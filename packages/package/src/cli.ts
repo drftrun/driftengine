@@ -106,6 +106,25 @@ async function doctor(cwd: string, options: ResourceOptions = {}): Promise<Packa
   console.log(
     `  splash: ${manifest.splash.show ? `the engine badge, held ${manifest.splash.minMs} ms` : 'off'}`,
   );
+  /*
+   * **Printed the way the signing mode is, and for the same reason.** An APK's permissions are the
+   * difference between a game that can reach a relay and one whose every connection fails with
+   * nothing logged at either end, and they are invisible until somebody runs `aapt2` on the built
+   * artifact. Saying it here puts it in front of whoever is about to build.
+   */
+  if (manifest.targets.includes('android')) {
+    const asked = manifest.android.permissions;
+    console.log(
+      `  android: permissions ${asked.length > 0 ? asked.join(', ') : 'none — the APK cannot open a socket'}`,
+    );
+    console.log(
+      `  android: cleartext ${
+        manifest.android.cleartextTraffic
+          ? 'permitted — http:// and ws:// are allowed, and mixed content with them'
+          : 'refused — a relay must be wss://'
+      }`,
+    );
+  }
 
   /*
    * **What each target still needs, and the command that fetches it.** A `doctor` that only

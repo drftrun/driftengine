@@ -12,6 +12,7 @@ const manifest: PackageManifest = {
   features: { clipExport: false, gamepad: true },
   targets: ['linux-x64', 'win-x64'],
   steam: { appId: null },
+  android: { permissions: [], cleartextTraffic: false },
   splash: { show: true, minMs: 1400 },
   publisher: 'example',
   icon: null,

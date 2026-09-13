@@ -1,7 +1,7 @@
 {
   "name": "@driftengine/workspace",
   "private": true,
-  "version": "3.61.4",
+  "version": "3.62.0",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -48,9 +48,9 @@
     "capabilities:check": "npx tsx --conditions=drift-source scripts/capabilities.ts --check"
   },
   "devDependencies": {
-    "@driftengine/assets": "3.61.4",
-    "@driftengine/core": "3.61.4",
-    "@driftengine/drft": "3.61.4",
+    "@driftengine/assets": "3.62.0",
+    "@driftengine/core": "3.62.0",
+    "@driftengine/drft": "3.62.0",
     "@types/node": "^26.2.0",
     "@webgpu/glslang": "^0.0.15",
     "driftscript": "1.13.0",

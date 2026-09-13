@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/core",
-  "version": "3.61.4",
+  "version": "3.62.0",
   "description": "DriftEngine reusable browser 3D runtime",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,8 +29,8 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/drft": "3.61.4",
-    "@driftengine/physics": "3.61.4",
+    "@driftengine/drft": "3.62.0",
+    "@driftengine/physics": "3.62.0",
     "gl-matrix": "^3.4.3"
   },
   "author": "Drift Technologies",

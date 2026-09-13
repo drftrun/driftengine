@@ -58,7 +58,8 @@ Beside your `package.json`, in the project that produces the web build:
   "features": { "clipExport": false, "gamepad": true },
   "splash": { "show": true, "minMs": 1400 },
   "targets": ["linux-x64", "win-x64", "mac-arm64"],
-  "steam": { "appId": null }
+  "steam": { "appId": null },
+  "android": { "permissions": [], "cleartextTraffic": false }
 }
 ```
 
@@ -242,6 +243,40 @@ workers and `crossOriginIsolated` all work without a loopback server listening i
 bridge is injected before the game's own scripts through `addDocumentStartJavaScript`, which is the
 mobile equivalent of the desktop preload, so `createHost` finds the same `__driftHost` it finds on
 the desktop.
+
+### An APK asks for nothing until a game says so
+
+The manifest template declares one activity and **no permissions**, which is the right default: a
+permission is visible in the store listing, and a packager that granted the network to every game
+it ever built would be asking on behalf of games that never use it. A game that needs the network
+says so:
+
+```json
+"android": { "permissions": ["INTERNET"], "cleartextTraffic": false }
+```
+
+`"INTERNET"` and `"android.permission.INTERNET"` are both accepted, and the elements are written
+into the copied Gradle project before Gradle runs — the same copy the icon is written into, so
+nothing in this repository is touched by a consumer's build. `drift-package doctor` prints what was
+asked for, and `aapt2 dump permissions <apk>` is how to confirm it landed.
+
+**Without it every connection fails and nothing says why.** The process is not permitted to open a
+socket, so the game reports that it could not connect and the server logs nothing at all, because
+no packet leaves the phone. That is the same silence on both ends, and it is indistinguishable from
+a wrong address.
+
+### Reaching a relay that has no certificate
+
+`cleartextTraffic` is the second half, and it is false by default. The game is served from an https
+origin, so a WebView will not open `ws://` from it: a WebView defaults to `MIXED_CONTENT_NEVER_ALLOW`,
+which is stricter than a browser tab, where the same connection succeeds with a deprecation warning
+(measured on Chrome 151 against a LAN address). Setting it true writes
+`android:usesCleartextTraffic="true"` **and** is what `MainActivity` reads back at runtime, through
+`NetworkSecurityPolicy`, to allow mixed content in the WebView. One switch, so the platform and the
+renderer cannot disagree — which they would if only the manifest moved.
+
+Set it only for the case it exists for: a relay on a LAN, which cannot hold a certificate for an
+address that is not a name. A public relay should be `wss://` and this should stay false.
 
 **Signing is not optional here and there is no unsigned option to offer**: Android refuses to
 install an unsigned APK at all. Without a keystore the packager generates one and says so on every

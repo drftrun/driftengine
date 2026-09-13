@@ -12,9 +12,11 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Toast;
 import android.os.Message;
+import android.security.NetworkSecurityPolicy;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.URLUtil;
@@ -91,6 +93,28 @@ public final class MainActivity extends Activity {
        error — which is indistinguishable from a broken link. With it, the request arrives at
        onCreateWindow below and is sent to the person's browser. */
     web.getSettings().setSupportMultipleWindows(true);
+    /*
+     * **Mixed content follows the manifest's cleartext policy, read back from the platform.**
+     *
+     * The game is served from an https origin (see the class comment), so it is a secure context,
+     * and a WebView defaults to MIXED_CONTENT_NEVER_ALLOW — stricter than a browser tab, which
+     * permits an insecure WebSocket from a secure page with a deprecation warning. A relay on a
+     * LAN cannot hold a certificate, so a game that wants one asks for
+     * `"android": { "cleartextTraffic": true }` and gets `usesCleartextTraffic="true"` in its
+     * manifest. Without this line that flag would be half a permission: Android would allow the
+     * socket and the renderer would still refuse it, which is the kind of disagreement nobody can
+     * debug from either side.
+     *
+     * **Read from NetworkSecurityPolicy rather than passed in as a build property**, so there is
+     * one source of truth. The policy reflects `usesCleartextTraffic` and any network security
+     * config a consumer adds later, so the two cannot drift apart and a scoped config keeps
+     * working without this file learning about it.
+     *
+     * A build that asks for nothing keeps NEVER_ALLOW, which is exactly what it had before.
+     */
+    if (NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted()) {
+      web.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+    }
     web.setWebViewClient(new LocalContentClient(loader, this));
     web.setWebChromeClient(new ExternalWindowClient(this));
     /*

@@ -94,6 +94,9 @@
     "packages/package/src/identity.ts",
     "packages/package/src/identity.test.ts",
     "packages/package/src/stage.test.ts",
+    /* Reads the manifest template off disk, so it needs Node's types for the same reason the
+       Node-side modules above do. `tsconfig.scripts.json` typechecks it. */
+    "packages/package/src/mobile/androidManifest.test.ts",
     "packages/package/src/init.ts",
     "packages/package/src/init.test.ts",
     "packages/package/src/templates",

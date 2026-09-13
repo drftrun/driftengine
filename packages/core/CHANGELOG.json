@@ -1,5 +1,16 @@
 [
   {
+    "version": "3.62.0",
+    "date": "2026-09-13",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "An Android build can ask for the permissions it needs. Without this an APK could not open a socket at all, and there was no way for a game to say otherwise short of vendoring three directories.",
+        "text": "**The Android manifest template declares one activity and no permissions, and that default is right**: a permission is visible in a store listing, and a packager that granted the network to every game it ever built would be asking on behalf of games that never use it. The difficulty was that a consumer had no way to depart from it. The template is copied wholesale, none of the eight `-Pdrift*` properties Gradle takes reaches the manifest, there is no `manifestPlaceholders` and no source-set overlay, and `--resources` moves the desktop shell and the iOS spec along with the Gradle project — so changing one line of one manifest meant vendoring all three.\n\nSo an online game shipped an APK whose process is not permitted to open a socket. Every connection failed, the game reported that it could not connect, and the relay logged nothing at all because no packet left the phone: the same silence at both ends, indistinguishable from a wrong address. Measured on the built artifact, `aapt2 dump permissions` printed the package name and nothing else.\n\n```json\n\"android\": { \"permissions\": [\"INTERNET\"], \"cleartextTraffic\": false }\n```\n\n`\"INTERNET\"` and `\"android.permission.INTERNET\"` are both accepted; a name that would break out of the XML attribute it is written into is refused at parse time. The elements are written into the copied Gradle project before Gradle runs, which is where the icon is already written, so nothing in the engine's own tree is touched by a consumer's build. `doctor` prints what was asked for beside the signing mode, and says `none — the APK cannot open a socket` when nothing was.\n\n**`cleartextTraffic` is the second half, and it is the one only the engine could answer.** The game is served from `https://appassets.androidplatform.net`, which is a secure context, and a WebView defaults to `MIXED_CONTENT_NEVER_ALLOW` — stricter than a browser tab, where the same insecure WebSocket connects with a deprecation warning rather than being refused, measured on Chrome 151 against a LAN address. Setting it true writes `android:usesCleartextTraffic=\"true\"` **and** is what `MainActivity` reads back through `NetworkSecurityPolicy` to allow mixed content in the WebView. One switch drives both, so the platform and the renderer cannot disagree about it, and a network security config a consumer adds later is picked up without the Java learning about it. A relay on a LAN cannot hold a certificate, which is the case it exists for; a public relay should be `wss://` and this should stay false.\n\nVerified on real APKs with `aapt2`: unchanged, the dump is the package name alone; asking, it carries both permissions and the cleartext flag. Held by twenty-nine cases, and seven mutations each redden at least one."
+      }
+    ]
+  },
+  {
     "version": "3.61.4",
     "date": "2026-09-13",
     "entries": [

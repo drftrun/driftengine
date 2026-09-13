@@ -95,3 +95,54 @@ describe('parseManifest', () => {
     expect(features.clipExport).toBe(false);
   });
 });
+
+describe('the android block', () => {
+  /*
+   * **Absent means nothing asked for, which is the posture the manifest template documents.** A
+   * game that needs the network says so, and the asking is then visible in the store listing
+   * rather than granted to every game the packager ever builds.
+   */
+  it('defaults to no permissions and no cleartext', () => {
+    const parsed = parseManifest(valid);
+    expect(parsed.android.permissions).toEqual([]);
+    expect(parsed.android.cleartextTraffic).toBe(false);
+  });
+
+  it('takes the short name a consumer writes and stores what the XML needs', () => {
+    const parsed = parseManifest({ ...valid, android: { permissions: ['INTERNET'] } });
+    expect(parsed.android.permissions).toEqual(['android.permission.INTERNET']);
+  });
+
+  it('leaves a qualified name as it was written', () => {
+    const parsed = parseManifest({
+      ...valid,
+      android: { permissions: ['android.permission.ACCESS_NETWORK_STATE'] },
+    });
+    expect(parsed.android.permissions).toEqual(['android.permission.ACCESS_NETWORK_STATE']);
+  });
+
+  it('refuses a permission that would break out of the XML attribute', () => {
+    expect(() =>
+      parseManifest({ ...valid, android: { permissions: ['INTERNET" /><uses-permission x="'] } }),
+    ).toThrow(/not a permission name/);
+  });
+
+  it('refuses the wrong shape rather than quietly ignoring it', () => {
+    expect(() => parseManifest({ ...valid, android: { permissions: 'INTERNET' } })).toThrow(
+      /must be an array/,
+    );
+    expect(() => parseManifest({ ...valid, android: { permissions: [3] } })).toThrow(
+      /expected strings/,
+    );
+  });
+
+  it('takes cleartext only when it is asked for exactly', () => {
+    expect(
+      parseManifest({ ...valid, android: { cleartextTraffic: true } }).android.cleartextTraffic,
+    ).toBe(true);
+    /* Not `'true'`, not `1`: a security posture is not something to be talked into by a truthy. */
+    expect(
+      parseManifest({ ...valid, android: { cleartextTraffic: 'true' } }).android.cleartextTraffic,
+    ).toBe(false);
+  });
+});

@@ -10,6 +10,8 @@
  * immediately. The id, the entry, the targets and the backend policy do not, because each of them
  * is silent when wrong: the wrong id writes saves to a directory nobody looks in.
  */
+import { checkPermission, fullPermissionName } from './mobile/androidManifest.ts';
+
 export type WebGpuPolicy = 'prefer' | 'require' | 'off';
 export type Target = 'win-x64' | 'mac-arm64' | 'mac-x64' | 'linux-x64' | 'android' | 'ios';
 
@@ -54,6 +56,25 @@ export interface PackageManifest {
   readonly targets: readonly Target[];
   readonly steam: { readonly appId: number | null };
   readonly splash: { readonly show: boolean; readonly minMs: number };
+  /**
+   * What the Android build asks the platform for. Nothing, unless a game says otherwise.
+   *
+   * **`permissions` is empty by default and that default is the feature**: the manifest template
+   * declares none, so a game asks for what it needs and the asking is visible in the store listing
+   * rather than granted to every game the packager ever builds. `"INTERNET"` and
+   * `"android.permission.INTERNET"` are both accepted.
+   *
+   * **`cleartextTraffic` is false by default and is the other half of reaching a relay.** The game
+   * is served from `https://appassets.androidplatform.net`, which is a secure context, so Blink
+   * refuses `ws://` from it as mixed content whatever Android's own policy says. Setting this true
+   * sets `android:usesCleartextTraffic` *and* is what `MainActivity` reads at runtime to allow
+   * mixed content in the WebView, so the platform and the renderer cannot disagree about it. A
+   * relay on a LAN cannot hold a certificate, which is the case it exists for.
+   */
+  readonly android: {
+    readonly permissions: readonly string[];
+    readonly cleartextTraffic: boolean;
+  };
   /**
    * Who an installer says this is from.
    *
@@ -116,6 +137,20 @@ export function parseManifest(raw: unknown): PackageManifest {
   const featuresRaw = (source.features ?? {}) as Record<string, unknown>;
   const steamRaw = (source.steam ?? {}) as Record<string, unknown>;
   const splashRaw = (source.splash ?? {}) as Record<string, unknown>;
+  const androidRaw = (source.android ?? {}) as Record<string, unknown>;
+  const permissionsRaw = androidRaw.permissions ?? [];
+  if (!Array.isArray(permissionsRaw)) {
+    throw new Error('drift.package.json: "android.permissions" must be an array of strings');
+  }
+  const permissions = permissionsRaw.map((entry) => {
+    if (typeof entry !== 'string') {
+      throw new Error(
+        `drift.package.json: "android.permissions" holds ${typeof entry}, expected strings`,
+      );
+    }
+    checkPermission(entry);
+    return fullPermissionName(entry);
+  });
   const appId = steamRaw.appId;
 
   return {
@@ -146,6 +181,10 @@ export function parseManifest(raw: unknown): PackageManifest {
         ? source.publisher
         : (id.split('.')[1] ?? id),
     icon: typeof source.icon === 'string' && source.icon.length > 0 ? source.icon : null,
+    android: {
+      permissions,
+      cleartextTraffic: androidRaw.cleartextTraffic === true,
+    },
     splash: {
       show: splashRaw.show !== false,
       minMs:

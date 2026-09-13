@@ -8,6 +8,7 @@ import type { PackageManifest } from './manifest.ts';
 import { resourceDir } from './resources.ts';
 import type { ResourceOptions } from './resources.ts';
 import { missingReferences } from './mobile/assetCheck.ts';
+import { withAndroidManifest } from './mobile/androidManifest.ts';
 import { versionCodeFor } from './mobile/versionCode.ts';
 import { androidToolchain, toolchainHome } from './toolchain.ts';
 
@@ -76,6 +77,30 @@ export async function buildAndroid(
     target: 'es2022',
     logLevel: 'warning',
   });
+
+  /*
+   * **The manifest is rewritten in the copy, before Gradle reads it.** The same place and the same
+   * reason as the icon below: the template is staged into `out/`, so a consumer's permissions never
+   * touch this repository's tree. See `mobile/androidManifest.ts` for what an empty request does,
+   * which is nothing at all.
+   */
+  const manifestPath = join(projectRoot, 'app', 'src', 'main', 'AndroidManifest.xml');
+  const templateXml = await readFile(manifestPath, 'utf8');
+  const withPermissions = withAndroidManifest(templateXml, manifest.android);
+  if (withPermissions !== templateXml) {
+    await writeFile(manifestPath, withPermissions, 'utf8');
+  }
+  if (manifest.android.permissions.length > 0) {
+    console.log(`[drift-package] android: permissions ${manifest.android.permissions.join(', ')}`);
+  }
+  if (manifest.android.cleartextTraffic) {
+    /*
+     * Said out loud because it is a security posture rather than a setting: the build now permits
+     * `http://` and `ws://`, and `MainActivity` reads the same flag to allow mixed content in the
+     * WebView. A consumer who did not mean it should see it in the build log.
+     */
+    console.log('[drift-package] android: cleartext traffic permitted (http:// and ws:// allowed)');
+  }
 
   if (manifest.icon !== null) {
     /* One PNG at one density: Android scales it for the rest, and a game that wants a full set
