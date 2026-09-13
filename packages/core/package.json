@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/core",
-  "version": "3.61.1",
+  "version": "3.61.2",
   "description": "DriftEngine reusable browser 3D runtime",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,6 +21,7 @@
     "!src/**/*.test.ts",
     "!src/**/*.test.mjs",
     "!src/**/__snapshots__",
+    "scripts",
     "CHANGELOG.json",
     "README.md",
     "LICENSE",
@@ -28,8 +29,8 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/drft": "3.61.1",
-    "@driftengine/physics": "3.61.1",
+    "@driftengine/drft": "3.61.2",
+    "@driftengine/physics": "3.61.2",
     "gl-matrix": "^3.4.3"
   },
   "author": "Drift Technologies",

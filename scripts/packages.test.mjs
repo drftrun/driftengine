@@ -14,6 +14,7 @@
  * root table, or quoting a number that has moved, is a red suite.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -319,4 +320,45 @@ test('every package declares the licence the tree carries', () => {
     .filter(({ manifest }) => manifest.license !== 'Apache-2.0')
     .map(({ dir, manifest }) => `${dir} says ${manifest.license}`);
   assert.deepEqual(wrong, [], `these disagree with LICENSE:\n  ${wrong.join('\n  ')}`);
+});
+
+/**
+ * **Every file a package tracks reaches the tarball, unless it is a test or a build config.**
+ *
+ * This gate exists because three packages shipped broken and nothing noticed. `files` was rewritten
+ * when these packages were prepared for the registry and it *replaced* each array rather than
+ * extending it: `@driftengine/package` lost `bin/`, `assets/`, `android/` and `ios/`, so the
+ * command its own `bin` field declares was not in the tarball; `@driftengine/script` lost
+ * `capabilities.json`, which the DriftScript plugin resolves by package path; and
+ * `packages/core/scripts/` had never shipped at all, though `AGENTS.md` documents importing
+ * `@driftengine/core/scripts/browser.mjs` and a consumer does exactly that in eight files.
+ *
+ * **None of it was visible from inside the workspace.** A path dependency resolves through a
+ * symlink into the tree, where every file exists whatever `files` says. The defect only appears
+ * once somebody installs from the registry, which is the worst possible moment to find it.
+ *
+ * Excluded: tests, snapshots and TypeScript configs, which a consumer never reaches for.
+ */
+test('a package ships every file it tracks', () => {
+  const SKIP = /(\.test\.(ts|mjs)$)|(__snapshots__\/)|(^tsconfig)|(\.tsbuildinfo$)/;
+  const missing = [];
+  for (const { dir } of packages()) {
+    const root = path.join(PACKAGES, dir);
+    const tracked = execFileSync('git', ['ls-files', root], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean)
+      .map((f) => path.relative(root, path.join(ROOT, f)))
+      .filter((f) => !SKIP.test(f) && f !== 'package.json');
+    const packed = new Set(
+      JSON.parse(
+        execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8' }),
+      )[0].files.map((f) => f.path),
+    );
+    for (const f of tracked) if (!packed.has(f)) missing.push(`${dir}: ${f}`);
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `these files are tracked but would not reach a consumer:\n  ${missing.join('\n  ')}`,
+  );
 });

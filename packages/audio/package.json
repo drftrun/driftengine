@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/audio",
-  "version": "3.61.1",
+  "version": "3.61.2",
   "description": "Layered stems, synthesis, rhythm analysis and positional placement",
   "license": "Apache-2.0",
   "type": "module",

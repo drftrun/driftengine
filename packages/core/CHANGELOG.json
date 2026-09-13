@@ -1,5 +1,16 @@
 [
   {
+    "version": "3.61.2",
+    "date": "2026-09-13",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "core ships its scripts, and a gate now asserts every tracked file reaches a consumer.",
+        "text": "**`packages/core/scripts/` had never been published**, though `AGENTS.md` documents importing `@driftengine/core/scripts/browser.mjs` and a consumer does exactly that in eight files. It ships now, along with the `scripts/` of `package`, `physics` and `script`.\\n\\n**The gate matters more than the fix.** `packages.test.mjs` now asserts that every file a package tracks reaches its tarball, excluding tests, snapshots and build configs. None of this was visible from inside the workspace: a path dependency resolves through a symlink into the tree, where every file exists whatever `files` says, so the defect could only appear once somebody installed from the registry. Three packages shipped broken in 3.61.0 for exactly that reason."
+      }
+    ]
+  },
+  {
     "version": "3.61.1",
     "date": "2026-09-13",
     "entries": [
