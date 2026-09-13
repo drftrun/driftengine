@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/xr",
-  "private": true,
   "version": "3.61.0",
   "description": "WebXR sessions, stereo views, controller input and hand joints, over both backends",
   "license": "Apache-2.0",

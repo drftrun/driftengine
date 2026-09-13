@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/splats",
-  "private": true,
   "version": "3.61.0",
   "description": "Gaussian splat captures: readers, an off-frame sort, and a pass that composes into the scene",
   "license": "Apache-2.0",

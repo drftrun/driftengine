@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/script",
-  "private": true,
   "version": "3.61.0",
   "description": "The drift/* capability bindings: what this engine provides to DriftScript, and the only place the two are coupled",
   "license": "Apache-2.0",

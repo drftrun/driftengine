@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/animation",
-  "private": true,
   "version": "3.61.0",
   "description": "Skeletons, clips, poses and the graphs over them: sampling as a pure function of a caller-supplied time",
   "license": "Apache-2.0",

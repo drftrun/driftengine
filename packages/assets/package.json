@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/assets",
-  "private": true,
   "version": "3.61.0",
   "description": "Model readers and the streaming loader for the .drft container",
   "license": "Apache-2.0",

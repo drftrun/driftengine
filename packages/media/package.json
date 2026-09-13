@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/media",
-  "private": true,
   "version": "3.61.0",
   "description": "Clip encoding and frame delivery for recording what the engine draws",
   "license": "Apache-2.0",

@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/package",
-  "private": true,
   "version": "3.61.0",
   "description": "Builds an installable application from a game built on the engine",
   "license": "Apache-2.0",
@@ -28,7 +27,7 @@
   ],
   "sideEffects": false,
   "bin": {
-    "drift-package": "./bin/drift-package.mjs"
+    "drift-package": "bin/drift-package.mjs"
   },
   "peerDependencies": {
     "@driftengine/core": "3.61.0",

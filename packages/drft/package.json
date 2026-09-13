@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/drft",
-  "private": true,
   "version": "3.61.0",
   "description": "The .drft container: a streaming format for baked 3D scenes",
   "license": "Apache-2.0",

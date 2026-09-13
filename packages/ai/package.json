@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/ai",
-  "private": true,
   "version": "3.61.0",
   "description": "Provider-neutral intelligence sessions, typed tools and context, and an agent loop that does not wait",
   "license": "Apache-2.0",

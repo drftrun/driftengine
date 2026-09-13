@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/editor",
-  "private": true,
   "version": "3.61.0",
   "description": "The model of a scene editor: a tree of what exists, an inspector over what is selected, and play-in-editor",
   "license": "Apache-2.0",

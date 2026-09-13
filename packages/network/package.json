@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/network",
-  "private": true,
   "version": "3.61.0",
   "description": "A transport seam, rewind and replay, lockstep and an authoritative host, on the fixed-step loop",
   "license": "Apache-2.0",

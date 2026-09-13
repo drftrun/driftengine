@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/core",
-  "private": true,
   "version": "3.61.0",
   "description": "DriftEngine reusable browser 3D runtime",
   "license": "Apache-2.0",

@@ -1,6 +1,5 @@
 {
   "name": "@driftengine/physics",
-  "private": true,
   "version": "3.61.0",
   "description": "Collision shapes, spatial queries and swept kinematic collision",
   "license": "Apache-2.0",
