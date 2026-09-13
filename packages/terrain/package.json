@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/terrain",
-  "version": "3.61.0",
+  "version": "3.61.1",
   "description": "Heightfields: a query that answers the surface that is drawn, and patches that meet without cracks",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,10 +27,10 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/drft": "3.61.0"
+    "@driftengine/drft": "3.61.1"
   },
   "devDependencies": {
-    "@driftengine/physics": "3.61.0"
+    "@driftengine/physics": "3.61.1"
   },
   "author": "Drift Technologies",
   "repository": {
