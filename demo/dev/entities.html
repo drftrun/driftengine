@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — DriftScript entities</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      13px/1.5 ui-monospace,
+      monospace;
+  }
+  #stage {
+    position: relative;
+    height: 100vh;
+  }
+  #field {
+    position: absolute;
+    inset: 2rem 2rem 2rem 22rem;
+    border: 1px solid #1d232b;
+  }
+  .mover {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #4da3ff;
+  }
+  .mover.frozen {
+    background: #46506b;
+  }
+  #out {
+    position: absolute;
+    left: 0.7rem;
+    top: 0.7rem;
+    white-space: pre-wrap;
+    width: 20rem;
+  }
+</style>
+<div id="stage">
+  <div id="out"></div>
+  <div id="field"></div>
+</div>
+<script type="module" src="./entities.ts"></script>

@@ -1,0 +1,117 @@
+// Tending a fire: dry what is wet, feed what is hungry, and know when to stop.
+//
+// Everything here links against a target providing `drift/chemistry`, `drift/ecs` and `drift/time`.
+// It is in the corpus rather than in `examples/` because it needs a host, and `examples/` is the set
+// that runs against no host at all.
+//
+// **Nothing in this file decides anything about fire.** It reads five numbers the model computed
+// and acts on them: a moisture content on a dry basis, how close to catching a log is, how much
+// oxygen the air at the hearth has left, what the fire is putting out in kilowatts, and how far you
+// can see through the smoke. Whether a log catches is the model's answer, not this file's.
+
+import { alive, burning, charFraction, heatRelease, ignite, ignitionProgress, moisture,
+         oxygenFraction, surfaceTemperature, visibility, wet } from "drift/chemistry"
+
+// A piece of fuel waiting its turn, and where it was put.
+//
+// A `data` record rather than a `component`, because this file passes it to a function and a
+// component type is not a type a parameter can be annotated with. The engine's own binding layer
+// declares a `Chemistry` component of the same two fields for the entity side of this — `§19` says
+// why it lives there rather than in the entity package or the chemistry one.
+data Fuel {
+    parcel: i32 = 0
+    // Metres from the fire. Radiant flux falls as one over this squared, so the difference between
+    // drying a log and charring it is where you set it down.
+    standoff: f32 = 0
+}
+
+// A material this game defines rather than taking from a library, and `@substance` asserts that it
+// carries everything the registry will ask for. Registering it is still a host call, so a target
+// without `drift/chemistry` refuses this file at linking rather than at the first spawn.
+@substance
+data Dragonhide {
+    density: f32 = 1100
+    heatCapacity: f32 = 1600
+    conductivity: f32 = 0.35
+    emissivity: f32 = 0.94
+    porosity: f32 = 0.20
+    // Absolute, so `degC` is the right spelling. A *difference* would be refused here and told to
+    // use `K`, because Celsius is an offset scale and five degrees of it is not five kelvin.
+    ignitionK: f32 = 1150degC
+    criticalMassFlux: f32 = 0.012
+}
+
+// Whether this is worth putting on the fire yet. A pure function of two readings, so it checks with
+// no host at all — which is what makes the rule testable separately from the simulation.
+@pure
+fn ready(moistureFraction: f32, progress: f32) -> bool {
+    return moistureFraction < 0.25 && progress > 0.6
+}
+
+// How hungry the fire is: below this it is dying and wants feeding. In kilowatts, because that is
+// what a fire's size is measured in.
+@pure
+fn hungry(kilowatts: f32) -> bool {
+    return kilowatts < 4
+}
+
+// The hearth is choking rather than burning: a flame stops near 0.14 by volume, and a room that has
+// fallen to 0.17 is one log away from putting itself out.
+@pure
+fn stifled(oxygen: f32, metresVisible: f32) -> bool {
+    return oxygen < 0.17 || metresVisible < 3
+}
+
+@deterministic
+fn tend(chem: Chemistry, fuel: Fuel, hearthX: f32, hearthY: f32, hearthZ: f32) -> bool {
+    let p = fuel.parcel
+    if !chemistry.alive(chem, p) {
+        return false
+    }
+    if chemistry.burning(chem, p) {
+        return false
+    }
+
+    // Do not feed a fire that has no air left. Adding fuel to a starved hearth makes smoke, not
+    // heat, and the model will agree — but a tender who knows this stops first.
+    if stifled(chemistry.oxygenFraction(chem, hearthX, hearthY, hearthZ),
+               chemistry.visibility(chem, hearthX, hearthY, hearthZ)) {
+        return false
+    }
+
+    if ready(chemistry.moisture(chem, p), chemistry.ignitionProgress(chem, p)) {
+        // A pilot, and nothing more. It satisfies one of five criteria: held to wet wood it does
+        // nothing at all, which is the API telling the truth about what a match is.
+        chemistry.ignite(chem, p)
+        return true
+    }
+    return false
+}
+
+// Put it out. Not by clearing a flag — by pouring real water into the surface shell, where the
+// boiling reaction finds it and charges the full 2.44 MJ per kilogram against the fire.
+@deterministic
+fn douseWith(chem: Chemistry, parcel: i32, litres: f32) {
+    chemistry.wet(chem, parcel, litres)
+}
+
+// What the fire looks like from here, for a log or a UI to read. Surface temperature is the number
+// a glow is a blackbody curve of, and char fraction is what darkens the albedo.
+@pure
+fn embersLook(surfaceK: f32, char: f32) -> f32 {
+    if surfaceK < 800 {
+        return 0
+    }
+    return char * ((surfaceK - 800) / 700)
+}
+
+@deterministic
+fn emberGlow(chem: Chemistry, parcel: i32) -> f32 {
+    return embersLook(chemistry.surfaceTemperature(chem, parcel), chemistry.charFraction(chem, parcel))
+}
+
+// Whether the fire wants another log at all.
+@deterministic
+fn wantsFuel(chem: Chemistry, parcel: i32) -> bool {
+    return hungry(chemistry.heatRelease(chem, parcel))
+}

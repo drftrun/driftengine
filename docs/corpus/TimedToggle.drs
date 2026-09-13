@@ -1,0 +1,86 @@
+// A lamp that blinks on the fixed clock and announces every change — Phase 4 in one file.
+//
+// The four mechanisms are here because they are what a behaviour script is made of: a task waiting
+// on a clock, a scope that owns it, a typed event, and a state machine. Each is the smallest honest
+// use rather than a demonstration of the syntax, because a corpus file that only exercises a
+// feature teaches nobody how to reach for one.
+//
+// Three things this shows that the files beside it could not:
+//
+//   - `await fixedTime(500ms)` resumes on the step that reaches half a second of **simulation**
+//     time, not of real time. A stall does not skip the beat, and a replay lands it on the same
+//     tick. `EcsCoroutines.drs` records what the Lua original did instead: spin on `os.clock()`.
+//   - `emit` reaches whoever is listening without the lamp knowing who, and the handler is closed
+//     when the module is disposed rather than when somebody remembers to.
+//   - `state` holds what an `enum` and a chain of `if` hold in `GuardBehaviour.drs`. That file
+//     stays as it is, because it records what the Lua original looked like; this one records what
+//     the language offers instead, and the difference is that the compiler here knows which states
+//     nothing enters and which have no way out.
+//
+// **The two `on` forms are different channels and the names are kept apart on purpose.** A
+// module-level `on` listens on the event bus that `emit` publishes to. An `on` inside a `state`
+// answers `send` on one machine. Nothing routes the first into the second — a machine reacting to
+// every event emitted anywhere would be a machine nobody could reason about — so a host that wants
+// one to drive the other calls `send` itself. Using one name for both would read as though it
+// happened automatically.
+
+import { sound, play } from "drift/audio"
+
+// What the lamp publishes. Anybody may listen; the lamp does not know who does.
+event Toggled {
+    lit: bool = false
+}
+
+// What a host sends the machine to start and stop it.
+event Requested {
+    running: bool = false
+}
+
+data Lamp {
+    lit: bool = false
+    period: f32 = 0.5
+}
+
+// The only thing here that reaches the host. A slot may not resolve — the file may not be there —
+// so the sound is an option and playing it is inside the `if let` rather than after it.
+fn announce(lit: bool) {
+    if let clip = audio.sound("toggle") {
+        audio.play(clip, 1)
+    }
+}
+
+on Toggled as toggle {
+    announce(toggle.lit)
+}
+
+// The beat itself. It never returns, and that is fine: the scope that owns it ends it.
+task blink(period: f32) {
+    while true {
+        await fixedTime(period)
+        emit Toggled { lit: true }
+        await fixedTime(period)
+        emit Toggled { lit: false }
+    }
+}
+
+state Idle {
+    on Requested {
+        become Running
+    }
+}
+
+// The entry block suspends, which is why it is a task and not a function. Leaving the state leaves
+// the scope, which cancels `blink` wherever in its cycle it happens to be.
+state Running {
+    enter {
+        scope beat {
+            spawn blink(0.5)
+            await fixedTime(30s)
+        }
+        become Idle
+    }
+
+    on Requested {
+        become Idle
+    }
+}

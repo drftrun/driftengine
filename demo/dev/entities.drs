@@ -1,0 +1,66 @@
+// The entity forms, running in a browser.
+//
+// Everything here is a language form rather than a call: `component` declares a shape the host
+// builds a store from, `system` declares a body the schedule runs, and `query` is a loop the
+// compiler checks. Nothing in this file names a capability, and it still requires `drift/ecs` —
+// the query form *is* a use of it, so the linker would refuse this against a target with no
+// entity model.
+//
+// **Edit it and save.** Change a speed, add a field to a component, add a system. The world keeps
+// its entities: a reloaded module keeps the store it already made, because replacing the component
+// type would orphan every entity holding one.
+
+component Position {
+    x: f64 = 0
+    y: f64 = 0
+}
+
+component Velocity {
+    x: f64 = 0
+    y: f64 = 0
+}
+
+// A marker. A component with no fields is how a query narrows by a fact rather than by a value,
+// and it costs one byte of presence per entity and nothing else.
+component Frozen {
+    since: f64 = 0
+}
+
+// The whole point of the page: this is a property load and an array index in the JavaScript it
+// compiles to, not a host call per field. `.without<Frozen>()` narrows the walk itself, so a frozen
+// entity is never yielded rather than yielded and skipped.
+system Movement {
+    reads Velocity
+    writes Position
+
+    update {
+        for e in query<Position, Velocity>().without<Frozen>() {
+            e.Position.x = e.Position.x + e.Velocity.x
+            e.Position.y = e.Position.y + e.Velocity.y
+        }
+    }
+}
+
+// Bouncing, at a rate rather than every step, so the panel shows a stride doing something visible.
+// `at 20Hz` is three fixed steps; a rate that did not divide the fixed step would be refused.
+system Bounce {
+    reads Position
+    writes Velocity
+
+    update at 20Hz {
+        for e in query<Position, Velocity>() {
+            if e.Position.x < 0 {
+                e.Velocity.x = 1
+            }
+            if e.Position.x > 100 {
+                e.Velocity.x = -1
+            }
+            if e.Position.y < 0 {
+                e.Velocity.y = 1
+            }
+            if e.Position.y > 100 {
+                e.Velocity.y = -1
+            }
+        }
+    }
+}

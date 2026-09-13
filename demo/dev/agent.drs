@@ -1,0 +1,65 @@
+// The first DriftScript file to name an agent, and it is deliberately not a character.
+//
+// What `drift/ai` lets a script do is small on purpose: wake an agent, ask it to consider, and
+// read what it is doing. Nothing here awaits a provider. A script that could await one would be a
+// script that can stall a fixed step for five seconds, and the whole of Track O is the argument
+// that nothing should — the agent's floor is already deciding while the model is still thinking.
+//
+// Whether the agent drives an actor, a camera, a page's narration or a build step is the
+// consumer's, which is why this file talks about an agent and never about what it controls.
+
+import { agent, wake, consider, intentId, degraded } from "drift/ai"
+
+data Watch {
+    // What the agent was last seen doing, so a change is an edge rather than a poll.
+    lastIntent: String = ""
+    quiet: f32 = 0
+}
+
+event AgentChanged {
+    intent: String = ""
+}
+
+// Reads what the agent is doing and reports a change.
+//
+// `@deterministic` holds, and that is the interesting part: reading the current intent is reading
+// the simulation, because a deterministic floor put it there and a replay recomputes it. Asking a
+// provider is the nondeterministic half, and it is `wake` and `consider` that carry the effect.
+//
+// The agent is *resolved* rather than passed, exactly as a sound is. It may be absent — a scene
+// loaded without its agents, a name that moved — and the option is what makes a script face that
+// instead of talking to nothing and reporting success.
+@deterministic
+fn observe(state: mut Watch, dt: f32) {
+    if let mind = ai.agent("watcher") {
+        let now = ai.intentId(mind)
+        if now != state.lastIntent {
+            state.lastIntent = now
+            state.quiet = 0
+        } else {
+            state.quiet += dt
+        }
+    }
+}
+
+// Something happened worth interrupting for. Returns immediately; the agent acts at its next tick.
+fn alarm() {
+    if let mind = ai.agent("watcher") {
+        ai.wake(mind, "an alarm sounded", 90)
+    }
+}
+
+// A low-frequency think tick, never a per-frame one.
+//
+// Three seconds rather than every frame, because the API is meant to make provider cost impossible
+// to ignore. `consider` is cheap to call and the request behind it is not.
+task ponder() {
+    while true {
+        await fixedTime(3s)
+        if let mind = ai.agent("watcher") {
+            if !ai.degraded(mind) {
+                ai.consider(mind)
+            }
+        }
+    }
+}

@@ -1,0 +1,72 @@
+// A patrolling guard with a state machine, modelled on a real Lua NPC script.
+//
+// This is in the corpus because it is what people actually write, rather than what a language
+// designer imagines they write. The Lua original carried its states as tables of `on_enter`,
+// `on_update` and `on_exit` closures, kept a `blackboard` table for shared data, and drove
+// transitions by assigning `current_state`.
+//
+// Three things change on the way across, and each is the language doing something the original
+// could not:
+//
+//   - The blackboard is a `data` record, so a typo in a key is a compile error rather than a `nil`
+//     at the worst possible moment.
+//   - The state is an `enum`, so `match` refuses to compile until every state is handled. The Lua
+//     version would silently do nothing for a state nobody wrote a branch for.
+//   - `canSeePlayer` is a capability call with a declared effect, so a `@deterministic` function
+//     cannot accidentally depend on it.
+//
+// What does NOT change: this is still a guard, and "guard" is a game's noun. The engine provides
+// vision queries and positions; what a guard *is* stays in the game.
+
+import { distance } from "drift/scene"
+
+enum Alertness {
+    Patrolling
+    Chasing
+    Searching
+}
+
+data Guard {
+    mode: Alertness = Alertness.Patrolling
+    speed: f32 = 2
+    visionRange: f32 = 15
+    searchTimer: f32 = 0
+    waypoint: u32 = 0
+}
+
+@pure
+fn speedFor(mode: Alertness) -> f32 {
+    return match mode {
+        Patrolling => 2
+        Chasing => 4.5
+        Searching => 1.5
+    }
+}
+
+fn canSee(guard: Guard, self: Node, target: Node) -> bool {
+    return scene.distance(self, target) <= guard.visionRange
+}
+
+fn think(guard: mut Guard, self: Node, target: Node, dt: f32) {
+    let visible = canSee(guard, self, target)
+
+    if guard.mode == Alertness.Patrolling {
+        if visible {
+            guard.mode = Alertness.Chasing
+        }
+    } else if guard.mode == Alertness.Chasing {
+        if !visible {
+            guard.mode = Alertness.Searching
+            guard.searchTimer = 3
+        }
+    } else {
+        guard.searchTimer -= dt
+        if visible {
+            guard.mode = Alertness.Chasing
+        } else if guard.searchTimer <= 0 {
+            guard.mode = Alertness.Patrolling
+        }
+    }
+
+    guard.speed = speedFor(guard.mode)
+}

@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8" />
+<!--
+  Without this a phone lays the page out at 980 CSS pixels and scales the result down, so the
+  scene buttons come out unreadable and a scene sized from `cssWidth` is drawing for a viewport
+  three times wider than the one holding it. The harness is opened on a phone by whoever is
+  checking a scene on a phone, which is the case it exists to serve.
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DriftEngine — demos</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.5 ui-monospace,
+      monospace;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.7rem;
+    border-bottom: 1px solid #1e242c;
+  }
+  button {
+    background: #12161b;
+    color: #9fb0c3;
+    border: 1px solid #232b34;
+    border-radius: 4px;
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+    font: inherit;
+  }
+  button[aria-pressed='true'] {
+    color: #6ee7a8;
+    border-color: #2f6f52;
+  }
+  #stage {
+    position: relative;
+    height: calc(100vh - 7rem);
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas:active {
+    cursor: grabbing;
+  }
+  #stats {
+    position: absolute;
+    left: 0.7rem;
+    bottom: 0.7rem;
+    color: #7d8ea1;
+    pointer-events: none;
+  }
+  /* The reveal scrubber, shown only for a scene that holds one. Over the canvas rather than
+     under it, because what it moves is in the picture and the eye should not have to travel. */
+  #scrub {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 2.4rem;
+    width: min(34rem, 70%);
+    display: none;
+    accent-color: #6ee7a8;
+    cursor: ew-resize;
+  }
+  #scrub.on {
+    display: block;
+  }
+  #error {
+    padding: 0.7rem;
+    color: #ff9b9b;
+    white-space: pre-wrap;
+  }
+</style>
+<header id="picker"></header>
+<div id="stage">
+  <canvas id="canvas"></canvas
+  ><input id="scrub" type="range" min="0" max="1" step="1" value="1" aria-label="Load progress" />
+  <div id="stats"></div>
+</div>
+<div id="error"></div>
+<script type="module" src="./main.ts"></script>

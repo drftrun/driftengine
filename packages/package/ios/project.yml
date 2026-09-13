@@ -1,0 +1,57 @@
+# The Xcode project, described rather than committed.
+#
+# The `__DRIFT_*__` placeholders are substituted by `src/ios.ts` when it stages a copy — plain text
+# replacement rather than Xcode build settings, so what XcodeGen reads is a finished spec and there
+# is one place a wrong value could come from.
+#
+# A `.xcodeproj` is a generated artefact with absolute paths and a merge conflict in every pull
+# request; XcodeGen turns this file into one at build time, and `drift-package bootstrap
+# --target=ios` fetches XcodeGen itself. Every value the packager substitutes is a placeholder
+# here, and the defaults are visibly placeholders rather than plausible.
+name: DriftHost
+options:
+  bundleIdPrefix: dev.driftengine
+  deploymentTarget:
+    # 15 is where WKWebView's modern JavaScript and WebGL2 are dependable. WebGPU arrives at 26
+    # and the engine's acceptance probe decides whether it is usable, per target.
+    iOS: '15.0'
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_NAME: __DRIFT_APP_NAME__
+    MARKETING_VERSION: __DRIFT_VERSION_NAME__
+    CURRENT_PROJECT_VERSION: __DRIFT_VERSION_CODE__
+    # Signing is decided by the build, not by this file: an unsigned archive is what a sideload
+    # tool re-signs, and a team id turns automatic signing back on.
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: __DRIFT_TEAM_ID__
+    TARGETED_DEVICE_FAMILY: '1,2'
+
+targets:
+  DriftHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: DriftHost
+      # Written into the staging copy by the packager: the game, and the bridge shim beside it.
+      - path: www
+        type: folder
+        optional: true
+      - path: drift-shim.js
+        optional: true
+    info:
+      path: DriftHost/Info.plist
+      properties:
+        CFBundleDisplayName: __DRIFT_APP_NAME__
+        CFBundleIdentifier: __DRIFT_APP_ID__
+        UILaunchScreen: {}
+        # A game is landscape or portrait as it likes; the host locks nothing, and
+        # `ScreenPresentation.lockOrientation` reports iOS's refusal rather than hiding it.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false

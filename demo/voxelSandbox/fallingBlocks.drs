@@ -1,0 +1,44 @@
+// Sand and gravel, falling.
+//
+// A block the player undermines stops being terrain and becomes an entity with a velocity, until
+// the cell below it is solid again. The grid is the host's and so is the landing test; this file
+// decides only how something falls.
+//
+// Nothing here names a capability. The query form *is* a use of `drift/ecs`, so a target with no
+// entity model would refuse this file rather than link it and do nothing.
+//
+// The host runs this schedule on a fixed 60 Hz step, which is why the constants below are per
+// tick rather than per second: 26 blocks/s² of gravity is 26/3600, and a 36 blocks/s terminal
+// speed is 36/60. Both are the reference's numbers.
+
+component Falling {
+    x: f64 = 0
+    y: f64 = 0
+    z: f64 = 0
+    vy: f64 = 0
+    block: i32 = 0
+}
+
+// A marker the host adds the moment a falling block meets solid ground.
+//
+// A component with no meaningful value is how a query narrows by a *fact* rather than by a value,
+// and `.without<Landed>()` narrows the walk itself — so a landed block is never yielded, rather
+// than yielded and skipped.
+component Landed {
+    tick: f64 = 0
+}
+
+system Gravity {
+    reads Falling
+    writes Falling
+
+    update {
+        for e in query<Falling>().without<Landed>() {
+            e.Falling.vy = e.Falling.vy - 0.00722
+            if e.Falling.vy < -0.6 {
+                e.Falling.vy = -0.6
+            }
+            e.Falling.y = e.Falling.y + e.Falling.vy
+        }
+    }
+}

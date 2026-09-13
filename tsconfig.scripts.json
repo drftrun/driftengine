@@ -1,0 +1,69 @@
+{
+  /*
+   * The tools, typechecked separately from the engine.
+   *
+   * A second config rather than another entry in `include`, and the reason is the one line
+   * they differ by: these run in Node and the engine does not. `scripts/bake.ts` reads files,
+   * writes files and parses `process.argv`, so it needs `@types/node`; `src/` must never
+   * compile against those types, because a consumer bundles that source for a browser and a
+   * stray `Buffer` would only fail once it was in somebody's game. So the engine's own config
+   * sets `"types": []` and this one asks for exactly what a tool needs.
+   *
+   * **Until this file existed, the baker was not typechecked at all**, and it cost two
+   * sessions the same kind of afternoon: a zip holds raw deflate and the baker was calling
+   * zlib inflate, and a `blitFramebuffer` depth copy refuses a format mismatch. Neither is
+   * something a type would have caught — but a missing function once passed `npm run
+   * typecheck` too, and that one it would have.
+   *
+   * `lib` carries the DOM as well as Node, which looks wrong for a command-line tool and is
+   * not. The baker imports the engine's own readers, and those reach `mesh.ts`, whose type is
+   * `WebGL2RenderingContext`: the *declarations* a tool compiles against include the browser's,
+   * even though nothing it runs will ever touch one. Leaving DOM out fails on six lines of
+   * `mesh.ts` and tells you nothing about the tool.
+   */
+  "compilerOptions": {
+    /*
+     * Matches the engine config. See the same option there for why it outlived `driftscript`:
+     * four engine packages write the extension on their own relative imports.
+     */
+    "allowImportingTsExtensions": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    /*
+     * **The same condition the root config names, and for the same reason.** These scripts import
+     * engine packages, and without this TypeScript resolves them through the `types` condition to
+     * `dist/index.d.ts` — a file that exists only after `npm run build`. Locally it usually does,
+     * which is exactly why its absence is invisible here: CI checks the tree out, never builds it,
+     * and every engine import fails to resolve.
+     *
+     * That was survivable while the default condition was the source. It stopped being survivable
+     * the moment the default became the build, so the condition has to be named rather than
+     * assumed.
+     */
+    "customConditions": ["drift-source"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  /*
+   * The TypeScript tools only. The `.mjs` ones are plain Node with their own `node --test`
+   * suites, and pulling them in here would mean `allowJs` and a second set of rules for code
+   * that already has a check.
+   *
+   * `@driftengine/package` is here as well as in the engine's config, and deliberately in both:
+   * its main process and CLI are Node and can only be checked here, while its renderer half must
+   * also survive the engine's `"types": []`, which is what stops a `Buffer` reaching a game's
+   * bundle. The overlap costs a second pass over a few small files and buys the one property that
+   * matters — a Node API in renderer code fails somewhere.
+   */
+  "include": ["scripts/**/*.ts", "packages/package/src/**/*.ts", "demo/dev/vite.config.ts"]
+}

@@ -1,0 +1,97 @@
+import { describe, expect, it } from 'vitest';
+
+import { parseManifest } from './manifest.ts';
+
+const valid = {
+  id: 'dev.example.title',
+  name: 'Title',
+  entry: 'dist/index.html',
+  window: { width: 1280, height: 720, mode: 'borderless', resizable: true },
+  backend: { webgpu: 'prefer', allowSoftwareRenderer: false },
+  features: { clipExport: false, gamepad: true },
+  targets: ['win-x64'],
+  steam: { appId: null },
+};
+
+describe('parseManifest', () => {
+  it('accepts a complete manifest and returns it typed', () => {
+    expect(parseManifest(valid).id).toBe('dev.example.title');
+  });
+
+  /*
+   * A reverse-DNS id is what every one of the three platforms keys an application on, and a
+   * wrong one is not discovered until signing or until saves land in the wrong directory.
+   * Rejecting it here costs nothing; rejecting it at notarisation costs a build.
+   */
+  it('refuses an id that is not reverse-DNS, and names the field', () => {
+    expect(() => parseManifest({ ...valid, id: 'Title' })).toThrow(/id/);
+  });
+
+  it('refuses an unknown target rather than silently skipping it', () => {
+    expect(() => parseManifest({ ...valid, targets: ['ps5'] })).toThrow(/ps5/);
+  });
+
+  it('refuses an unknown webgpu policy', () => {
+    expect(() =>
+      parseManifest({ ...valid, backend: { webgpu: 'maybe', allowSoftwareRenderer: false } }),
+    ).toThrow(/maybe/);
+  });
+
+  /*
+   * The engine badge is on by default and can be turned off, which is the honest arrangement: a
+   * consumer who does not want it says so in one line rather than being unable to.
+   */
+  it('shows the engine splash by default, for long enough to be read', () => {
+    const { splash } = parseManifest(valid);
+    expect(splash.show).toBe(true);
+    expect(splash.minMs).toBe(1400);
+  });
+
+  it('takes a splash that is turned off, and one with its own duration', () => {
+    expect(parseManifest({ ...valid, splash: { show: false } }).splash.show).toBe(false);
+    expect(parseManifest({ ...valid, splash: { minMs: 800 } }).splash.minMs).toBe(800);
+  });
+
+  /*
+   * A splash long enough to be a wait is a splash somebody will be annoyed by, and one that
+   * outlives a broken boot hides the failure. Both ends are clamped rather than trusted.
+   */
+  it('clamps a duration that would be a wait or a flash', () => {
+    expect(parseManifest({ ...valid, splash: { minMs: 90_000 } }).splash.minMs).toBe(6000);
+    expect(parseManifest({ ...valid, splash: { minMs: -5 } }).splash.minMs).toBe(0);
+  });
+
+  /*
+   * An installer puts this in front of a person, so it is defaulted from something real rather
+   * than left blank: the id's own organisation label is already in the manifest.
+   */
+  /* The engine's mark rather than Electron's, which would brand a game as its framework. */
+  it('defaults the icon to none, meaning the engine mark', () => {
+    expect(parseManifest(valid).icon).toBeNull();
+    expect(parseManifest({ ...valid, icon: 'art/icon.png' }).icon).toBe('art/icon.png');
+  });
+
+  it('takes the publisher from the id when none is given', () => {
+    expect(parseManifest(valid).publisher).toBe('example');
+    expect(parseManifest({ ...valid, publisher: 'Drift Technologies' }).publisher).toBe(
+      'Drift Technologies',
+    );
+  });
+
+  /*
+   * Defaults are filled rather than demanded, because a manifest a person writes by hand
+   * should be short. What is not defaulted is anything whose wrong value is silent.
+   */
+  it('defaults the window and the features when they are absent', () => {
+    const { window, features } = parseManifest({
+      id: 'dev.example.title',
+      name: 'Title',
+      entry: 'dist/index.html',
+      backend: { webgpu: 'prefer', allowSoftwareRenderer: false },
+      targets: ['win-x64'],
+      steam: { appId: null },
+    });
+    expect(window.width).toBe(1280);
+    expect(features.clipExport).toBe(false);
+  });
+});

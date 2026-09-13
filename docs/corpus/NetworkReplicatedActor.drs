@@ -1,0 +1,24 @@
+// A replicated actor. Does not link: `drift/network` is Track J.
+//
+// It is here so the networking semantics are written down before networking couples itself to the
+// state and task design — which is the design's own reason for specifying them early. A file that
+// cannot be written is a design that cannot be reviewed.
+
+import { replicate, authority } from "drift/network"
+
+data Runner {
+    x: f32 = 0
+    y: f32 = 0
+    stamina: f32 = 100
+}
+
+@deterministic
+fn step(runner: mut Runner, dx: f32, dy: f32, dt: f32) {
+    runner.x += dx * dt
+    runner.y += dy * dt
+    runner.stamina -= dt
+}
+
+fn publish(runner: Runner) {
+    network.replicate(runner.x, runner.y)
+}

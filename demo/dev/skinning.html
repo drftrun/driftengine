@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — skinning</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.5 ui-monospace,
+      monospace;
+  }
+  /* The canvas fills the window and nothing sits above it: this page is photographed, and a
+     header would move every figure a diff produces. */
+  #stage {
+    position: relative;
+    height: 100vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #stats {
+    position: absolute;
+    left: 0.7rem;
+    bottom: 0.7rem;
+    color: #7d8ea1;
+    pointer-events: none;
+  }
+  #error {
+    position: absolute;
+    left: 0.7rem;
+    top: 0.7rem;
+    color: #ff9b9b;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="stats"></div>
+  <div id="error"></div>
+</div>
+<script type="module" src="./skinning.ts"></script>

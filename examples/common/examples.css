@@ -1,0 +1,94 @@
+/* Shared chrome for every example page. The engine draws the picture; this is only the frame. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #0d0e12;
+  color: #c9cdd6;
+  font:
+    13px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+canvas#stage {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#backend {
+  position: fixed;
+  top: 12px;
+  left: 14px;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #00000080;
+  pointer-events: none;
+}
+
+#controls {
+  position: fixed;
+  bottom: 14px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #12141ad9;
+  border: 1px solid #ffffff14;
+}
+
+#controls .group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#controls b {
+  font-weight: 400;
+  color: #7f8694;
+}
+
+#controls a {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #ffffff1f;
+  color: #c9cdd6;
+  text-decoration: none;
+}
+
+#controls a:hover {
+  border-color: #ffffff45;
+}
+
+#controls a.on {
+  background: #e0a06a;
+  border-color: #e0a06a;
+  color: #171307;
+}
+
+#home {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px dashed #ffffff2e;
+  background: #12141ad9;
+  color: #c9cdd6;
+  text-decoration: none;
+}
+
+#home:hover {
+  border-color: #ffffff5c;
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No name here: `app_name` is written by `resValue` in the Gradle file, from the game's own
+  manifest. A default would be a second place for it to come from, and the wrong one would ship as
+  the label under the icon.
+-->
+<resources>
+  <!-- Shown between the two back presses that close a game which handled neither the gesture nor
+       the Escape key it becomes. -->
+  <string name="press_back_again">Press back again to exit</string>
+</resources>

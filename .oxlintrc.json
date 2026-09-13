@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "warn"
+  },
+  "ignorePatterns": ["**/dist/**", "**/generated/**", "**/__snapshots__/**", ".vitest/**"],
+  "rules": {
+    "no-unused-vars": "warn",
+    "typescript/no-explicit-any": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-useless-spread": "off"
+  }
+}

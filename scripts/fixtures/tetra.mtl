@@ -1,0 +1,20 @@
+# Two materials for tetra.obj: one plain, one with a shine on it.
+#
+# No `map_Kd` anywhere, deliberately. A texture reference would mean a checked-in image, and
+# the point of this fixture is that a fresh clone can bake something without acquiring an
+# asset. What it does exercise is the part with the most ways to go quietly wrong: an .mtl
+# resolved beside its .obj, two named materials, and faces grouped onto each of them.
+
+newmtl shell
+Kd 0.820000 0.780000 0.700000
+Ka 0.000000 0.000000 0.000000
+Ks 0.050000 0.050000 0.050000
+Ns 8.000000
+d 1.000000
+
+newmtl core
+Kd 0.180000 0.320000 0.560000
+Ka 0.000000 0.000000 0.000000
+Ks 0.600000 0.600000 0.600000
+Ns 120.000000
+d 0.650000

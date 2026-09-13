@@ -1,0 +1,78 @@
+# The engine's own checks, on every push to main.
+#
+# **On push, because it is cheap enough to be.** A few seconds: 584 tests over pure functions
+# with no browser, two typecheck passes, and a bake of a four-triangle model. A suite that runs
+# in minutes earns a manual trigger; this one does not.
+#
+# **The bake is the point of this file existing.** `npm run typecheck` now covers `scripts/`,
+# which it did not until 0.14.0, and that still cannot catch the class of fault the baker has
+# actually shipped: a zip holds raw deflate while the reader called zlib inflate, and a depth
+# copy refuses a format mismatch. Only running the tool finds those, and until now the only
+# model in the repository to run it against was somebody else's download, gitignored, absent
+# from any clone. `scripts/fixtures/tetra.obj` exists so a fresh checkout can bake something.
+#
+# No siblings to check out: the engine depends on no other repository.
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+    # **A push that only moves markdown does not run this.** CI minutes are billed by the whole
+    # minute per job, and a documentation commit that installs the tree, typechecks twice and
+    # bakes a model spends them on nothing it can affect. `docs.yml` runs instead: it is the two
+    # suites that actually read markdown, it needs no `npm ci`, and it takes under a second.
+    #
+    # **Markdown only, and never a directory.** `docs/corpus/**` is `.drs` and is a real input to
+    # the compiler suites, so ignoring `docs/**` would skip the tests a corpus change exists to
+    # exercise. A mixed push matches nothing here and runs everything, which is the right answer.
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: test-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # Both configs: the engine against the browser with no Node types, and the tools
+      # against Node. `npm run typecheck` runs the pair.
+      - name: Lint and format
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # The `.mjs` tools are plain Node and have their own suites, which vitest does not run.
+      # This glob covers the documentation guards, the package-boundary guard and the size
+      # gate as well, so all three run on every push without a step of their own.
+      - name: Test the tools
+        run: npm run test:scripts
+
+      # A real bake, twice, then `drft-diff` over the two outputs — so this covers writing a
+      # container, reading one back, and the two agreeing. A baker that produced a file no
+      # reader accepts would pass a typecheck and fail here.
+      - name: Bake a model
+        run: npm run bake:check

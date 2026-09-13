@@ -1,0 +1,37 @@
+# A tetrahedron with two materials, written by hand.
+#
+# The baker's only end-to-end check, and it is checked in for a reason no test file explains
+# by itself: every real model this repository has ever been pointed at is somebody else's
+# download, tens of megabytes, and not ours to redistribute — so `models/` is ignored and a
+# clone has nothing to bake. Two sessions lost an afternoon each to faults nothing but a real
+# bake could see (a zip holds raw deflate while the reader called zlib inflate; a depth blit
+# refuses a format mismatch), and `npm run typecheck` covering `scripts/` still cannot find
+# that class of thing. Running the tool can.
+#
+# Four vertices, four faces, two materials, one shared normal set, and UVs — enough that the
+# reader has to resolve an .mtl, group faces by material, and emit more than one surface.
+# Small enough to read in full in a diff.
+
+mtllib tetra.mtl
+
+v 0.000000 0.000000 0.000000
+v 1.000000 0.000000 0.000000
+v 0.000000 1.000000 0.000000
+v 0.000000 0.000000 1.000000
+
+vt 0.000000 0.000000
+vt 1.000000 0.000000
+vt 0.000000 1.000000
+
+vn 0.000000 0.000000 -1.000000
+vn 0.000000 -1.000000 0.000000
+vn -1.000000 0.000000 0.000000
+vn 0.577350 0.577350 0.577350
+
+usemtl shell
+f 1/1/1 3/3/1 2/2/1
+f 1/1/2 2/2/2 4/3/2
+f 1/1/3 4/2/3 3/3/3
+
+usemtl core
+f 2/1/4 3/2/4 4/3/4

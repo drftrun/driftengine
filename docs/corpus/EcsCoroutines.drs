@@ -1,0 +1,154 @@
+// An entity world with asynchronous behaviour, modelled on a real Lua ECS script.
+//
+// **Rewritten 2026-08-26, and this is the second time.** The file was first written against an API
+// a language designer imagined — `query<Animal, Hunger>()` and `componentOf(e, Position)` — and
+// neither was expressible when Track M shipped the engine underneath it. So it was rewritten to
+// walk a component's dense array by index with `count` and `at`, and its header said a query needed
+// a loop form the language did not have.
+//
+// It has one now. The forms below are what that header was waiting for, and the imagined `query`
+// turned out to be very close to the real one — what it was missing was a world to run against.
+//
+// The Lua original is worth recording because two of its mechanisms come out better here and one
+// comes out worse:
+//
+//   - Its component storage was a bitmask per entity and a table per component type, queried by
+//     `mask & required == required`. That is an *implementation* of a query; here the storage is a
+//     sparse set per component and the query is a form the compiler checks.
+//   - Its `wait_seconds` spun on `os.clock()` — a busy-wait that burns CPU and, worse, reads a wall
+//     clock on a path a simulation runs. `await fixedTime(…)` suspends properly, resumes on the
+//     fixed step, and is cancellable by the scope that owns it. The Lua comment claimed it did not
+//     consume CPU; it did.
+//   - Its scheduler reaped a coroutine only when `coroutine.status` said "dead", so an entity
+//     destroyed mid-behaviour leaked its thread. A scope-owned task makes that structural.
+//
+// The one thing that comes out worse: Lua's coroutines are values, so a scheduler can hold a table
+// of them. Tasks here are owned by a scope rather than held, which is safer and less flexible.
+
+import { alive, destroy } from "drift/ecs"
+
+component Position {
+    x: f64 = 0
+    y: f64 = 0
+}
+
+component Velocity {
+    x: f64 = 0
+    y: f64 = 0
+}
+
+// A brain, and the entity it is currently watching. `Entity?` is the design's own first example of
+// an optional field: absent is a real state here, and storing a sentinel handle for it would be a
+// handle that compares equal to nothing and looks live.
+component Brain {
+    range: f64 = 0
+    alert: f64 = 0
+    watching: Entity?
+}
+
+// **A handle is `Entity` and a position is `f64`, and neither is a choice.** A handle spends the
+// whole 53-bit budget a double holds, so anything narrower truncates its generation — and a
+// truncated generation is a stale handle that compares equal to a live one, which is the exact
+// failure the generation exists to prevent. Positions are `f64` for the same width reason. This
+// language has no implicit widening, so a helper taking `f32` would be a compile error at every
+// call, and that refusal is the feature working.
+//
+// **`self` below was `f64` until the capabilities could say `Entity`.** A handle is assignable *to*
+// an `f64` and not from one, so the moment `drift/ecs` named the type, a handle held in an `f64`
+// stopped being passable back — which is the point rather than a cost: a number a script computed
+// is not a handle, and it used to be able to pretend it was.
+@pure
+fn distanceSquared(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let dx = bx - ax
+    let dy = by - ay
+    return dx * dx + dy * dy
+}
+
+// The system the hand-written `movement` function used to be.
+//
+// `reads` and `writes` are **assertions** rather than the source of truth: the compiler infers what
+// this touches and checks the declaration against it, so removing either line is an error naming
+// this system and the component. Writing them anyway is what makes that check exist to fail.
+//
+// `@deterministic` holds: `ecs.read` and `ecs.write` are inside the simulation boundary, and this
+// touches no clock at all — the step it integrates is fixed.
+system Movement {
+    reads Velocity
+    writes Position
+
+    update {
+        for e in query<Position, Velocity>() {
+            e.Position.x = e.Position.x + e.Velocity.x
+            e.Position.y = e.Position.y + e.Velocity.y
+        }
+    }
+}
+
+// Sight, at a rate rather than every step.
+//
+// `at 4Hz` is fifteen fixed steps, converted where the rate is written. A rate that did not divide
+// the fixed step exactly would be refused naming the arithmetic, because rounding it is how a
+// replay stops matching a recording.
+system Senses {
+    reads Position
+    writes Brain
+
+    update at 4Hz {
+        for self in query<Brain, Position>() {
+            for other in query<Position>() {
+                let near = distanceSquared(
+                    self.Position.x,
+                    self.Position.y,
+                    other.Position.x,
+                    other.Position.y,
+                ) < self.Brain.range * self.Brain.range
+                if near {
+                    self.Brain.alert = 1
+                }
+            }
+        }
+    }
+}
+
+// The behaviour the Lua original ran as a coroutine per entity, and the reason this file is called
+// what it is. A scope owns it, so an entity destroyed mid-wait takes its task with it.
+//
+// **The loop and the `await` are deliberately not nested.** A query loop may not suspend: its
+// cursor comes from a pool and is given back when the loop ends, and holding one across a frame
+// would walk an array every system since had rewritten. So the task waits, then queries.
+task patrol(world: World, self: Entity) {
+    while ecs.alive(world, self) {
+        await fixedTime(2s)
+        for e in query<Brain>() {
+            e.Brain.alert = 0
+        }
+        await fixedTime(3s)
+    }
+}
+
+// A prefab is a description the host instantiates, so every value here is a constant. A value
+// computed at spawn time would make it a program, and a program cannot be inspected or serialised
+// without being run.
+prefab Watcher {
+    Position {}
+    Velocity { x: 1, y: 0 }
+    Brain { range: 12 }
+}
+
+// Reaping, as a system rather than a hand-written walk.
+//
+// The old version counted **downwards** through the dense array, because removing an entity swaps
+// the last one into the hole and a walk counting up would skip it. That hazard is gone: a system's
+// `destroy` is deferred to after the system returns, so the walk is never disturbed by it — which
+// is a decision the entity model made and this file no longer has to know.
+system Reaper {
+    reads Brain
+
+    update {
+        for e in query<Brain>() {
+            if e.Brain.range <= 0 {
+                ecs.destroy(world, e)
+            }
+        }
+    }
+}

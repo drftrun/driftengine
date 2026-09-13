@@ -1,0 +1,27 @@
+{
+  "means_l.webp": {
+    "width": 8,
+    "height": 8,
+    "rgba": "00Lt/wmN3v8fpCD/3k+i/4P25f8RjLb/X9bX//2Ogv9HJ3z/f79O/w4AAP+BAwH/3MpT/x5W9f9Kqen/YMgv/2K5yP9QhLf/LDT+//bWnv+wepz/WjX7/0C1l//k4sH/R4hd/2Dab/8pIQL/mLwg//Ugv/+AXO7//xGO/1u9LP9mHDv/1cwX/54D3P+36qv/GqGz/75BMv+jaNP/t40z/wFVnv97ROn/n+Bx/+2wsP8gYDn/3zll//X9bf8AAP7/fqPW/wnxXv+kSpX/TvV6/wgnDP9/PbD/fWnd//C3BP8iUEH/0glK/668Mf+cWsD/4GQ4/7Sfx/+e9fP/K//W/w=="
+  },
+  "means_u.webp": {
+    "width": 8,
+    "height": 8,
+    "rgba": "zwIA/8wEAf/IBwP/vxAG/7sVCP/ECwT/rSwR/7YcC/+yJA7/0wAA/9cAAP/aAAD/3QAA/+ECAP/kBAH/5wcD/+oLBP/tEAb/8BYI//IcC//1JA7/+C0R/6g2Ff+iQRn/nU4e/5dcI/+RbSn/in8v//o3Ff/9Qhn//08e/3yiPf91sUX/br1O/2jJV/9i0mL/Xdtu/1fjfP+DkjX/Te+X/0n0ov9E+Kz/UumK/zv9vv9A+7b/N//G/zP/zf8AgP//ApL//wWi//8Hsf7/Cr39/w3J/P8s/9n/Jfvj/yj93/8i+Oj/D9P6/xLb+P8V4/X/HvTs/xvv7/8Y6fL/MP/T/w=="
+  },
+  "scales.webp": {
+    "width": 8,
+    "height": 8,
+    "rgba": "moVj/5iEYv+Xg2H/koBe/49/Xf+UgmD/iHpa/419XP+Le1v/nIZk/52HZv+eiWf/n4po/6CMaf+hjWr/oo5s/6OQbf+kkW7/pZNv/6aVcP+nlnL/qJdz/4Z4WP+FdVf/g3FW/4FuVf9+a1T/fGhS/6mYdf+qmXb//5t3/3ViUP9vX0//alxO/2ZZTP9hVkv/XFNK/1dQSf95ZVH/TkpG/0lHRf9ERET/Uk1I/zo+Qv8/QUP/NjtA/zE4P/8AFir/BRcs/woZLf8OGi7/EBww/xIeMf8oMj3/Iyw6/yUvPP8gKTn/FB8y/xUhM/8WIjT/Hic4/xsmN/8YJDb/LDU+/w=="
+  },
+  "quats.webp": {
+    "width": 8,
+    "height": 8,
+    "rgba": "zuDN/9LfzP/V3sv/3dvJ/9rI4PzZ3cr/1sTb/NnH3/zXxt38yuHO/8biz//C48//vuTQ/7rl0f+25tH/sufS/67o0/+p6NP/penU/6Hp1P+d6tT/merV/9TD2vzSwtj80cDW/M+/1PzNvtP8zLzR/JTq1f+Q69X/jOvV/8i5zfzGuMv8xLbI/MK1xvzAs8T8vrHC/LywwPzKu8/8t6y7/LWqufyzqLb8uq69/K6lsfyxp7T8rKOv/KqhrPx/f3/8goGC/ISDhPyHhYf8iYeK/IyJjfylnaf8oJmi/KKbpfydl6D8jouP/JGNkvyTj5X8m5Wd/JmTmvyWkZj8p5+q/A=="
+  },
+  "sh0.webp": {
+    "width": 8,
+    "height": 8,
+    "rgba": "iCJavoYkWruEJlq3fihasXwrWq6BJ1q0dDFapHotWqt3L1qnix9awY4cWsSQG1rIkhpay5UYWs6YFFrRmRJa1ZoQWtidD1rbng1a3p8KWuKhCFrlowZa6HIyWqFwNFqebjZammw4WpdqOlqUaDxakaUEWuunAlrv/wBa8mRbWopiXVqHYF9ahF5hWoBcYlp9PmNaejxlWndmPVqNN2lacDVrWm0zbFpqOWdacy5vWmMxbVpnLHFaYCpzWl0Al1omA5RaKQWRWiwHkFovCY9aMw2NWjYmd1pWIXtaUCN5WlMdfVpND4paORGHWjwThVpAG39aSRqDWkYWhFpDJ3VaWg=="
+  }
+}

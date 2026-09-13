@@ -1,0 +1,10 @@
+# Generated, measured or asserted byte-for-byte. Formatting any of these changes what a gate
+# compares against, so the gate fails on a change that altered no behaviour at all.
+packages/*/dist
+**/generated/
+**/__snapshots__/
+packages/core/CHANGELOG.json
+# Written by `npm run capabilities`, and a gate compares it to the registry byte for byte.
+packages/script/capabilities.json
+package-lock.json
+.vitest

@@ -1,0 +1,19 @@
+# Matches the house style the tree is already written in: two spaces, LF, and a
+# hundred columns. See CONTRIBUTING.md for the rules an editor cannot enforce.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.md]
+# Markdown gives a hard line break to two trailing spaces.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

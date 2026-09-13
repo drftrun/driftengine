@@ -1,0 +1,60 @@
+# The documentation guards, for a push that moved nothing but markdown.
+#
+# **This exists so `test.yml` can skip such a push without the guards skipping with it.** Two suites
+# in `scripts/` read markdown as data rather than mentioning it in a comment: `docs.test.mjs` holds
+# every reference, count, sentinel and proper-noun rule over the documentation set, and
+# `packages.test.mjs` holds the package table in `README.md` against the directory it describes. A
+# markdown-only commit can break either, and nothing else.
+#
+# **It installs now, and the paragraph that stood here said it never would.** Until the language
+# became a published dependency, both suites imported nothing outside `node:`, so this job was a
+# checkout, a Node and four hundred milliseconds, and installing looked like it would cost more than
+# the job was written to avoid. `docs.test.mjs` asks the language for the modules its linker refuses
+# now, rather than grepping a file this repository no longer holds, and that is the better guard: the
+# pattern it replaced once matched `drift/[a-z]+` and silently dropped `drift/2d`, so it read its
+# input wrongly and passed anyway.
+#
+# **The bill does not notice.** A job is rounded up to the whole minute, so fifteen seconds and fifty
+# are the same minute, and what this exists to skip is the job that installs, typechecks twice, runs
+# the suite and bakes a model. The install is the same `npm ci` that job runs, against the same cache,
+# rather than a smaller bespoke one: `driftscript` is a devDependency, so `--omit=dev` would leave out
+# the package the guards came here to read.
+#
+# A mixed push runs this and `test.yml` both. The overlap is a few seconds and the alternative is a
+# filter with two ways to be wrong.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: docs-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Documentation guards
+        run: node --test scripts/docs.test.mjs scripts/packages.test.mjs

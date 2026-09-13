@@ -1,0 +1,36 @@
+// The first DriftScript file this engine ever ran.
+//
+// Deliberately a pulse rather than a character, for the reason AGENTS.md gives about the engine
+// outliving its first game: whether this intensity drives a light, the music, a camera, a gameplay
+// value or a page's visualisation is the consumer's to decide. Track A now makes a character
+// possible, which is exactly why the temptation exists and exactly why it is refused.
+//
+// It imports no capability, so it links against a target that provides none at all — the task and
+// the event below need no host either, because a scheduler and a dispatcher are control flow
+// rather than services something could provide differently.
+
+import { Wave } from "./shapes"
+
+data PulseState : Wave {
+    depth: f32 = 1
+}
+
+event Trigger {
+    beat: f32 = 0
+}
+
+fn update(state: mut PulseState, dt: f32) {
+    state.phase += dt
+}
+
+// The beat. It never returns; the scope that owns it is what ends it, and here that scope is the
+// module's — so disposing the module stops it without the page remembering to.
+//
+// **Edit the duration and save.** The task keeps the beats it has already counted, because a hot
+// patch replaces the code and leaves the frame where it is.
+task beat() {
+    while true {
+        await fixedTime(500ms)
+        emit Trigger { beat: 1 }
+    }
+}

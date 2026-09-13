@@ -1,0 +1,38 @@
+{
+  /*
+   * What a consumer installs, built from what this repository edits.
+   *
+   * **Separate from `tsconfig.json` rather than a flag on it, because that one must never emit.**
+   * `npm run typecheck` is the one-second gate every other gate is ordered behind, and a config that
+   * writes files is a gate that has side effects — a red typecheck would leave a half-written `dist`
+   * behind, and a green one would make the fast loop slower than the suite it precedes.
+   *
+   * **`rewriteRelativeImportExtensions` is the whole mechanism.** Every relative import in this
+   * repository names `.ts`; this rewrites those specifiers to `.js` on the way out and emits nothing
+   * else. It is a type strip with no code generation in it, which is what keeps the emitted
+   * JavaScript readable and makes a stack trace point at a line that means something without a map.
+   *
+   * **`customConditions` is deliberately absent, and its absence is the build order.** The root
+   * config names `drift-source` so the compiler reads this repository's own source; here it must not,
+   * because a package has to compile against its dependencies' *declarations* rather than against
+   * their TypeScript. That is what makes `drft` build before `assets` a requirement and not a
+   * preference, and `scripts/build.mjs` derives the order from the manifests rather than listing it.
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    /*
+     * No source maps and no declaration maps. The emitted JavaScript is the source with its types
+     * removed, line for line, so a map would point a reader at the file they are already reading.
+     * They are bytes in every consumer's install for no answer they cannot already get.
+     */
+    "declarationMap": false,
+    "sourceMap": false,
+    "composite": false,
+    "incremental": false
+  }
+}

@@ -1,0 +1,7 @@
+// A base in its own file, so the demo exercises a cross-module import rather than only a single
+// file. `pulse.drs` extends it: the values below are inlined into `createPulseState` by the
+// compiler, which is what makes an edit here visible in the running page.
+data Wave {
+    phase: f32 = 0
+    rate: f32 = 2.4
+}

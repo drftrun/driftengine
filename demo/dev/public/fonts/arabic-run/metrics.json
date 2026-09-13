@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "family": "Noto Sans Arabic",
+  "atlas": {
+    "width": 256,
+    "height": 51,
+    "distanceRange": 4
+  },
+  "metrics": {
+    "unitsPerEm": 1000,
+    "ascender": 1374,
+    "descender": -738,
+    "lineHeight": 2112
+  },
+  "glyphs": {
+    "أ": {
+      "advance": 234.99966430664062,
+      "planeLeft": -125,
+      "planeBottom": -125,
+      "planeRight": 343.75,
+      "planeTop": 1093.75,
+      "atlasLeft": 2,
+      "atlasRight": 17,
+      "atlasBottom": 41,
+      "atlasTop": 2
+    },
+    "ب": {
+      "advance": 992.9983520507812,
+      "planeLeft": -125,
+      "planeBottom": -343.75,
+      "planeRight": 1093.75,
+      "planeTop": 531.25,
+      "atlasLeft": 19,
+      "atlasRight": 58,
+      "atlasBottom": 30,
+      "atlasTop": 2
+    },
+    "و": {
+      "advance": 446.9992980957031,
+      "planeLeft": -93.75,
+      "planeBottom": -375,
+      "planeRight": 531.25,
+      "planeTop": 468.75,
+      "atlasLeft": 60,
+      "atlasRight": 80,
+      "atlasBottom": 29,
+      "atlasTop": 2
+    },
+    "أبو": {
+      "advance": 975.9984130859375,
+      "planeLeft": -93.75,
+      "planeBottom": -375,
+      "planeRight": 1093.75,
+      "planeTop": 1093.75,
+      "atlasLeft": 82,
+      "atlasRight": 120,
+      "atlasBottom": 49,
+      "atlasTop": 2
+    }
+  },
+  "kerning": {
+    "ب\u0000أ": -669.9988708496094,
+    "ب\u0000ب": -623.9991455078125,
+    "ب\u0000و": -698.9988708496094
+  }
+}

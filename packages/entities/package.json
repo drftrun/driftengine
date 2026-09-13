@@ -1,0 +1,58 @@
+{
+  "name": "@driftengine/entities",
+  "private": true,
+  "version": "3.61.0",
+  "description": "Entities with generational identity, component storage, systems and scenes",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "drift-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "!src/**/__snapshots__",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "driftscript": "1.13.0"
+  },
+  "author": "Drift Technologies",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftengine.git",
+    "directory": "packages/entities"
+  },
+  "homepage": "https://github.com/drftrun/driftengine#readme",
+  "bugs": "https://github.com/drftrun/driftengine/issues",
+  "keywords": [
+    "driftengine",
+    "3d",
+    "webgl",
+    "webgpu",
+    "typescript",
+    "ecs",
+    "entity-component-system",
+    "prefab",
+    "scene"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Origin probe</title>
+<!--
+  The one measurement a mobile host cannot be written without.
+
+  **Whether a WebView calls its origin a secure context decides the design.** `crossOriginIsolated`,
+  `SharedArrayBuffer` and anything threaded depend on it, and the answer is not the same on the two
+  platforms: Android serves from an `https://` origin through `WebViewAssetLoader`, which is a
+  secure context by definition, while iOS serves from a custom scheme through `WKURLSchemeHandler`,
+  where it is genuinely unclear. If iOS says no, the answer is a loopback server on 127.0.0.1 and
+  `SchemeHandler.swift` is the only file that changes.
+
+  Load this in the host — `drift://localhost/__drift/originProbe.html` on iOS,
+  `/originProbe.html` on Android — and read the table. A simulator is evidence for the origin
+  rows and not for the GPU ones.
+
+  The iOS host is `localhost` and the prefix is `__drift/`, and both are load-bearing:
+  `SchemeHandler.swift` serves shell assets from under that prefix alone, and `localhost` is the
+  whole reason the origin is trustworthy. `drift://shell/` is the desktop shell's spelling and
+  resolves here against the game's bundle root, where this file is not.
+-->
+<style>
+  body {
+    font:
+      15px/1.5 system-ui,
+      sans-serif;
+    margin: 0;
+    padding: 16px;
+    background: #0b0b0d;
+    color: #ececf0;
+  }
+  h1 {
+    font-size: 1rem;
+    color: #9a9aa8;
+    margin: 0 0 12px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #26262d;
+    vertical-align: top;
+  }
+  td:first-child {
+    color: #9a9aa8;
+    white-space: nowrap;
+  }
+  .yes {
+    color: #35e0b0;
+  }
+  .no {
+    color: #ff9b9b;
+  }
+</style>
+<h1>Origin probe</h1>
+<table id="t">
+  <tbody>
+    <tr>
+      <td>running…</td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+<script type="module">
+  /* That this script runs at all is the first result: a module script fails from `file://`. */
+  const rows = {
+    origin: location.origin,
+    isSecureContext: String(globalThis.isSecureContext),
+    crossOriginIsolated: String(globalThis.crossOriginIsolated),
+    sharedArrayBuffer: String(typeof SharedArrayBuffer !== 'undefined'),
+    moduleScript: 'yes — this script is one',
+    host: String(globalThis.__driftHost !== undefined),
+    webgpu: String(navigator.gpu !== undefined),
+    webgl2: String(document.createElement('canvas').getContext('webgl2') !== null),
+    videoEncoder: String(typeof VideoEncoder !== 'undefined'),
+    devicePixelRatio: String(devicePixelRatio),
+    screen: `${screen.width}x${screen.height}`,
+    userAgent: navigator.userAgent,
+  };
+
+  try {
+    const worker = new Worker(
+      URL.createObjectURL(new Blob(['self.postMessage(1)'], { type: 'text/javascript' })),
+    );
+    rows.blobWorker = await new Promise((done) => {
+      worker.onmessage = () => done('yes');
+      setTimeout(() => done('no'), 500);
+    });
+  } catch (cause) {
+    rows.blobWorker = `no — ${cause}`;
+  }
+
+  if (navigator.gpu !== undefined) {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      rows.adapter = adapter === null ? 'none offered' : (adapter.info?.description ?? 'unnamed');
+    } catch (cause) {
+      rows.adapter = `threw — ${cause}`;
+    }
+  }
+
+  globalThis.__originReport = rows;
+  document.querySelector('#t tbody').innerHTML = Object.entries(rows)
+    .map(([key, value]) => {
+      const cls =
+        value === 'true' || value === 'yes'
+          ? 'yes'
+          : value === 'false' || value === 'no'
+            ? 'no'
+            : '';
+      return `<tr><td>${key}</td><td class="${cls}">${String(value)}</td></tr>`;
+    })
+    .join('');
+</script>

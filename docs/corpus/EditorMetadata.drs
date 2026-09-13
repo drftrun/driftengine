@@ -1,0 +1,15 @@
+// Editor metadata. Does not link: `drift/editor` is Track K.
+//
+// The design's rule is that editor metadata compiles whether or not an editor exists and that a
+// shipping build carries no editor runtime. This file is the first half of that claim written down.
+
+import { inspect } from "drift/editor"
+
+data Lamp {
+    intensity: f32 = 1
+    radius: f32 = 10
+}
+
+fn describe(lamp: Lamp) {
+    editor.inspect(lamp.intensity)
+}

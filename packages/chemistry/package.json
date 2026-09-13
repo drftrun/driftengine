@@ -1,0 +1,101 @@
+{
+  "name": "@driftengine/chemistry",
+  "private": true,
+  "version": "3.61.0",
+  "description": "Thermochemistry of bulk matter: elements, species, substances and what they turn into",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "drift-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./library/organic": {
+      "drift-source": "./src/library/organic.ts",
+      "types": "./dist/library/organic.d.ts",
+      "node": "./dist/library/organic.js",
+      "default": "./src/library/organic.ts"
+    },
+    "./library/food": {
+      "drift-source": "./src/library/food.ts",
+      "types": "./dist/library/food.d.ts",
+      "node": "./dist/library/food.js",
+      "default": "./src/library/food.ts"
+    },
+    "./library/fuel": {
+      "drift-source": "./src/library/fuel.ts",
+      "types": "./dist/library/fuel.d.ts",
+      "node": "./dist/library/fuel.js",
+      "default": "./src/library/fuel.ts"
+    },
+    "./library/polymer": {
+      "drift-source": "./src/library/polymer.ts",
+      "types": "./dist/library/polymer.d.ts",
+      "node": "./dist/library/polymer.js",
+      "default": "./src/library/polymer.ts"
+    },
+    "./library/mineral": {
+      "drift-source": "./src/library/mineral.ts",
+      "types": "./dist/library/mineral.d.ts",
+      "node": "./dist/library/mineral.js",
+      "default": "./src/library/mineral.ts"
+    },
+    "./library/metal": {
+      "drift-source": "./src/library/metal.ts",
+      "types": "./dist/library/metal.d.ts",
+      "node": "./dist/library/metal.js",
+      "default": "./src/library/metal.ts"
+    },
+    "./library/biological": {
+      "drift-source": "./src/library/biological.ts",
+      "types": "./dist/library/biological.d.ts",
+      "node": "./dist/library/biological.js",
+      "default": "./src/library/biological.ts"
+    },
+    "./present": {
+      "drift-source": "./src/present/index.ts",
+      "types": "./dist/present/index.d.ts",
+      "node": "./dist/present/index.js",
+      "default": "./src/present/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "!src/**/__snapshots__",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "author": "Drift Technologies",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftengine.git",
+    "directory": "packages/chemistry"
+  },
+  "homepage": "https://github.com/drftrun/driftengine#readme",
+  "bugs": "https://github.com/drftrun/driftengine/issues",
+  "keywords": [
+    "driftengine",
+    "3d",
+    "webgl",
+    "webgpu",
+    "typescript",
+    "thermochemistry",
+    "simulation",
+    "combustion",
+    "enthalpy"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

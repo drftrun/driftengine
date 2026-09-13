@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — DriftScript</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.5 ui-monospace,
+      monospace;
+  }
+  #stage {
+    position: relative;
+    height: 100vh;
+    display: grid;
+    place-items: center;
+  }
+  #dot {
+    width: 160px;
+    height: 160px;
+    border-radius: 50%;
+    background: #4da3ff;
+  }
+  #out {
+    position: absolute;
+    left: 0.7rem;
+    top: 0.7rem;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="stage">
+  <div id="dot"></div>
+  <div id="out"></div>
+</div>
+<script type="module" src="./driftscript.ts"></script>

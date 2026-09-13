@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine</title>
+<!--
+  The badge the shell shows while the game builds its first frame.
+
+  **It covers a real wait rather than manufacturing one.** A packaged game has to start Chromium,
+  read a world off disk and compile shaders before it can paint, and the alternative to this is a
+  black window for that whole time — which reads as a crash. The minimum duration in the manifest
+  is what stops it flickering on a machine that boots fast, and the cap in `splashTiming.ts` is
+  what stops it outliving a boot that never finishes.
+
+  No script, and nothing loaded from anywhere but the shell's own assets: this page has no reason
+  to run code, and a splash that can fail to render is worse than none.
+-->
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    display: grid;
+    place-items: center;
+    background: #0b0b0d;
+    /* The plate is flat except for one very soft lift behind the mark, which is what stops a
+       420x300 rectangle of near-black reading as a window that failed to paint. */
+    background-image: radial-gradient(60% 55% at 50% 42%, #12161a 0%, #0b0b0d 70%);
+    overflow: hidden;
+  }
+
+  .stack {
+    display: grid;
+    justify-items: center;
+    gap: 26px;
+  }
+
+  /*
+   * The entrance is the mark's own idea, applied to the whole lockup: it arrives from the left
+   * and settles. Eased hard out, so it is quick at the start and lands rather than stops.
+   */
+  img {
+    width: 208px;
+    height: auto;
+    animation: arrive 640ms cubic-bezier(0.16, 0.84, 0.44, 1) both;
+  }
+
+  @keyframes arrive {
+    from {
+      opacity: 0;
+      transform: translateX(-16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  /* A hairline that says something is happening, without claiming to know how much is left.
+     A progress bar that cannot measure progress is a lie told in pixels. */
+  .line {
+    width: 168px;
+    height: 2px;
+    border-radius: 2px;
+    background: #1a2320;
+    overflow: hidden;
+    animation: fade 700ms 260ms both;
+  }
+
+  .line::after {
+    content: '';
+    display: block;
+    width: 42%;
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, rgba(53, 224, 176, 0), #35e0b0, rgba(53, 224, 176, 0));
+    animation: sweep 1500ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
+  }
+
+  /*
+   * Movement is the first thing to go for somebody who asked for less of it. The badge still
+   * appears and still says the same thing; it simply does not travel, and the hairline holds
+   * still rather than sweeping.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    img {
+      animation: fade 300ms both;
+    }
+    .line::after {
+      animation: none;
+      width: 100%;
+      opacity: 0.5;
+    }
+  }
+</style>
+<div class="stack">
+  <img src="./lockup.svg" alt="DriftEngine" />
+  <div class="line"></div>
+</div>

@@ -1,0 +1,26 @@
+// A record extending one declared in another file.
+//
+// `Wolf` inherits `name` and `energy` from `Creature` without restating them, and adds one of its
+// own. The layout is base-most first, so a wolf is `(name, energy, packSize)` — which is what the
+// generated constructor writes and what a hot reload compares.
+//
+// `drift/audio` is never imported here and is still required, because `callOut` reaches it. A target
+// that does not provide it refuses this file and names `./traits` as the reason.
+
+import { Creature, callOut, rest } from "./traits"
+
+data Wolf : Creature {
+    packSize: i32 = 0
+}
+
+// Accepts a `Wolf` where `Creature` is wanted: width subtyping, sound here because there are no
+// collection types to be unsound through.
+fn recover(w: mut Wolf) {
+    rest(w)
+}
+
+// Not annotated `@deterministic`, and it could not be: `callOut` reaches `audio.play` two files
+// away, and the effect travels with the call.
+fn howl(w: Wolf) {
+    callOut(w)
+}

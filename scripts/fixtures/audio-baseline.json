@@ -1,0 +1,18 @@
+{
+  "note": "The mix, frozen. Never regenerate this to make a check pass. It was first frozen from the mix as it stood before the console replaced it, and that rewrite came back bit-for-bit identical to it, which is what the freeze was for. It was re-frozen once, deliberately, at 3.0.0: removing AudioGraph.fadeMusic fixed a defect this render was sitting on. That method scheduled on context.currentTime rather than the graph clock, so offline the fade landed at instant zero however late it was asked for, and the whole four seconds rendered ducked to 0.2 instead of only the last half second. Measured at the moment of the change: rms 0.128556171 to 0.34368016, every quarter moved, the last one least.",
+  "renderedBy": "demo/dev/mixref.ts, __renderMixRef",
+  "sampleRate": 48000,
+  "length": 192000,
+  "left": {
+    "hash": "8640a092",
+    "peak": 1.143227339,
+    "rms": 0.34368016,
+    "quarters": [0.395043932, 0.369002293, 0.384549671, 0.179898194]
+  },
+  "right": {
+    "hash": "8640a092",
+    "peak": 1.143227339,
+    "rms": 0.34368016,
+    "quarters": [0.395043932, 0.369002293, 0.384549671, 0.179898194]
+  }
+}

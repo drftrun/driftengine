@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One activity and no permissions.
+
+  Nothing here asks for the network, storage, the camera or a location: the game is served from
+  the APK's own assets and its saves are a private preferences file. A game that needs the network
+  adds INTERNET here through its own build, and that addition is then visible in the store listing
+  rather than granted by default.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <application
+      android:label="@string/app_name"
+      android:icon="@mipmap/ic_launcher"
+      android:hardwareAccelerated="true"
+      android:allowBackup="false"
+      android:usesCleartextTraffic="false"
+      android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+
+    <activity
+        android:name=".MainActivity"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:screenOrientation="unspecified"
+        android:resizeableActivity="true"
+        android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

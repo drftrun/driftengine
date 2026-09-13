@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — spatial audio</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      13px/1.5 ui-monospace,
+      monospace;
+    display: flex;
+    height: 100vh;
+  }
+  #stage {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: grab;
+    touch-action: none;
+  }
+  canvas:active {
+    cursor: grabbing;
+  }
+  #hint {
+    position: absolute;
+    left: 0.8rem;
+    top: 0.8rem;
+    color: #7d8ea1;
+    pointer-events: none;
+    white-space: pre-line;
+  }
+  #start {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: #0b0d10e0;
+  }
+  #start button {
+    background: #12161b;
+    color: #6ee7a8;
+    border: 1px solid #2f6f52;
+    border-radius: 4px;
+    padding: 0.8rem 1.6rem;
+    font: inherit;
+    cursor: pointer;
+  }
+  aside {
+    width: 22rem;
+    border-left: 1px solid #1e242c;
+    padding: 0.8rem;
+    overflow-y: auto;
+  }
+  h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #7d8ea1;
+    margin: 1.2rem 0 0.4rem;
+  }
+  h2:first-child {
+    margin-top: 0;
+  }
+  .strip {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr auto auto;
+    gap: 0.3rem;
+    align-items: center;
+    margin-bottom: 0.25rem;
+  }
+  .strip input[type='range'] {
+    width: 100%;
+    accent-color: #6ee7a8;
+  }
+  .strip button {
+    background: #12161b;
+    color: #9fb0c3;
+    border: 1px solid #232b34;
+    border-radius: 3px;
+    padding: 0.1rem 0.45rem;
+    font: inherit;
+    cursor: pointer;
+  }
+  .strip button[aria-pressed='true'] {
+    color: #6ee7a8;
+    border-color: #2f6f52;
+  }
+  .row {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .row button {
+    background: #12161b;
+    color: #9fb0c3;
+    border: 1px solid #232b34;
+    border-radius: 3px;
+    padding: 0.3rem 0.6rem;
+    font: inherit;
+    cursor: pointer;
+  }
+  label.toggle {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    color: #9fb0c3;
+  }
+  p.note {
+    color: #6b7a8c;
+    margin: 0.3rem 0 0;
+  }
+</style>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="hint"></div>
+  <div id="start"><button type="button">Start listening</button></div>
+</div>
+<aside>
+  <h2>What to listen for</h2>
+  <p class="note" id="guide"></p>
+  <h2>Mixer</h2>
+  <div id="mixer"></div>
+  <h2>Snapshots</h2>
+  <div class="row">
+    <button type="button" data-snapshot="take">Capture "now"</button>
+    <button type="button" data-snapshot="recall">Recall over 2 s</button>
+  </div>
+  <h2>Sources</h2>
+  <div class="row" id="sources"></div>
+</aside>
+<script type="module" src="./audio.ts"></script>

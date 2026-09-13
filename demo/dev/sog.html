@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — a .sog capture through the browser's own decoder</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.6 ui-monospace,
+      monospace;
+    padding: 1.2rem;
+  }
+  table {
+    border-collapse: collapse;
+    margin-top: 0.8rem;
+  }
+  td {
+    padding: 0.1rem 1.2rem 0.1rem 0;
+  }
+  #error {
+    color: #ff9b9b;
+    white-space: pre-wrap;
+  }
+</style>
+<h1 style="font-size: 1rem; font-weight: 600">A `.sog` capture, decoded by this browser</h1>
+<div id="out">reading…</div>
+<div id="error"></div>
+<script type="module" src="./sog.ts"></script>

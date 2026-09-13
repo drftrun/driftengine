@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 233.30 207.08" color="#ececf0">
+  <!--
+    The vertical lockup: the mark over the word.
+
+    The word is outlines rather than text, so this file renders identically on a machine with no
+    fonts installed and inside a shell that has no access to any. Drawn from Fira Sans (SIL Open
+    Font License 1.1) at Light for "Drift" and SemiBold for "Engine": the weight break is what
+    carries the compound word without a space or a capital doing the work, and the colour break
+    puts the engine's own accent on the half that names it.
+
+    Nothing here is a font dependency: no font is embedded, distributed or required. These are
+    curves.
+
+    "Drift" is `currentColor` so the half that is not the accent follows whatever surface this is
+    placed on; the root carries the dark-surface default, which is what a standalone view or an
+    `<img>` gets. The mark is centred on the *cube* rather than on the composition's bounding box:
+    the streaks drag that box left, and centring on it puts the cube visibly off the word's axis.  -->
+  <style>
+    /* The half that is not the accent follows its surface. A file referenced as an image gets
+       these defaults; an inline copy can be overridden by setting `color` on any ancestor.
+       No angle brackets in here: this is XML, and a tag name inside a CSS comment is a tag. */
+    :root { color: #ececf0; }
+    @media (prefers-color-scheme: light) { :root { color: #14141a; } }
+  </style>
+  <g transform="translate(27.96,0)">
+    <polygon points="38.04,54.65 4.00,71.67 4.00,82.07 38.04,65.05" fill="#2ac79c" />
+    <polygon points="38.04,83.02 4.00,100.04 4.00,110.44 38.04,93.42" fill="#116352" />
+    <polygon points="49.39,43.31 88.69,66.00 88.69,111.39 49.39,88.69" fill="#0f5b49" />
+    <polygon points="88.69,66.00 128.00,43.31 128.00,88.69 88.69,111.39" fill="#1c9b7c" />
+    <polygon points="88.69,20.61 128.00,43.31 88.69,66.00 49.39,43.31" fill="#35e0b0" />
+  </g>
+  <g transform="translate(0.00,196.96)">
+    <path transform="translate(0.00,0.00) scale(0.04600,-0.04600)" d="M247 685H111V0H258C399 0 566 64 566 348C566 630 406 685 247 685ZM255 635C375 635 503 599 503 348C503 102 380 50 262 50H171V635Z" fill="currentColor" />
+    <path transform="translate(29.37,0.00) scale(0.04600,-0.04600)" d="M309 534C236 534 189 492 161 406L156 523H106V0H164V320C192 427 231 479 304 479C322 479 335 477 350 473L361 528C347 532 329 534 309 534Z" fill="currentColor" />
+    <path transform="translate(46.83,0.00) scale(0.04600,-0.04600)" d="M134 753C108 753 91 734 91 711C91 688 108 669 134 669C161 669 178 688 178 711C178 734 161 753 134 753ZM164 523H106V0H164Z" fill="currentColor" />
+    <path transform="translate(59.55,0.00) scale(0.04600,-0.04600)" d="M260 695C293 695 325 687 359 672L379 715C340 733 302 743 257 743C166 743 112 691 112 609V523H21V476H112V0H170V476H300L308 523H170V607C170 669 201 695 260 695Z" fill="currentColor" />
+    <path transform="translate(74.62,0.00) scale(0.04600,-0.04600)" d="M321 62C295 47 270 39 241 39C188 39 164 69 164 130V476H292L299 523H164V655L106 648V523H18V476H106V127C106 36 155 -11 234 -11C276 -11 312 1 344 22Z" fill="currentColor" />
+    <path transform="translate(90.60,0.00) scale(0.04600,-0.04600)" d="M486 692H73V0H488V108H220V299H438V405H220V585H470Z" fill="#35e0b0" />
+    <path transform="translate(115.19,0.00) scale(0.04600,-0.04600)" d="M366 546C298 546 247 516 204 463L193 530H70V0H212V366C241 413 273 440 314 440C350 440 372 423 372 362V0H514V386C514 486 459 546 366 546Z" fill="#35e0b0" />
+    <path transform="translate(142.12,0.00) scale(0.04600,-0.04600)" d="M509 610C445 574 383 543 261 546C128 546 35 471 35 354C35 286 63 239 129 203C91 179 67 142 67 104C67 48 113 0 224 0H302C358 0 385 -22 385 -58C385 -96 359 -123 261 -123C160 -123 138 -101 138 -51H11C11 -157 64 -220 258 -220C435 -220 528 -155 528 -48C528 40 451 104 331 104H250C198 104 189 121 189 139C189 153 197 166 209 174C228 169 248 167 271 167C406 167 489 242 489 345C489 412 456 452 391 481C455 481 505 486 544 501ZM264 451C323 451 352 421 352 358C352 293 322 259 265 259C211 259 177 295 177 356C177 414 210 451 264 451Z" fill="#35e0b0" />
+    <path transform="translate(167.45,0.00) scale(0.04600,-0.04600)" d="M140 803C89 803 54 767 54 720C54 673 89 637 140 637C191 637 227 673 227 720C227 767 191 803 140 803ZM212 530H70V0H212Z" fill="#35e0b0" />
+    <path transform="translate(180.72,0.00) scale(0.04600,-0.04600)" d="M366 546C298 546 247 516 204 463L193 530H70V0H212V366C241 413 273 440 314 440C350 440 372 423 372 362V0H514V386C514 486 459 546 366 546Z" fill="#35e0b0" />
+    <path transform="translate(207.65,0.00) scale(0.04600,-0.04600)" d="M518 277C518 446 429 546 279 546C124 546 38 422 38 262C38 96 127 -16 297 -16C380 -16 446 14 498 56L439 136C393 104 355 90 310 90C242 90 194 120 184 222H515C516 237 518 259 518 277ZM377 311H184C191 411 226 449 282 449C350 449 377 397 377 317Z" fill="#35e0b0" />
+  </g>
+</svg>

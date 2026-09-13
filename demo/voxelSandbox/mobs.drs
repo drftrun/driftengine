@@ -1,0 +1,77 @@
+// What a mob wants, as opposed to where it is drawn.
+//
+// The grid, the meshes, the spawn budget and the ground under a mob's feet are all the host's.
+// This file decides only what a mob wants next, which is the half worth reading — and it is the
+// half that changes when somebody is tuning how the world feels.
+//
+// The host steps this at a fixed 60 Hz, so the timers below count in ticks.
+
+// Moods, as integers rather than as an `enum`.
+//
+// **An enum cannot be a component field.** The runtime refuses it in as many words: "`Mob.mood`
+// is declared `enum:Mood`, which has no column. The types with one are f32, f64, i8 … A type that
+// has to be boxed is a decision about layout, so it is added here rather than assumed." That is a
+// defensible position about layout, and it costs this file the exhaustive `match` that
+// `GuardBehaviour.drs` is in the corpus to demonstrate — because the state a behaviour tree
+// switches on is exactly the state that has to persist between ticks. See `GAPS.md`.
+//
+// 0 idle, 1 wandering, 2 fleeing. The host reads the same three numbers.
+
+component Mob {
+    mood: i32 = 0
+    // Where it is, and which way it is walking. The host writes position back after collision.
+    x: f64 = 0
+    y: f64 = 0
+    z: f64 = 0
+    headingX: f64 = 0
+    headingZ: f64 = 0
+    vy: f64 = 0
+    // Ticks until it reconsiders.
+    timer: f64 = 0
+    // Set by the host when the player comes close. Cleared here once acted on.
+    startled: f64 = 0
+    // Raised by this file when it wants a new direction, and cleared by the host once it has
+    // written one.
+    //
+    // **The host picks the number because DriftScript has no maths.** There is no `sin`, `cos`,
+    // `floor` or modulo in the language and no `drift/math` module, so a script cannot turn an
+    // angle into a heading or a counter into a pseudo-random value. What it can do is decide
+    // *when* a mob should turn, which is the interesting half. See `GAPS.md`.
+    wantsHeading: f64 = 0
+}
+
+// A marker the host adds while a mob has solid ground under it.
+component Grounded {
+    since: f64 = 0
+}
+
+system MobThink {
+    reads Mob
+    writes Mob
+
+    update {
+        for e in query<Mob>() {
+            e.Mob.timer = e.Mob.timer - 1
+
+            if e.Mob.startled > 0 {
+                e.Mob.mood = 2
+                e.Mob.timer = 150
+                e.Mob.startled = 0
+            }
+
+            if e.Mob.timer <= 0 {
+                // Idle and wandering alternate; fleeing settles back to wandering.
+                if e.Mob.mood == 1 {
+                    e.Mob.mood = 0
+                    e.Mob.timer = 140
+                    e.Mob.headingX = 0
+                    e.Mob.headingZ = 0
+                } else {
+                    e.Mob.mood = 1
+                    e.Mob.timer = 200
+                    e.Mob.wantsHeading = 1
+                }
+            }
+        }
+    }
+}

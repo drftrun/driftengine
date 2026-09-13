@@ -1,0 +1,30 @@
+// A shared record and the function over it, in their own file.
+//
+// This half of the corpus exists to be *imported*: it is what the next file extends and calls, so
+// the pair exercises a cross-module base, a cross-module call and a capability requirement that
+// travels with them. Read together with `wolf.drs`.
+
+import { play, sound } from "drift/audio"
+
+data Creature {
+    name: String = ""
+    energy: f32 = 1
+}
+
+// Restores a creature to full energy. Takes `mut` because it writes through the reference, which is
+// the only way a caller sees a change: assigning a whole record rebinds a local and nothing else.
+fn rest(c: mut Creature) {
+    c.energy = 1
+}
+
+// Reaches a capability, so anything calling it is not deterministic — across the file boundary too,
+// which is the property `wolf.drs` is written to demonstrate.
+//
+// `sound` answers an option because a slot resolves through a registry and the file often is not
+// there. Ignoring that is how a script plays silence and reports success, so the option is not a
+// formality: there is no way to reach `play` without answering it.
+fn callOut(c: Creature) {
+    if let s = audio.sound(c.name) {
+        audio.play(s, 1)
+    }
+}

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    DriftEngine: a cube in isometric, with the streaks of its own motion behind it.
+
+    A cube because that is what a 3D engine draws before it draws anything else, and three flat
+    facets because that is what this one's renderer does to it — one tone a face, no gradient, no
+    smooth Bezier anywhere in the file.
+
+    The isometric is exact rather than eyeballed: half-diagonals of side*cos30 and side*sin30 with
+    a vertical edge of side, so it reads as a cube instead of as a box. The streaks carry the name.
+    They were arrived at by elimination, and what was tried first is worth recording, because it is
+    the obvious thing: echoes of the cube itself, offset along its axis. Stacked triangles read as
+    a pine tree at every size that was tried. Two parallel streaks, near one bright and far one
+    dim, read as motion at 128 pixels and as motion at 32.
+
+    Below about 24 pixels the streaks merge into the cube. `mark-small.svg` is the same mark with
+    them removed, which is what a favicon should use.  -->
+  <rect width="64" height="64" rx="12" fill="#0b0b0d" />
+  <polygon points="9.48,19.00 32.00,32.00 32.00,58.00 9.48,45.00" fill="#0f5b49" />
+  <polygon points="32.00,32.00 54.52,19.00 54.52,45.00 32.00,58.00" fill="#1c9b7c" />
+  <polygon points="32.00,6.00 54.52,19.00 32.00,32.00 9.48,19.00" fill="#35e0b0" />
+</svg>

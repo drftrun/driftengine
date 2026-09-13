@@ -1,0 +1,74 @@
+// A tractor beam that pulls what it hits, and settles what lands. Track B is complete.
+//
+// Everything here links against a target providing `drift/physics` and `drift/time`. It is in the
+// corpus rather than in `examples/` because it needs a host, and `examples/` is the set that runs
+// against no host at all.
+
+import { applyImpulse, bodyMass, contactA, contactCount, contactKind, hitBody, hitFraction, hitNormalY, hitX, hitY, hitZ, raycast, setVelocity, wake } from "drift/physics"
+import { frameDelta } from "drift/time"
+
+data Beam {
+    // How hard the beam pulls, in newtons per kilogram of what it caught.
+    pull: f32 = 40
+    // Which layers the beam may catch. The binding requires it, and its documentation says why:
+    // without a mask the first thing a ray finds is very often the body it was fired from.
+    mask: i32 = 2
+    range: f32 = 40
+}
+
+// How hard the beam pulls at a given fraction of its range. A pure function of its inputs, so it
+// is checkable with no host at all.
+@pure
+fn falloff(fraction: f32) -> f32 {
+    if fraction >= 1 {
+        return 0
+    } else {
+        return 1 - fraction
+    }
+}
+
+// Fire the beam along a direction and pull whatever it catches back along it.
+fn fire(world: PhysicsWorld, x: f32, y: f32, z: f32, dx: f32, dy: f32, dz: f32, beam: Beam) -> bool {
+    if !physics.raycast(world, x, y, z, dx, dy, dz, beam.range, beam.mask) {
+        return false
+    }
+
+    let body = physics.hitBody(world)
+    if body < 0 {
+        return false
+    }
+
+    // The impulse acts at the point the beam struck, not at the centre of mass. The binding
+    // requires the point for exactly that reason: through the centre it would produce no spin at
+    // all, and a beam that never tumbles what it catches reads as a broken beam.
+    let strength = beam.pull * physics.bodyMass(world, body)
+        * falloff(physics.hitFraction(world)) * time.frameDelta()
+    physics.applyImpulse(
+        world,
+        body,
+        0 - dx * strength,
+        0 - dy * strength,
+        0 - dz * strength,
+        physics.hitX(world),
+        physics.hitY(world),
+        physics.hitZ(world),
+    )
+    return true
+}
+
+// Stop anything that just landed on a surface flat enough to stand on, which is what a magnet does.
+fn settleLandings(world: PhysicsWorld) {
+    let count = physics.contactCount(world)
+    var i: i32 = 0
+    while i < count {
+        // Kind 0 is "entered", which is the only tick a landing happens on.
+        if physics.contactKind(world, i) == 0 {
+            if physics.hitNormalY(world) > 0.7 {
+                let body = physics.contactA(world, i)
+                physics.setVelocity(world, body, 0, 0, 0)
+                physics.wake(world, body)
+            }
+        }
+        i = i + 1
+    }
+}

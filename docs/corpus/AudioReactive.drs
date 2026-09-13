@@ -1,0 +1,45 @@
+// A behaviour that reacts to the music. Wired today: Track G is complete.
+//
+// Everything here links against a target providing `drift/audio` and `drift/time`. It is in the
+// corpus rather than in `examples/` because it needs a host, and `examples/` is the set that runs
+// against no host at all.
+
+import { play, sound, distanceGain } from "drift/audio"
+import { frameDelta } from "drift/time"
+
+data Pulse {
+    energy: f32 = 0
+    decay: f32 = 4
+}
+
+// The decay is a pure function of its inputs, so it is checkable without a host at all.
+@pure
+fn decayed(energy: f32, decay: f32, dt: f32) -> f32 {
+    let next = energy - decay * dt
+    if next < 0 {
+        return 0
+    } else {
+        return next
+    }
+}
+
+// `sound` answers an option, because a slot resolves through a registry and the file often is not
+// there. A script that ignored it would play silence and report success, so there is no way to
+// reach `play` without answering the question first.
+fn onKick(pulse: mut Pulse, strength: f32) {
+    pulse.energy = strength
+    if let kick = audio.sound("kick") {
+        audio.play(kick, strength)
+    }
+}
+
+fn advance(pulse: mut Pulse) {
+    let dt = time.frameDelta()
+    pulse.energy = decayed(pulse.energy, pulse.decay, dt)
+}
+
+// Gain falling off with distance, which the host computes rather than the script guessing at a
+// curve. Pure arithmetic on the way out, so this stays checkable.
+fn nearGain(distance: f32) -> f32 {
+    return audio.distanceGain(distance, 20)
+}

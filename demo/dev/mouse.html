@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — what the mouse actually delivers</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      13px/1.6 ui-monospace,
+      monospace;
+  }
+  #stage {
+    padding: 1.4rem 1.6rem;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 0.2rem;
+  }
+  p.lede {
+    color: #7d8ea1;
+    margin: 0 0 1rem;
+    max-width: 70ch;
+  }
+  button {
+    font: inherit;
+    padding: 0.5rem 0.9rem;
+    background: #1b2430;
+    color: #d7dde5;
+    border: 1px solid #33465c;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  button:hover {
+    background: #22303f;
+  }
+  pre {
+    background: #05070a;
+    border: 1px solid #1b2430;
+    border-radius: 4px;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0 0;
+    white-space: pre-wrap;
+  }
+  .k {
+    color: #7d8ea1;
+  }
+</style>
+<div id="stage">
+  <h1>What the mouse actually delivers</h1>
+  <p class="lede">
+    Click Lock, then move the mouse the way you would to look around: slowly for a few seconds, then
+    quickly for a few seconds. The numbers below say whether the browser is handing over the
+    device's own counts or the desktop's accelerated cursor, and at what rate.
+  </p>
+  <button id="lock">Lock the pointer</button>
+  <button id="reset">Reset the numbers</button>
+  <pre id="out">not locked yet</pre>
+</div>
+<script type="module" src="./mouse.ts"></script>

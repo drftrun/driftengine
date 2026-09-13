@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — chemistry</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #05070a;
+    color: #d7dde5;
+    font:
+      13px/1.5 ui-monospace,
+      monospace;
+  }
+  #stage {
+    position: relative;
+    height: 100vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #stats {
+    position: absolute;
+    left: 0.7rem;
+    bottom: 0.7rem;
+    color: #7d8ea1;
+    pointer-events: none;
+    white-space: pre;
+  }
+  /* The conservation panel, which is part of the test rather than beside it: a demo whose element
+     totals drift is a failed demo, and that is this track's exit condition. */
+  #ledger {
+    position: absolute;
+    right: 0.7rem;
+    top: 0.7rem;
+    color: #7d8ea1;
+    pointer-events: none;
+    white-space: pre;
+    text-align: right;
+  }
+  #ledger b {
+    color: #6ee7a8;
+    font-weight: normal;
+  }
+  #ledger .bad {
+    color: #ff9b9b;
+  }
+</style>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="stats"></div>
+  <div id="ledger"></div>
+</div>
+<script type="module" src="./chemistry.ts"></script>

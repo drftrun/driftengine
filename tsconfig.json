@@ -1,0 +1,109 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    /*
+     * Relative imports may name a `.ts` file.
+     *
+     * **This arrived for `driftscript` and stayed for a different reason.** That package shipped its
+     * TypeScript source and its Vite plugin is loaded by Node, whose ESM resolver requires an
+     * extension — so every relative import in it named the file. `driftscript` is a published
+     * package now, ships compiled JavaScript, and asks nothing of this config.
+     *
+     * **Every package here names the extension now**, since 2026-09-04. Four of them had adopted
+     * the convention while this flag sat set for another package's sake — `ai`, `chemistry`,
+     * `entities` and `script`, on 714 relative imports between them — and the rest had not, so the
+     * codebase carried two conventions and nothing said which was meant. The rename this comment
+     * called "worth doing deliberately or not at all" was done deliberately.
+     *
+     * It is load-bearing now rather than permissive: `tsconfig.build.json` pairs it with
+     * `rewriteRelativeImportExtensions`, which is what turns `.ts` specifiers into `.js` ones on the
+     * way out. It needs `noEmit` here, which is set above, and the build config supplies the rewrite
+     * that makes it legal beside emit.
+     */
+    "allowImportingTsExtensions": true,
+    /*
+     * The condition that keeps this repository reading its own source.
+     *
+     * Every package's `exports` names `drift-source` first, ahead of `types` and `node`. Without
+     * this line the compiler would skip that branch, land on `types`, and want a `dist` nobody has
+     * built — so `npm run typecheck` would require a build, which is exactly backwards for the gate
+     * everything else is ordered behind.
+     *
+     * `tsconfig.build.json` deliberately does not set it: a package compiles against its
+     * dependencies' declarations rather than their TypeScript, which is what makes the build order a
+     * dependency order.
+     */
+    "customConditions": ["drift-source"],
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    /*
+     * No ambient type packages at all, which is what keeps Node out of the engine.
+     *
+     * `@types/node` is installed for `tsconfig.scripts.json`, and TypeScript includes every
+     * `@types` package it can find unless a config says otherwise. Without this line, adding
+     * those types to typecheck the baker would also hand `process`, `Buffer` and `require` to
+     * every module under `src/` — where they are exactly the things that must not compile,
+     * because a consumer bundles this source for a browser.
+     *
+     * Empty rather than a list: `src/` and `demo/` reach the DOM through the `lib` above and
+     * declare anything else they need themselves, so there is nothing legitimate to name here
+     * and a list would be a place for one to creep back in.
+     */
+    "types": []
+  },
+  "include": ["packages/*/src", "demo", "examples"],
+  /*
+   * The packager's Node-side files, checked by `tsconfig.scripts.json` instead.
+   *
+   * `@driftengine/package` is the one package with code on both sides of the line this config
+   * draws. Its manifest, flag, signing and renderer modules are ordinary browser-or-pure
+   * TypeScript and belong here, where `"types": []` is what stops `Buffer` reaching a consumer's
+   * bundle. Its main process, its preload entry and its CLI *are* Node — they read files, spawn
+   * processes and import `electron` — so they are checked where Node's types exist. Splitting the
+   * package rather than loosening this config is what keeps the guarantee: a stray `process` in a
+   * renderer file still fails here.
+   *
+   * **A test of a Node-side module is excluded with it**, and that is not an oversight: `exclude`
+   * only removes a file from `include`, it does not stop one being pulled in as an import — so a
+   * test that lives here and imports the main process would drag Node's types back into the
+   * engine's config through the back door. `tsconfig.scripts.json` typechecks both.
+   */
+  "exclude": [
+    "packages/package/src/main",
+    "packages/package/src/preload/entry.ts",
+    "packages/package/src/cli.ts",
+    "packages/package/src/build.ts",
+    "packages/package/src/macCrossSign.ts",
+    "packages/package/src/macCrossSign.test.ts",
+    "packages/package/src/resources.ts",
+    "packages/package/src/resources.test.ts",
+    "packages/package/src/outDir.ts",
+    "packages/package/src/outDir.test.ts",
+    "packages/package/src/runtime.ts",
+    "packages/package/src/runtime.test.ts",
+    "packages/package/src/identity.ts",
+    "packages/package/src/identity.test.ts",
+    "packages/package/src/stage.test.ts",
+    "packages/package/src/init.ts",
+    "packages/package/src/init.test.ts",
+    "packages/package/src/templates",
+    "packages/package/src/stage.ts",
+    "packages/package/src/android.ts",
+    "packages/package/src/ios.ts",
+    "packages/package/src/steam/main.ts",
+    "packages/package/src/steam/main.test.ts",
+    "packages/package/src/bootstrap.ts",
+    "packages/package/src/toolchain.ts",
+    "packages/package/src/shellBundle.ts"
+  ]
+}

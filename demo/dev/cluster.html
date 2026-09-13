@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — cluster binner conformance</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.5 ui-monospace,
+      monospace;
+  }
+  #stage {
+    position: relative;
+    height: 100vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #out {
+    position: absolute;
+    left: 0.7rem;
+    top: 0.7rem;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="out"></div>
+</div>
+<script type="module" src="./cluster.ts"></script>

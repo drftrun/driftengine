@@ -1,0 +1,144 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — gamepad and input hints</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.6 ui-monospace,
+      monospace;
+    padding: 1.5rem 2rem;
+  }
+  h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 0.2rem;
+  }
+  p.sub {
+    margin: 0 0 1.4rem;
+    color: #7d8ea1;
+  }
+  /* The line this page exists for: it must change device without the page being touched. */
+  #hint {
+    font-size: 1.5rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid #24303c;
+    border-radius: 6px;
+    margin-bottom: 1.4rem;
+  }
+  #identity {
+    color: #7d8ea1;
+    margin-bottom: 1rem;
+    white-space: pre-wrap;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.4rem;
+    margin-bottom: 1.2rem;
+  }
+  .cell {
+    border: 1px solid #24303c;
+    border-radius: 4px;
+    padding: 0.4rem 0.5rem;
+  }
+  .cell.on {
+    background: #1d3a2a;
+    border-color: #3f7f5c;
+    color: #b6f0cf;
+  }
+  .cell .pos {
+    color: #61707f;
+    font-size: 0.75rem;
+  }
+  .cell .lbl {
+    font-size: 1rem;
+  }
+  #axes {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.2rem;
+    max-width: 34rem;
+  }
+  .stick {
+    position: relative;
+    width: 8rem;
+    height: 8rem;
+    border: 1px solid #24303c;
+    border-radius: 50%;
+  }
+  .dead {
+    position: absolute;
+    border: 1px dashed #2c3947;
+    border-radius: 50%;
+  }
+  .dot {
+    position: absolute;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #6fd39b;
+    transform: translate(-50%, -50%);
+  }
+  .bar {
+    height: 0.5rem;
+    background: #24303c;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 0.3rem;
+  }
+  .bar > i {
+    display: block;
+    height: 100%;
+    background: #6fd39b;
+    width: 0;
+  }
+  #actions {
+    display: grid;
+    gap: 0.35rem;
+    max-width: 34rem;
+  }
+  .act {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border: 1px solid #24303c;
+    border-radius: 4px;
+    padding: 0.45rem 0.6rem;
+    cursor: pointer;
+  }
+  .act.on {
+    background: #1d3a2a;
+    border-color: #3f7f5c;
+    color: #b6f0cf;
+  }
+  .act.capturing {
+    border-color: #d8b567;
+    color: #ffd98a;
+  }
+  .act .binds {
+    color: #7d8ea1;
+  }
+</style>
+<h1>Gamepad, controller identity and input hints</h1>
+<p class="sub">
+  Nothing appears until you press a button — a browser will not report a pad before that, which is
+  its rule and not a fault here. Then: type, and the line below says keyboard. Press a button, and
+  it says controller. Nudge the mouse, and it should still say controller.
+</p>
+<div id="hint">…</div>
+<div id="identity"></div>
+<div id="grid"></div>
+<div id="axes"></div>
+<h2 style="font-size: 0.95rem; margin: 1.6rem 0 0.3rem">Actions</h2>
+<p class="sub" style="margin-bottom: 0.8rem">
+  One name, either device. Click a row to rebind it, then press any key or button. The prompt
+  follows the binding, which is what a rebinding screen is for.
+</p>
+<div id="actions"></div>
+<script type="module" src="./gamepad.ts"></script>

@@ -1,0 +1,83 @@
+// An agent that walks somewhere, on a peer that may or may not be the one deciding.
+//
+// This is in the corpus because it is the first script that touches both AI bridges, and because
+// the two of them look like they contradict each other until you write one down.
+//
+// `navigate` is deterministic and runs on every peer. `deciding` says whether this peer is the one
+// asking a model. Those coexist because they are about different things: a script's own command is
+// a function of the simulation — a route is the graph and two endpoints, and ties break on the node
+// index — so every peer computes the same one and it replicates itself by being re-run. A *model's*
+// decision is none of those things, which is why it is taken in one place and arrives everywhere
+// else already taken.
+//
+// So the rule this file demonstrates is: **a script may drive an agent anywhere; it may not ask what
+// the model chose.** `intentId` is the whole of what it can read about that, and `drift/ai` binds
+// nothing that would hand it a tool or an argument.
+//
+// The other thing worth noticing is `reachable`. Before it, scoring a destination meant calling
+// `route` — which writes — and then undoing it, which is a write a `@deterministic` function would
+// have had to make and take back.
+
+import { agent, deciding, intentId, navigate, path, reachable, wake } from "drift/ai"
+import { following } from "drift/navigation"
+
+data Errand {
+    x: f32 = 0
+    y: f32 = 0
+    z: f32 = 0
+    attempts: u32 = 0
+    giveUpAfter: u32 = 3
+}
+
+// Pick the nearer of two destinations that can actually be reached.
+//
+// `@deterministic` holds because every capability here is inside the deterministic effects:
+// `reachable` is `navigation.read`, and so is `following`. A version of this that called `wake`
+// would not compile, which is the annotation doing its job rather than a limitation.
+@deterministic
+fn chooseTarget(a: Agent, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) -> bool {
+    if ai.reachable(a, ax, ay, az) {
+        return true
+    }
+    return ai.reachable(a, bx, by, bz)
+}
+
+// `ai.path` is the join, and this is what it buys: one capability makes `drift/navigation`'s
+// twelve work on an agent, so nothing here had to be bound a second time to answer for one.
+@deterministic
+fn stillWalking(a: Agent) -> bool {
+    if let route = ai.path(a) {
+        return navigation.following(route)
+    }
+    return false
+}
+
+fn sendOnErrand(id: String, errand: Errand) -> bool {
+    if let a = ai.agent(id) {
+        let found = ai.navigate(a, errand.x, errand.y, errand.z)
+        if !found {
+            // A destination that cannot be reached is not an error and not a retry. `navigate` has
+            // already cleared the old route, so the agent is not still walking somewhere nobody
+            // asked for any more, and its policy floor covers the gap.
+            return false
+        }
+
+        // Only the deciding peer is told anything. Elsewhere the model's answer arrives already
+        // taken, and waking an agent that is replaying would be asking a question whose answer is
+        // already on the wire.
+        if ai.deciding(a) {
+            ai.wake(a, "errand", 40)
+        }
+        return true
+    }
+    return false
+}
+
+fn errandFinished(id: String) -> bool {
+    if let a = ai.agent(id) {
+        // `intentId` is the only thing a script may read about what the agent settled on. It is
+        // state the simulation owns, because the floor put it there and a replay recomputes it.
+        return ai.intentId(a) == "" || !stillWalking(a)
+    }
+    return false
+}
