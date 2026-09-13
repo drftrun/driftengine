@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/entities",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "Entities with generational identity, component storage, systems and scenes",
   "license": "Apache-2.0",
   "type": "module",
@@ -53,5 +53,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/entities"
   }
 }

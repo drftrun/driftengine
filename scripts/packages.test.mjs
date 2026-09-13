@@ -66,6 +66,37 @@ test('every package can be built for Node', () => {
   );
 });
 
+/**
+ * Every package rebuilds `dist/` before it is packed.
+ *
+ * **`dist/` is gitignored, so a tarball carries whatever was last built on the publishing
+ * machine.** Nothing hooked the build to the publish and nothing compared the two, so 3.61.3 went
+ * to the registry with `src/` carrying a fix and `dist/` carrying the bug it fixed — and `main`,
+ * `types` and the default `exports` condition all resolve to `dist`, so every ordinary consumer
+ * installed the defect under a version number that claimed to have cured it. It cannot be undone
+ * either: a published version is immutable, so the answer was another release.
+ *
+ * **Invisible from inside the workspace, like the missing-files defect this sits beside.** A path
+ * dependency resolves through a symlink into the tree, where `dist` is whatever the last local
+ * build left; only an install from the registry can show it, and by then it is published.
+ *
+ * `prepack` rather than `prepublishOnly`, because npm runs it for `npm pack` too — so the tarball
+ * a gate inspects is built the same way the tarball a consumer installs is.
+ */
+test('every package builds itself before it is packed', () => {
+  const wrong = packages()
+    .filter(
+      (pkg) =>
+        pkg.manifest.scripts?.prepack !== `node ../../scripts/build.mjs ${pkg.manifest.name}`,
+    )
+    .map((pkg) => `${pkg.manifest.name}: ${pkg.manifest.scripts?.prepack ?? '(none)'}`);
+  assert.deepEqual(
+    wrong,
+    [],
+    `packages that would pack a stale \`dist/\`:\n  ${wrong.join('\n  ')}`,
+  );
+});
+
 test('a package README opens by naming the package', () => {
   /* A reader arriving from a file tree needs the first line to say which of eleven things this is.
      Deriving it from the manifest means a rename cannot leave the heading behind. */
@@ -349,11 +380,20 @@ test('a package ships every file it tracks', () => {
       .filter(Boolean)
       .map((f) => path.relative(root, path.join(ROOT, f)))
       .filter((f) => !SKIP.test(f) && f !== 'package.json');
-    const packed = new Set(
-      JSON.parse(
-        execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8' }),
-      )[0].files.map((f) => f.path),
-    );
+    /*
+     * **The JSON is sliced out rather than parsed whole, because `prepack` now writes to stdout
+     * too.** Every package builds itself before it packs — see the test above for what a stale
+     * `dist/` cost — and npm runs that script's output into the same stream as `--json`, so
+     * `JSON.parse` on the lot fails with `Unexpected token '@'`. The document starts at the first
+     * `[`, which is unambiguous: nothing the build prints contains one.
+     */
+    const out = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    const start = out.indexOf('[');
+    assert.notEqual(start, -1, `npm pack printed no JSON for ${dir}:\n${out}`);
+    const packed = new Set(JSON.parse(out.slice(start))[0].files.map((f) => f.path));
     for (const f of tracked) if (!packed.has(f)) missing.push(`${dir}: ${f}`);
   }
   assert.deepEqual(

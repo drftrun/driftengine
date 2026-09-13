@@ -1,5 +1,16 @@
 [
   {
+    "version": "3.61.4",
+    "date": "2026-09-13",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "The published packages carry a dist built from the source beside it. 3.61.3 went out with the fixed source and a dist built before the fix, so installing it delivered the bug.",
+        "text": "**`dist/` is gitignored, so a tarball carries whatever the publishing machine last built**, and nothing hooked the build to the publish or compared the two. 3.61.3 went to the registry with `src/render/backend/webgpu/insetPass.ts` carrying the inset depth fix and `dist/render/backend/webgpu/insetPass.js` carrying the bug it fixed. `main`, `types` and the default `exports` condition all resolve to `dist`, so an ordinary consumer installed the defect under a version number that claimed to have cured it, and only a consumer reading the `drift-source` condition got the fix.\n\nA published version is immutable, so the answer is this release rather than a correction of that one. **3.61.3 should not be used**: for the inset fix, take 3.61.4.\n\n**Invisible from inside the workspace, which is what it has in common with the missing files 3.61.2 fixed.** A path dependency resolves through a symlink into the tree, where `dist` is whatever the last local build left behind; only an install from the registry can show either defect, and by then it is published. That is the whole argument for gating both at the tarball.\n\nEvery package now carries a `prepack` that builds it, so the tarball is built the same way whoever publishes it invokes npm, and `packages.test.mjs` asserts every package declares one. `prepack` rather than `prepublishOnly` because npm runs it for `npm pack` too, so the tarball a gate inspects is the tarball a consumer installs. Held by staling a built `dist` on purpose and packing: the file inside the tarball comes out rebuilt."
+      }
+    ]
+  },
+  {
     "version": "3.61.3",
     "date": "2026-09-13",
     "entries": [

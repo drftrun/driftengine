@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/chemistry",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "Thermochemistry of bulk matter: elements, species, substances and what they turn into",
   "license": "Apache-2.0",
   "type": "module",
@@ -96,5 +96,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/chemistry"
   }
 }

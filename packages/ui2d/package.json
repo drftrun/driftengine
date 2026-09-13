@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/ui2d",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "The 2D layer: batched sprites, sheets, tilemaps, and a retained interface tree over them",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,7 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/core": "3.61.3"
+    "@driftengine/core": "3.61.4"
   },
   "author": "Drift Technologies",
   "repository": {
@@ -53,5 +53,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/ui2d"
   }
 }

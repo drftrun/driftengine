@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/package",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "Builds an installable application from a game built on the engine",
   "license": "Apache-2.0",
   "type": "module",
@@ -35,7 +35,7 @@
     "drift-package": "bin/drift-package.mjs"
   },
   "peerDependencies": {
-    "@driftengine/core": "3.61.3",
+    "@driftengine/core": "3.61.4",
     "steamworks.js": ">=0.4.0"
   },
   "dependencies": {
@@ -74,5 +74,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/package"
   }
 }

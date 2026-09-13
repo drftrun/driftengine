@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/physics",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "Collision shapes, spatial queries and swept kinematic collision",
   "license": "Apache-2.0",
   "type": "module",
@@ -52,5 +52,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/physics"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/media",
-  "version": "3.61.3",
+  "version": "3.61.4",
   "description": "Clip encoding and frame delivery for recording what the engine draws",
   "license": "Apache-2.0",
   "type": "module",
@@ -30,7 +30,7 @@
     "mp4-muxer": "5.2.2"
   },
   "peerDependencies": {
-    "@driftengine/core": "3.61.3"
+    "@driftengine/core": "3.61.4"
   },
   "author": "Drift Technologies",
   "repository": {
@@ -56,5 +56,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/media"
   }
 }
