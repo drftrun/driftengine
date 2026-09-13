@@ -2,6 +2,14 @@
   <img src="packages/package/assets/lockup.svg" alt="DriftEngine" width="150">
 </p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="npm" src="https://img.shields.io/npm/v/@driftengine/core?logo=npm&label=%40driftengine%2Fcore"></a>
+  <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/npm/l/@driftengine/core?label=licence"></a>
+  <a href="https://github.com/drftrun/driftengine/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/drftrun/driftengine/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-18-blue"></a>
+  <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="Install size" src="https://img.shields.io/bundlephobia/minzip/@driftengine/core?label=core%20gzipped"></a>
+</p>
+
 DriftEngine is a 3D engine written in strict TypeScript. It draws through WebGPU and falls back to
 WebGL2 where a browser offers no usable device.
 
