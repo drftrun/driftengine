@@ -159,6 +159,10 @@ Two things they must not contain:
 Every changelog entry carries both `text` (the full prose) and `short` (one
 sentence, at most 200 characters, and shorter than the `text` it summarises).
 
+A release is then tagged `v<version>`, annotated, on the commit that bumped it, and
+the GitHub release body is `npm run changelog` — the same file the build reads, so the
+two cannot disagree.
+
 ## Browser verification
 
 Visual checks must run on the machine's real GPU. Never force SwiftShader or

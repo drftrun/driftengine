@@ -538,6 +538,23 @@ A package once moved to 0.7.1 with no changelog entry, leaving a consumer failin
 half until somebody traced it back and wrote the entry after the fact, from the commit message,
 having not made the change.
 
+### A release is tagged, and the tag is what a reader arrives at — hard rule (2026-09-13)
+
+**`v<version>`, annotated, on the commit that bumped it**, pushed, and then a GitHub release whose
+body is `npm run changelog`. That script exists for this and says so in its own header: a release
+body is a `>` away. Using it is what stops the notes and the version the build reports from
+disagreeing, because both read `CHANGELOG.json`.
+
+**Why this became a rule only now.** Until this repository was published there were no tags at all,
+in any copy of it, and nothing needed one — a consumer took a path dependency and read the source.
+A published package changes that. `npm install @driftengine/core@3.61.0` hands somebody the code
+and no way to see what changed or which commit produced it, and a release attached weeks later
+cannot point at a commit that was never marked. The tag is the only thing that answers both.
+
+`v3.61.0` is the first and sets the shape: the `v` prefix, annotated rather than lightweight so the
+tag carries its own message and date, and one tag per release rather than one per tranche — which
+is the cadence rule below, applied to the thing a stranger sees.
+
 ### A capability that lands unbound is a capability DriftScript cannot reach (2026-08-25)
 
 **When a track ships, bind it.** `@driftengine/script` is where this engine describes itself to
