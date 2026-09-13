@@ -88,11 +88,15 @@ async function main(): Promise<void> {
   /*
    * **`?after=1` ends the frame first, which is what the game does.** A consumer draws its whole
    * interface after `endFrame` on purpose, so the interface escapes the screen-space post chain.
-   * WebGL2 allows it: its commands run eagerly against the canvas, so a draw after the resolve
-   * lands on top of it. WebGPU records into an encoder that `endFrame` has already submitted, so
-   * every one of these calls finds no open pass and returns without drawing and without saying
-   * so. Compare the two backends under this flag: WebGL2 draws the text and the inset, WebGPU
-   * draws neither.
+   * Both backends allow it: WebGL2 runs its commands eagerly against the canvas, and WebGPU's
+   * `openPass` opens an overlay pass against the presented swap view with its own depth.
+   *
+   * **This comment used to say WebGPU drew neither, and being wrong about that is what hid a real
+   * bug.** Under this flag WebGPU drew the text and the inset's clear and not the mesh inside the
+   * inset, because the clearing quad wrote the near plane into a reversed depth buffer, which has
+   * nothing to do with `endFrame` at all. The ordering had a documented explanation, so a missing
+   * mesh read as expected behaviour to everybody who looked, including this file. Both backends
+   * now draw all three under both flags.
    */
   const afterEndFrame = new URLSearchParams(location.search).get('after') === '1';
   if (afterEndFrame) renderer.endFrame();

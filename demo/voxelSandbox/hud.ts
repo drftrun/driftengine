@@ -7,9 +7,10 @@
  * engine nobody else can have. So every pixel here is `fillPanel` and `drawText`, which is what
  * `examples/overlay-text/` exists to demonstrate.
  *
- * **Everything must be drawn before `endFrame`.** An overlay issued after it survives on WebGL2
- * and vanishes on WebGPU — the trap `AGENTS.md` names, and the reason this class has a `draw`
- * the scene calls rather than doing its own frame bookkeeping.
+ * **Everything is drawn before `endFrame`**, which is why this class has a `draw` the scene calls
+ * rather than doing its own frame bookkeeping. It is not a requirement: both backends draw after
+ * the present, WebGPU through the overlay pass `openPass` opens against the presented swap view.
+ * `AGENTS.md` used to name that as a trap and no longer does, measured on `demo/dev/overlay.ts`.
  */
 import {
   DEFAULT_TEXT_STYLE,

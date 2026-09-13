@@ -23,6 +23,7 @@ packages/package/android/build/
 # the counts in CAPABILITIES.md cost nothing extra. Machine-local: it describes one run on one
 # machine, and a committed copy would be a claim about somebody else's.
 .vitest/
+/.playwright-mcp/
 
 # Reference sources fetched for a port, which are somebody else's and are not always MIT — the
 # voxel sandbox reads Babylon-Lite's, which is Apache 2.0. Fetched on demand and never committed:

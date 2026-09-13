@@ -328,9 +328,21 @@ Two traps that look like engine bugs and are not:
 - **Emissive is gated on `nightFactor`.** The shader multiplies emissive by exactly that, so a lamp
   in an environment with `nightFactor: 0` emits nothing however high its own emissive value, and
   bloom then finds nothing above its threshold.
-- **Overlays drawn after `endFrame` vanish on WebGPU.** WebGL2 runs commands eagerly and forgives it;
-  WebGPU has already submitted the encoder, so the call finds no open pass, draws nothing, and
-  reports no error. Draw interface before `endFrame`.
+- **A fixed clip-space z is written at the end of the buffer this engine reverses.** `REVERSED_DEPTH`
+  is on, so the far plane is **0** and the compare is `greater`; a shader that writes `1.0` because
+  that is the conventional far plane is writing the _near_ plane. The sky did it and painted over
+  the world, which is loud, and `glslFarDepth` exists because of it. The inset's clearing quad did
+  it and painted over nothing, which is a black box on a menu: with `depthCompare: 'always'` and
+  depth writes on it stamped the near plane across the rectangle, and every mesh drawn between
+  `beginInset` and `endInset` failed the test. Read the end off `depthConvention.ts`.
+
+**One that was in this list and is not true**: _overlays drawn after `endFrame` vanish on WebGPU_.
+They do not. `openPass` opens an overlay pass against the presented swap view, with its own depth
+texture, precisely so a consumer can draw its interface after the present and escape the
+screen-space chain — measured on the demo above, where text and an inset both land under `?after=1`
+on both backends. The note outlived whatever made it true, and while it stood it gave the inset bug
+above a sanctioned explanation: the box was blank, the game drew it after `endFrame`, and the
+documented answer said that was expected. A stale "known issue" is worse than no note.
 
 ## How a consumer consumes this
 

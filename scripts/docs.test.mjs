@@ -34,6 +34,10 @@ const SKIP = new Set([
   // Build artifacts, not files that ship. `.vitest/summary.json` records absolute paths,
   // so it carries the machine's own home directory and a maintainer's name with it.
   '.vitest',
+  // A browser tool's page snapshots, for the same reason and more sharply: they are dumps of
+  // whatever site was open, so they carry consumer nouns verbatim and turned the guard below red
+  // without a contributor having typed anything. Gitignored as well, so they cannot be committed.
+  '.playwright-mcp',
 ]);
 
 /**

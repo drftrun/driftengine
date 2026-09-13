@@ -1,4 +1,5 @@
 import type { PipelineCache } from './pipelineCache.ts';
+import { DEPTH_CLEAR } from '../../depthConvention.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import { shaderModule } from './shaderModules.ts';
 
@@ -11,7 +12,10 @@ import { shaderModule } from './shaderModules.ts';
  * depth that way would silently un-occlude everything a scene draws *after* `endInset`.
  *
  * So the rect is drawn rather than cleared: one quad at the far plane, depth always written,
- * colour written or masked off depending on whether the caller asked for a colour.
+ * colour written or masked off depending on whether the caller asked for a colour. **Which end of
+ * the buffer "the far plane" is comes from `depthConvention.ts`** and not from this file: depth is
+ * reversed here, and a quad that names the conventional end clears the inset to the *near* plane
+ * and makes it undrawable. See the note at the return.
  *
  * **Its own shader, and it is allowed to be.** This is not generated from GLSL and has no
  * WebGL2 counterpart to stay honest against — the counterpart is `gl.clear`. The mip blit in
@@ -43,8 +47,24 @@ fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32>
     vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
   );
   let ndc = corner[index] * 2.0 - vec2<f32>(1.0, 1.0);
-  // z = 1: the far plane, which is what a depth clear writes.
-  return vec4<f32>(ndc, 1.0, 1.0);
+  /*
+   * **The far plane, interpolated from the convention rather than written down.**
+   *
+   * This said \`1.0\`, under a comment calling it "the far plane, which is what a depth clear
+   * writes". That is true of a conventional depth buffer and this engine reverses depth, where
+   * 1.0 is the *near* plane and the compare is \`greater\`. The quad is drawn with
+   * \`depthCompare: 'always'\` and depth writes on, so it stamped the nearest possible value
+   * across the whole inset and every mesh drawn between \`beginInset\` and \`endInset\` failed
+   * the test against it: the box came out holding its clear colour and nothing else, on WebGPU
+   * only, with nothing logged. Reported from a game as two empty boxes on two menu screens, both
+   * of them the places it draws an inset.
+   *
+   * It is the mistake \`glslFarDepth\` exists because the sky made — a full-screen triangle at
+   * \`z = w\`, the far plane conventionally and the near plane once reversed. \`DEPTH_CLEAR\` is
+   * the same number by definition: what a depth attachment is cleared to, which is what a quad
+   * standing in for a depth clear must write.
+   */
+  return vec4<f32>(ndc, ${DEPTH_CLEAR}.0, 1.0);
 }
 
 @fragment
