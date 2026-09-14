@@ -48,6 +48,10 @@ function recordingGl(): { gl: WebGL2RenderingContext; calls: Call[] } {
     CLAMP_TO_EDGE: 17,
     NEAREST: 18,
     LINEAR: 19,
+    /* The two minification filters that read a chain. Distinct values, so a test can tell which
+       one was set rather than only that something was. */
+    NEAREST_MIPMAP_LINEAR: 26,
+    LINEAR_MIPMAP_LINEAR: 27,
     BLEND: 20,
     DEPTH_TEST: 21,
     DEPTH_WRITEMASK: 22,
@@ -69,6 +73,7 @@ function recordingGl(): { gl: WebGL2RenderingContext; calls: Call[] } {
     createVertexArray: () => ({}),
     createBuffer: () => ({}),
     createTexture: () => ({ id: calls.length }),
+    generateMipmap: record('generateMipmap'),
     bindVertexArray: record('bindVertexArray'),
     bindBuffer: record('bindBuffer'),
     bufferData: record('bufferData'),
@@ -334,5 +339,90 @@ describe('texture slots', () => {
     calls.length = 0;
     pass.setTexture(0, IMAGE);
     expect(named(calls, 'deleteTexture')).toHaveLength(1);
+  });
+});
+
+/**
+ * The mip chain, which a glyph atlas needs and pixel art must not get.
+ *
+ * **What this is about.** A consumer bakes one page per weight at 96 px and draws body copy at 11,
+ * which is a 7x minification. `linear` reads four texels of a footprint covering dozens, so a `t`
+ * crossbar two texels tall lands on about a quarter of a pixel and survives or not depending on
+ * where the sample falls — reported by a player as `Step-In Uppercut` reading `Slep-In Uppercul`.
+ * The sampler state below is the whole of the fix on this backend, and none of it is visible in a
+ * screenshot of a frame that happened to sample well.
+ */
+describe('a mipmapped sprite sheet on WebGL2', () => {
+  /*
+   * The **last** setting of each, not the first: the pass fills a slot with its white texel at
+   * init and that sets both filters too, so reading the first call reads the white texture's
+   * state and passes whatever the sheet under test was given.
+   */
+  const minFilter = (calls: readonly Call[]): unknown =>
+    named(calls, 'texParameteri')
+      .filter((call) => call.args[1] === 13)
+      .at(-1)?.args[2];
+  const magFilter = (calls: readonly Call[]): unknown =>
+    named(calls, 'texParameteri')
+      .filter((call) => call.args[1] === 14)
+      .at(-1)?.args[2];
+
+  it('builds no chain unless one is asked for, which is what pixel art needs', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear' });
+    expect(named(calls, 'generateMipmap')).toHaveLength(0);
+    expect(minFilter(calls), 'plain LINEAR, the same as before this option existed').toBe(19);
+  });
+
+  it('builds none for a caller that passes no options at all', () => {
+    /*
+     * The path through `DEFAULT_SPRITE_TEXTURE_OPTIONS`, which is the only one that reads it: the
+     * pass falls back to that constant when a caller hands over nothing. Without this the constant
+     * could be flipped to `true` and every other test here would still pass.
+     */
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE);
+    expect(named(calls, 'generateMipmap')).toHaveLength(0);
+  });
+
+  it('builds one when it is', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear', mipmap: true });
+    expect(named(calls, 'generateMipmap')).toHaveLength(1);
+  });
+
+  it('samples it trilinearly, which is what stops a stroke vanishing between levels', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear', mipmap: true });
+    expect(minFilter(calls)).toBe(27); // LINEAR_MIPMAP_LINEAR
+  });
+
+  it('blends between levels even for a nearest sheet, because that is minification', () => {
+    /*
+     * `filter` is a decision about magnification — whether the texels of one level are blended.
+     * Asking for `nearest` says the pixels are the subject; it does not say a stroke should
+     * disappear on the way down. `SurfaceTexture` splits the two the same way.
+     */
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'nearest', mipmap: true });
+    expect(minFilter(calls)).toBe(26); // NEAREST_MIPMAP_LINEAR
+    expect(magFilter(calls), 'magnification is still nearest, as asked').toBe(18);
+  });
+
+  it('leaves magnification alone when the chain is on', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear', mipmap: true });
+    expect(magFilter(calls)).toBe(19); // LINEAR
+  });
+
+  it('builds the chain after the upload, which is the only order that works', () => {
+    /* The chain is generated from level 0; a driver handed the call before the image builds it
+       from whatever was there, which is nothing. */
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear', mipmap: true });
+    const upload = calls.findIndex((call) => call.name === 'texImage2D');
+    const generate = calls.findIndex((call) => call.name === 'generateMipmap');
+    expect(upload).toBeGreaterThanOrEqual(0);
+    expect(generate).toBeGreaterThan(upload);
   });
 });

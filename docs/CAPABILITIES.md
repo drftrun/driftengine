@@ -1,6 +1,6 @@
 # Capabilities — what this engine does, what it does not, and what holds that true
 
-**True against engine 3.62.0**, container format 1.12, 487 test files and 4535 tests passing.
+**True against engine 3.63.0**, container format 1.12, 488 test files and 4548 tests passing.
 
 The single map. Anything else claiming to list what is missing is either older than this file or
 is a plan for closing one of its rows. Established by reading the tree rather than the release

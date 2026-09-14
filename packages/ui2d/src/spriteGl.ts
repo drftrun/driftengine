@@ -129,9 +129,25 @@ export function setWebgl2SpriteTexture(
   gl.bindTexture(gl.TEXTURE_2D, texture);
   const internal = options.colorSpace === 'linear' ? gl.RGBA : gl.SRGB8_ALPHA8;
   gl.texImage2D(gl.TEXTURE_2D, 0, internal, gl.RGBA, gl.UNSIGNED_BYTE, source);
-  const filter = options.filter === 'linear' ? gl.LINEAR : gl.NEAREST;
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  const linear = options.filter === 'linear';
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, linear ? gl.LINEAR : gl.NEAREST);
+  /*
+   * **Minification is the chain's question and magnification is `filter`'s**, which is why the two
+   * are set apart here. A mipmapped sheet blends *between* levels whichever filter was asked for:
+   * that is what stops a stroke disappearing on the way down, and `filter` still decides whether
+   * the texels inside a level are blended. `SurfaceTexture` splits it the same way.
+   */
+  gl.texParameteri(
+    gl.TEXTURE_2D,
+    gl.TEXTURE_MIN_FILTER,
+    options.mipmap === true
+      ? linear
+        ? gl.LINEAR_MIPMAP_LINEAR
+        : gl.NEAREST_MIPMAP_LINEAR
+      : linear
+        ? gl.LINEAR
+        : gl.NEAREST,
+  );
   /*
    * Clamped on both axes, and it is a correctness rule rather than a default. A sheet frame's
    * edge texel is adjacent to the *next* frame's, so a repeating wrap bleeds one sprite into
@@ -139,6 +155,9 @@ export function setWebgl2SpriteTexture(
    */
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  /* After the upload, which is the only order that works: the chain is built from level 0, and a
+     driver that has not been given one yet builds nothing from it. */
+  if (options.mipmap === true) gl.generateMipmap(gl.TEXTURE_2D);
   gl.bindTexture(gl.TEXTURE_2D, null);
   gl.activeTexture(gl.TEXTURE0);
   sprites.textures[slot] = texture;

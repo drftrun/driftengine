@@ -158,6 +158,21 @@ export type {
  * write to the frame stays refused while a write to a pass-owned target does not is written out.
  */
 export type { PassAttachmentOptions, PassTarget } from './render/passTarget.ts';
+/*
+ * The mip chain a pass has to build for itself on WebGPU, and the level count it needs to ask for.
+ *
+ * **Public because `gl.generateMipmap` has no WebGPU equivalent and every contributed pass that
+ * uploads a texture meets that the moment its texture is ever minified.** `ui2d` met it with a
+ * glyph atlas baked at 96 px and drawn at 11; writing the blit a second time there would have been
+ * a second WGSL shader to keep in step with this one, and the copy that quietly disagrees about
+ * the colour space is the one that would ship. `MipPipelines` is an interface rather than the
+ * renderer's cache so a pass can hand over a `Map` and nothing more.
+ */
+export {
+  generateMipChain,
+  mipLevelCount,
+  type MipPipelines,
+} from './render/backend/webgpu/surfaceTexturePass.ts';
 export { createPassAttachment } from './render/passTarget.ts';
 export type { FrameResource } from './render/frame/index.ts';
 /*

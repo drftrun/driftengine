@@ -55,6 +55,100 @@ export function mipLevelCount(width: number, height: number): number {
   return Math.floor(Math.log2(Math.max(width, height))) + 1;
 }
 
+/**
+ * Somewhere to keep one pipeline per format. `PipelineCache` satisfies it; so does a `Map`.
+ *
+ * Taken as an interface rather than as the class, because the other caller of the chain below is
+ * `@driftengine/ui2d`, which builds its own pipeline from the device and has no cache of the
+ * renderer's to hand.
+ */
+export interface MipPipelines {
+  get(key: string, describe: () => GPURenderPipelineDescriptor): GPURenderPipeline;
+}
+
+/**
+ * Fill every level of a texture from the one above it, which is what WebGPU asks for instead of a
+ * call.
+ *
+ * **`gl.generateMipmap` is one line and WebGPU has no equivalent at all**, so this is the whole of
+ * the difference between the two backends for any texture that wants a chain. One encoder, one
+ * render pass per level, submitted together, once, at upload.
+ *
+ * The source view is a **single level**, so the sample cannot read the level being written — that
+ * would be one texture bound as an attachment and as a resource at once, which is rejected, and
+ * rejected quietly enough to matter.
+ *
+ * **A free function because there are two callers now.** A surface texture on a mesh has wanted a
+ * chain since it existed; a sprite sheet wanted one the day a consumer baked type into an atlas and
+ * drew it at a seventh of its authored size. Writing the blit twice would be two statements of one
+ * thing, and the second copy is the one that would quietly disagree about the format.
+ */
+export function generateMipChain(
+  device: GPUDevice,
+  pipelines: MipPipelines,
+  texture: GPUTexture,
+  format: GPUTextureFormat,
+  levels: number,
+): void {
+  if (levels < 2) return;
+  const pipeline = mipBlitPipeline(device, pipelines, format);
+  const sampler = device.createSampler({
+    label: 'mip.sampler',
+    magFilter: 'linear',
+    minFilter: 'linear',
+  });
+  const encoder = device.createCommandEncoder({ label: 'mip.chain' });
+  for (let level = 1; level < levels; level++) {
+    const source = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 });
+    const target = texture.createView({ baseMipLevel: level, mipLevelCount: 1 });
+    const pass = encoder.beginRenderPass({
+      label: `mip.level${level}`,
+      colorAttachments: [
+        { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+      ],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(
+      0,
+      device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: source },
+          { binding: 1, resource: sampler },
+        ],
+      }),
+    );
+    pass.draw(3);
+    pass.end();
+  }
+  device.queue.submit([encoder.finish()]);
+}
+
+/**
+ * Cached per format, because the two differ: an `-srgb` target encodes on write, and blitting a
+ * linear chain through a pipeline declared for the other one is a gamma error per level.
+ */
+function mipBlitPipeline(
+  device: GPUDevice,
+  pipelines: MipPipelines,
+  format: GPUTextureFormat,
+): GPURenderPipeline {
+  return pipelines.get(`surface.mip:${format}`, () => ({
+    label: `surface.mip:${format}`,
+    layout: 'auto' as const,
+    vertex: {
+      module: shaderModule(device, { label: 'surface.mip', code: MIP_WGSL }),
+      entryPoint: 'vertexMain',
+    },
+    fragment: {
+      module: shaderModule(device, { label: 'surface.mip', code: MIP_WGSL }),
+      entryPoint: 'fragmentMain',
+      targets: [{ format }],
+    },
+    primitive: { topology: 'triangle-list' as const },
+  }));
+}
+
 function sourceSize(source: TexImageSource): { width: number; height: number } {
   const candidate = source as {
     width?: number;
@@ -201,57 +295,6 @@ export class GpuSurfaceTexture {
    * an attachment and a resource at once — rejected, and rejected silently enough to matter.
    */
   private generateMips(texture: GPUTexture): void {
-    const pipeline = this.mipPipeline();
-    const sampler = this.device.createSampler({
-      label: 'surface.mipSampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-    });
-    const encoder = this.device.createCommandEncoder({ label: 'surface.mips' });
-    for (let level = 1; level < this.levels; level++) {
-      const source = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 });
-      const target = texture.createView({ baseMipLevel: level, mipLevelCount: 1 });
-      const pass = encoder.beginRenderPass({
-        label: `surface.mip${level}`,
-        colorAttachments: [
-          { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
-        ],
-      });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(
-        0,
-        this.device.createBindGroup({
-          layout: pipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: source },
-            { binding: 1, resource: sampler },
-          ],
-        }),
-      );
-      pass.draw(3);
-      pass.end();
-    }
-    this.device.queue.submit([encoder.finish()]);
-  }
-
-  /**
-   * Cached per format, because the two differ: an `-srgb` target encodes on write, and blitting
-   * a linear chain through a pipeline declared for the other one is a gamma error per level.
-   */
-  private mipPipeline(): GPURenderPipeline {
-    return this.pipelines.get(`surface.mip:${this.format}`, () => ({
-      label: `surface.mip:${this.format}`,
-      layout: 'auto' as const,
-      vertex: {
-        module: shaderModule(this.device, { label: 'surface.mip', code: MIP_WGSL }),
-        entryPoint: 'vertexMain',
-      },
-      fragment: {
-        module: shaderModule(this.device, { label: 'surface.mip', code: MIP_WGSL }),
-        entryPoint: 'fragmentMain',
-        targets: [{ format: this.format }],
-      },
-      primitive: { topology: 'triangle-list' as const },
-    }));
+    generateMipChain(this.device, this.pipelines, texture, this.format, this.levels);
   }
 }

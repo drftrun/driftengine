@@ -34,9 +34,40 @@ export interface SpriteTextureOptions {
    * and saves the sharp case from a blur nobody asked for.
    */
   readonly filter?: 'nearest' | 'linear';
+  /**
+   * Whether to build a mip chain and sample it. `false` by default, which is the sheet above.
+   *
+   * **The case it exists for is type baked into an atlas.** The comment on `filter` says a sheet
+   * that is not pixel art "is normally drawn near its authored size, where the two filters differ
+   * by very little" — a glyph page is the sheet where that is not true. A consumer baking one page
+   * per weight at 96 px and drawing body copy at 11 is minifying **7x**, and `linear` reads four
+   * texels of a footprint that covers dozens: a `t` crossbar two texels tall lands on about a
+   * quarter of a pixel, and whether it survives depends on where the sample falls. Reported by a
+   * player as `Step-In Uppercut` reading `Slep-In Uppercul`, with different strokes lost per
+   * glyph and per position, so the line looks unevenly spaced as well as misread.
+   *
+   * Neither workaround available to a consumer is good: baking nearer the drawn size blurs the
+   * headings, because one atlas cannot serve an 8x range of sizes, and baking a second atlas for
+   * small text doubles the pages and the uploads and moves a sampling decision into the game where
+   * it has to be re-tuned whenever a size changes.
+   *
+   * **Off by default because the chain is wrong for pixel art**, which is what most sheets are: it
+   * is memory nothing samples, and at a distance it dissolves art whose whole point is the pixel.
+   *
+   * With `filter: 'linear'` this is trilinear — blended within a level and between levels. With
+   * `filter: 'nearest'` the levels are still blended, because that is minification and `filter` is
+   * about magnification; `SurfaceTexture` makes the same split and for the same reason.
+   *
+   * **Padding cells against bleed is the caller's problem**, and it has to be: a lower level mixes
+   * texels the atlas packer put next to each other, so a sheet whose frames touch will show its
+   * neighbours. How much padding depends on how far the chain is allowed to go, which is a fact
+   * about the sheet rather than about the sampler.
+   */
+  readonly mipmap?: boolean;
 }
 
 export const DEFAULT_SPRITE_TEXTURE_OPTIONS: SpriteTextureOptions = {
   colorSpace: 'srgb',
   filter: 'nearest',
+  mipmap: false,
 };

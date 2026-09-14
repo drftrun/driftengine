@@ -119,6 +119,33 @@ decodes and the pass's own output transform re-encodes, so the blend happens in 
 `filter` defaults to `nearest`, because a sheet is usually pixel art and linear filtering is the
 thing that makes pixel art look wrong.
 
+### Type in an atlas wants `mipmap: true`
+
+`mipmap` defaults to false, which is right for pixel art: a chain is memory nothing samples, and at
+a distance it dissolves art whose whole point is the pixel. **A glyph page is the sheet where that
+default is wrong.** Bake one page at 96 px, draw body copy at 11, and that is a 7x minification:
+`linear` reads four texels out of a footprint covering dozens, so a `t` crossbar two texels tall
+lands on about a quarter of a pixel and survives or not depending on where the sample falls. A
+player reported it as `Step-In Uppercut` reading `Slep-In Uppercul`, with the same letter surviving
+in one word and not the next, so the line looked unevenly spaced as well as misread.
+
+```ts
+sprites.setTexture(0, glyphPage, { filter: 'linear', mipmap: true });
+```
+
+Measured on `demo/dev/glyphMip.ts`, twelve copies of one glyph at different subpixel offsets: the
+ink varies between copies with a standard deviation of **0.0130** plain and **0.0020** mipmapped, so
+**6.6x less** copy-to-copy disagreement, identical on both backends. `scripts/glyph-mip-check.mjs`
+is that measurement as a gate.
+
+With `filter: 'linear'` this is trilinear. With `filter: 'nearest'` the levels are still blended,
+because that is minification and `filter` is about magnification.
+
+**Pad the cells yourself.** A lower level mixes texels the packer put next to each other, so a sheet
+whose frames touch shows its neighbours once the chain is deep enough to reach them. How much
+padding depends on how far down the sheet is ever sampled, which is a fact about the sheet rather
+than about the sampler — the engine cannot size it for you.
+
 **Neither backend flips the image.** `surfaceTexture.ts` in core carries the whole argument and the
 bug it came from: WebGL2 ignores `UNPACK_FLIP_Y_WEBGL` for an `ImageBitmap` and honours it for a
 canvas, so a pipeline checked with one source type is half checked. `scripts/sprite-check.mjs`

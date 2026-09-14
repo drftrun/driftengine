@@ -1,5 +1,16 @@
 [
   {
+    "version": "3.63.0",
+    "date": "2026-09-14",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "A sprite sheet can carry a mip chain. Type baked into an atlas and drawn small was losing strokes, so a t read as an l and the same letter read differently in different words.",
+        "text": "**`mipmap` on `SpriteTextureOptions`, false by default.** A sprite sheet is usually pixel art, where a chain is memory nothing samples and a blur nobody asked for, so nothing changes for a sheet that does not ask. A glyph page is the sheet where that default is wrong, and the comment on `filter` said as much without offering a way out: it assumed a sheet that is not pixel art \"is normally drawn near its authored size, where the two filters differ by very little\".\n\nA consumer bakes one page per weight at 96 px and draws body copy at 11 to 13, which is about a **7x** minification. `linear` reads four texels out of a footprint covering dozens, so a `t` crossbar two texels tall lands on roughly a quarter of a pixel and survives or not depending on where the sample falls. A player reported it as `Step-In Uppercut` reading `Slep-In Uppercul` — and because the sample point moves with the glyph's position, the same letter survived in one word and not the next, which made the line look unevenly spaced as well as misread.\n\nNeither workaround was worth having: baking nearer the drawn size blurs the headings, because one atlas cannot serve the 8x range between body copy and a display size, and a second atlas for small text doubles the pages and the uploads and moves a sampling decision into the game where it has to be re-tuned whenever a size changes.\n\n**Measured rather than asserted.** `demo/dev/glyphMip.ts` draws one glyph twelve times at deliberately different subpixel offsets, through a plain sampler and through a chain, because the reported symptom is not missing ink but *inconsistent* ink — a build that samples well by luck passes an ink threshold and fails this. The copies' ink has a standard deviation of **0.0130** plain and **0.0020** mipmapped: **6.6x less** disagreement, and the two backends land on the same number to four decimal places. `scripts/glyph-mip-check.mjs` is that measurement as a gate, and it reddens with four failures when the chain is disabled.\n\nWith `filter: 'linear'` this is trilinear; with `filter: 'nearest'` the levels are still blended, because that is minification and `filter` is about magnification, which is the split `SurfaceTexture` already makes. Padding cells against bleed stays the caller's problem, since how much depends on how far down the sheet is ever sampled.\n\n**WebGPU has no `generateMipmap`**, so `generateMipChain` and `mipLevelCount` are public now: the per-level blit that `SurfaceTexture` has always carried is a free function rather than a private method, and `ui2d` calls it. Writing the blit a second time there would have been a second shader to keep in step, and the copy that quietly disagrees about the colour space is the one that ships. It is the first runtime import `ui2d` takes from the engine and it was measured before it was taken: bundled alone, **11,777 against 11,163 gzipped bytes**, so 614 for the blit and its shader."
+      }
+    ]
+  },
+  {
     "version": "3.62.0",
     "date": "2026-09-13",
     "entries": [
