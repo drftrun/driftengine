@@ -817,8 +817,14 @@ export const FLOORS = {
    * measurement and the gate stayed green at 3,395 over a package that had grown by half. A size
    * fixture measures what it imports, which is the same trap as a scope nobody re-reads: adding
    * public surface means adding it to the fixture, or the floor guards the old package forever.
+   *
+   * **5,391 from 4.1.1**, of which 286 is the two adapters: an entity world as something the
+   * inspector can read, and a lockstep session as something the network panel can. Both are the
+   * same forwarding every consumer with a world or a session was about to write, and both are
+   * typed structurally, so the package still depends on nothing new. Named in the fixture in the
+   * same commit, which is the whole point of the paragraph above it.
    */
-  'tools-only': 5105,
+  'tools-only': 5391,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional

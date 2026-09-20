@@ -68,6 +68,60 @@ export function cityCapacity(reach: number): StreamCapacity {
   };
 }
 
+/**
+ * The reaches this scene will step down through, largest first.
+ *
+ * A ladder rather than arithmetic because the capacity is a step function of the reach: blocks come
+ * in whole rows and columns, so between two rungs nothing changes and solving for a reach would
+ * land between them and mean the same city.
+ */
+const REACH_LADDER = [900, 700, 600, 500, 450, 350, 300, 250, 200] as const;
+
+/**
+ * Room to leave under the device's ceiling.
+ *
+ * The vertex buffer is the largest of the pipeline's storage bindings and it is not the only one,
+ * so filling the limit exactly would refuse on the next binding instead of this one.
+ */
+const BINDING_FIT = 0.8;
+
+/** What a reach costs as one storage binding, which is what a device actually refuses. */
+export function cityVertexBytes(reach: number, bytesPerVertex: number): number {
+  return cityCapacity(reach).vertices * bytesPerVertex;
+}
+
+/**
+ * The largest reach this adapter can bind, which on a phone is not the one the desktop gets.
+ *
+ * **Reported from a Galaxy S23 Ultra: the scene asked for 152,314,560 bytes and the device binds
+ * 134,217,728.** That is 128 MiB, the WebGPU default, and it is what most handhelds offer against
+ * the several gigabytes a desktop adapter does. The engine was already asking the adapter for its
+ * ceiling rather than taking the default, so there was nothing to raise: the scene was simply
+ * larger than the part could hold, and every phone got a blank frame and a refusal in the console.
+ *
+ * **`budget` could not have fixed this on its own.** This scene ignored the one it was handed, and
+ * it would not have helped if it had: the demos page passes `full` to every device and only a
+ * `?budget=` in the address says otherwise, so a phone never asked for less. Sizing against the
+ * limit the device reports needs no coordination with whoever is mounting the scene.
+ *
+ * A fresh adapter, because the one `createRenderer` used was consumed by the device it created.
+ * Where there is nothing to ask, the asked-for reach stands and the pipeline refuses as before.
+ */
+/**
+ * The largest reach on the ladder this ceiling can bind, never larger than the one asked for.
+ *
+ * Pure, and separated from the adapter that supplies the ceiling, because the arithmetic is the
+ * part worth asserting and a device is the part a test cannot have.
+ */
+export function reachForCeiling(asked: number, ceiling: number, bytesPerVertex: number): number {
+  const room = ceiling * BINDING_FIT;
+  if (cityVertexBytes(asked, bytesPerVertex) <= room) return asked;
+  for (const rung of REACH_LADDER) {
+    if (rung <= asked && cityVertexBytes(rung, bytesPerVertex) <= room) return rung;
+  }
+  return REACH_LADDER[REACH_LADDER.length - 1];
+}
+
 function keyOf(bx: number, bz: number): string {
   return `${bx},${bz}`;
 }

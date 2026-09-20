@@ -4,7 +4,7 @@ The editor's panels, as something a shipped game can carry: an inspector, a cons
 a network panel, with the command stack that makes their edits undoable, and the overlay that puts
 them on screen on a key.
 
-**5,105 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**5,391 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/tools-only.ts`. Optional — nothing in `@driftengine/core` imports it, so a
 game that never asks for these pays nothing.
 
@@ -76,6 +76,28 @@ if (overlay.route(keyEvent(event.key, event.shiftKey, event.ctrlKey))) event.pre
 
 While it is closed `frame` returns before it builds anything and `route` refuses every event but the
 one that opens it, so a game that never presses the key pays for a boolean.
+
+## Two adapters, because every consumer was about to write the same ones
+
+A panel needs its world in the shape the panel reads. Two of those shapes are the same in every
+game that has the thing behind them, so they are here rather than in each of them.
+
+`entitiesInspectable(world, types)` turns an entity world into an `InspectableWorld`: the inspector
+addresses a component by name because that is what a row carries, and a world addresses it by the
+type object because that is what indexes its stores. A name with no type behind it does nothing
+rather than guessing, so a row built from a stale schema cannot write a field into a component the
+world does not have and report success.
+
+`createSessionRecorder` plus `observeSession` and `sessionReadout` turn a lockstep session into a
+`NetworkReadout`. The watching is the part worth having written once: `session.desync` is **latched
+rather than an event**, so it keeps answering with the same disagreement every frame until the next
+one arrives, and a recorder that appended what it read would turn one divergence into sixty a
+second. `snapshotBytes` is the caller's, because `RewindLoop` is generic over the state it
+snapshots and cannot know the size of one.
+
+**Both are typed structurally**, the way `@driftengine/drft` takes DTEX types that
+`@driftengine/texture` satisfies, so this package depends on nothing new and anything shaped right
+can be read — including a consumer whose state is not an entity world at all.
 
 ## Building it in or leaving it out
 

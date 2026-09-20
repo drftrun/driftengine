@@ -7,6 +7,7 @@ import {
   createInspectorView,
   inspectorPanel,
   removeComponentCommand,
+  entitiesInspectable,
   setFieldCommand,
   type InspectableWorld,
 } from './inspector.ts';
@@ -311,5 +312,102 @@ describe('the inspector panel', () => {
     const view = createInspectorView({ selection });
     inspectorPanel.build({ world }, view, view.root);
     expect(view.root.children[0]?.text).toContain('—');
+  });
+});
+
+/*
+ * **The adapter exists because every ECS consumer was about to write it.** `InspectableWorld`
+ * addresses a component by name and `@driftengine/entities`' `World` addresses it by the type
+ * object, and bridging the two is seven forwarding methods and a name lookup — the same seven in
+ * every game that has a world. It is typed structurally rather than by importing `entities`, the
+ * way `@driftengine/drft` takes DTEX types that `@driftengine/texture` satisfies, so this package
+ * gains no dependency and the version count does not move.
+ */
+describe('an entity world, as something the inspector can read', () => {
+  const Health = {
+    name: 'Health',
+    schema: {
+      name: 'Health',
+      fields: [
+        { id: 'g::Health::current', name: 'current', type: 'f32' },
+        { id: 'g::Health::max', name: 'max', type: 'f32' },
+      ],
+    },
+  };
+  const Mesh = {
+    name: 'Mesh',
+    schema: { name: 'Mesh', fields: [{ id: 'g::Mesh::id', name: 'id', type: 'u32' }] },
+  };
+
+  /** Stands in for `World`, with the five methods the adapter forwards to. */
+  function world() {
+    const held = new Map<string, Map<string, unknown>>();
+    const key = (entity: number, type: { name: string }): string => `${entity}/${type.name}`;
+    return {
+      calls: [] as string[],
+      has(entity: number, type: { name: string }): boolean {
+        return held.has(key(entity, type));
+      },
+      add(entity: number, type: { name: string }): void {
+        held.set(key(entity, type), new Map());
+      },
+      remove(entity: number, type: { name: string }): boolean {
+        return held.delete(key(entity, type));
+      },
+      read(entity: number, type: { name: string }, field: string): unknown {
+        return held.get(key(entity, type))?.get(field);
+      },
+      write(entity: number, type: { name: string }, field: string, value: unknown): void {
+        held.get(key(entity, type))?.set(field, value);
+      },
+    };
+  }
+
+  it('reports only the components an entity actually carries', () => {
+    const w = world();
+    const view = entitiesInspectable(w, [Health, Mesh]);
+    expect(view.componentsOf(1)).toEqual([]);
+    w.add(1, Health);
+    expect(view.componentsOf(1)).toEqual(['Health']);
+    w.add(1, Mesh);
+    expect(view.componentsOf(1)).toEqual(['Health', 'Mesh']);
+  });
+
+  it('answers a schema by name, and nothing for a name it was not given', () => {
+    const view = entitiesInspectable(world(), [Health, Mesh]);
+    expect(view.schemaOf('Health').map((field) => field.name)).toEqual(['current', 'max']);
+    expect(view.schemaOf('Nothing')).toEqual([]);
+  });
+
+  it('reads and writes a field through the world rather than around it', () => {
+    const w = world();
+    const view = entitiesInspectable(w, [Health]);
+    view.addComponent(3, 'Health');
+    view.write(3, 'Health', 'current', 42);
+    expect(view.read(3, 'Health', 'current')).toBe(42);
+    expect(w.read(3, Health, 'current')).toBe(42);
+  });
+
+  /*
+   * **A name the world has no type for is refused rather than guessed.** The inspector reaches a
+   * component by a string that came off a row, and a row built from a stale schema would otherwise
+   * write a field into nothing and report success.
+   */
+  it('does nothing for a component it has no type for, rather than pretending', () => {
+    const w = world();
+    const view = entitiesInspectable(w, [Health]);
+    view.addComponent(4, 'Ghost');
+    expect(view.hasComponent(4, 'Ghost')).toBe(false);
+    expect(view.read(4, 'Ghost', 'anything')).toBe(undefined);
+    expect(() => view.write(4, 'Ghost', 'anything', 1)).not.toThrow();
+  });
+
+  it('adds and removes a component the world knows', () => {
+    const view = entitiesInspectable(world(), [Health]);
+    expect(view.hasComponent(5, 'Health')).toBe(false);
+    view.addComponent(5, 'Health');
+    expect(view.hasComponent(5, 'Health')).toBe(true);
+    view.removeComponent(5, 'Health');
+    expect(view.hasComponent(5, 'Health')).toBe(false);
   });
 });

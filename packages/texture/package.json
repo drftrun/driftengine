@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/texture",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "DriftTexture: a texture as a compiled, sampled field rather than an image",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,7 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/core": "4.1.0"
+    "@driftengine/core": "4.1.1"
   },
   "author": "Drift Technologies",
   "repository": {

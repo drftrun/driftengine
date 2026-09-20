@@ -20,10 +20,11 @@ import {
   createEnvironment,
   createFogTarget,
   createRenderer,
+  VERTEX_FLOATS,
 } from '../packages/core/src/index';
 
 import type { GpuDrivenView, RenderQualityOptions, SkyColors } from '../packages/core/src/index';
-import { CITY_SEED, CityStream } from './city/cityStream';
+import { CITY_SEED, CityStream, reachForCeiling } from './city/cityStream';
 import { FLIGHT_SPEED, flightAt, flightLook } from './city/flight';
 import { cityPalette } from './city/palette';
 import type { DemoBudget, DemoHandle, DemoScene, DemoStats } from './types';
@@ -146,6 +147,19 @@ function reachAsked(search: string): number {
   return Number.isFinite(asked) && asked >= 100 && asked <= 2000 ? asked : REACH;
 }
 
+async function reachThatBinds(asked: number): Promise<number> {
+  const gpu = (
+    navigator as {
+      gpu?: { requestAdapter(): Promise<{ limits: Record<string, number> } | null> };
+    }
+  ).gpu;
+  if (gpu === undefined) return asked;
+  const adapter = await gpu.requestAdapter().catch(() => null);
+  const ceiling = adapter?.limits.maxStorageBufferBindingSize;
+  if (typeof ceiling !== 'number' || ceiling <= 0) return asked;
+  return reachForCeiling(asked, ceiling, VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT);
+}
+
 async function mountCity(
   canvas: HTMLCanvasElement,
   overrides: RenderQualityOptions,
@@ -160,7 +174,11 @@ async function mountCity(
   );
   await renderer.ready();
 
-  const stream = new CityStream(CITY_SEED, reachAsked(location.search));
+  /*
+   * Sized to what this device can bind rather than to what the desktop gets. See `reachThatBinds`:
+   * a phone offers the 128 MiB WebGPU default and this scene asks for more at its full reach.
+   */
+  const stream = new CityStream(CITY_SEED, await reachThatBinds(reachAsked(location.search)));
   /*
    * **The flight unless a still camera is asked for.** `?eye=` holds the camera where it says and
    * looks at `?target=`; without it the camera flies `flight.ts`'s loop from `?at=` seconds,

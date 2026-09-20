@@ -183,3 +183,71 @@ export const networkPanel: Panel<NetworkWorld, NetworkView> = {
     return null;
   },
 };
+
+/**
+ * A session, as this package needs it.
+ *
+ * Structural rather than imported, so nothing here loads `@driftengine/network` at run time and a
+ * consumer whose session is its own shape can still be read.
+ */
+export interface SessionLike {
+  readonly participants: number;
+  readonly inputDelay: number;
+  /** The disagreement the session is currently holding, or null. Latched, not an event. */
+  readonly desync: Desync | null;
+  readonly loop: { readonly depth: number };
+}
+
+/** What a recorder keeps: the disagreements it has seen, oldest first. */
+export interface SessionRecorder {
+  readonly desyncs: Desync[];
+  readonly limit: number;
+}
+
+export function createSessionRecorder(limit = 32): SessionRecorder {
+  return { desyncs: [], limit: Math.max(1, limit) };
+}
+
+/**
+ * Watch a session for one frame.
+ *
+ * **`desync` is latched rather than an event**, which is the whole reason this is not one line at
+ * the call site. A session keeps answering with the same disagreement on every frame until the
+ * next one arrives, so appending what it reads turns one divergence into sixty a second and buries
+ * the tick somebody is looking for under copies of itself. A disagreement is new when its tick and
+ * peer differ from the last one kept.
+ *
+ * Bounded, because a session that desyncs every tick would otherwise grow an array forever behind
+ * a panel nobody has open.
+ */
+export function observeSession(recorder: SessionRecorder, session: SessionLike): void {
+  const seen = session.desync;
+  if (seen === null) return;
+  const last = recorder.desyncs[recorder.desyncs.length - 1];
+  if (last !== undefined && last.tick === seen.tick && last.peer === seen.peer) return;
+  recorder.desyncs.push(seen);
+  if (recorder.desyncs.length > recorder.limit) recorder.desyncs.shift();
+}
+
+/**
+ * The session and what has been seen of it, as the panel's readout.
+ *
+ * **`snapshotBytes` is the caller's, because the engine cannot know it.** `RewindLoop` is generic
+ * over the state it snapshots, so its depth is knowable here and the size of one is not. A caller
+ * passing zero is saying it has not measured, which the panel renders as such.
+ */
+export function sessionReadout(
+  session: SessionLike,
+  recorder: SessionRecorder,
+  snapshotBytes: number,
+  componentHashes: NetworkReadout['componentHashes'] = null,
+): NetworkReadout {
+  return {
+    inputDelay: session.inputDelay,
+    participants: session.participants,
+    snapshotBytes,
+    snapshotCount: session.loop.depth,
+    desyncs: recorder.desyncs,
+    componentHashes,
+  };
+}

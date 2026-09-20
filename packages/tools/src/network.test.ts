@@ -9,6 +9,9 @@ import {
   pushRollback,
   rollbackValues,
   type NetworkReadout,
+  createSessionRecorder,
+  observeSession,
+  sessionReadout,
 } from './network.ts';
 
 function readout(over: Partial<NetworkReadout> = {}): NetworkReadout {
@@ -187,5 +190,71 @@ describe('which component differs', () => {
     networkPanel.build({ session }, view, view.root);
     const text = view.root.children.map((child) => child.text).join('\n');
     expect(text).toContain('no per-component hashes');
+  });
+});
+
+/*
+ * **The readout exists because a session does not hand one over.** `LockstepSession` carries the
+ * participants, the input delay and the *current* desync, and the panel wants the history — so
+ * somebody has to watch the session and keep what it saw. That watcher is the same in every
+ * consumer with a session, which is why it is here rather than in each of them.
+ *
+ * Typed structurally, so this needs nothing from `@driftengine/network` at run time.
+ */
+describe('a lockstep session, as something the network panel can read', () => {
+  const session = (over: Partial<Record<string, unknown>> = {}) => ({
+    participants: 2,
+    inputDelay: 3,
+    desync: null as { tick: number; peer: number; ours: string; theirs: string } | null,
+    loop: { depth: 12 },
+    ...over,
+  });
+
+  it('carries what the session knows and the snapshot size the caller does', () => {
+    const readout = sessionReadout(session(), createSessionRecorder(), 1216);
+    expect(readout.participants).toBe(2);
+    expect(readout.inputDelay).toBe(3);
+    expect(readout.snapshotCount).toBe(12);
+    expect(readout.snapshotBytes).toBe(1216);
+    expect(readout.desyncs).toEqual([]);
+    /* Absent rather than empty: nobody hashed per component here. */
+    expect(readout.componentHashes).toBe(null);
+  });
+
+  /*
+   * **`desync` is latched, not an event.** It keeps answering with the same disagreement every
+   * frame until the next one, so a recorder that appended what it read would turn one divergence
+   * into sixty a second and the panel would show a wall of the same tick.
+   */
+  it('records one disagreement once, however often it is observed', () => {
+    const recorder = createSessionRecorder();
+    const live = session({ desync: { tick: 40, peer: 1, ours: 'aaaa', theirs: 'bbbb' } });
+    for (let frame = 0; frame < 5; frame += 1) observeSession(recorder, live);
+    expect(sessionReadout(live, recorder, 0).desyncs).toHaveLength(1);
+  });
+
+  it('appends a later disagreement rather than replacing the first', () => {
+    const recorder = createSessionRecorder();
+    const live = session({ desync: { tick: 40, peer: 1, ours: 'aaaa', theirs: 'bbbb' } });
+    observeSession(recorder, live);
+    live.desync = { tick: 91, peer: 1, ours: 'cccc', theirs: 'dddd' };
+    observeSession(recorder, live);
+    expect(sessionReadout(live, recorder, 0).desyncs.map((d) => d.tick)).toEqual([40, 91]);
+  });
+
+  it('keeps the newest and drops the oldest past its limit', () => {
+    const recorder = createSessionRecorder(2);
+    const live = session();
+    for (const tick of [1, 2, 3]) {
+      live.desync = { tick, peer: 1, ours: 'a', theirs: 'b' };
+      observeSession(recorder, live);
+    }
+    expect(sessionReadout(live, recorder, 0).desyncs.map((d) => d.tick)).toEqual([2, 3]);
+  });
+
+  it('passes a per-component breakdown through where the caller has one', () => {
+    const hashes = { ours: new Map([['Health', 'aa']]), theirs: new Map([['Health', 'bb']]) };
+    const readout = sessionReadout(session(), createSessionRecorder(), 0, hashes);
+    expect(readout.componentHashes?.ours.get('Health')).toBe('aa');
   });
 });

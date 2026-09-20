@@ -58,10 +58,12 @@ export type {
   InspectorWorld,
   RowKind,
 } from './inspector.ts';
+export type { EntityWorldLike, InspectableComponentType } from './inspector.ts';
 export {
   MIXED,
   addComponentCommand,
   createInspectorView,
+  entitiesInspectable,
   fieldEditable,
   inspectorPanel,
   inspectorRows,
@@ -107,13 +109,17 @@ export {
 } from './profiler.ts';
 
 export type { NetworkReadout, NetworkView, NetworkWorld, RollbackHistory } from './network.ts';
+export type { SessionLike, SessionRecorder } from './network.ts';
 export {
   componentDivergence,
   createNetworkView,
   createRollbackHistory,
+  createSessionRecorder,
   networkPanel,
+  observeSession,
   pushRollback,
   rollbackValues,
+  sessionReadout,
 } from './network.ts';
 
 /*

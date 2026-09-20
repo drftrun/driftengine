@@ -8,12 +8,16 @@
  */
 import {
   consolePanel,
+  createSessionRecorder,
   createToolsOverlay,
   createUndoStack,
+  entitiesInspectable,
   inspectorPanel,
   networkPanel,
+  observeSession,
   paintOverlay,
   profilerPanel,
+  sessionReadout,
 } from '@driftengine/tools';
 export const entry = [
   inspectorPanel,
@@ -23,4 +27,8 @@ export const entry = [
   createUndoStack,
   createToolsOverlay,
   paintOverlay,
+  entitiesInspectable,
+  createSessionRecorder,
+  observeSession,
+  sessionReadout,
 ];

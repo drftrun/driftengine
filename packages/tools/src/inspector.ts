@@ -348,3 +348,80 @@ export const inspectorPanel: Panel<InspectorWorld, InspectorView> = {
     return null;
   },
 };
+
+/**
+ * The shape of a component type, as this package needs it.
+ *
+ * **Structural rather than imported.** `@driftengine/entities`' `ComponentType` satisfies it, and
+ * so does anything else a consumer describes its state with — which is the arrangement
+ * `@driftengine/drft` already has with `@driftengine/texture`'s DTEX types across a boundary the
+ * one package must not depend across. This package gains no dependency for the adapter below, so
+ * the release's place count does not move.
+ */
+export interface InspectableComponentType {
+  readonly name: string;
+  readonly schema: { readonly fields: readonly { readonly name: string; readonly type: string }[] };
+}
+
+/** The five methods the adapter forwards to. `World` has all of them. */
+export interface EntityWorldLike<T> {
+  has(entity: number, type: T): boolean;
+  add(entity: number, type: T): void;
+  remove(entity: number, type: T): boolean;
+  read(entity: number, type: T, field: string): unknown;
+  write(entity: number, type: T, field: string, value: unknown): void;
+}
+
+/**
+ * An entity world, as something the inspector can read and edit.
+ *
+ * **Written once here because every consumer with a world was about to write it.** The inspector
+ * addresses a component by name, since a name is what a row carries; a world addresses it by the
+ * type object, since that is what indexes its stores. Bridging the two is seven forwarding methods
+ * and a lookup, identical wherever it is written.
+ *
+ * **A name with no type behind it does nothing rather than guessing.** A row built against a stale
+ * schema would otherwise write a field into a component the world does not have and report
+ * success, which is a silent loss of the edit a person just made and watched apply.
+ *
+ * `componentsOf` answers in the order the types were given, so a panel's rows do not reorder
+ * between frames.
+ */
+export function entitiesInspectable<T extends InspectableComponentType>(
+  world: EntityWorldLike<T>,
+  types: readonly T[],
+): InspectableWorld {
+  const byName = new Map<string, T>();
+  for (const type of types) byName.set(type.name, type);
+
+  return {
+    componentsOf(entity: number): readonly string[] {
+      const out: string[] = [];
+      for (const type of types) if (world.has(entity, type)) out.push(type.name);
+      return out;
+    },
+    schemaOf(component: string): readonly { readonly name: string; readonly type: string }[] {
+      return byName.get(component)?.schema.fields ?? [];
+    },
+    read(entity: number, component: string, field: string): unknown {
+      const type = byName.get(component);
+      return type === undefined ? undefined : world.read(entity, type, field);
+    },
+    write(entity: number, component: string, field: string, value: unknown): void {
+      const type = byName.get(component);
+      if (type !== undefined) world.write(entity, type, field, value);
+    },
+    hasComponent(entity: number, component: string): boolean {
+      const type = byName.get(component);
+      return type !== undefined && world.has(entity, type);
+    },
+    addComponent(entity: number, component: string): void {
+      const type = byName.get(component);
+      if (type !== undefined) world.add(entity, type);
+    },
+    removeComponent(entity: number, component: string): void {
+      const type = byName.get(component);
+      if (type !== undefined) world.remove(entity, type);
+    },
+  };
+}

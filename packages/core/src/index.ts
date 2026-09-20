@@ -238,6 +238,14 @@ export {
   GPU_DRIVEN_LISTS,
   GpuDrivenPass,
   MATERIAL_FLOATS,
+  /*
+   * **The vertex stride, because a consumer sizing a streaming scene has to know it.** A
+   * `StreamCapacity` is counts, and what a device refuses is bytes: the pipeline binds the whole
+   * vertex buffer as one storage binding, so whether a capacity fits is `vertices * VERTEX_FLOATS
+   * * 4` against `maxStorageBufferBindingSize`. Without this a consumer either hard-codes 48 or
+   * finds out by being refused, and the published city scene did the second on every phone.
+   */
+  VERTEX_FLOATS,
 } from './render/backend/webgpu/gpuDrivenPass.ts';
 export type {
   GpuDrivenList,

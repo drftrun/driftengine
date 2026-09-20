@@ -1,7 +1,14 @@
-import { expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 
 import { clustered } from '../gpuDrivenRig';
-import { CITY_SEED, CITY_WORST, CityStream, cityCapacity } from './cityStream';
+import {
+  CITY_SEED,
+  CITY_WORST,
+  CityStream,
+  cityCapacity,
+  cityVertexBytes,
+  reachForCeiling,
+} from './cityStream';
 import {
   CITY_COLS,
   CITY_ROWS,
@@ -144,4 +151,39 @@ test('A BLOCK THAT DOES NOT FIT IS REFUSED WHOLE, counted, and leaves nothing be
   expect(stream.count).toBe(1);
   expect(stream.scene.freeVertices).toBe(before);
   expect(stream.scene.liveClusters).toBe(first.reduce((sum, mesh) => sum + mesh.clusters.count, 0));
+});
+
+/*
+ * **Reported from a Galaxy S23 Ultra, on the published site over HTTPS.** The scene asked for
+ * 152,314,560 bytes as one storage binding and the device binds 134,217,728 — 128 MiB, the WebGPU
+ * default, which is what most handhelds offer against the several gigabytes a desktop adapter
+ * does. The engine was already asking the adapter for its ceiling rather than taking the default,
+ * so there was nothing to raise: the city was simply larger than the part could hold, and every
+ * phone got a blank frame with the refusal in a console nobody had open.
+ */
+describe('the reach a device can actually bind', () => {
+  const PHONE = 134_217_728;
+  const DESKTOP = 4 * 1024 * 1024 * 1024;
+  const PER_VERTEX = 48;
+
+  test('costs more than a phone can bind at the published reach', () => {
+    expect(cityVertexBytes(900, PER_VERTEX)).toBe(152_314_560);
+    expect(cityVertexBytes(900, PER_VERTEX)).toBeGreaterThan(PHONE);
+  });
+
+  test('leaves a desktop the reach it asked for', () => {
+    expect(reachForCeiling(900, DESKTOP, PER_VERTEX)).toBe(900);
+  });
+
+  test('steps a phone down to something it can bind, with room under the ceiling', () => {
+    const reach = reachForCeiling(900, PHONE, PER_VERTEX);
+    expect(reach).toBeLessThan(900);
+    expect(cityVertexBytes(reach, PER_VERTEX)).toBeLessThanOrEqual(PHONE * 0.8);
+  });
+
+  /* A smaller reach asked for is a decision, so it is never raised to fill the room available. */
+  test('never hands back more than it was asked for', () => {
+    expect(reachForCeiling(300, DESKTOP, PER_VERTEX)).toBe(300);
+    expect(reachForCeiling(250, PHONE, PER_VERTEX)).toBe(250);
+  });
 });
