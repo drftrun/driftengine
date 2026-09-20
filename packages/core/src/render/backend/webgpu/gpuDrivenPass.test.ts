@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { DEPTH_COMPARE_EQUAL } from '../../depthConvention.ts';
 import { CULL_CONES, CULL_SETTINGS_FLOATS } from '../../shaders/gpudriven/cull.wgsl.ts';
@@ -138,6 +138,14 @@ function recordingDevice() {
     }),
     createComputePipeline: pipeline,
     createRenderPipeline: pipeline,
+    /*
+     * **The scopes the blend pipeline is built in.** A real device reports a refused pipeline
+     * asynchronously rather than throwing, so the pass opens a scope round it and disowns the
+     * handle where one comes back. `refuse` is what a test sets to be that device.
+     */
+    refuse: null as { message: string } | null,
+    pushErrorScope: () => undefined,
+    popErrorScope: (): Promise<{ message: string } | null> => Promise.resolve(device.refuse),
     createBindGroup: (descriptor: GPUBindGroupDescriptor): StubGroup => ({
       label: descriptor.label ?? '',
       entries: [...descriptor.entries],
@@ -1886,4 +1894,81 @@ test('AND THE GLASS IS CULLED WITHOUT THE PYRAMID TOO, which reads phase two\u20
   };
   expect(culled(true)).toBe(1);
   expect(culled(false)).toBe(0);
+});
+
+/*
+ * **Reported from a Galaxy S23 Ultra, on the published site.** `CreateGraphicsPipelines failed
+ * with VK_ERROR_UNKNOWN` for `gpu-driven blend`, and then four more errors that were all the same
+ * one: an invalid pipeline makes an invalid bind group, which makes an invalid encoder, which makes
+ * an invalid command buffer. The city drew nothing on a device that could have drawn all of it but
+ * the glass.
+ *
+ * `createRenderPipeline` does not throw where a driver refuses — it hands back an invalid handle
+ * and reports asynchronously — so the refusal is learned from an error scope and the handle is
+ * disowned.
+ */
+async function framesWithBlend(refuse: { message: string } | null) {
+  const { device, encoder, commands } = recordingDevice();
+  /* The stub's own field, which `PassDevice` knows nothing about. See `recordingDevice`. */
+  (device as unknown as { refuse: { message: string } | null }).refuse = refuse;
+  const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), [
+    { tint: [1, 1, 1], emissive: 0 },
+  ]);
+  pass.init({
+    backend: 'webgpu',
+    device,
+    format: 'rgba8unorm',
+    depthFormat: 'depth32float',
+    samples: 1,
+    clipCorrection: IDENTITY,
+    depthCorrection: IDENTITY,
+    reconstruction: false,
+  });
+  /* The scopes settle on a microtask, which is the whole reason this is asynchronous. */
+  await Promise.resolve();
+  await Promise.resolve();
+  pass.resize(100, 40);
+  pass.setView(VIEW);
+  pass.prepare({
+    backend: 'webgpu',
+    encoder,
+    environment: null,
+    distanceField: null,
+    jitter: NO_JITTER,
+  });
+  return frameText(commands);
+}
+
+describe('a device that refuses the blend pipeline', () => {
+  /*
+   * **The assertion is the warning and the frame, not the absence of a blend draw.** The first
+   * version of this checked that no transparent draw was encoded, and it could not have failed:
+   * the one-triangle fixture carries nothing transparent, so that draw is absent either way and
+   * the check passed over an unfixed pass. What is observable here is that the refusal is said
+   * once in the device's own words, and that everything else still encodes.
+   */
+  test('says so once, in the words the device used', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const frame = await framesWithBlend({ message: 'VK_ERROR_UNKNOWN' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('VK_ERROR_UNKNOWN');
+      expect(String(warn.mock.calls[0]?.[0])).toContain('opaque');
+      /* And the frame is still a frame. This is the whole point: the glass, not the city. */
+      expect(frame.length).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('says nothing where the device accepts it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const frame = await framesWithBlend(null);
+      expect(warn).not.toHaveBeenCalled();
+      expect(frame.length).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

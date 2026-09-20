@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/script",
-  "version": "4.1.1",
+  "version": "4.1.2",
   "description": "The drift/* capability bindings: what this engine provides to DriftScript, and the only place the two are coupled",
   "license": "Apache-2.0",
   "type": "module",
@@ -31,17 +31,17 @@
     "driftscript": "1.13.0"
   },
   "peerDependencies": {
-    "@driftengine/ai": "4.1.1",
-    "@driftengine/animation": "4.1.1",
-    "@driftengine/audio": "4.1.1",
-    "@driftengine/chemistry": "4.1.1",
-    "@driftengine/core": "4.1.1",
-    "@driftengine/editor": "4.1.1",
-    "@driftengine/entities": "4.1.1",
-    "@driftengine/network": "4.1.1",
-    "@driftengine/terrain": "4.1.1",
-    "@driftengine/ui2d": "4.1.1",
-    "@driftengine/xr": "4.1.1"
+    "@driftengine/ai": "4.1.2",
+    "@driftengine/animation": "4.1.2",
+    "@driftengine/audio": "4.1.2",
+    "@driftengine/chemistry": "4.1.2",
+    "@driftengine/core": "4.1.2",
+    "@driftengine/editor": "4.1.2",
+    "@driftengine/entities": "4.1.2",
+    "@driftengine/network": "4.1.2",
+    "@driftengine/terrain": "4.1.2",
+    "@driftengine/ui2d": "4.1.2",
+    "@driftengine/xr": "4.1.2"
   },
   "author": "Drift Technologies",
   "repository": {

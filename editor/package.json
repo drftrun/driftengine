@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/editor-app",
-  "version": "4.1.1",
+  "version": "4.1.2",
   "private": true,
   "description": "The editor: a product on the engine's public surface, deliberately not a package",
   "license": "Apache-2.0",
@@ -9,14 +9,14 @@
     "driftscript": "1.13.0"
   },
   "dependencies": {
-    "@driftengine/capture": "4.1.1",
-    "@driftengine/core": "4.1.1",
-    "@driftengine/drft": "4.1.1",
-    "@driftengine/editor": "4.1.1",
-    "@driftengine/entities": "4.1.1",
-    "@driftengine/network": "4.1.1",
-    "@driftengine/texture": "4.1.1",
-    "@driftengine/tools": "4.1.1",
-    "@driftengine/ui2d": "4.1.1"
+    "@driftengine/capture": "4.1.2",
+    "@driftengine/core": "4.1.2",
+    "@driftengine/drft": "4.1.2",
+    "@driftengine/editor": "4.1.2",
+    "@driftengine/entities": "4.1.2",
+    "@driftengine/network": "4.1.2",
+    "@driftengine/texture": "4.1.2",
+    "@driftengine/tools": "4.1.2",
+    "@driftengine/ui2d": "4.1.2"
   }
 }
