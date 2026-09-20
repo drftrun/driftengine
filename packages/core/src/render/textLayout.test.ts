@@ -5,6 +5,7 @@ import {
   TEXT_CUBE,
   TextLayout,
   deviceSnappedCellSize,
+  deviceSnappedOrigin,
   textHeightPx,
   textWidthPx,
 } from './textLayout.ts';
@@ -169,4 +170,38 @@ test('A SUB-PIXEL CELL AND A DEGENERATE RATIO PASS THROUGH UNCHANGED', () => {
   expect(deviceSnappedCellSize(4, 0, 1280)).toBe(4);
   expect(deviceSnappedCellSize(4, 1280, 0)).toBe(4);
   expect(deviceSnappedCellSize(4, 1280, Number.NaN)).toBe(4);
+});
+
+/**
+ * **THE GRID'S PHASE, WHICH IS THE OTHER HALF OF THE SAME DEFECT.**
+ *
+ * The cell snap above fixes how far apart the boundaries are. It does nothing about where the
+ * first one falls, and a whole pitch starting at a fractional device pixel puts every boundary at
+ * the same fraction — so each stroke still covers whole pixels and two halves, and the face is as
+ * ragged as it was. The first fix shipped and the reporter said the text was still wrong.
+ *
+ * Nearest rather than down, which is the opposite of the cell and for the opposite reason: this is
+ * a position. Moving a label at most half a device pixel puts its grid on the display's, where
+ * flooring would shift every label the same way and pull a centred one off centre.
+ */
+test('AN ORIGIN LANDS ON A WHOLE DEVICE PIXEL, so a whole cell starts where one begins', () => {
+  for (const ratio of [1, 1.25, 1.5, 2, 2.5, 3]) {
+    for (const asked of [0, 10.4, 17.5, 33.333, 100.9, -12.7]) {
+      const snapped = deviceSnappedOrigin(asked, 1280, 1280 * ratio);
+      const device = snapped * ratio;
+      expect(
+        Math.abs(device - Math.round(device)),
+        `origin ${asked} at ratio ${ratio} starts at ${device} device pixels`,
+      ).toBeLessThan(1e-6);
+      /* Nearest: it never moves a label by as much as a whole device pixel. */
+      expect(Math.abs(snapped - asked)).toBeLessThanOrEqual(0.5 / ratio + 1e-9);
+    }
+  }
+});
+
+/** A degenerate viewport or buffer answers the caller's own number, as the cell snap does. */
+test('A DEGENERATE RATIO LEAVES AN ORIGIN ALONE', () => {
+  expect(deviceSnappedOrigin(10.4, 0, 1280)).toBe(10.4);
+  expect(deviceSnappedOrigin(10.4, 1280, 0)).toBe(10.4);
+  expect(deviceSnappedOrigin(10.4, 1280, Number.NaN)).toBe(10.4);
 });

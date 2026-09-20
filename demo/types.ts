@@ -91,6 +91,20 @@ export interface DemoHandle {
    */
   readonly lost?: boolean;
   /**
+   * Why this scene is drawing nothing, where a device refused a pipeline it needs.
+   *
+   * **The same shape as `lost` above and for the same reason, one cause along.** A driver that
+   * accepts the backend and then refuses to compile a particular pipeline reports it
+   * asynchronously, long after `createRenderer` has decided the backend can run the scene at all,
+   * so there is no earlier place to throw and nothing for a host to catch. What a host sees is a
+   * black rectangle at a healthy frame rate — which is how this arrived, twice, from two handsets,
+   * described both times as the scene not loading.
+   *
+   * Optional, so a handle written before this existed still satisfies the contract, and absent
+   * means "cannot say" rather than "fine".
+   */
+  readonly refused?: string;
+  /**
    * Release every GPU resource this scene created.
    *
    * Called on unmount and on context loss. It has to be safe to call twice: a

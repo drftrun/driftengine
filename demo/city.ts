@@ -242,6 +242,15 @@ async function mountCity(
 
   return {
     backend,
+    /*
+     * **Read every time rather than latched, because the answer arrives after the mount.** The
+     * device settles its error scopes on a microtask or two, so a host asking once at mount asks
+     * before there is anything to say. Absent until the pass has been refused, which is what
+     * `DemoHandle.refused` means by "cannot say".
+     */
+    get refused(): string | undefined {
+      return pass.refusedBecause() ?? undefined;
+    },
     frame(dtSec: number): DemoStats {
       if (disposed || renderer.contextLost) return stats;
       if (still === null) {

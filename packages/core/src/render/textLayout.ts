@@ -124,6 +124,40 @@ export function deviceSnappedCellSize(
   return whole / ratio;
 }
 
+/**
+ * The same grid's **phase**, which is the other half of the same defect.
+ *
+ * **A whole pitch on a fractional origin still draws strokes of two widths.** Snapping the cell to
+ * four device pixels puts the boundaries four apart, and starting them at 10.4 puts every boundary
+ * at `.4` — so each stroke covers three whole pixels and two halves, and the rasteriser resolves
+ * that the same ragged way it resolved a fractional cell. The pitch decides how far apart the
+ * boundaries are; this decides where the first one is, and a face of uniform strokes needs both.
+ *
+ * It was found the way the first half was: the cell snap shipped, and the reporter said the text was
+ * still wrong.
+ *
+ * **To nearest rather than down**, which is the opposite of the cell above and for the opposite
+ * reason: this is a position, not a size. Moving a label up to half a device pixel is the smallest
+ * change that puts its grid on the display's, while flooring would shift every label the same way
+ * and bias a centred one off centre.
+ *
+ * **What would make it wrong** is a caller animating an origin sub-pixel on purpose — a label that
+ * slides smoothly now steps by a device pixel. For a face whose strokes are one pixel wide that is
+ * the trade this whole function exists to make, and `sdfTextLayout.ts`, which does not come through
+ * here, is the path for anything that wants the other answer.
+ */
+export function deviceSnappedOrigin(
+  value: number,
+  viewportWidth: number,
+  bufferWidth: number,
+): number {
+  const ratio = bufferWidth / viewportWidth;
+  if (!Number.isFinite(ratio) || ratio <= 0) return value;
+  const device = value * ratio;
+  if (!Number.isFinite(device)) return value;
+  return Math.round(device) / ratio;
+}
+
 export class TextLayout {
   /** Reused every upload; text changes far too often to allocate per change. */
   readonly cells = new Float32Array(MAX_CELLS * 2);

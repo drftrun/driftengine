@@ -105,21 +105,84 @@ async function main(): Promise<void> {
   renderer.drawMesh(insetMesh, IDENTITY);
   renderer.endInset();
 
+  /*
+   * **`?ladder=1` draws one line per cell size instead of one line at seven**, which is the
+   * control a report of "small text is eaten away and large text is not" needs. A consumer sizes
+   * a quiet second line off its headline and floors it at three pixels, so the sizes worth seeing
+   * are 3 to 12 — and the whole claim is that the *size* is what decides, which cannot be shown
+   * by a page that draws one.
+   *
+   * `?alpha=` is the other half of the pair, because the competing explanation is a fade: the
+   * consumer's two lines differ by a tenth of an alpha and by a factor of two in cell size, and
+   * only a page that can move each on its own says which one the artefact follows.
+   */
+  const asked = new URLSearchParams(location.search);
+  const ladder = asked.get('ladder') === '1';
+  const textAlpha = Number(asked.get('alpha') ?? '1');
+  const cell = Number(asked.get('cell') ?? '7');
+  /*
+   * **The three motion terms, because each one moves a cell by a fraction of a pixel.** A consumer
+   * holds a settled message with an idle bob on it, and a bitmap face whose strokes are one cell
+   * wide has nothing to spare: a cell offset by half a pixel either covers a row of pixels or does
+   * not. Whether that is what eats a small line is a question about `bob` alone, so `bob` alone is
+   * what this moves.
+   */
+  const bob = Number(asked.get('bob') ?? '0');
+  const spin = Number(asked.get('spin') ?? '0');
+  const punch = Number(asked.get('punch') ?? '0');
+  const reveal = Number(asked.get('reveal') ?? '1');
+
   /* Text last, over everything, the way an announcement is drawn. */
   renderer.bindMeshPass(camera, env);
-  renderer.drawText(
-    label,
-    canvas.width,
-    canvas.height,
-    Math.round(canvas.width * 0.06),
-    Math.round(canvas.height * 0.5),
-    { ...DEFAULT_TEXT_STYLE, cellSize: 7, color: [1, 0.85, 0.2], glow: 1, alpha: 1, reveal: 1 },
-    TIME_SEC,
-  );
+  if (ladder) {
+    for (let size = 3; size <= 12; size++) {
+      renderer.setText(label, 'RUIN FOUND');
+      renderer.drawText(
+        label,
+        canvas.width,
+        canvas.height,
+        Math.round(canvas.width * 0.04),
+        Math.round(canvas.height * 0.08 + (size - 3) * canvas.height * 0.085),
+        {
+          ...DEFAULT_TEXT_STYLE,
+          cellSize: size,
+          color: [1, 0.85, 0.2],
+          glow: 1,
+          alpha: textAlpha,
+          reveal,
+          spin,
+          punch,
+          bob,
+        },
+        TIME_SEC,
+      );
+    }
+  } else {
+    renderer.drawText(
+      label,
+      canvas.width,
+      canvas.height,
+      Math.round(canvas.width * 0.06),
+      Math.round(canvas.height * 0.5),
+      {
+        ...DEFAULT_TEXT_STYLE,
+        cellSize: cell,
+        color: [1, 0.85, 0.2],
+        glow: 1,
+        alpha: textAlpha,
+        reveal,
+        spin,
+        punch,
+        bob,
+      },
+      TIME_SEC,
+    );
+  }
   if (!afterEndFrame) renderer.endFrame();
 
   stats.textContent =
     `${created.backend} · ${created.reason} · text "RUIN FOUND" + inset` +
+    ` · cell ${ladder ? '3..12' : cell} · alpha ${textAlpha} · bob ${bob} · spin ${spin} · punch ${punch} · reveal ${reveal}` +
     (afterEndFrame ? ' · drawn after endFrame' : '');
   (globalThis as unknown as { __drawn?: boolean }).__drawn = true;
 }

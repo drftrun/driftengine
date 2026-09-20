@@ -1,5 +1,11 @@
 import type { TextStyle } from './textLayout.ts';
-import { MAX_CELLS, TEXT_CUBE, TextLayout, deviceSnappedCellSize } from './textLayout.ts';
+import {
+  MAX_CELLS,
+  TEXT_CUBE,
+  TextLayout,
+  deviceSnappedCellSize,
+  deviceSnappedOrigin,
+} from './textLayout.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { TEXT_FRAG, TEXT_VERT } from './shaders/text.ts';
 
@@ -115,7 +121,14 @@ export class TextRenderer {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     setVec2(gl, this.uniforms['uViewport'], viewportWidth, viewportHeight);
-    setVec2(gl, this.uniforms['uOrigin'], originX, originY);
+    /* Snapped with the cell below: a whole pitch on a fractional origin still splits a stroke.
+       See `deviceSnappedOrigin`. */
+    setVec2(
+      gl,
+      this.uniforms['uOrigin'],
+      deviceSnappedOrigin(originX, viewportWidth, gl.drawingBufferWidth),
+      deviceSnappedOrigin(originY, viewportHeight, gl.drawingBufferHeight),
+    );
     /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
        decision is shared with WebGPU; only this binding is per-backend. See `textLayout.ts`. */
     setFloat(

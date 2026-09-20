@@ -737,6 +737,30 @@ export class GpuDrivenPass implements PassDefinition {
    * before the device answers, which nobody sees; the alternative is a frame that draws nothing.
    */
   private blendUsable = false;
+  /**
+   * The same question about *every other* pipeline in this pass, and the reason it exists is that
+   * 4.1.3 asked it about one.
+   *
+   * **The guard above was written from a log that named `gpu-driven blend`, and the four render
+   * pipelines and eight compute pipelines beside it were left with the shape that caused the
+   * report.** Reported again from an Android handset once that fix shipped: the transparent pass
+   * now skips itself correctly, the overlay still draws and the frame counter still counts — and
+   * the world is black, which is what an invalid *opaque* pipeline looks like once the blended one
+   * has stopped taking the command buffer with it.
+   *
+   * So the whole of `buildPipelines` is built inside one pair of scopes and nothing this pass
+   * encodes runs until they come back clean. The blend pipeline pushes its own pair *inside* that
+   * region, so the two verdicts stay separate: a device that refuses only the transparent pipeline
+   * still draws everything opaque, and a device that refuses anything else turns this pass off
+   * rather than encoding against a handle the driver has already rejected.
+   *
+   * **What it gives up** is the first frames, which draw nothing while the device is still
+   * answering. **What would make it wrong** is a device that never resolves an error scope; the
+   * `popErrorScope` check below is the same concession the blend guard makes, for the same reason.
+   */
+  private usable = false;
+  /** Why this pass refused itself, in the words the device used, or null while it has not. */
+  private refusal: string | null = null;
   /** Builds the transparent raster's bindings, held until there is a pipeline worth binding to. */
   private makeBlendGroup: (() => GPUBindGroup) | null = null;
   private blendResolvePipeline: GPURenderPipeline | null = null;
@@ -997,7 +1021,18 @@ export class GpuDrivenPass implements PassDefinition {
       });
     }
     this.buildBuffers(device.device);
+    /*
+     * **Every pipeline this pass owns, inside one pair of scopes.** See `usable`: the blend
+     * pipeline pushes its own pair within this region, so its refusal stays its own and any other
+     * refusal is caught here and turns the pass off instead of reaching an encoder.
+     */
+    const scoped = typeof device.device.pushErrorScope === 'function';
+    if (scoped) {
+      device.device.pushErrorScope('validation');
+      device.device.pushErrorScope('internal');
+    }
     this.buildPipelines(device.device, device.format, device.samples);
+    this.watchPipelines(device.device, scoped);
     if (this.width > 0) this.buildTargets(device.device);
   }
 
@@ -1357,6 +1392,53 @@ export class GpuDrivenPass implements PassDefinition {
     };
     void device.popErrorScope().then((error) => settle(error, 'internal'));
     void device.popErrorScope().then((error) => settle(error, 'validation'));
+  }
+
+  /**
+   * Close the scopes every other pipeline was built in, and refuse the pass where one came back.
+   *
+   * **This is `watchBlendPipeline` widened to the rest of the pass**, and the reason it is separate
+   * is that the two refusals mean different things: a blend pipeline nobody can compile costs the
+   * glass, and a raster, shadow, blit or compute pipeline nobody can compile costs the world. The
+   * first degrades; the second has nothing to degrade to, so it says so and draws nothing rather
+   * than encoding a command buffer the driver will reject whole.
+   *
+   * A device with no scopes is taken at its word, exactly as the blend guard takes it: refusing to
+   * draw on hardware that never said no is the worse of the two failures.
+   */
+  private watchPipelines(device: GPUDevice, scoped: boolean): void {
+    if (!scoped || typeof device.popErrorScope !== 'function') {
+      this.usable = true;
+      return;
+    }
+    let outstanding = 2;
+    const settle = (error: GPUError | null, scope: string): void => {
+      outstanding -= 1;
+      if (error !== null && this.refusal === null) {
+        this.refusal = error.message;
+        console.warn(
+          `[driftengine] this device refused a gpu-driven pipeline (${scope}), so this pass draws ` +
+            `nothing and the rest of the frame is unaffected: ${error.message}`,
+        );
+      }
+      /* Usable only once both have come back clean, which is what keeps an invalid handle out. */
+      if (outstanding > 0 || this.refusal !== null) return;
+      this.usable = true;
+    };
+    void device.popErrorScope().then((error) => settle(error, 'internal'));
+    void device.popErrorScope().then((error) => settle(error, 'validation'));
+  }
+
+  /**
+   * Why this pass is drawing nothing, in the words the device used, or null where it is not.
+   *
+   * **Exposed because a black frame that says nothing is the bug this was reported as, twice.** A
+   * pipeline refusal arrives asynchronously, long after `createRenderer` has decided the backend
+   * can run this at all, so there is no earlier place to throw — and a scene that can read this can
+   * tell somebody what happened instead of presenting an empty picture.
+   */
+  refusedBecause(): string | null {
+    return this.refusal;
   }
 
   private buildPipelines(device: GPUDevice, format: GPUTextureFormat, samples: number): void {
@@ -2420,6 +2502,8 @@ export class GpuDrivenPass implements PassDefinition {
 
   prepare(ctx: PrepareContext): void {
     if (ctx.backend !== 'webgpu') return;
+    /* Nothing is encoded until the device has answered for the pipelines. See `usable`. */
+    if (!this.usable) return;
     const device = this.device;
     if (device === null || this.levels.length === 0) return;
     /* Before `writeFrame`, which reads what this took, and before the groups it may invalidate. */
@@ -2988,6 +3072,8 @@ export class GpuDrivenPass implements PassDefinition {
 
   draw(ctx: PassContext): void {
     if (ctx.backend !== 'webgpu') return;
+    /* The same gate as `prepare`: an unanswered or refused pipeline set encodes nothing at all. */
+    if (!this.usable) return;
     if (this.blitPipeline === null || this.blitGroup === null) return;
     if (ctx.outputTransform !== 0 && !this.gradeWarned) {
       this.gradeWarned = true;

@@ -1899,15 +1899,36 @@ test('AND THE GLASS IS CULLED WITHOUT THE PYRAMID TOO, which reads phase two\u20
  * and reports asynchronously — so the refusal is learned from an error scope and the handle is
  * disowned.
  */
-async function framesWithBlend(refuse: { message: string } | null) {
+async function framesWithBlend(
+  refuse: { message: string } | null,
+  /**
+   * What the *outer* pair of scopes answers — the one every other pipeline is built inside.
+   *
+   * **Two pairs are in flight and a stub that answers both the same way cannot tell them apart.**
+   * The blend pipeline pushes its pair within the region the rest of the pass is built in, so a
+   * real device pops the inner pair first; this counts calls to model that. Answering every pop
+   * with the same refusal is what a device does when it can compile *nothing*, which is a
+   * different fixture and is the one below.
+   */
+  refuseOthers: { message: string } | null = null,
+) {
   const { device, encoder, commands } = recordingDevice();
   /*
    * **The scopes, attached here rather than on the stub.** A real device reports a refused
    * pipeline asynchronously rather than throwing, and a device that offers no scopes at all is
    * taken at its word — which is what the other tests exercise, and why they stay synchronous.
    */
+  let popped = 0;
   Object.assign(device, {
-    popErrorScope: (): Promise<{ message: string } | null> => Promise.resolve(refuse),
+    /* **Both halves, because the pass asks for `pushErrorScope` before it pushes.** A stub with
+       only the pop is a device that reports errors nobody asked it to collect, which no device is,
+       and a guard reading the push would take such a device at its word and never run. */
+    pushErrorScope: (): void => undefined,
+    popErrorScope: (): Promise<{ message: string } | null> => {
+      popped += 1;
+      /* The blend pipeline's own pair, popped first because it was pushed last. */
+      return Promise.resolve(popped <= 2 ? refuse : refuseOthers);
+    },
   });
   const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), [
     { tint: [1, 1, 1], emissive: 0 },
@@ -1964,6 +1985,50 @@ describe('a device that refuses the blend pipeline', () => {
     try {
       const frame = await framesWithBlend(null);
       expect(warn).not.toHaveBeenCalled();
+      expect(frame.length).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/*
+ * **The same guard, for the pipelines 4.1.3 did not cover — which is how it was found.**
+ *
+ * That version wrapped the blend pipeline alone, because the reported log named `gpu-driven blend`.
+ * The four other render pipelines and the eight compute pipelines beside it kept the shape that
+ * caused the report, and the next handset reported the half of it that was left: the transparent
+ * pass correctly skipping itself, the overlay still drawing, the frame counter still counting, and
+ * the world black.
+ *
+ * So the assertion here is the one the blend tests could not make: that a refusal of anything else
+ * encodes **nothing at all**, rather than encoding a command buffer the driver rejects whole.
+ */
+describe('a device that refuses one of the other pipelines', () => {
+  test('encodes nothing, says so once, and reports why when asked', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const frame = await framesWithBlend(null, { message: 'VK_ERROR_UNKNOWN' });
+      /*
+       * **Empty, and that is the fix.** Before it, this frame was a full set of compute passes and
+       * an indirect draw against handles the device had already rejected — which is the black
+       * picture and the five cascading errors the report carried.
+       */
+      expect(frame).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('VK_ERROR_UNKNOWN');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('draws the frame where every scope comes back clean', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const frame = await framesWithBlend(null, null);
+      expect(warn).not.toHaveBeenCalled();
+      /* The control for the assertion above: the same fixture encodes a frame when nothing
+         refuses, so `toHaveLength(0)` there is the refusal and not the fixture being empty. */
       expect(frame.length).toBeGreaterThan(0);
     } finally {
       warn.mockRestore();

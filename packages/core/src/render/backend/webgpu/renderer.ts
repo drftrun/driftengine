@@ -150,7 +150,7 @@ import {
   type GpuTextCube,
 } from './textPass.ts';
 import type { TextStyle } from '../../textLayout.ts';
-import { deviceSnappedCellSize } from '../../textLayout.ts';
+import { deviceSnappedCellSize, deviceSnappedOrigin } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
 import {
   createSdfTextBindGroup,
@@ -3179,7 +3179,12 @@ export class WebGPURenderer implements RendererApi {
     const at = (name: string): number => TEXT_VERT_FIELDS[name]?.offset ?? 0;
     const v = this.textVerts;
     v.writeFloats(vertexSlot, at('uViewport'), [viewportWidth, viewportHeight]);
-    v.writeFloats(vertexSlot, at('uOrigin'), [originX, originY]);
+    /* Snapped with the cell below: a whole pitch on a fractional origin still splits a stroke.
+       See `deviceSnappedOrigin`. */
+    v.writeFloats(vertexSlot, at('uOrigin'), [
+      deviceSnappedOrigin(originX, viewportWidth, this.surface.canvas.width),
+      deviceSnappedOrigin(originY, viewportHeight, this.surface.canvas.height),
+    ]);
     /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
        decision is shared with WebGL2; only this binding is per-backend. See `textLayout.ts`. */
     v.writeFloat(
