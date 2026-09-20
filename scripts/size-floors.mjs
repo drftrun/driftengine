@@ -806,8 +806,19 @@ export const FLOORS = {
    *
    * **3,394 bytes, of which 79 is the licence banner.** Four panels, a selection, an undo stack and
    * the panel contract, measured 2026-09-15 on the commit that published the package.
+   *
+   * **5,105 from 4.1.0, and 1,710 of the rise is `createToolsOverlay`.** The panels shipped with
+   * nothing to mount them, so the thing that puts them on screen on a key — the column geometry,
+   * the event routing and the painter walk — is now in the package rather than written again by
+   * every consumer that wants an in-game inspector.
+   *
+   * **The fixture did not name it, and for one commit this number was a lie.** `tools-only.ts`
+   * imported the four panels and the undo stack, so the overlay was tree-shaken out of the
+   * measurement and the gate stayed green at 3,395 over a package that had grown by half. A size
+   * fixture measures what it imports, which is the same trap as a scope nobody re-reads: adding
+   * public surface means adding it to the fixture, or the floor guards the old package forever.
    */
-  'tools-only': 3395,
+  'tools-only': 5105,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional

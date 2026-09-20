@@ -30,7 +30,6 @@ import {
   type Command,
   type UndoStack,
   createPanelRoot,
-  type Panel,
   type UiEvent,
 } from '@driftengine/tools';
 import {
@@ -41,34 +40,20 @@ import {
   type DockSite,
 } from './dock/layout.ts';
 
-/**
- * A panel with its world and its view already attached.
+/*
+ * **`PanelBinding` and `bindPanel` were defined here and are `@driftengine/tools`' now.**
  *
- * **The generics are closed here rather than carried by the application.** `Panel<W, V>` is two
- * type parameters per panel and the editor holds seven of them at once, which no single list can
- * express without erasing to `unknown` and casting on the way out. Binding closes them at the point
- * where both types are known and hands the application something with no parameters at all — so
- * the application never casts, and a panel keeps the signature that makes its own rules checkable.
+ * Neither had an editor-specific noun in it: closing a `Panel<W, V>`'s two type parameters where
+ * both are known is what *any* host holding several panels at once must do, and the in-game
+ * overlay needed exactly the same thing. Two implementations of one decision drift, and these two
+ * would have drifted the first time one of them grew a clamp — so the definition moved to the
+ * package that both hosts already depend on, and this file re-exports it for the callers here that
+ * name it.
  */
-export interface PanelBinding {
-  readonly id: string;
-  readonly title: string;
-  build(root: UiNode): void;
-  route(event: UiEvent): Command | null;
-}
+import type { PanelBinding } from '@driftengine/tools';
 
-export function bindPanel<W, V>(
-  panel: Panel<W, V>,
-  world: () => Readonly<W>,
-  view: V,
-): PanelBinding {
-  return {
-    id: panel.id,
-    title: panel.title,
-    build: (root: UiNode): void => panel.build(world(), view, root),
-    route: (event: UiEvent): Command | null => panel.route(world(), view, event),
-  };
-}
+export type { PanelBinding } from '@driftengine/tools';
+export { bindPanel } from '@driftengine/tools';
 
 export interface EditorAppOptions {
   /**

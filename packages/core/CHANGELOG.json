@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.1.0",
+    "date": "2026-09-20",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "The tools panels can be shown. createToolsOverlay mounts the inspector, console, profiler and network panel over a running game on a key, and the painter is four calls a host supplies.",
+        "text": "**4.0.0 shipped the panels and nothing to mount them**, which is the gap this closes. `@driftengine/tools` exported an inspector, a console, a profiler and a network panel, and each of those builds a `UiNode` tree and stops there. What turned a tree into something a person could look at, the geometry and the event routing and the painting, lived in the editor application, and that workspace is private and ships to nobody. So a consumer wanting an in-game inspector had to write that half again, and six of them writing it six times is the drift `AGENTS.md` opens by describing.\n\n**A column rather than a dock.** The editor dock splits, drags and persists because somebody arranges an editor and then keeps that arrangement. Nobody arranges a debug overlay: they press a key, read a number and press it again. So the panels stack down one edge in the order they are given, and what a dock would have bought is not bought.\n\n**The painter is supplied rather than reached for**, and it is four calls: a rectangle, a line of text, a clip and its close. A host with a 2D context writes four lines, a host drawing through `@driftengine/ui2d` writes them over a sprite batch, and a host with no screen at all writes them into an array, which is what the tests in this package do. That is the platform rule applied to drawing, and it is why nothing here needs a graphics device and the whole of it can be asserted.\n\n**While it is closed it costs a boolean.** `frame` returns before it builds anything and `route` refuses every event except the one that opens it, so a game that never presses the key pays nothing for carrying it.\n\n**`createGpuPassTimings` and `recordGpuSample` came with it**, because the engine fills no timings for anybody: `PassTimings` is a container and `RendererApi.gpuTimer` is a source, and joining the two is the same twenty lines in every consumer, over slots that are `GPU_SLOTS` and never the game's. `recordGpuSample` resets before it writes, and the first draft did not: `recordPassSample` accumulates on purpose, since a shadow pass runs per cascade, and a whole resolved frame added to what was already there leaves the rows climbing forever and reads as a leak in whatever the game last changed.\n\n**The package is 5,105 bytes gzipped, from 3,395.** The size fixture named the four panels and the undo stack and nothing else, so for one commit the overlay was tree-shaken straight out of the measurement and the gate stayed green over a package that had grown by half. A size fixture measures what it imports, which is the same trap as a scope nobody re-reads.\n\n**`PanelBinding` and `bindPanel` moved here from the editor**, because neither had an editor-specific noun in it and both hosts needed the same thing. Two implementations of one decision drift, so the editor re-exports them now."
+      }
+    ]
+  },
+  {
     "version": "4.0.0",
     "date": "2026-09-20",
     "entries": [

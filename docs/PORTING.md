@@ -38,9 +38,9 @@ every `@driftengine/*` range in your manifest in the same commit, then run `npm 
 
 ## What you gain by doing nothing else
 
-The new packages are peers that stay out of the payload until something imports them, so an
-upgrade with no other edit changes the bytes your players download by nothing. Every new
-capability is opt-in at the point you call it:
+The new packages are peers that stay out of the payload until something imports them, so none of
+the five costs you anything until you install it. Every new capability is opt-in at the point you
+call it:
 
 - **Reconstruction** is `quality.reconstruction` on the renderer, off unless you pass a ratio.
 - **The GPU-driven pipeline** is `createRenderer({ pipeline: 'gpu-driven' })`, and it **throws**
@@ -48,6 +48,20 @@ capability is opt-in at the point you call it:
   against the backend that will draw, not the one you asked for.
 - **Indirect light** is CPU-side and drawn by nothing, so exporting it changed no scene.
 - **`@driftengine/nav`, `texture`, `tools`, `capture` and `native-host`** are separate installs.
+
+## What it does cost, measured on a real consumer
+
+**`@driftengine/core` itself grew, and this section said it did not.** The sentence above read "an
+upgrade with no other edit changes the bytes your players download by nothing", which is true of
+the five new packages and false of the one everybody already has: the frame graph, the GPU-driven
+pipeline, reconstruction and indirect light all live in `core`, and a consumer gets them whether or
+not it ever turns one on.
+
+Measured on a published site with four packages installed, building against the registry rather
+than a checkout: **805.5 KB gzipped to 846.9 KB, which is 41.3 KB and 5.1%**, almost all of it the
+renderer chunk at 449.5 to 487.6 KB. That is the number to plan against on an upgrade where nothing
+else changes. A consumer under a payload budget should take it as the floor and measure its own,
+because how much of the new code a bundler can drop depends on what that game already reaches for.
 
 ## The one thing to read before you reach for it
 

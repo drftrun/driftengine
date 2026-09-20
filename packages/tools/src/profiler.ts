@@ -17,7 +17,17 @@
  */
 import { addUiChild, createUiNode } from '@driftengine/ui2d';
 import type { UiNode } from '@driftengine/ui2d';
-import { passLabel, passMs, type PassTimings } from '@driftengine/core';
+import {
+  GPU_SLOTS,
+  createPassTimings,
+  passLabel,
+  passMs,
+  recordPassLabel,
+  recordPassSample,
+  resetPassTimings,
+  type GpuSample,
+  type PassTimings,
+} from '@driftengine/core';
 import { residentCount, type ResidencyTable } from '@driftengine/texture';
 import type { Command } from './command.ts';
 import { createPanelRoot, emptyPanel, type Panel } from './panel.ts';
@@ -195,3 +205,44 @@ export const profilerPanel: Panel<ProfilerWorld, ProfilerView> = {
     return null;
   },
 };
+
+/**
+ * A `PassTimings` labelled with the engine's own GPU brackets.
+ *
+ * **The engine fills no timings for anybody.** `PassTimings` is a container and
+ * `RendererApi.gpuTimer` is a source, and joining the two is the same twenty lines wherever it is
+ * written — the slots are `GPU_SLOTS` and never the game's, because a second backend measuring the
+ * same frame owes the same three numbers. So it is written here once rather than in every consumer
+ * that wants a frame readout, which is the argument that put the overlay in this package.
+ *
+ * Labelled and unsampled, so every row shows `—` until a frame resolves. That is the distinction
+ * `profilerRows` exists to keep: a bracket nothing has measured yet is not a bracket that ran in no
+ * time.
+ */
+export function createGpuPassTimings(): PassTimings {
+  const timings = createPassTimings(GPU_SLOTS.length);
+  for (let slot = 0; slot < GPU_SLOTS.length; slot += 1) {
+    recordPassLabel(timings, slot, GPU_SLOTS[slot] ?? '');
+  }
+  return timings;
+}
+
+/**
+ * Write one resolved sample over the three rows.
+ *
+ * **It resets first, and the first draft did not.** `recordPassSample` accumulates on purpose,
+ * because a pass may be sampled several times in one frame — a shadow pass runs per cascade — and
+ * the row a reader wants is what that pass cost altogether. A `GpuSample` is the opposite: it is
+ * one resolved frame's three totals, already summed by the timer. Adding it to what was there left
+ * the rows climbing forever, which reads as a leak in whatever the game last changed rather than as
+ * a defect in the readout. `resetPassTimings` is how the engine's own frame starts, and the labels
+ * survive it, which is why the rows do not flicker.
+ *
+ * A caller wanting an average across frames has `FrameHistory` for it.
+ */
+export function recordGpuSample(timings: PassTimings, sample: GpuSample): void {
+  resetPassTimings(timings);
+  recordPassSample(timings, 0, sample.shadows);
+  recordPassSample(timings, 1, sample.reflection);
+  recordPassSample(timings, 2, sample.rest);
+}

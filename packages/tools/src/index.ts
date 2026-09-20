@@ -95,6 +95,7 @@ export {
 export type { FrameHistory, ProfilerRow, ProfilerView, ProfilerWorld } from './profiler.ts';
 export {
   createFrameHistory,
+  createGpuPassTimings,
   createProfilerView,
   formatMs,
   historyValues,
@@ -102,6 +103,7 @@ export {
   profilerPanel,
   profilerRows,
   pushFrame,
+  recordGpuSample,
 } from './profiler.ts';
 
 export type { NetworkReadout, NetworkView, NetworkWorld, RollbackHistory } from './network.ts';
@@ -113,3 +115,25 @@ export {
   pushRollback,
   rollbackValues,
 } from './network.ts';
+
+/*
+ * What mounts the four panels over a running game, on a key.
+ *
+ * **The panels shipped in 4.0.0 with nothing to show them**, which is the gap this closes: every
+ * panel above builds a `UiNode` tree and stops there, and the dock, layout, painting and routing
+ * that turn a tree into something a person sees lived only in the editor application, which is
+ * private. A consumer wanting an in-game inspector had to write that half again, and the six
+ * writing it six times is the drift `AGENTS.md` opens by describing.
+ *
+ * `OverlayPainter` is four calls, so a host with a 2D context, a host drawing through a sprite
+ * pass and a host with no screen at all each satisfy it — which is the platform rule applied to
+ * drawing, and what keeps this testable with no graphics device anywhere near it.
+ */
+export type {
+  OverlayPainter,
+  OverlaySite,
+  PanelBinding,
+  ToolsOverlay,
+  ToolsOverlayOptions,
+} from './overlay.ts';
+export { bindPanel, createToolsOverlay, paintOverlay } from './overlay.ts';

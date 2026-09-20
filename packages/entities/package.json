@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/entities",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Entities with generational identity, component storage, systems and scenes",
   "license": "Apache-2.0",
   "type": "module",

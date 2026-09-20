@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/xr",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "WebXR sessions, stereo views, controller input and hand joints, over both backends",
   "license": "Apache-2.0",
   "type": "module",
@@ -30,7 +30,7 @@
     "gl-matrix": "^3.4.3"
   },
   "peerDependencies": {
-    "@driftengine/core": "4.0.0"
+    "@driftengine/core": "4.1.0"
   },
   "author": "Drift Technologies",
   "repository": {

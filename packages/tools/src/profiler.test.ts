@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GPU_SLOTS,
   createPassTimings,
   passLabel,
   passMs,
@@ -10,6 +11,7 @@ import {
 import { createResidencyTable, markResident, residentCount } from '@driftengine/texture';
 import {
   createFrameHistory,
+  createGpuPassTimings,
   createProfilerView,
   formatMs,
   historyValues,
@@ -17,6 +19,7 @@ import {
   profilerPanel,
   profilerRows,
   pushFrame,
+  recordGpuSample,
 } from './profiler.ts';
 
 function timings(): ReturnType<typeof createPassTimings> {
@@ -224,5 +227,34 @@ describe('the profiler panel', () => {
         { kind: 'pointer', phase: 'up', x: 0, y: 0, button: 0 },
       ),
     ).toBe(null);
+  });
+});
+
+/*
+ * **The bridge exists because the engine fills no timings for you.** `PassTimings` is a container
+ * and `renderer.gpuTimer` is a source, and joining them is the same twenty lines in every game:
+ * three labels from `GPU_SLOTS`, then a poll a frame writing three numbers. Six consumers writing
+ * it six times is what put the overlay in this package, and this is the same argument one layer
+ * down.
+ */
+describe('the engine’s own GPU brackets, as profiler rows', () => {
+  it('labels a row per slot, in the order the engine declares them', () => {
+    const timings = createGpuPassTimings();
+    const rows = profilerRows(timings, []);
+    expect(rows.map((row) => row.label)).toEqual([...GPU_SLOTS]);
+  });
+
+  it('reads unmeasured until a sample arrives, and never zero', () => {
+    const timings = createGpuPassTimings();
+    expect(profilerRows(timings, []).map((row) => row.ms)).toEqual([null, null, null]);
+    recordGpuSample(timings, { shadows: 1.5, reflection: 0, rest: 4.25 });
+    expect(profilerRows(timings, []).map((row) => row.ms)).toEqual([1.5, 0, 4.25]);
+  });
+
+  it('takes the newest sample rather than accumulating them', () => {
+    const timings = createGpuPassTimings();
+    recordGpuSample(timings, { shadows: 9, reflection: 9, rest: 9 });
+    recordGpuSample(timings, { shadows: 1, reflection: 2, rest: 3 });
+    expect(profilerRows(timings, []).map((row) => row.ms)).toEqual([1, 2, 3]);
   });
 });
