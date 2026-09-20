@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "fd947913:157677",
-  "directionalShadows+environmentProbe": "7f7adc72:180663",
-  "directionalShadows+environmentProbe+nightEmissive": "d38fc6b8:183149",
-  "directionalShadows+nightEmissive": "ef6df741:160163",
-  "environmentProbe": "bc0ba14a:167847",
-  "environmentProbe+nightEmissive": "3bee902e:170333",
-  "nightEmissive": "fe6740cf:147347",
-  "none": "eb029993:144861",
-  "pointShadows": "e5bc5f23:169278",
-  "pointShadows+directionalShadows": "1367ee5f:182094",
-  "pointShadows+directionalShadows+environmentProbe": "b2db2140:205080",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "b25002d8:207566",
-  "pointShadows+directionalShadows+nightEmissive": "e14f4f6b:184580",
-  "pointShadows+environmentProbe": "d80c5338:192264",
-  "pointShadows+environmentProbe+nightEmissive": "355423a2:194750",
-  "pointShadows+nightEmissive": "499bd209:171764",
+  "directionalShadows": "c631608d:164878",
+  "directionalShadows+environmentProbe": "24da799e:187864",
+  "directionalShadows+environmentProbe+nightEmissive": "11d41c2e:190350",
+  "directionalShadows+nightEmissive": "575daecd:167364",
+  "environmentProbe": "925b5f48:175048",
+  "environmentProbe+nightEmissive": "7a6cd1e2:177534",
+  "nightEmissive": "879047d1:154548",
+  "none": "e7ed4d47:152062",
+  "pointShadows": "6a86b4b9:179350",
+  "pointShadows+directionalShadows": "5b8189f3:192166",
+  "pointShadows+directionalShadows+environmentProbe": "70a4267c:215152",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "bea990f0:217638",
+  "pointShadows+directionalShadows+nightEmissive": "643e3383:194652",
+  "pointShadows+environmentProbe": "773dc2ce:202336",
+  "pointShadows+environmentProbe+nightEmissive": "8b5f2d08:204822",
+  "pointShadows+nightEmissive": "c8c636c7:181836",
 }
 `;
 
@@ -922,15 +922,52 @@ uniform float uLiveAreaShadowWeight[MAX_AREA_LIGHTS];
  * where a bias means what it looks like it means.
  */
 /**
- * Sample offsets forming a rough sphere, for filtering a cubemap shadow.
- * Perturbing the *direction* is how PCF works on a cube — there is no 2D UV
- * neighbourhood to step across the way there is for the sun's cascade.
+ * Twelve places on a disk across the light ray, for filtering an omnidirectional shadow.
+ *
+ * **These were eight, and the count is why a penumbra was stippled.** The list used to be the
+ * eight corners and six faces of a cube, carried as \`vec3\` from the era when a tap offset a
+ * direction by a 3D vector. Nothing has read the third component since the map became
+ * octahedral — both filters take \`.xy\` — and flattening a cube's corners onto a plane makes
+ * pairs of them coincide: \`(1, 1, 1)\` and \`(1, 1, -1)\` are one 2D offset, four times over. So
+ * twelve taps asked eight questions and answered four of them twice, and every one of the eight
+ * sat on the rim at radius 1 or 1.414 with nothing in between. A coverage estimate from a ring
+ * moves in steps of two twelfths as the penumbra's edge sweeps a doubled pair across it, which
+ * is the size of the speckle that was reported.
+ *
+ * **The replacement is the golden-angle disk this repository already uses for ambient
+ * occlusion** — angle \`i\` turns of 137.5 degrees, radius \`sqrt((k + 0.5) / 12)\` — so the taps
+ * are spread evenly over the area rather than crowded on the rim or at the centre, and no two
+ * coincide. The nearest pair is 0.355 apart where the old set had a pair at zero.
+ *
+ * **The radii are dealt round rather than taken in order, and that is what makes a short filter
+ * work.** \`shadowFilterTaps\` is 4, 8 or 12 and the loop below simply stops early, so every
+ * prefix of this list is a filter somebody ships: in spiral order the first four taps would be
+ * the four innermost and a low profile would quietly get a filter a third of the width it asked
+ * for. Interleaved, the first four already span 0.21 to 0.91 of the disk's reach and sit around
+ * its centre rather than to one side, which is a small filter rather than a narrow one.
+ *
+ * **What it gives up** is a little softness. The old set put two thirds of its taps at the
+ * outermost radius, so it read the penumbra's widest part twice as often as an even disk does
+ * and drew a shadow edge softer than the emitter's size calls for; an even disk is the honest
+ * estimate and is very slightly crisper. **What would make it wrong** is a caller wanting the
+ * filter's *reach* changed — that is \`MAX_FILTER_RADIUS\`, and the outermost tap here is 1.384
+ * against the old 1.414 precisely so this change does not move it.
  */
-const vec3 PCF_OFFSETS[12] = vec3[12](
-  vec3( 1.0,  1.0,  1.0), vec3( 1.0, -1.0, -1.0), vec3(-1.0,  1.0, -1.0), vec3(-1.0, -1.0,  1.0),
-  vec3( 1.0, -1.0,  1.0), vec3(-1.0,  1.0,  1.0), vec3( 1.0,  1.0, -1.0), vec3(-1.0, -1.0, -1.0),
-  vec3( 1.0,  0.0,  0.0), vec3(-1.0,  0.0,  0.0), vec3( 0.0,  1.0,  0.0), vec3( 0.0, -1.0,  0.0)
+const vec2 PCF_OFFSETS[12] = vec2[12](
+  vec2( 0.289,  0.000), vec2(-0.767,  0.703), vec2( 0.067, -0.761), vec2( 0.766,  0.999),
+  vec2(-0.492, -0.087), vec2( 0.943, -0.600), vec2(-0.225,  0.836), vec2(-0.610, -1.174),
+  vec2( 0.606,  0.221), vec2(-1.100,  0.454), vec2( 0.406, -0.867), vec2( 0.414,  1.321)
 );
+/**
+ * The angle between the two tap sets a pair of neighbouring pixels uses. See \`pointShadow\`.
+ *
+ * Half the golden angle, because the offsets above are a golden-angle spiral: turning the whole
+ * set by half a step drops the second pixel's taps between the first pixel's arms rather than
+ * on top of them. Measured on the pair, the closest two of the twenty-four are 0.305 apart,
+ * against 0.175 for a half turn and 0.233 for a whole golden angle — so this is the choice that
+ * makes the pair's combined filter as even as the twelve it is built from.
+ */
+const float PCF_PAIR_TURN = 1.19998161;
 
 /** A finite point-light shadow loses strength with the light that casts it. */
 vec2 octEncode(vec3 d) {
@@ -1469,8 +1506,8 @@ float pointShadow(
   float strength = 1.0 - penumbra * penumbra;
 
   /*
-   * Taps are placed on a disk *perpendicular to the light ray*, rotated per
-   * fragment.
+   * Taps are placed on a disk *perpendicular to the light ray*, turned by half a golden
+   * angle on every other column of pixels.
    *
    * Offsetting the ray by fixed 3D vectors was the earlier approach and it has
    * two faults that only show on a wide filter. The offsets are not
@@ -1480,8 +1517,33 @@ float pointShadow(
    * tap pattern — reported, on a brazier behind a rank of columns, as strange
    * straight lines across the light pool.
    *
-   * A per-fragment rotation turns that banding into a fine dither, which the eye
-   * reads as smooth — the standard cure, and it costs one hash.
+   * **The cure for that was a per-fragment hash, and it is what made the penumbra
+   * stipple.** Twelve taps are a coarse estimate of how much of the emitter this point can
+   * see; turning them by an unrelated angle at every pixel makes each pixel's error
+   * independent of its neighbour's, which is the definition of noise. Something has to
+   * average that back out, and this engine's lit pass is the last thing to touch the frame —
+   * there is no blur and no temporal resolve behind it, so the noise reached the screen. Two
+   * games reported the same coarse cross-hatch across a light pool.
+   *
+   * **So the turn comes from a two-pixel tile instead, and the pair is averaged afterwards.**
+   * A pixel's own x parity picks one of two tap sets half a golden angle apart, and
+   * \`main\` folds the pair together once the light loop is over — see the resolve there. The
+   * pair's twenty-four taps are the filter; each pixel pays for twelve of them.
+   *
+   * **A *column* pair rather than a 2x2 square, and that was measured rather than assumed.**
+   * Four turns on a square tile, resolved with both derivatives, came back at 3.88 against this
+   * pair's 2.46 on the same build — because the second derivative hands the lower row of a quad
+   * the upper row's difference on hardware that answers a coarse derivative, and with four turns
+   * that is the wrong difference. Two turns keyed on the column alone make it the right one,
+   * which is why the tile's shape and the resolve are one decision rather than two.
+   *
+   * **Neither half works alone**, which is the same pairing \`ambientOcclusion.ts\` describes
+   * between its rotation tile and its blur. Measured on \`demo/dev/pointshadow.html\` at
+   * \`?exposure=6\`, as mean absolute luminance difference to the right and down neighbour over
+   * the mover's penumbra, on WebGL2: **4.60** for the per-fragment hash this replaces, **2.88**
+   * for this tile with no resolve — and a one-pixel vertical comb in the picture, which is the
+   * tile itself on screen — against **2.37** for the pair resolved. A frame with the shadow
+   * switched off measures 0.81, and WebGPU answers 4.56 and 2.33 for the same two builds.
    *
    * **Unchanged by the move to an octahedral map, and that is the point.** The offsets are
    * angular perturbations of a direction, so every tap is still a direction and octEncode is
@@ -1492,17 +1554,19 @@ float pointShadow(
   vec3 up = abs(fwd.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 tu = normalize(cross(up, fwd));
   vec3 tv = cross(fwd, tu);
-  // Interleaved gradient noise: cheap, and stable enough per pixel that the
-  // dither does not crawl while the camera moves.
-  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))
-    * 6.28318530718;
+  /*
+   * Integer arithmetic, because this is a lattice: a shader compiler is free to implement
+   * \`mod(x, 2.0)\` as a multiply by a reciprocal, and a GPU here answers 3 for \`3.0 % 3.0\`.
+   * \`gl_FragCoord.x\` is the pixel's centre, so truncating it is the pixel's own column.
+   */
+  float angle = float(int(gl_FragCoord.x) & 1) * PCF_PAIR_TURN;
   float ca = cos(angle);
   float sa = sin(angle);
 
   float lit = 0.0;
   for (int i = 0; i < 12; i++) {
     if (i >= uShadowFilterTaps) break;
-    vec2 disk = PCF_OFFSETS[i].xy;
+    vec2 disk = PCF_OFFSETS[i];
     vec2 turned = vec2(disk.x * ca - disk.y * sa, disk.x * sa + disk.y * ca);
     // Perpendicular to the ray, and *not* scaled by its length: the offsets are
     // an angular perturbation of a direction, which is what the encoding takes.
@@ -1620,20 +1684,19 @@ float areaShadow(
   float strength = 1.0 - penumbra * penumbra;
 
   /*
-   * Rotated per fragment inside the unit disk *before* the ellipse maps it, so the dither that
-   * breaks up twelve aligned taps survives the anisotropy. Interleaved gradient noise, one hash;
-   * without it a wide filter bands along the tap pattern — reported on a brazier behind a rank of
-   * columns as straight lines across the light pool.
+   * Turned inside the unit disk *before* the ellipse maps it, so the half-turn that separates
+   * the two halves of a pixel pair survives the anisotropy. The same two-pixel tile the round
+   * filter uses and for the same reasons — see \`pointShadow\`, which carries the measurement;
+   * a rectangle's shadow stippled exactly as a lamp's did, because it is the same twelve taps.
    */
-  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))
-    * 6.28318530718;
+  float angle = float(int(gl_FragCoord.x) & 1) * PCF_PAIR_TURN;
   float ca = cos(angle);
   float sa = sin(angle);
 
   float lit = 0.0;
   for (int i = 0; i < 12; i++) {
     if (i >= uShadowFilterTaps) break;
-    vec2 disk = PCF_OFFSETS[i].xy;
+    vec2 disk = PCF_OFFSETS[i];
     vec2 turned = vec2(disk.x * ca - disk.y * sa, disk.x * sa + disk.y * ca);
     vec3 sampleDir = toFrag + alongX * (turned.x * widthX) + alongY * (turned.y * widthY);
     float stored = textureLod(maps, vec3(octEncode(sampleDir), layer), 0.0).r;
@@ -3001,6 +3064,27 @@ void main() {
     float lightShade = 1.0;
 
     /*
+     * **The lamps' light twice: once as it arrives, once as their shadows leave it.**
+     *
+     * Every point light's contribution used to go straight into \`lit\`. It is accumulated here
+     * instead, in two sums that differ only by the shadow term, so that after the loop there is
+     * a single number per channel saying how much of the lamps' light survived — and *that* is
+     * the thing the resolve below can average across a pair of pixels without touching albedo,
+     * a highlight, or anything else the frame has in it.
+     *
+     * **The two sums are not an approximation.** \`lampOpen\` multiplied by
+     * \`lampShadowed / lampOpen\` is \`lampShadowed\`, per channel, whatever mixture of lamps
+     * and shadows produced it. With the resolve switched off this is arithmetically the line it
+     * replaces; a lamp that is shadowed and a lamp beside it that is not keep their own shares.
+     *
+     * **What it costs** is two vector adds per light and six floats of live state. **What would
+     * make it wrong** is a term wanting to sit between the lamps and \`lit\` — a per-light
+     * tone map, say — because these two are summed before anything can get between them.
+     */
+    vec3 lampOpen = vec3(0.0);
+    vec3 lampShadowed = vec3(0.0);
+
+    /*
      * Which froxel this fragment is in.
      *
      * Derived in view space rather than from \`gl_FragCoord\`, for the reason \`uView\`'s own
@@ -3395,7 +3479,13 @@ void main() {
        *
        * At metal 0 this is one multiply by 1.0 away from the expression it replaces.
        */
-      lit += albedo * lightColor * ndl * shape * shaded * lightWeight * (1.0 - metal);
+      /*
+       * Held back from \`lit\` until the loop is over, so the shadow can be resolved across a
+       * pair of pixels first. See the block below the loop; nothing else about this term moved.
+       */
+      vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);
+      lampOpen += lampDiffuse;
+      lampShadowed += lampDiffuse * shaded;
 
       /*
        * A lamp reflected in a polished surface, which point lights could not do at all.
@@ -3425,8 +3515,12 @@ void main() {
           vec3(1.0),
           pow(1.0 - max(dot(toEyeLamp, lampHalfway), 0.0), 5.0) * metal
         );
-        lit += lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
-          * lampSpec * shape * shaded * lightWeight;
+        /* Held back with the diffuse half, and shadowed by the same term it always was. */
+        vec3 lampHighlight =
+          lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
+          * lampSpec * shape * lightWeight;
+        lampOpen += lampHighlight;
+        lampShadowed += lampHighlight * shaded;
       }
       /*
        * The most any light in range shadows this point, for the emissive term below —
@@ -3572,7 +3666,10 @@ void main() {
         );
       }
 
-      lit += albedo * uAreaLightColor[a] * form * (1.0 - metal) * areaOccl;
+      /* Held back with the point lamps', and shadowed by the same term it always was. */
+      vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
+      lampOpen += areaDiffuse;
+      lampShadowed += areaDiffuse * areaOccl;
 
       if (vSpecular > 0.0 || metal > 0.0) {
         /*
@@ -3597,10 +3694,60 @@ void main() {
         if (coverage > 0.0) {
           vec2 areaDfg = envBrdfApprox(max(dot(n, toEyeArea), 0.0), surfaceRoughness);
           vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
-          lit += areaSpec * uAreaLightColor[a] * coverage * areaOccl;
+          vec3 areaHighlight = areaSpec * uAreaLightColor[a] * coverage;
+          lampOpen += areaHighlight;
+          lampShadowed += areaHighlight * areaOccl;
         }
       }
     }
+
+    /*
+     * **The other half of the shadow filter: the two pixels of a column pair, folded together.**
+     *
+     * \`pointShadow\` turns its twelve taps by half a golden angle on every other column, so a
+     * pair of neighbouring pixels holds twenty-four places on the disk between them and neither
+     * holds more than twelve. This is where the pair becomes one filter. \`dFdx\` of a value is
+     * the difference across the pair, and half of it, signed by which of the two this pixel is,
+     * is exactly the average of both — so each pixel ends up shaded by all twenty-four taps
+     * while paying for twelve. It is the pairing \`ambientOcclusion.ts\` describes between its
+     * rotation tile and its blur, at the smallest size that needs no second pass.
+     *
+     * **After both lamp loops rather than beside the taps, and that is why this block exists at
+     * all.** A derivative is only defined where every pixel of the quad reaches it, and neither
+     * loop above reaches anything uniformly: the point loop \`continue\`s on falloff and on
+     * facing, and in the clustered arm its trip count is read from a froxel, so two neighbouring
+     * pixels can be shading different lights with a froxel boundary drawn across the screen
+     * where they stop agreeing. A \`dFdx\` in there is the 2026-08-07 rule's own case, and it
+     * would also invite a compiler to flatten the loop. Measured, too: with the turn taken from
+     * a per-fragment hash instead of the column, the same resolve made the penumbra *worse*
+     * than no resolve at all — 3.14 against 3.00 — because the hardware here answers a coarse
+     * derivative and the second row of a quad then borrows the first row's difference. The
+     * column tile is what makes that borrowing correct, so the two halves are one mechanism.
+     *
+     * Both lamp kinds are in the sums, because a rectangle's shadow is filtered by the same
+     * twelve taps and stippled the same way.
+     *
+     * **Clamped, and the clamp is a guard rather than tidying.** A fragment killed by the
+     * cutout or the clip plane above leaves its lane without a value for its neighbour to
+     * difference against, and GLSL ES says nothing about what comes back. What could reach the
+     * frame is a shadow term outside 0..1 on the pixel beside a cutout hole, which the clamp
+     * turns into a pixel that is merely fully lit or fully shadowed. **What would make this
+     * wrong** is a consumer whose cutout edges are most of the frame — dense foliage drawn as
+     * one alpha-tested sheet — where the honest answer is to resolve in a pass of its own,
+     * against a shadow term written to a target.
+     *
+     * The floor under the divisor costs nothing and answers the case where no lamp reached this
+     * pixel at all: both sums are zero there, so the ratio is zero and multiplying it back by
+     * the floor adds nothing.
+     */
+    vec3 lampOpenFloor = max(lampOpen, vec3(1e-6));
+    vec3 lampShade = lampShadowed / lampOpenFloor;
+    lampShade = clamp(
+      lampShade - dFdx(lampShade) * (float(int(gl_FragCoord.x) & 1) - 0.5),
+      0.0,
+      1.0
+    );
+    lit += lampOpenFloor * lampShade;
 
     /*
      * Self-illuminated geometry, dimmed where a lamp's shadow crosses it.

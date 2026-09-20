@@ -3,7 +3,7 @@
 Gaussian splat captures: the readers, view-dependent colour, an off-frame sort, and a pass that
 composes into the scene.
 
-**Cost: 16.5 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
+**Cost: 16.6 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
 drifts more than 3% — the number is derived from the same floors that gate asserts, so a README
 quoting a stale one is a red suite rather than a thing somebody notices.
 

@@ -648,8 +648,26 @@ export const FLOORS = {
    * cull became a stage of its frame: the stage list core keeps gained one name. The cull itself is
    * in the opt-in pass and costs a consumer who does not construct one nothing. Recorded exactly,
    * for the reason above.
+   *
+   * **Raised 2026-09-21 by the point-shadow filter's pair resolve — and only 9,056 of the 23,382
+   * is that change.** Measured the same way on the tree before it, `core-only` reads **729,276**
+   * against a floor of 715,117: 14,159 bytes, 1.98%, had accumulated unrecorded and were sitting
+   * inside the tolerance waiting for whatever landed next to be blamed for them. That is the third
+   * time this file has caught itself doing exactly what its own header warns about, so it is
+   * written down rather than folded in. The remaining 167 arrived with the glyph-cell rounding
+   * that landed between the two measurements.
+   *
+   * **What the 9,056 is.** Almost all of it is generated WGSL rather than anything a reader typed:
+   * the resolve is fifteen statements of GLSL and naga expands them into each of the sixteen
+   * lighting permutations, which is +29,270 raw and +5,122 gzipped in `flat.wgsl.ts` alone. The
+   * rest is the GLSL those permutations are assembled from — comments included, because a shader
+   * source is a string and its comments ship. The tap table itself is *smaller*: it was twelve
+   * `vec3` and is twelve `vec2`.
+   *
+   * **What would make it wrong** is the same thing that would make the fix wrong: if the sixteen
+   * permutations were ever collapsed, this would collapse with them.
    */
-  'core-only': 715117,
+  'core-only': 738499,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -662,7 +680,7 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 719918,
+  'core-and-gizmo': 743349,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -675,7 +693,7 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 721320,
+  'core-and-audio': 744736,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -697,7 +715,7 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 721332,
+  'core-and-animation': 744797,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -732,7 +750,7 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 752784,
+  'core-and-script': 776274,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -884,7 +902,7 @@ export const FLOORS = {
    * minds.
    */
   'capture-only': 66373,
-  'core-and-splats': 731992,
+  'core-and-splats': 755540,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -901,7 +919,7 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 716533,
+  'core-and-terrain': 739911,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -927,8 +945,8 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 724032,
-  'core-and-assets': 727906,
+  'core-and-ui2d': 747470,
+  'core-and-assets': 751527,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -939,7 +957,7 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 723420,
+  'core-audio-spatial': 746887,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

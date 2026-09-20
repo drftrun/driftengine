@@ -116,8 +116,8 @@ export const POINTSHADOW_GLSL = `float pointShadow(
   float strength = 1.0 - penumbra * penumbra;
 
   /*
-   * Taps are placed on a disk *perpendicular to the light ray*, rotated per
-   * fragment.
+   * Taps are placed on a disk *perpendicular to the light ray*, turned by half a golden
+   * angle on every other column of pixels.
    *
    * Offsetting the ray by fixed 3D vectors was the earlier approach and it has
    * two faults that only show on a wide filter. The offsets are not
@@ -127,8 +127,33 @@ export const POINTSHADOW_GLSL = `float pointShadow(
    * tap pattern — reported, on a brazier behind a rank of columns, as strange
    * straight lines across the light pool.
    *
-   * A per-fragment rotation turns that banding into a fine dither, which the eye
-   * reads as smooth — the standard cure, and it costs one hash.
+   * **The cure for that was a per-fragment hash, and it is what made the penumbra
+   * stipple.** Twelve taps are a coarse estimate of how much of the emitter this point can
+   * see; turning them by an unrelated angle at every pixel makes each pixel's error
+   * independent of its neighbour's, which is the definition of noise. Something has to
+   * average that back out, and this engine's lit pass is the last thing to touch the frame —
+   * there is no blur and no temporal resolve behind it, so the noise reached the screen. Two
+   * games reported the same coarse cross-hatch across a light pool.
+   *
+   * **So the turn comes from a two-pixel tile instead, and the pair is averaged afterwards.**
+   * A pixel's own x parity picks one of two tap sets half a golden angle apart, and
+   * \`main\` folds the pair together once the light loop is over — see the resolve there. The
+   * pair's twenty-four taps are the filter; each pixel pays for twelve of them.
+   *
+   * **A *column* pair rather than a 2x2 square, and that was measured rather than assumed.**
+   * Four turns on a square tile, resolved with both derivatives, came back at 3.88 against this
+   * pair's 2.46 on the same build — because the second derivative hands the lower row of a quad
+   * the upper row's difference on hardware that answers a coarse derivative, and with four turns
+   * that is the wrong difference. Two turns keyed on the column alone make it the right one,
+   * which is why the tile's shape and the resolve are one decision rather than two.
+   *
+   * **Neither half works alone**, which is the same pairing \`ambientOcclusion.ts\` describes
+   * between its rotation tile and its blur. Measured on \`demo/dev/pointshadow.html\` at
+   * \`?exposure=6\`, as mean absolute luminance difference to the right and down neighbour over
+   * the mover's penumbra, on WebGL2: **4.60** for the per-fragment hash this replaces, **2.88**
+   * for this tile with no resolve — and a one-pixel vertical comb in the picture, which is the
+   * tile itself on screen — against **2.37** for the pair resolved. A frame with the shadow
+   * switched off measures 0.81, and WebGPU answers 4.56 and 2.33 for the same two builds.
    *
    * **Unchanged by the move to an octahedral map, and that is the point.** The offsets are
    * angular perturbations of a direction, so every tap is still a direction and octEncode is
@@ -139,17 +164,19 @@ export const POINTSHADOW_GLSL = `float pointShadow(
   vec3 up = abs(fwd.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 tu = normalize(cross(up, fwd));
   vec3 tv = cross(fwd, tu);
-  // Interleaved gradient noise: cheap, and stable enough per pixel that the
-  // dither does not crawl while the camera moves.
-  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))
-    * 6.28318530718;
+  /*
+   * Integer arithmetic, because this is a lattice: a shader compiler is free to implement
+   * \`mod(x, 2.0)\` as a multiply by a reciprocal, and a GPU here answers 3 for \`3.0 % 3.0\`.
+   * \`gl_FragCoord.x\` is the pixel's centre, so truncating it is the pixel's own column.
+   */
+  float angle = float(int(gl_FragCoord.x) & 1) * PCF_PAIR_TURN;
   float ca = cos(angle);
   float sa = sin(angle);
 
   float lit = 0.0;
   for (int i = 0; i < ${MAX_SHADOW_FILTER_TAPS}; i++) {
     if (i >= uShadowFilterTaps) break;
-    vec2 disk = PCF_OFFSETS[i].xy;
+    vec2 disk = PCF_OFFSETS[i];
     vec2 turned = vec2(disk.x * ca - disk.y * sa, disk.x * sa + disk.y * ca);
     // Perpendicular to the ray, and *not* scaled by its length: the offsets are
     // an angular perturbation of a direction, which is what the encoding takes.
@@ -267,20 +294,19 @@ float areaShadow(
   float strength = 1.0 - penumbra * penumbra;
 
   /*
-   * Rotated per fragment inside the unit disk *before* the ellipse maps it, so the dither that
-   * breaks up twelve aligned taps survives the anisotropy. Interleaved gradient noise, one hash;
-   * without it a wide filter bands along the tap pattern — reported on a brazier behind a rank of
-   * columns as straight lines across the light pool.
+   * Turned inside the unit disk *before* the ellipse maps it, so the half-turn that separates
+   * the two halves of a pixel pair survives the anisotropy. The same two-pixel tile the round
+   * filter uses and for the same reasons — see \`pointShadow\`, which carries the measurement;
+   * a rectangle's shadow stippled exactly as a lamp's did, because it is the same twelve taps.
    */
-  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))
-    * 6.28318530718;
+  float angle = float(int(gl_FragCoord.x) & 1) * PCF_PAIR_TURN;
   float ca = cos(angle);
   float sa = sin(angle);
 
   float lit = 0.0;
   for (int i = 0; i < ${MAX_SHADOW_FILTER_TAPS}; i++) {
     if (i >= uShadowFilterTaps) break;
-    vec2 disk = PCF_OFFSETS[i].xy;
+    vec2 disk = PCF_OFFSETS[i];
     vec2 turned = vec2(disk.x * ca - disk.y * sa, disk.x * sa + disk.y * ca);
     vec3 sampleDir = toFrag + alongX * (turned.x * widthX) + alongY * (turned.y * widthY);
     float stored = textureLod(maps, vec3(octEncode(sampleDir), layer), 0.0).r;

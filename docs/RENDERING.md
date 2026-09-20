@@ -25,7 +25,7 @@ existed renders unchanged.
 | §2 Camera motion blur               | **done.** `cameraMotionBlur`, default 0. Reprojects through the previous view in the composite pass. Needed depth as a texture, which ambient occlusion will also want.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | §3 Reflection probe                 | **done.** `reflectionProbeSize` and `bakeReflectionProbe`, default off. Six faces into a mipmapped cubemap, once; roughness picks the mip. **Whether it fits is now a backend question** — see §3.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | §4 Ambient occlusion                | **done.** `ambientOcclusion` and `ambientOcclusionRadius`, default 0. Its own pass into a single-channel target, then a four-wide depth-aware blur, then the composite multiplies. 0.18 ms at 1.46 MP.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| §4 Shadow filtering (PCF)           | **done, and this row was wrong.** Both paths filter: a rotated Poisson disk on the directional cascade with receiver-plane depth gradient compensation, and a per-fragment rotated disk on the cube path with a penumbra estimated from the source radius. `shadowFilterTaps` budgets both. What is true is that the _point_ filter is deliberately held near its floor. See below.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| §4 Shadow filtering (PCF)           | **done, and this row was wrong.** Both paths filter: a rotated Poisson disk on the directional cascade with receiver-plane depth gradient compensation, and a golden-angle disk on the omnidirectional path with a penumbra estimated from the source radius. `shadowFilterTaps` budgets both. The omnidirectional filter spans a pair of pixel columns and is folded back together after the lamp loops, which is one mechanism rather than two. See below.                                                                                                                                                                                                                                                                                                                          |
 | §4 Texture filtering                | **partly done.** `SurfaceTexture` takes an `anisotropy` option and applies it where the extension is present. What is missing is any caller asking for more than the default, which is the tyre-tread case.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | §4a Bloom                           | **done in 0.30.0, corrected in 0.31.0.** The threshold measures the largest channel rather than luminance, because luminance weights blue at 0.0722 and a world built out of coloured light bloomed by zero pixels. Identical to the old behaviour on neutral grey, so it can only ever bloom more.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Relief from a surface texture       | **done in 1.4.0–1.4.1.** `setSurfaceTextureRelief` takes the bound texture's own luminance onto the shading normal, and procedural relief fades where a pixel covers more than a bump, so a road at a grazing angle reads as aggregate rather than as noise.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -332,21 +332,34 @@ will be to read a single timing and believe it.
 
 - **Shadow filtering — done, and the entry that once sat here was stale.** Both paths have
   been filtering for a long time: `DIRECTIONAL_PCF_OFFSETS` is a twelve-tap Poisson disk with
-  receiver-plane depth gradient compensation, and `PCF_OFFSETS` is a disk perpendicular to the
-  light ray, rotated per fragment by interleaved gradient noise. Both are budgeted by
-  `shadowFilterTaps`.
+  receiver-plane depth gradient compensation, and `PCF_OFFSETS` is a twelve-tap golden-angle
+  disk perpendicular to the light ray. Both are budgeted by `shadowFilterTaps`.
 
-  **What is true, and worth stating precisely because it reads like an omission:** the point
-  filter is deliberately capped near its floor at `MAX_FILTER_RADIUS = 0.07`. Four attempts went
-  into widening it and the fourth found out why none of them worked. A wide angular filter on a
-  _cube_ map crosses face seams, and a tap across a seam reads a face rendered under a different
-  90° projection, which draws as straight lines radiating from beneath the light. Seven separate
-  reports pointed at those lines. So softness is carried by `PENUMBRA_FADE` fading the shadow
-  out with distance from its caster, which is seam-independent by construction because it changes
-  how much a tap counts rather than where it samples.
+  **The point filter is a pair of pixels rather than one, and that is the part worth knowing.**
+  Its taps turn by half a golden angle on every other pixel column, and `main` folds a pixel
+  together with its neighbour once both lamp loops are over, so each pixel is shaded by the
+  pair's twenty-four places while paying for twelve. Neither half stands alone: the turn on its
+  own draws the tile as a one-pixel comb, and the fold on its own has nothing to fold. It is the
+  same pairing the ambient-occlusion pass describes between its rotation tile and its blur, at
+  the smallest size that needs no second pass — which matters here because the lit pass is the
+  last thing to touch the frame and there is no blur behind it to hide a noisy estimate in.
 
-  Anyone reopening this should read `pointShadow` in `flat.ts` first, and should not widen the
-  radius without a plan for the seams.
+  **What this replaced was a per-fragment hash**, and that is what made a penumbra stipple:
+  twelve taps are a coarse estimate, and turning them by an unrelated angle at every pixel makes
+  each pixel's error independent of its neighbour's. Two games reported the same coarse
+  cross-hatch across a light pool. The fold is also why the derivative lives in `main` rather
+  than beside the taps — inside the light loop the control flow is not uniform, so no derivative
+  there is defined.
+
+  `MAX_FILTER_RADIUS` is 0.25. It was 0.07 for as long as the map was a cube, because a wide
+  angular filter crossed face seams and a tap across a seam read a face rendered under a
+  different 90° projection — straight lines radiating from beneath the light, in seven separate
+  reports. An octahedral map is one projection over the whole sphere and has no join to cross.
+  Softness is still carried mostly by `PENUMBRA_FADE` fading the shadow out with distance from
+  its caster, which changes how much a tap counts rather than where it samples.
+
+  Anyone reopening this should read `pointShadow` in `shaders/flat/` first, and
+  `packages/core/src/render/shaders/pointShadowFilter.test.ts` for what the tap set has to be.
 
 - **Texture filtering.** `SurfaceTexture` takes anisotropy where the extension is present, and
   nothing currently asks for it. A tyre tread at a grazing angle is exactly the case it fixes.

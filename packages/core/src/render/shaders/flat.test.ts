@@ -43,8 +43,14 @@ test('a light contributes only as much as it is present', () => {
      by `(1 - metal)`, and it is added after the environment blend, so it could not even be dimmed
      by the reflection in front of it: a broad view-independent wash sat on top of every metal in
      every lamp-lit room, which is the definition of matte and is what one read as. */
+  /* The term is accumulated rather than added straight into `lit` since the shadow filter's
+     pair resolve, which needs the lamps' light separable from everything else in the frame —
+     see the resolve in `main`. Every factor it always had is still on it. */
   expect(source, 'the direct term is weighted, and a metal takes none of it').toContain(
-    'lit += albedo * lightColor * ndl * shape * shaded * lightWeight * (1.0 - metal);',
+    'vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);',
+  );
+  expect(source, 'and the shadow is what separates the two sums it lands in').toContain(
+    'lampOpen += lampDiffuse; lampShadowed += lampDiffuse * shaded;',
   );
   // `shape` is the falloff curve the profile asked for; squaring belongs to one of them.
   expect(source, 'and the shaped falloff still squares').toContain(
@@ -242,7 +248,7 @@ test('a polished surface reflects the lamps, not only the sun', () => {
   /* `lampSpec` rather than `vSpecular` since the ORM map: it is that attribute exactly wherever
      no map is bound. What this line asserts is the three terms after it. */
   expect(source, 'and it fades with the light, not independently of it').toContain(
-    '* lampSpec * shape * shaded * lightWeight;',
+    '* lampSpec * shape * lightWeight; lampOpen += lampHighlight; lampShadowed += lampHighlight * shaded;',
   );
   /*
    * The lobe is GGX rather than a pow(): its long tail is what smears a lamp into a streak
@@ -332,8 +338,15 @@ test('a profile with shadows off compiles none of the shadow path', () => {
   }
 
   // And the shading it feeds is still there, unshadowed rather than unlit.
-  expect(bare).toContain('lit += albedo * lightColor');
+  expect(bare).toContain('vec3 lampDiffuse = albedo * lightColor');
   expect(bare).toContain('float sunShade = 1.0;');
+  /* The lamps' two sums survive a shadowless profile and are equal in it, so the ratio below
+     them is one and the line that applies it is the line it replaced. What must not survive is
+     the derivative: nothing to resolve, and a fragment shader that takes one pays for it. */
+  expect(bare, 'the lamps still reach lit through the same pair of sums').toContain(
+    'lit += lampOpenFloor * lampShade;',
+  );
+  expect(bare, 'and a shadowless profile takes no derivative').not.toContain('dFdx(lampShade)');
 });
 
 test('each half of the shadow path is dropped on its own', () => {

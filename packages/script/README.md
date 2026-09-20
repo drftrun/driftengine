@@ -3,7 +3,7 @@
 The `drift/*` capability bindings: what this engine provides to DriftScript, and **the only place the
 two are coupled**.
 
-**Cost: 36.8 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
+**Cost: 36.9 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
 drifts more than 3% — the number is derived from the same floors that gate asserts, so a README
 quoting a stale one is a red suite rather than a thing somebody notices.
 

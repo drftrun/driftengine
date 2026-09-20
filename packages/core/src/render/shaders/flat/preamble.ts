@@ -883,16 +883,53 @@ uniform float uLiveAreaShadowWeight[MAX_AREA_LIGHTS];
  * where a bias means what it looks like it means.
  */
 /**
- * Sample offsets forming a rough sphere, for filtering a cubemap shadow.
- * Perturbing the *direction* is how PCF works on a cube — there is no 2D UV
- * neighbourhood to step across the way there is for the sun's cascade.
+ * Twelve places on a disk across the light ray, for filtering an omnidirectional shadow.
+ *
+ * **These were eight, and the count is why a penumbra was stippled.** The list used to be the
+ * eight corners and six faces of a cube, carried as \`vec3\` from the era when a tap offset a
+ * direction by a 3D vector. Nothing has read the third component since the map became
+ * octahedral — both filters take \`.xy\` — and flattening a cube's corners onto a plane makes
+ * pairs of them coincide: \`(1, 1, 1)\` and \`(1, 1, -1)\` are one 2D offset, four times over. So
+ * twelve taps asked eight questions and answered four of them twice, and every one of the eight
+ * sat on the rim at radius 1 or 1.414 with nothing in between. A coverage estimate from a ring
+ * moves in steps of two twelfths as the penumbra's edge sweeps a doubled pair across it, which
+ * is the size of the speckle that was reported.
+ *
+ * **The replacement is the golden-angle disk this repository already uses for ambient
+ * occlusion** — angle \`i\` turns of 137.5 degrees, radius \`sqrt((k + 0.5) / 12)\` — so the taps
+ * are spread evenly over the area rather than crowded on the rim or at the centre, and no two
+ * coincide. The nearest pair is 0.355 apart where the old set had a pair at zero.
+ *
+ * **The radii are dealt round rather than taken in order, and that is what makes a short filter
+ * work.** \`shadowFilterTaps\` is 4, 8 or 12 and the loop below simply stops early, so every
+ * prefix of this list is a filter somebody ships: in spiral order the first four taps would be
+ * the four innermost and a low profile would quietly get a filter a third of the width it asked
+ * for. Interleaved, the first four already span 0.21 to 0.91 of the disk's reach and sit around
+ * its centre rather than to one side, which is a small filter rather than a narrow one.
+ *
+ * **What it gives up** is a little softness. The old set put two thirds of its taps at the
+ * outermost radius, so it read the penumbra's widest part twice as often as an even disk does
+ * and drew a shadow edge softer than the emitter's size calls for; an even disk is the honest
+ * estimate and is very slightly crisper. **What would make it wrong** is a caller wanting the
+ * filter's *reach* changed — that is \`MAX_FILTER_RADIUS\`, and the outermost tap here is 1.384
+ * against the old 1.414 precisely so this change does not move it.
  */
 #if POINT_SHADOWS
-const vec3 PCF_OFFSETS[${MAX_SHADOW_FILTER_TAPS}] = vec3[${MAX_SHADOW_FILTER_TAPS}](
-  vec3( 1.0,  1.0,  1.0), vec3( 1.0, -1.0, -1.0), vec3(-1.0,  1.0, -1.0), vec3(-1.0, -1.0,  1.0),
-  vec3( 1.0, -1.0,  1.0), vec3(-1.0,  1.0,  1.0), vec3( 1.0,  1.0, -1.0), vec3(-1.0, -1.0, -1.0),
-  vec3( 1.0,  0.0,  0.0), vec3(-1.0,  0.0,  0.0), vec3( 0.0,  1.0,  0.0), vec3( 0.0, -1.0,  0.0)
+const vec2 PCF_OFFSETS[${MAX_SHADOW_FILTER_TAPS}] = vec2[${MAX_SHADOW_FILTER_TAPS}](
+  vec2( 0.289,  0.000), vec2(-0.767,  0.703), vec2( 0.067, -0.761), vec2( 0.766,  0.999),
+  vec2(-0.492, -0.087), vec2( 0.943, -0.600), vec2(-0.225,  0.836), vec2(-0.610, -1.174),
+  vec2( 0.606,  0.221), vec2(-1.100,  0.454), vec2( 0.406, -0.867), vec2( 0.414,  1.321)
 );
+/**
+ * The angle between the two tap sets a pair of neighbouring pixels uses. See \`pointShadow\`.
+ *
+ * Half the golden angle, because the offsets above are a golden-angle spiral: turning the whole
+ * set by half a step drops the second pixel's taps between the first pixel's arms rather than
+ * on top of them. Measured on the pair, the closest two of the twenty-four are 0.305 apart,
+ * against 0.175 for a half turn and 0.233 for a whole golden angle — so this is the choice that
+ * makes the pair's combined filter as even as the twelve it is built from.
+ */
+const float PCF_PAIR_TURN = 1.19998161;
 #endif
 
 /** A finite point-light shadow loses strength with the light that casts it. */`;

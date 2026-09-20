@@ -794,6 +794,27 @@ export const MAIN_GLSL = `void main() {
     float lightShade = 1.0;
 
     /*
+     * **The lamps' light twice: once as it arrives, once as their shadows leave it.**
+     *
+     * Every point light's contribution used to go straight into \`lit\`. It is accumulated here
+     * instead, in two sums that differ only by the shadow term, so that after the loop there is
+     * a single number per channel saying how much of the lamps' light survived — and *that* is
+     * the thing the resolve below can average across a pair of pixels without touching albedo,
+     * a highlight, or anything else the frame has in it.
+     *
+     * **The two sums are not an approximation.** \`lampOpen\` multiplied by
+     * \`lampShadowed / lampOpen\` is \`lampShadowed\`, per channel, whatever mixture of lamps
+     * and shadows produced it. With the resolve switched off this is arithmetically the line it
+     * replaces; a lamp that is shadowed and a lamp beside it that is not keep their own shares.
+     *
+     * **What it costs** is two vector adds per light and six floats of live state. **What would
+     * make it wrong** is a term wanting to sit between the lamps and \`lit\` — a per-light
+     * tone map, say — because these two are summed before anything can get between them.
+     */
+    vec3 lampOpen = vec3(0.0);
+    vec3 lampShadowed = vec3(0.0);
+
+    /*
      * Which froxel this fragment is in.
      *
      * Derived in view space rather than from \`gl_FragCoord\`, for the reason \`uView\`'s own
@@ -1192,7 +1213,13 @@ export const MAIN_GLSL = `void main() {
        *
        * At metal 0 this is one multiply by 1.0 away from the expression it replaces.
        */
-      lit += albedo * lightColor * ndl * shape * shaded * lightWeight * (1.0 - metal);
+      /*
+       * Held back from \`lit\` until the loop is over, so the shadow can be resolved across a
+       * pair of pixels first. See the block below the loop; nothing else about this term moved.
+       */
+      vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);
+      lampOpen += lampDiffuse;
+      lampShadowed += lampDiffuse * shaded;
 
       /*
        * A lamp reflected in a polished surface, which point lights could not do at all.
@@ -1222,8 +1249,12 @@ export const MAIN_GLSL = `void main() {
           vec3(1.0),
           pow(1.0 - max(dot(toEyeLamp, lampHalfway), 0.0), 5.0) * metal
         );
-        lit += lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
-          * lampSpec * shape * shaded * lightWeight;
+        /* Held back with the diffuse half, and shadowed by the same term it always was. */
+        vec3 lampHighlight =
+          lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
+          * lampSpec * shape * lightWeight;
+        lampOpen += lampHighlight;
+        lampShadowed += lampHighlight * shaded;
       }
       /*
        * The most any light in range shadows this point, for the emissive term below —
@@ -1371,7 +1402,10 @@ export const MAIN_GLSL = `void main() {
       }
 #endif
 
-      lit += albedo * uAreaLightColor[a] * form * (1.0 - metal) * areaOccl;
+      /* Held back with the point lamps', and shadowed by the same term it always was. */
+      vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
+      lampOpen += areaDiffuse;
+      lampShadowed += areaDiffuse * areaOccl;
 
       if (vSpecular > 0.0 || metal > 0.0) {
         /*
@@ -1396,10 +1430,62 @@ export const MAIN_GLSL = `void main() {
         if (coverage > 0.0) {
           vec2 areaDfg = envBrdfApprox(max(dot(n, toEyeArea), 0.0), surfaceRoughness);
           vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
-          lit += areaSpec * uAreaLightColor[a] * coverage * areaOccl;
+          vec3 areaHighlight = areaSpec * uAreaLightColor[a] * coverage;
+          lampOpen += areaHighlight;
+          lampShadowed += areaHighlight * areaOccl;
         }
       }
     }
+
+    /*
+     * **The other half of the shadow filter: the two pixels of a column pair, folded together.**
+     *
+     * \`pointShadow\` turns its twelve taps by half a golden angle on every other column, so a
+     * pair of neighbouring pixels holds twenty-four places on the disk between them and neither
+     * holds more than twelve. This is where the pair becomes one filter. \`dFdx\` of a value is
+     * the difference across the pair, and half of it, signed by which of the two this pixel is,
+     * is exactly the average of both — so each pixel ends up shaded by all twenty-four taps
+     * while paying for twelve. It is the pairing \`ambientOcclusion.ts\` describes between its
+     * rotation tile and its blur, at the smallest size that needs no second pass.
+     *
+     * **After both lamp loops rather than beside the taps, and that is why this block exists at
+     * all.** A derivative is only defined where every pixel of the quad reaches it, and neither
+     * loop above reaches anything uniformly: the point loop \`continue\`s on falloff and on
+     * facing, and in the clustered arm its trip count is read from a froxel, so two neighbouring
+     * pixels can be shading different lights with a froxel boundary drawn across the screen
+     * where they stop agreeing. A \`dFdx\` in there is the 2026-08-07 rule's own case, and it
+     * would also invite a compiler to flatten the loop. Measured, too: with the turn taken from
+     * a per-fragment hash instead of the column, the same resolve made the penumbra *worse*
+     * than no resolve at all — 3.14 against 3.00 — because the hardware here answers a coarse
+     * derivative and the second row of a quad then borrows the first row's difference. The
+     * column tile is what makes that borrowing correct, so the two halves are one mechanism.
+     *
+     * Both lamp kinds are in the sums, because a rectangle's shadow is filtered by the same
+     * twelve taps and stippled the same way.
+     *
+     * **Clamped, and the clamp is a guard rather than tidying.** A fragment killed by the
+     * cutout or the clip plane above leaves its lane without a value for its neighbour to
+     * difference against, and GLSL ES says nothing about what comes back. What could reach the
+     * frame is a shadow term outside 0..1 on the pixel beside a cutout hole, which the clamp
+     * turns into a pixel that is merely fully lit or fully shadowed. **What would make this
+     * wrong** is a consumer whose cutout edges are most of the frame — dense foliage drawn as
+     * one alpha-tested sheet — where the honest answer is to resolve in a pass of its own,
+     * against a shadow term written to a target.
+     *
+     * The floor under the divisor costs nothing and answers the case where no lamp reached this
+     * pixel at all: both sums are zero there, so the ratio is zero and multiplying it back by
+     * the floor adds nothing.
+     */
+    vec3 lampOpenFloor = max(lampOpen, vec3(1e-6));
+    vec3 lampShade = lampShadowed / lampOpenFloor;
+#if POINT_SHADOWS
+    lampShade = clamp(
+      lampShade - dFdx(lampShade) * (float(int(gl_FragCoord.x) & 1) - 0.5),
+      0.0,
+      1.0
+    );
+#endif
+    lit += lampOpenFloor * lampShade;
 
     /*
      * Self-illuminated geometry, dimmed where a lamp's shadow crosses it.
