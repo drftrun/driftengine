@@ -482,7 +482,12 @@ export class InputSource {
   ) {
     this.target = target;
     this.preventDefaultCodes = new Set(preventDefaultCodes);
-    this.isCoarse = window.matchMedia('(pointer: coarse)').matches;
+    /* Guarded, and `ui/fullscreen.ts` guards the identical query with the identical test. This
+       line is in a constructor, so unguarded it did not degrade a hint — it threw, and an embedder
+       without `matchMedia` could not construct input at all. False is what a runtime with no
+       pointer media query honestly is. */
+    this.isCoarse =
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
     this.deadzone = options.deadzone ?? DEFAULT_DEADZONE;
     this.autoPoll = options.autoPoll ?? true;
     for (const name of ['keyboard', 'mouse', 'touch', 'gamepad'] as const) {

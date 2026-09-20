@@ -215,68 +215,66 @@ describe('a scene', () => {
     expect(loaded.liveCount).toBe(0);
   });
 
-  it('costs about eight times as much for eight times as many, rather than sixty-four', () => {
+  it('COSTS THE SAME FOR ONE BIG WORLD AS FOR EIGHT SMALL ONES, which quadratic would not', () => {
     /*
-     * **A ratio, not a threshold**, because a threshold is a fact about the machine and this is a
-     * fact about the algorithm. Multiplying the entities by eight multiplies a linear cost by eight
-     * and a quadratic one by sixty-four.
+     * **A ratio between two measurements that allocate the same amount, which is the third shape
+     * this test has taken.** What it is for has not changed: `serializeWorld` built its entity list
+     * with `Array.includes` as the membership test, a linear scan per entity, and a hundred
+     * thousand entities across three components took **8.8 seconds** where a `Set` takes 74
+     * milliseconds. It reads as obviously correct — the list is the thing being built, so testing
+     * it is the natural move — and the cost is invisible until the world is large.
      *
-     * **The two sizes are far apart on purpose, and that matters more than making them large.**
-     * At 2x the hypotheses are 2 and 4, so a ceiling sits halfway between them and a scheduling
-     * hiccup inside one measurement crosses it — this failed about one run in five at 4,000/8,000
-     * and about one in six at 20,000/40,000, because raising the counts raises the work *and* the
-     * window a hiccup can land in. At 8x they are 8 and 64, and the measured quadratic version
-     * comes in at 97.8 against a ceiling of 20.
+     * **The two shapes before this one were timing comparisons that flaked, and raising the numbers
+     * did not fix it.** 4,000 against 8,000 failed about one run in five; 10,000 against 80,000,
+     * with best-of-three and eight times the separation, still failed **two full-suite runs in six**
+     * on 2026-09-17 while other work shared the machine. The reason is not noise: the large arm
+     * allocated eight times as much as the small one, so a major collection was eight times likelier
+     * to land inside the measurement that was being compared *against*. A bias, not a hiccup, and
+     * more rounds do not average it away.
      *
-     * What it caught: the entity list was built with `Array.includes` as its membership test, which
-     * is a linear scan per entity. A hundred thousand entities across three components took **8.8
-     * seconds**; with a `Set` it is 74 milliseconds. It reads as obviously correct — the list is
-     * the thing being built, so testing it is the natural move — and the cost is invisible until
-     * the world is large.
+     * **So both arms do the same work and allocate the same amount**, and the only thing that
+     * differs is how many entities are in one world. Forty thousand entities either way: once as a
+     * single world, and once as eight worlds of five thousand serialized in a row. A linear
+     * algorithm cannot tell the difference. A quadratic one does 40,000² against 8 × 5,000², which
+     * is eight times as much.
+     *
+     * Measured on 2026-09-17: **1.00 to 1.27 linear, 6.78 to 7.26 quadratic.** The ceiling of three
+     * sits about two and a half times above the one and two and a half times below the other, and
+     * a collection now lands in whichever arm it likes.
      */
     const fill = (n: number): World => {
       const world = new World();
       for (let i = 0; i < n; i += 1) world.add(world.create(), Health, { current: i, maximum: i });
       return world;
     };
-    /* **Best of three**, because a single timing is a fact about what else the machine was doing.
-       A scheduling hiccup inside one measurement is exactly what makes a ratio test flaky, and the
-       minimum is the reading least contaminated by one. */
-    const measure = (world: World): number => {
+    const TOTAL = 40_000;
+    const PARTS = 8;
+    const one = fill(TOTAL);
+    const many = Array.from({ length: PARTS }, () => fill(TOTAL / PARTS));
+
+    /* Best of three, because a single timing is a fact about what else the machine was doing. */
+    const measure = (run: () => void): number => {
       let best = Infinity;
       for (let round = 0; round < 3; round += 1) {
         const started = performance.now();
-        serializeWorld(world, [Health]);
+        run();
         best = Math.min(best, performance.now() - started);
       }
       return best;
     };
-
-    /*
-     * **Eight times the entities rather than two, and the margin is the whole change.**
-     *
-     * At 2x, linear costs 2 and quadratic costs 4 — a ceiling of 3 sits halfway between them, and
-     * a scheduling hiccup inside one measurement crosses it. This test failed about one full-suite
-     * run in six on 2026-08-26 despite best-of-three, and had already been raised once from
-     * 4,000/8,000 for the same reason. Raising the counts again buys nothing: doubling the work
-     * doubles the window a hiccup can land in.
-     *
-     * At 8x the two hypotheses are 8 and 64. A ceiling of 20 is more than twice the linear cost
-     * and less than a third of the quadratic one, so noise would have to more than double a
-     * measurement to reach it — and the test still fails on a quadratic serialize by a factor of
-     * three. That is a wider *separation*, not a weaker assertion.
-     */
-    const small = fill(10_000);
-    const large = fill(80_000);
+    const big = (): void => void serializeWorld(one, [Health]);
+    const small = (): void => {
+      for (const world of many) serializeWorld(world, [Health]);
+    };
     /* Warmed together so neither pays for the other's first run. */
-    measure(small);
-    measure(large);
+    big();
+    small();
 
-    const ratio = Math.max(measure(large), 0.05) / Math.max(measure(small), 0.05);
+    const ratio = Math.max(measure(big), 0.05) / Math.max(measure(small), 0.05);
     expect(
       ratio,
-      'eight times the entities should cost about eight times as much, not sixty-four',
-    ).toBeLessThan(20);
+      'one world of 40,000 should cost what eight of 5,000 do, not eight times as much',
+    ).toBeLessThan(3);
   });
 
   it('round-trips through JSON, which is what a save file is', () => {

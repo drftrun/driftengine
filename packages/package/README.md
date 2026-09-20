@@ -7,7 +7,7 @@ learning what a shell is.
 npx drift-package init                   # writes the two scripts your repository has to own
 npx drift-package doctor                 # is this project packageable, and how would it be signed
 npx drift-package run                    # the real shell, from source, no installer
-npx drift-package build --target=linux-x64
+npx drift-package build --target=native-linux-x64
 npx drift-package verify --contains=<a string from your diff>
 ```
 
@@ -64,6 +64,8 @@ Beside your `package.json`, in the project that produces the web build:
 ```
 
 `id`, `name`, `entry` and `targets` are required; every rejection names the field it is about.
+`native.entry` is required when `targets` names `native-linux-x64`, and nowhere else — see
+[the native target](#the-native-target-and-electron-as-the-compatibility-target).
 `icon` is a 1024x1024 PNG and defaults to the engine's own mark, because the alternative default is
 Electron's logo. `window.mode` is what the window is _created_ as — `borderless` makes it
 frameless — and is a different thing from the runtime mode a settings screen changes.
@@ -327,6 +329,60 @@ which is committed.
 mobile build is 20 MB rather than 200, and it is also why WebGL2 is the baseline there: what the
 device offers is what the game gets, and the acceptance probe decides.
 
+## The native target, and Electron as the compatibility target
+
+**On Linux x64, `native-linux-x64` is the target to ship.** It runs the game on
+[`@driftengine/native-host`](../native-host/README.md) — Node, Dawn and SDL, with no browser — and
+the archive carries everything that runs it:
+
+    startup/                   what the archive holds, and what a Steam depot would upload
+      startup                  the launcher: the Node beside it, running the game
+      runtime/node             the Node that ran the build
+      app/game.mjs             the game, the host and the engine, bundled for Node
+      app/modules/             each module the bundle starts by URL: workers, the thread bootstrap
+      app/node_modules/        the modules that cannot be bundled, and what they load
+      app/public/              the game's web build, which its `fetch` of a relative path reads
+      licenses/                Node's licence and every package's, with INDEX.txt
+    Startup-1.0.0-linux-x64.tar.gz
+
+Two things it needs of the game. **The host**, installed beside it at the packager's version —
+`npm install @driftengine/native-host@<version>`; `doctor` names the command when it is missing, and
+a build refuses a host from another release. **A native entry**, `native.entry` in the manifest: a
+module exporting `mount(canvas)`, since there is no page there for a game to find its canvas in.
+The game's page still builds as before, and its files are what the host serves to the game's
+`fetch`. Saves are kept where the desktop target keeps them, under the same name, so a player
+moving between the two builds keeps theirs.
+
+**Measured 2026-09-19**, one small program — the starter's lit cube — packaged both ways on one
+machine (an RX 9070 XT under COSMIC), with `npm run native:startup -- --electron` in the engine's
+repository:
+
+|                      | `native-linux-x64`            | `linux-x64` (Electron 43.4.1)         |
+| -------------------- | ----------------------------- | ------------------------------------- |
+| archive              | 61.3 MB                       | 121.7 MB tarball, 128.5 MB AppImage   |
+| unpacked             | 181.2 MB, of which Node 124.8 | 330.6 MB                              |
+| spawn to first frame | 750 ms, WebGPU                | 380 ms, WebGL2 — it offered no WebGPU |
+| build                | 7 s                           | 3 min 13 s                            |
+
+The native start is mostly the renderer's pipelines, compiled on every launch because the binding
+exposes Dawn's cache to nothing: 355 ms of the 750, where Node's own start is 17. **On that
+machine's Wayland session the Electron build did not start at all** — its main thread waits on the
+compositor's socket before `ready` — so it was timed under XWayland, where the native host's window
+is too.
+
+**The Electron targets are kept, as the compatibility target**, and nothing that shipped stops
+shipping: they are the desktop build on Windows and macOS, where there is no native host yet — it
+reaches both after 4.0.0, and the three bindings already publish binaries for them — and on
+Linux the build for a game with no native entry yet, or one that needs what the host lacks — WebGL2
+beneath WebGPU on a machine with no Vulkan device, a DOM beyond the canvas, the engine's badge, and
+a store (`steam.appId` does nothing on the host, and `doctor` says so).
+
+**No copyleft library is bundled.** The Opus decoder's Ogg parser is LGPL-3.0, so it ships as a
+file of its own in `app/node_modules`, which a person can replace, with the GPL's text beside it in
+`licenses/`; any other that would land in the bundle stops the build, naming it. `verify
+--target=native-linux-x64` looks in the native bundle, which is built from the game's source rather
+than copied from its web build.
+
 ## Where each artifact is built
 
 An artifact is built on the platform it targets, with one exception, and `build` refuses the ones
@@ -334,6 +390,7 @@ this machine cannot honestly produce.
 
 | target                 | built on                        | how                                                                                     |
 | ---------------------- | ------------------------------- | --------------------------------------------------------------------------------------- |
+| `native-linux-x64`     | Linux on x64                    | `npx drift-package build --target=native-linux-x64`                                     |
 | `linux-x64`            | Linux                           | `npx drift-package build --target=linux-x64`                                            |
 | `win-x64`              | Windows, a VM is fine           | `drift-package init` writes `scripts/build-windows.ps1` into your project; run it there |
 | `mac-arm64`, `mac-x64` | macOS, **or Linux**             | [`scripts/build-macos.sh`](scripts/build-macos.sh), or `build --target=mac-arm64`       |

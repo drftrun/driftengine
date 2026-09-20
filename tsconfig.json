@@ -61,7 +61,16 @@
      */
     "types": []
   },
-  "include": ["packages/*/src", "demo", "examples"],
+  /*
+   * `editor` is here because for three waves it was not, and nothing said so.
+   *
+   * The editor is a product outside `packages/`, and `include` was the one list that never learnt
+   * it: `vitest.config.ts`, `scripts/docs.test.mjs` and `scripts/docs-counts.mjs` all walk
+   * `['packages', 'demo', 'editor']`, and this walked two of the three. So every editor module
+   * written for Waves 2C, 3C and 4C was tested and never typechecked — `const n: number = 'x'`
+   * compiled clean, which is how it was found.
+   */
+  "include": ["packages/*/src", "demo", "examples", "editor/src"],
   /*
    * The packager's Node-side files, checked by `tsconfig.scripts.json` instead.
    *
@@ -79,6 +88,10 @@
    * engine's config through the back door. `tsconfig.scripts.json` typechecks both.
    */
   "exclude": [
+    /* The native host and its harness run in Node and nowhere else; `tsconfig.scripts.json` checks
+       all of both. */
+    "packages/native-host/src",
+    "demo/native",
     "packages/package/src/main",
     "packages/package/src/preload/entry.ts",
     "packages/package/src/cli.ts",
@@ -94,6 +107,14 @@
     "packages/package/src/identity.ts",
     "packages/package/src/identity.test.ts",
     "packages/package/src/stage.test.ts",
+    "packages/package/src/nativeBundle.ts",
+    "packages/package/src/nativeBundle.test.ts",
+    "packages/package/src/native.ts",
+    "packages/package/src/native.test.ts",
+    "packages/package/src/nativeCopy.ts",
+    "packages/package/src/nativeCopy.test.ts",
+    "packages/package/src/nativeLicenses.ts",
+    "packages/package/src/nativeLicenses.test.ts",
     /* Reads the manifest template off disk, so it needs Node's types for the same reason the
        Node-side modules above do. `tsconfig.scripts.json` typechecks it. */
     "packages/package/src/mobile/androidManifest.test.ts",

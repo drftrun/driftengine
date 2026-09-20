@@ -65,5 +65,12 @@
    * bundle. The overlap costs a second pass over a few small files and buys the one property that
    * matters — a Node API in renderer code fails somewhere.
    */
-  "include": ["scripts/**/*.ts", "packages/package/src/**/*.ts", "demo/dev/vite.config.ts"]
+  "include": [
+    "scripts/**/*.ts",
+    "packages/package/src/**/*.ts",
+    "demo/dev/vite.config.ts",
+    "packages/native-host/src/**/*.ts",
+    "demo/native/**/*.ts",
+    "tools/**/*.ts"
+  ]
 }

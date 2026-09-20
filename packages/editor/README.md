@@ -2,7 +2,7 @@
 
 The model of a scene editor: what exists, what is selected, and what play mode does to a world.
 
-**Cost: 10.3 KB gzipped standalone.** Measured by `scripts/size-gate.test.mjs`, which fails if it
+**Cost: 10.4 KB gzipped standalone.** Measured by `scripts/size-gate.test.mjs`, which fails if it
 drifts more than 3% — the number comes from the same floors that gate asserts, so a README quoting a
 stale one is a red suite rather than a thing somebody notices.
 

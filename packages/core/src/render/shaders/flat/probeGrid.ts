@@ -1,5 +1,16 @@
 /** Reading the probe array: which layers a point sits between, and what each of them holds. */
 
+import {
+  PROBE_VISIBILITY_CRUSH,
+  PROBE_VISIBILITY_SHARPNESS,
+  PROBE_VISIBILITY_VARIANCE_FLOOR,
+} from '../../gi/probeVolume.ts';
+
+/** A number as GLSL always reads it as a float, so an integer constant is not an `int`. */
+function glslFloat(value: number): string {
+  return Number.isInteger(value) ? value.toFixed(1) : String(value);
+}
+
 /**
  * The lit pass's half of the grid, and the two things it has to get right.
  *
@@ -83,6 +94,41 @@ vec3 probeRadiance(vec3 dir, float lod, float layer) {
   return mix(fine, coarse, clamp(lod - lo, 0.0, 1.0));
 }
 
+/** Layers of radiance in the array, which is where the visibility moments start. */
+float probeLayerCount() {
+  return uProbeGridCounts.x * uProbeGridCounts.y * uProbeGridCounts.z;
+}
+
+/**
+ * How much of a probe a point can actually see, from one to zero.
+ *
+ * **The same arithmetic as "probeVisibilityWeight", and the constants are interpolated from it**
+ * rather than written again: one in front of what the probe saw along that direction, and behind it
+ * a Chebyshev bound on the variance of the distances the probe recorded — confident where the
+ * geometry is flat, uncertain where it is not, which is exactly where a hard answer would be wrong.
+ *
+ * The variance floor is not a tolerance. A probe facing a flat wall records the same distance in
+ * every direction of its cone, so the variance is exactly zero and the bound becomes a step: one in
+ * front of the wall and zero behind it, with a hard line between them that crawls every time the
+ * probes are rebaked.
+ *
+ * The moments live in the radiance array, offset past its layers by the grid's probe count, at
+ * level zero. See "uProbeVisibilityEnabled".
+ */
+float probeVisible(vec3 fromProbe, float distanceM, float layer) {
+  vec2 moments = textureLod(
+    uEnvironment,
+    vec3(octInsetUv(fromProbe, uEnvironmentEdge), layer + probeLayerCount()),
+    0.0
+  ).rg;
+  if (distanceM <= moments.x) return 1.0;
+  float variance =
+    max(abs(moments.x * moments.x - moments.y), ${glslFloat(PROBE_VISIBILITY_VARIANCE_FLOOR)});
+  float beyond = distanceM - moments.x;
+  float chebyshev = variance / (variance + beyond * beyond);
+  return pow(chebyshev, ${glslFloat(PROBE_VISIBILITY_SHARPNESS)});
+}
+
 /**
  * The grid's diffuse light at a point, trilinear over the eight probes around it.
  *
@@ -101,14 +147,43 @@ vec3 gridIrradiance(vec3 dir, vec3 worldPos) {
   vec3 frac;
   probeCell(worldPos, base, frac);
   vec3 sum = vec3(0.0);
+  /*
+   * **The weights are renormalised rather than used as they fall.** Multiplying by visibility takes
+   * energy out of the blend, and a blend that quietly drops a share of its probes darkens every
+   * bounce — the property "visibleProbes" states and the white furnace rests on.
+   *
+   * And a point every probe is blind to still gets an answer: inside a solid, or in a sealed void
+   * with a probe on each side of a wall, every weight crushes to nothing and the nearest probe
+   * takes the lot. This is the last level of the chain and there is nothing behind it.
+   */
+  float total = 0.0;
+  float nearestDistance = 1.0e30;
+  vec3 nearestColour = vec3(0.0);
   for (int c = 0; c < 8; c++) {
     vec3 corner = vec3(float(c & 1), float((c >> 1) & 1), float((c >> 2) & 1));
     vec3 axisWeight = mix(1.0 - frac, frac, corner);
     float weight = axisWeight.x * axisWeight.y * axisWeight.z;
     if (weight <= 0.0) continue;
-    sum += probeIrradiance(dir, probeLayer(base + corner)) * weight;
+    float layer = probeLayer(base + corner);
+    vec3 colour = probeIrradiance(dir, layer);
+    float kept = weight;
+    if (uProbeVisibilityEnabled > 0.5) {
+      vec3 fromProbe = worldPos - (uProbeGridOrigin + (base + corner) / uProbeGridInvSpacing);
+      float distanceM = length(fromProbe);
+      /* A point standing exactly on a probe is seen by it, and has no direction to ask about. */
+      float seen = distanceM > 0.0 ? probeVisible(fromProbe / distanceM, distanceM, layer) : 1.0;
+      kept = weight * seen;
+      kept = kept < ${glslFloat(PROBE_VISIBILITY_CRUSH)} ? 0.0 : kept;
+      if (distanceM < nearestDistance) {
+        nearestDistance = distanceM;
+        nearestColour = colour;
+      }
+    }
+    sum += colour * kept;
+    total += kept;
   }
-  return sum;
+  if (uProbeVisibilityEnabled <= 0.5) return sum;
+  return total > 0.0 ? sum / total : nearestColour;
 }
 
 /**

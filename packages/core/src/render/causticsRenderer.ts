@@ -100,6 +100,8 @@ export class CausticsRenderer {
    * pass: this is light arriving at a surface, not the surface.
    *
    * @param strength scales the whole effect; 1 is the calibrated default.
+   *
+   * Answers whether it drew, which the renderer counts on its frame budget.
    */
   draw(
     gl: WebGL2RenderingContext,
@@ -113,8 +115,8 @@ export class CausticsRenderer {
     windX = 0,
     windZ = 0,
     strength = 1,
-  ): void {
-    if (this.vertexCount === 0) return;
+  ): boolean {
+    if (this.vertexCount === 0) return false;
     const u = this.uniforms;
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, camera.viewProjection);
@@ -161,6 +163,7 @@ export class CausticsRenderer {
     gl.enable(gl.CULL_FACE);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+    return true;
   }
 
   dispose(gl: WebGL2RenderingContext): void {

@@ -5,7 +5,7 @@ kinematic sweep that resolves a moving body against a static world one axis at a
 
 **It imports no other engine package.** Together with `@driftengine/entities` that makes a
 deterministic simulation you can run with no renderer in its module graph — in Node, in a worker,
-or on a server, which is what an authoritative host needs. **45.0 KB gzipped** standalone, measured
+or on a server, which is what an authoritative host needs. **45.1 KB gzipped** standalone, measured
 by `scripts/size-gate.test.mjs` against `scripts/fixtures/size/physics-only.ts`.
 
 **`@driftengine/core` re-exports every name here**, so reaching for collision through the core

@@ -1,0 +1,10 @@
+{
+  "id": "dev.example.startup",
+  "name": "Startup",
+  "entry": "dist/index.html",
+  "window": { "width": 1280, "height": 720 },
+  "backend": { "webgpu": "prefer" },
+  "targets": ["linux-x64", "native-linux-x64"],
+  "native": { "entry": "src/native.ts" },
+  "splash": { "show": false }
+}

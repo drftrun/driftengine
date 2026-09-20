@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>DriftEngine — a cull in motion</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      14px/1.5 ui-monospace,
+      monospace;
+  }
+  #stage {
+    position: relative;
+    height: 100vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #stats {
+    position: absolute;
+    left: 0.7rem;
+    bottom: 0.7rem;
+    color: #7d8ea1;
+    pointer-events: none;
+  }
+  #error {
+    padding: 0.7rem;
+    color: #ff9b9b;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="stats"></div>
+</div>
+<div id="error"></div>
+<script type="module" src="./motion.ts"></script>

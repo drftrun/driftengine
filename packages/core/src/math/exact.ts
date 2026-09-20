@@ -18,9 +18,10 @@
  *
  * ## What is here, and what is deliberately not
  *
- * `exactSin`, `exactCos`, `exactExp`, `exactAcos`. Four, because four is what the engine and its
- * first consumer actually reach for: the terrain binding's slope angle needs `acos`, a lockstep
- * fixture rotating anything needs `sin` and `cos`, and exponential decay needs `exp`.
+ * `exactSin`, `exactCos`, `exactExp`, `exactAcos` and `exactLog`. Five, because five is what the
+ * engine and its first consumer actually reach for: the terrain binding's slope angle needs `acos`,
+ * a lockstep fixture rotating anything needs `sin` and `cos`, exponential decay needs `exp`, and a
+ * detector's box prior is a logit of the patch grid, which needs `log`.
  *
  * **`atan2` is absent.** It is the obvious fifth and nothing here needs one: `shape.ts` sorts by a
  * comparison key computed from two in-plane axes rather than by an angle, and `joints.ts` compares
@@ -237,6 +238,71 @@ export function exactExp(x: number): number {
   sum = 1 + r * sum;
 
   return sum * pow2(k);
+}
+
+/* fdlibm's `log` polynomial in s², for log(1 + f) around f = 0 by way of s = f / (2 + f). */
+const LG1 = 6.66666666666673513e-1;
+const LG2 = 3.999999999940941908e-1;
+const LG3 = 2.857142874366239149e-1;
+const LG4 = 2.222219843214978396e-1;
+const LG5 = 1.818357216161805012e-1;
+const LG6 = 1.531383769920937332e-1;
+const LG7 = 1.479819860511658591e-1;
+const TWO54 = 1.8014398509481984e16;
+const SMALLEST_NORMAL = 2.2250738585072014e-308;
+
+/* A double's two words, for reading and setting an exponent; one view, reused. */
+const words = new DataView(new ArrayBuffer(8));
+
+/**
+ * `Math.log`, reproducibly: fdlibm's algorithm, which is also V8's.
+ *
+ * Take the power of two out as `k` and leave a significand in [√2/2, √2), so that `f = m - 1` is
+ * small either side of zero; then log(1 + f) = f - f²/2 + s·(f²/2 + R(s²)) with s = f/(2 + f), and
+ * `k·ln 2` added back in two parts so the large part loses nothing. The exponent is read and the
+ * significand rescaled through the double's own words — integer operations, not transcendentals.
+ */
+export function exactLog(x: number): number {
+  if (Number.isNaN(x) || x < 0) return Number.NaN;
+  if (x === 0) return Number.NEGATIVE_INFINITY;
+  if (x === Number.POSITIVE_INFINITY) return x;
+
+  let k = 0;
+  let value = x;
+  if (value < SMALLEST_NORMAL) {
+    k = -54;
+    value *= TWO54;
+  }
+  words.setFloat64(0, value);
+  let hx = words.getUint32(0);
+  k += (hx >>> 20) - 1023;
+  hx &= 0x000fffff;
+  /* Keep the significand at or above √2/2: past √2, halve it and count one more power of two. */
+  const i = (hx + 0x95f64) & 0x100000;
+  words.setUint32(0, hx | (i ^ 0x3ff00000));
+  k += i >>> 20;
+  const f = words.getFloat64(0) - 1;
+
+  if ((0x000fffff & (2 + hx)) < 3) {
+    /* |f| < 2^-20: two terms of the series are the whole answer. */
+    if (f === 0) return k === 0 ? 0 : k * LN2_HI + k * LN2_LO;
+    const r = f * f * (0.5 - 0.33333333333333333 * f);
+    return k === 0 ? f - r : k * LN2_HI - (r - k * LN2_LO - f);
+  }
+  const s = f / (2 + f);
+  const z = s * s;
+  const w = z * z;
+  const t1 = w * (LG2 + w * (LG4 + w * LG6));
+  const t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+  const r = t2 + t1;
+  /* Far enough from one that f²/2 is worth carrying apart from f. */
+  if (((hx - 0x6147a) | (0x6b851 - hx)) > 0) {
+    const half = 0.5 * f * f;
+    return k === 0
+      ? f - (half - s * (half + r))
+      : k * LN2_HI - (half - (s * (half + r) + k * LN2_LO) - f);
+  }
+  return k === 0 ? f - s * (f - r) : k * LN2_HI - (s * (f - r) - k * LN2_LO - f);
 }
 
 /** fdlibm's `asin` rational on `z = x²`, valid where `z` is small. */

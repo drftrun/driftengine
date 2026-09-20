@@ -21,3 +21,38 @@ export { heightfieldPatch } from './heightfieldPatch.ts';
 export type { HeightfieldPatchOptions } from './heightfieldPatch.ts';
 export { TerrainMaterials, terrainMaterialWeights } from './terrainMaterials.ts';
 export type { TerrainMaterial, TerrainMaterialsOptions } from './terrainMaterials.ts';
+/*
+ * The clipmap: which squares of the field to draw at what detail, as one decision per patch so it
+ * can move into a compute pass beside the cluster cut rather than be rewritten there. It builds no
+ * geometry — `heightfieldPatch` does that, and matches the seam.
+ */
+export {
+  CLIPMAP_LEVELS,
+  CLIPMAP_PATCHES_ACROSS,
+  CLIPMAP_PATCH_CELLS,
+  clipmapFrame,
+  clipmapLevelAt,
+  clipmapPatchAt,
+  clipmapPatchCount,
+  clipmapPatchOptions,
+  emptyClipmapPatch,
+  selectClipmap,
+} from './clipmap.ts';
+export type { ClipmapFrame, ClipmapOptions, ClipmapPatch } from './clipmap.ts';
+/*
+ * Heights and material weights as `DTEX` layers, and the one rule that makes it safe: a terrain
+ * rebuilt from a layer is built from the decoded samples, so collision and rendering cannot read
+ * different numbers. Opt-in — a consumer who never names these imports none of `@driftengine/texture`.
+ */
+export {
+  TERRAIN_HEIGHT_LEVELS,
+  TERRAIN_SPLAT_CHANNELS,
+  TERRAIN_SPLAT_LEVELS,
+  decodeTerrainHeights,
+  decodeTerrainSplat,
+  encodeTerrainHeights,
+  encodeTerrainSplat,
+  terrainFromHeightLayer,
+  terrainHeightTolerance,
+} from './terrainTexture.ts';
+export type { TerrainHeightLayer, TerrainSplatLayer } from './terrainTexture.ts';

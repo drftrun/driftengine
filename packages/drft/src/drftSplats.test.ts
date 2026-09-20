@@ -92,7 +92,7 @@ describe('a capture in the container', () => {
   });
 
   it('still refuses a file that carries neither', () => {
-    expect(() => writeDrft({ meshes: [] })).toThrow(/at least one mesh or a capture/);
+    expect(() => writeDrft({ meshes: [] })).toThrow(/at least one mesh, a capture/);
   });
 
   it('carries a capture beside geometry without disturbing it', () => {

@@ -4,6 +4,62 @@ One section per major. Read the one you are moving to.
 
 ---
 
+# 4.0.0 — nothing breaks, and that is the notable part
+
+**What breaks: nothing.** Across every package barrel this release **adds 769 public symbols and
+removes none**. No export was renamed, no default flipped, and no signature narrowed. A game built
+against 3.63.0 compiles against 4.0.0 with no edit, and the four lines that moved in `core`'s
+barrel moved because the re-export beside them was widened — `exactLog` joined the exact
+transcendentals, `boxInFrustum` joined the frustum tests, `RenderPipeline` joined the renderer's
+types.
+
+**So why a major.** Because the surface is a different size: five new packages — `capture`,
+`native-host`, `nav`, `texture` and `tools` — an editor application, and a second host. A version
+number is quoted in bug reports and compared across machines, and a consumer reading "3.64.0"
+would have no way to tell that the engine now reconstructs a scene from a video and runs without a
+browser. The number is carrying the scale of the addition, not a warning about removal.
+
+## Doing it
+
+One line, and then the install:
+
+```sh
+npm install @driftengine/core@4.0.0
+```
+
+**If you take more than one package, they must all move together.** The packages peer-depend on
+each other at an exact version, so a tree holding `@driftengine/core@4.0.0` beside
+`@driftengine/animation@3.63.0` is a tree npm will either refuse or resolve into two copies of
+core — and two copies of core is two renderers, two clocks and one very confusing afternoon. Move
+every `@driftengine/*` range in your manifest in the same commit, then run `npm ci` rather than
+`npm install`, because that is the command that reads the lockfile the way your CI will.
+
+**A path dependency needs nothing but a pull.** Nothing about the `drift-source` condition changed.
+
+## What you gain by doing nothing else
+
+The new packages are peers that stay out of the payload until something imports them, so an
+upgrade with no other edit changes the bytes your players download by nothing. Every new
+capability is opt-in at the point you call it:
+
+- **Reconstruction** is `quality.reconstruction` on the renderer, off unless you pass a ratio.
+- **The GPU-driven pipeline** is `createRenderer({ pipeline: 'gpu-driven' })`, and it **throws**
+  on a backend without indirect draws rather than falling back quietly. That refusal is checked
+  against the backend that will draw, not the one you asked for.
+- **Indirect light** is CPU-side and drawn by nothing, so exporting it changed no scene.
+- **`@driftengine/nav`, `texture`, `tools`, `capture` and `native-host`** are separate installs.
+
+## The one thing to read before you reach for it
+
+**`@driftengine/capture` states its maturity stage by stage, and the statement is the contract.**
+It reconstructs what a clip saw from where the clip saw it. Colliders hold where the capture has a
+surface and the capture does not have one everywhere; delighting recovers colour and reports how
+little it trusts it; entity proposals arrive unlabelled for a person to accept. Six frames is the
+ceiling measured on the development device, and **the metric scale is unverified** — the metres
+are the depth model's claim rather than a measurement. Build on it knowing that, or wait.
+
+---
+
 # 3.0.0 — the mix is a tree, and `AudioGraph` no longer holds it
 
 **What breaks:** every mixing method on `AudioGraph` is gone. The class keeps the transport — what

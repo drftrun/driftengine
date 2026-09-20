@@ -140,3 +140,42 @@ test('order-independent transparency is off by default', () => {
 test('a consumer that asks for order-independent transparency gets it', () => {
   expect(resolveRenderQuality({ orderIndependent: true }).orderIndependent).toBe(true);
 });
+
+/**
+ * Reconstruction is a ratio, and its off value is zero rather than one.
+ *
+ * **Zero and not one, because one is a thing somebody might mean.** A ratio of one is the resolve
+ * running at the output size with no upscaling — a temporal antialiaser with a better
+ * neighbourhood rule — which is a configuration worth being able to ask for, and a sentinel that
+ * collided with it would make it unaskable. So the off value is outside the range entirely.
+ *
+ * **The range is clamped rather than refused.** Below 1.3 the render saves less than a third of the
+ * fragment work and the resolve's own cost eats it; above 2 the render is a quarter of the output
+ * and no reconstruction holds an edge through that. A number outside is a caller reaching for
+ * "as much as possible", which is what the end of the range is.
+ */
+test('reconstruction is off at zero, and any other value is a ratio inside its range', () => {
+  expect(resolveRenderQuality({}).reconstruction).toBe(0);
+  expect(resolveRenderQuality({ reconstruction: 0 }).reconstruction).toBe(0);
+  expect(resolveRenderQuality({ reconstruction: 1.5 }).reconstruction).toBeCloseTo(1.5, 6);
+  expect(resolveRenderQuality({ reconstruction: 1 }).reconstruction).toBeCloseTo(1.3, 6);
+  expect(resolveRenderQuality({ reconstruction: 3 }).reconstruction).toBe(2);
+  /* Negative is off, not a clamp to the bottom of the range: it cannot mean "a little". */
+  expect(resolveRenderQuality({ reconstruction: -1 }).reconstruction).toBe(0);
+  expect(resolveRenderQuality({ reconstruction: Number.NaN }).reconstruction).toBe(0);
+});
+
+/**
+ * Indirect light is a switch rather than a strength, and it is off.
+ *
+ * **A strength would be a lie about what the feature does.** A reconstruction at half a ratio is a
+ * meaningful thing to ask for; half an indirect bounce is not — a probe either holds what the chain
+ * traced or it holds what the rasterised cube held, and mixing the two is two solutions averaged
+ * rather than one at a lower quality. What is genuinely adjustable is how many probes refresh a
+ * frame, and that is the grid's business rather than this one's.
+ */
+test('indirect light is off by default, and is a switch rather than a strength', () => {
+  expect(resolveRenderQuality({}).indirectLight).toBe(false);
+  expect(resolveRenderQuality({ indirectLight: true }).indirectLight).toBe(true);
+  expect(resolveRenderQuality({ indirectLight: false }).indirectLight).toBe(false);
+});

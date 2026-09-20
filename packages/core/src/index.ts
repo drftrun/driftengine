@@ -6,7 +6,7 @@ export type { LoopHooks, FrameSource, LoopOptions } from './core/loop.ts';
 export { StepBudget } from './core/stepBudget.ts';
 export type { StepBudgetOptions } from './core/stepBudget.ts';
 export { hashToUnit, mulberry32, pickBySeed, savableMulberry32 } from './core/rng.ts';
-export { exactAcos, exactCos, exactExp, exactSin } from './math/exact.ts';
+export { exactAcos, exactCos, exactExp, exactLog, exactSin } from './math/exact.ts';
 export type { SavableRandom } from './core/rng.ts';
 export { TickTrace } from './core/tickTrace.ts';
 export type { TickTraceLike } from './core/tickTrace.ts';
@@ -120,8 +120,13 @@ export type { PickHit, PickableSource } from './render/pickable.ts';
 /* How big a piece of geometry is, which everything that culls or picks a detail level starts from. */
 export { boundsOfBox, boundsOfPositions, createBounds } from './math/bounds.ts';
 export type { Bounds } from './math/bounds.ts';
-export { createFrustum, frustumFromViewProjection, sphereInFrustum } from './math/frustum.ts';
-export type { Frustum } from './math/frustum.ts';
+export {
+  boxInFrustum,
+  createFrustum,
+  frustumFromViewProjection,
+  sphereInFrustum,
+} from './math/frustum.ts';
+export type { Frustum, FrustumPlanes } from './math/frustum.ts';
 export { boundsVisible } from './render/visibility.ts';
 export { apparentSize, lodForBounds } from './render/lod.ts';
 /* A transform hierarchy. Additive: nothing in the renderer knows a node exists. */
@@ -174,6 +179,11 @@ export {
   type MipPipelines,
 } from './render/backend/webgpu/surfaceTexturePass.ts';
 export { createPassAttachment } from './render/passTarget.ts';
+/*
+ * What a pass drawing the world does with `PrepareContext.jitter`, so a reconstructed frame's
+ * resolve finds its geometry where the renderer's own verbs put theirs.
+ */
+export { jitterClip } from './render/recon/jitter.ts';
 export type { FrameResource } from './render/frame/index.ts';
 /*
  * Occlusion culling, which is arithmetic rather than a GPU feature — so the class is public and a
@@ -206,7 +216,172 @@ export { createRenderer } from './render/backend/createRenderer.ts';
  * one is to write the object inline at the call — which is exactly how a choice ends up
  * duplicated across the several places an application creates a renderer.
  */
-export type { CreatedRenderer, CreateRendererOptions } from './render/backend/createRenderer.ts';
+export type {
+  CreatedRenderer,
+  CreateRendererOptions,
+  RenderPipeline,
+} from './render/backend/createRenderer.ts';
+/*
+ * The second pipeline, as the two things a consumer assembles: the scene packing and the pass
+ * that draws it.
+ *
+ * **Exported here and reached by nobody who does not ask for it.** `pipeline: 'gpu-driven'` on
+ * `createRenderer` is the permission — it fails at boot where the backend cannot run this — and
+ * `GpuDrivenPass` is the implementation, registered the way `@driftengine/splats` registers one.
+ * A consumer who names neither pays nothing: `core-only` is measured with these exported and does
+ * not move, because nothing in the forward path reaches them.
+ *
+ * It draws vertex colour, one directional term, a hemispheric ambient and an emissive add — not
+ * the standard material. `DRAFT_SCENES`, never `SCENES`, until it draws the six published ones.
+ */
+export {
+  GPU_DRIVEN_LISTS,
+  GpuDrivenPass,
+  MATERIAL_FLOATS,
+} from './render/backend/webgpu/gpuDrivenPass.ts';
+export type {
+  GpuDrivenList,
+  GpuDrivenMaterial,
+  GpuDrivenShadowOptions,
+  GpuDrivenView,
+} from './render/backend/webgpu/gpuDrivenPass.ts';
+/*
+ * **One environment, one haze, on both pipelines.** `GpuDrivenView.fog` is the medium the forward
+ * path binds, and a consumer drawing both in one frame fills it from `atmosphereFog` rather than
+ * working the numbers out again — the voxel sandbox's port is the first.
+ */
+export { atmosphereFog, createFogTarget } from './render/fog.ts';
+export type { FogOptions, FogTarget } from './render/fog.ts';
+export { buildGpuDrivenScene } from './render/gpudriven/sceneUpload.ts';
+export type { GpuDrivenMesh, GpuDrivenScene } from './render/gpudriven/sceneUpload.ts';
+/*
+ * **The scene a `GpuDrivenPass` takes**, which is a streaming one since 2026-09-18 — a static
+ * scene is one filled once, so there is a single path rather than two. `buildGpuDrivenScene` stays
+ * exported because it is the packer `streamScene.test.ts` holds the streaming layout to.
+ */
+export { StreamingScene, streamingScene } from './render/gpudriven/streamScene.ts';
+export type {
+  DirtySpan,
+  GeometrySink,
+  StreamCapacity,
+  StreamHandle,
+  StreamUpload,
+} from './render/gpudriven/streamScene.ts';
+export type { ClusterSource } from './render/gpudriven/clusterUpload.ts';
+export { packDecodeTables, programFromEncoded } from './render/gpudriven/decodeTables.ts';
+export type {
+  DecodeTables,
+  EncodedProgramShape,
+  GpuDrivenLatent,
+  GpuDrivenNetwork,
+  GpuDrivenProgram,
+} from './render/gpudriven/decodeTables.ts';
+export type { GpuDrivenTextures } from './render/gpudriven/materialTable.ts';
+/*
+ * **A network graph on a device**: the one neural runtime's device half. `@driftengine/texture`
+ * holds the references and validates a graph; this runs the validated graph, whose shapes it takes
+ * as given, on a device opened from whichever `GPU` the caller has — a browser's or the native
+ * host's Dawn. Exported because the device may not leave `render/`, so a package that runs a
+ * network does so through here or not at all.
+ */
+export { openInferenceDevice } from './render/inference/device.ts';
+export type { InferenceDevice } from './render/inference/device.ts';
+export { createGraphRunner } from './render/inference/runner.ts';
+/* The buffer-reuse rule, exported because `@driftengine/texture`'s evaluator plans by this one
+   rather than by a second copy of it — see `reuse.ts` for why it is on this side of the arrow. */
+export { planReuse } from './render/inference/reuse.ts';
+/* The tile lists a device draws a splat cloud from, beside the shader that walks them. */
+export {
+  countSplatTiles,
+  fillSplatTiles,
+  splatPixelBox,
+  splatTileGrid,
+  splatTileOffsets,
+  SPLAT_BIN_FLOATS,
+  SPLAT_TILE,
+} from './render/inference/splatTiles.ts';
+export type { BufferReuse } from './render/inference/reuse.ts';
+export type { GraphRunner } from './render/inference/runner.ts';
+export type {
+  DeviceAttribute,
+  DeviceGraph,
+  DeviceGraphNode,
+} from './render/inference/deviceGraph.ts';
+/**
+ * **Indirect light, as three levels that fall back to each other and never off the end.**
+ *
+ * `ROADMAP.md` refused screen-space global illumination because its error is unbounded — a ray
+ * that leaves the frame has no answer, and every technique that ships one anyway invents one from
+ * whatever happened to be on screen. This does not reverse that refusal: the screen is an
+ * accelerator with a world-space distance field behind it, whose error is bounded by its own
+ * resolution, and a probe volume behind *that*, which is never wrong and only ever coarse.
+ *
+ * **CPU-side, and reached by nobody who does not ask.** There is no WGSL, no pass and no renderer
+ * option yet, so no scene renders differently for these existing — this wave's first constraint,
+ * measured rather than asserted: the eight published scenes are 0 of 921,600 pixels against the
+ * build before them, and `core-only` is byte-identical with these exported and without them.
+ * Exported anyway, for the reason `bake/cluster.ts` was not: a capability with no route out of its
+ * package is one the first consumer finds by failing a boundary test.
+ */
+export {
+  GI_SOURCE_FIELD,
+  GI_SOURCE_PROBES,
+  GI_SOURCE_SCREEN,
+  newIndirectResult,
+  traceIndirect,
+} from './render/gi/chain.ts';
+export type { GiResources, GiSource, IndirectRay, IndirectResult } from './render/gi/chain.ts';
+export {
+  GLOBAL_FIELD_BLEND,
+  composeGlobalField,
+  createGlobalField,
+  sampleGlobalField,
+} from './render/gi/globalField.ts';
+export type {
+  FieldSource,
+  GlobalField,
+  GlobalFieldCascade,
+  GlobalFieldInstance,
+} from './render/gi/globalField.ts';
+export {
+  GI_SCREEN_MARCH,
+  SCREEN_TRACE_BIAS_M,
+  screenRayOrigin,
+  traceScreen,
+} from './render/gi/traceScreen.ts';
+export { FIELD_MARCH, coneRadiusAt, newFieldHit, traceField } from './render/gi/traceField.ts';
+export type { FieldHit, FieldMarch } from './render/gi/traceField.ts';
+export {
+  PROBE_VISIBILITY_SHARPNESS,
+  bakeProbeVisibility,
+  createProbeVisibility,
+  probeUpdateSchedule,
+  probeVisibilityWeight,
+  sampleProbeVolume,
+  visibleProbes,
+} from './render/gi/probeVolume.ts';
+export type { ProbeVisibility } from './render/gi/probeVolume.ts';
+export {
+  DENOISE_MIN_ALPHA,
+  filterStepFor,
+  newTemporalPixel,
+  spatialDenoise,
+  temporalDenoise,
+} from './render/gi/denoise.ts';
+export type { DenoiseFrame, SpatialOptions, TemporalPixel } from './render/gi/denoise.ts';
+export { reflectDirection, reflectionCone, traceReflection } from './render/gi/reflection.ts';
+/*
+ * The pass that draws the renderer's field on a device. WebGPU only, and it says so at
+ * registration rather than at the first frame: a distance field is composed by compute and WebGL2
+ * has none. It no longer composes one of its own — `addDistanceField` is how a scene declares
+ * what its indirect light may be traced against, and this marches what the renderer made of them.
+ */
+export { GiFieldPass } from './render/backend/webgpu/giFieldPass.ts';
+export type { GiFieldOptions } from './render/backend/webgpu/giFieldPass.ts';
+export { DistanceFieldScene, MAX_DISTANCE_FIELDS } from './render/gi/fieldScene.ts';
+export type { DistanceFieldInstance } from './render/gi/fieldScene.ts';
+export { placeCascade } from './render/gi/globalField.ts';
+export type { ReflectionOptions, ReflectiveSample } from './render/gi/reflection.ts';
 /*
  * The acceptance probe, exported because a consumer may want to ask the question itself — an
  * editor deciding whether to offer a backend, a shell deciding what to tell the player — and
@@ -477,6 +652,13 @@ export { DebugLines } from './render/debugLines.ts';
  * over and what a drag does, and fills line buffers the caller draws with `drawLines`.
  * Nothing here touches a context.
  */
+/*
+ * Ray intersection, exported because a consumer building a tool needs the same arithmetic the
+ * gizmo does. `editor/src/viewport/gizmo.ts` reaching into `src/math/intersect.ts` by path would
+ * be the editor using a private hook, which `ARCHITECTURE.md` treats as a hole in the engine
+ * rather than as the editor's problem — so the hole is closed here.
+ */
+export { rayClosestOnLine, rayPlane, raySphere } from './math/intersect.ts';
 export {
   GIZMO_GROUP_ACTIVE,
   GIZMO_GROUP_COLORS,
@@ -660,6 +842,30 @@ export type { ContactReport } from './dev/contactProbe.ts';
 
 export { GPU_SLOTS, GpuTimer } from './render/gpuTimer.ts';
 export type { GpuSample, GpuSlot } from './render/gpuTimer.ts';
+
+/*
+ * Per-pass timings, which are a readout rather than a frame graph.
+ *
+ * **`render/frame/index.ts` says nothing under it may be reached from outside `render/` yet, and
+ * this module is the exception with a reason.** The rest of that directory is the graph's
+ * construction — declarations, lifetimes, aliasing, scheduling — whose public shape the design
+ * leaves to a later phase, and exporting it now would fix a shape nobody has had to live with.
+ * A timing readout is not that: it is seven functions over three arrays, its own header argues why
+ * it is not a widening of `GpuTimer`, and anything that profiles a frame needs it.
+ *
+ * The editor is what made this concrete. `AGENTS.md`'s rule is that a consumer needing a private
+ * import has found a hole in the engine, and the hole is fixed here rather than worked around
+ * there — which is the whole reason the editor was built outside `packages/`.
+ */
+export {
+  createPassTimings,
+  passLabel,
+  passMs,
+  recordPassLabel,
+  recordPassSample,
+  resetPassTimings,
+} from './render/frame/passTimings.ts';
+export type { PassTimings } from './render/frame/passTimings.ts';
 export { classifyRightGesture } from './input/rightGesture.ts';
 export type { RightGesture, RightGestureOptions } from './input/rightGesture.ts';
 export { createWindState, sampleWind } from './render/wind.ts';
@@ -743,3 +949,39 @@ export type { TreeParams, TreeGeometry } from './geometry/treeBuilder.ts';
 export type { InstanceData } from './render/instancedMesh.ts';
 export type { MeshInstances } from './render/instances.ts';
 export type { WindProfile, WindState } from './render/wind.ts';
+
+/*
+ * Large worlds: the cell grid that streams and freezes, and the origin that rendering rebases
+ * against while the simulation never does. See `world/rebase.ts` for why that asymmetry is the
+ * rule the whole design hangs on.
+ */
+export {
+  cellBounds,
+  cellCoord,
+  cellCoordInRange,
+  cellCoordsOf,
+  cellIdFor,
+  cellIdFrom,
+  cellsInFrustum,
+  cellsInRadius,
+  createCellGrid,
+} from './world/cell.ts';
+export type { CellGrid } from './world/cell.ts';
+export { renderOrigin, toRenderSpace, toWorldSpace } from './world/rebase.ts';
+export {
+  cameraPositionFrom,
+  cellPredictor,
+  createCellStream,
+  pumpCellStream,
+  setCellStreamOrigin,
+} from './world/cellStream.ts';
+export type { CellStore, CellStream, CellStreamOptions } from './world/cellStream.ts';
+export {
+  createFrozenCells,
+  freezeCell,
+  frozenEntities,
+  frozenFingerprintContribution,
+  isCellFrozen,
+  thawCell,
+} from './world/freeze.ts';
+export type { FreezableWorld, FrozenCell, FrozenCells } from './world/freeze.ts';

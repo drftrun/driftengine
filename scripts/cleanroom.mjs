@@ -39,6 +39,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { missingModules } from './emitModules.mjs';
+
 const ROOT = path.resolve(import.meta.dirname, '..');
 const KEEP = process.argv.includes('--keep');
 
@@ -74,9 +76,17 @@ console.log(`clean room: ${room}\n`);
  * second deletes every package just extracted and the whole run fails with `ERR_MODULE_NOT_FOUND`
  * for all twenty-five entry points.
  */
+/*
+ * **Optional dependencies too**, because a consumer's `npm install` fetches them unless told not to:
+ * the native host's window, device and audio are three, and its barrel loads the window's binding
+ * when it is imported.
+ */
 const external = new Set();
 for (const p of manifests) {
-  for (const [name, range] of Object.entries(p.manifest.dependencies ?? {})) {
+  for (const [name, range] of Object.entries({
+    ...p.manifest.dependencies,
+    ...p.manifest.optionalDependencies,
+  })) {
     if (!name.startsWith('@driftengine/')) external.add(`${name}@${range}`);
   }
 }
@@ -101,8 +111,19 @@ for (const p of manifests) {
   execFileSync('tar', ['-xzf', path.join(room, packed), '-C', target, '--strip-components=1']);
 }
 
-/* Every entry point every package declares, imported under plain node, one process each. */
+/*
+ * **Every module a package starts by URL, in the tarball.** A worker is not an import, so importing
+ * each entry point below never reaches one, and a `dist` naming a worker it does not hold imports
+ * cleanly. `emitModules.mjs` has the history.
+ */
 let failed = 0;
+for (const p of manifests) {
+  const missing = missingModules(path.join(modules, p.manifest.name.split('/')[1], 'dist'));
+  for (const line of missing) console.log(`  ${p.manifest.name}: ${line}`);
+  failed += missing.length;
+}
+
+/* Every entry point every package declares, imported under plain node, one process each. */
 let checked = 0;
 for (const p of manifests) {
   const entries = Object.keys(p.manifest.exports ?? { '.': true });

@@ -41,6 +41,15 @@ const DOC = path.join(ROOT, 'docs', 'CAPABILITIES.md');
  * how a summary is known to be stale: a test edited after the last run describes a suite that no
  * longer exists.
  */
+/**
+ * The roots `vitest.config.ts` runs tests under, which the walk below has to cover exactly: a run is
+ * known to be a full one by comparing its file count against this walk, so a root the suite runs and
+ * the walk misses makes every full run look filtered. `docs.test.mjs` reads the configuration's own
+ * list and fails if this one falls behind it. `tools` joined when the reconstruction trainer's tests
+ * did.
+ */
+export const TEST_ROOTS = ['packages', 'demo', 'editor', 'tools'];
+
 export function surveyTestFiles() {
   let total = 0;
   let newest = 0;
@@ -56,7 +65,7 @@ export function surveyTestFiles() {
       }
     }
   };
-  for (const root of ['packages', 'demo']) walk(path.join(ROOT, root));
+  for (const root of TEST_ROOTS) walk(path.join(ROOT, root));
   return { total, newest };
 }
 

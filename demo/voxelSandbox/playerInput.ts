@@ -21,6 +21,14 @@ import type { World } from './world';
 
 /** How far a player can reach, in blocks. The reference's number. */
 const REACH = 7;
+/**
+ * How fast a fully pushed right stick turns the view, in radians a second.
+ *
+ * Chosen to match a comfortable console default — about 150 degrees a second — rather than derived
+ * from anything. **What would make it wrong** is a player who wants it faster or slower, which is
+ * what a sensitivity setting is for; this demo has one for the mouse and none for the pad yet.
+ */
+const STICK_RADIANS_A_SECOND = 2.6;
 
 export class PlayerInput {
   /** Which hotbar slot is selected. The HUD reads it; nothing else writes it. */
@@ -56,6 +64,7 @@ export class PlayerInput {
   private readonly move = { x: 0, y: 0 };
   private readonly look = { dx: 0, dy: 0 };
   private readonly touchLook = { dx: 0, dy: 0 };
+  private readonly lookStick = { x: 0, y: 0 };
 
   private flying = false;
   private target: RayHit | null = null;
@@ -90,7 +99,7 @@ export class PlayerInput {
 
   update(dtSec: number, lookSensitivity: number): void {
     this.touch?.tick(performance.now());
-    this.readLook(lookSensitivity);
+    this.readLook(lookSensitivity, dtSec);
     this.readIntent();
     this.player.step(dtSec, this.intent);
     this.aim();
@@ -114,7 +123,7 @@ export class PlayerInput {
     window.removeEventListener('keydown', this.onKeyDown);
   }
 
-  private readLook(sensitivity: number): void {
+  private readLook(sensitivity: number, dtSec: number): void {
     this.input.consumeMouseDelta(this.look);
     let dx = this.look.dx;
     let dy = this.look.dy;
@@ -126,8 +135,23 @@ export class PlayerInput {
     /* Yaw grows to the right, matching `Camera`'s own basis. Pitch is inverted from screen
        coordinates because down the screen is down the world. */
     this.player.yaw += dx * sensitivity;
+    let pitch = this.player.pitch - dy * sensitivity;
+
+    /*
+     * **A stick is a rate and a mouse is a displacement**, which is why the two cannot share a
+     * sensitivity. A mouse delta is how far the hand moved since the last frame and is already
+     * finished; a stick held over says *keep turning*, so it is multiplied by the frame's own
+     * seconds and turns at the same speed whatever the refresh rate. Sharing the mouse's number
+     * would make a held stick turn faster on a faster monitor, which is the bug this distinction
+     * exists to avoid.
+     */
+    this.actions.vector('look', this.lookStick);
+    this.player.yaw += this.lookStick.x * STICK_RADIANS_A_SECOND * dtSec;
+    /* Up is negative in the stick convention, as it is on the screen, so the sign matches above. */
+    pitch -= this.lookStick.y * STICK_RADIANS_A_SECOND * dtSec;
+
     const limit = Math.PI / 2 - 0.01;
-    this.player.pitch = Math.max(-limit, Math.min(limit, this.player.pitch - dy * sensitivity));
+    this.player.pitch = Math.max(-limit, Math.min(limit, pitch));
   }
 
   private readIntent(): void {

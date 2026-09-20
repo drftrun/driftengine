@@ -188,6 +188,9 @@ export function requirementsFor(target: Target): readonly string[] {
       /* XcodeGen is downloadable; Xcode is not, and pretending otherwise would be the lie this
          file exists to avoid — it is a sign-in and an App Store download, and only on a Mac. */
       return ['macOS', 'Xcode with the iOS SDK', PINS.xcodegen.label];
+    case 'native-linux-x64':
+      /* Nothing of the machine: it ships the Node that runs the build. The host is the game's. */
+      return ["@driftengine/native-host at the packager's version, installed in the game"];
     default:
       return [
         'the Electron runtime for this platform',

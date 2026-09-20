@@ -5,6 +5,40 @@ import { Camera } from './camera.ts';
 import { roughnessForLevel } from './prefilterEnvMap.ts';
 
 /**
+ * The same view-projection with clip y negated, which is what rendering into a cube face wants.
+ *
+ * **A cubemap face's rows run downward and a GL framebuffer's run upward.** `framebufferTexture2D`
+ * on `TEXTURE_CUBE_MAP_POSITIVE_X + face` makes framebuffer row 0 the face's texel row 0, and the
+ * face's own direction mapping — the specification's `sc`, `tc`, `ma` table — says texel row 0 is
+ * the +Y end. A camera aimed along the face with its up at +Y puts +Y at the top of the render
+ * area, which in GL is the *last* row, so the face is stored upside down and every reflection and
+ * every irradiance sample taken from it has up and down the wrong way round.
+ *
+ * **Almost nothing can see it**, which is why it stood until 2026-09-16. A face that is flat, or
+ * chequered, or bright across its whole width is symmetric under a vertical flip, and so was every
+ * room this repository could bake into a probe. `showroom` is not: its walls are a lit cove and
+ * ceiling above and a dark floor below, and its ceiling came out 22 levels of 255 from what the
+ * other backend drew, with its floor 7 the other way and its walls exactly equal — a difference
+ * that reverses between a surface facing up and one facing down and leaves a horizontal one alone
+ * is a probe with its rows the wrong way up. `demo/dev/ibl.html?band=1` is the room that shows it
+ * directly: four side walls bright above and dark below, and without this correction the spheres
+ * in it are lit from underneath.
+ *
+ * **The winding goes with it.** Negating one clip axis mirrors every triangle, so a caller has to
+ * flip the front face for the duration or the room turns inside out — `bakeProbe` does.
+ *
+ * Writing into the source is allowed: each output element reads only the element at its own index.
+ */
+export function cubeFaceProjection(out: Float32Array, viewProj: ArrayLike<number>): Float32Array {
+  for (let i = 0; i < 16; i++) {
+    const value = viewProj[i] as number;
+    /* Row one of a column-major 4x4 is indices 1, 5, 9, 13 — the row that produces clip y. */
+    out[i] = i % 4 === 1 ? -value : value;
+  }
+  return out;
+}
+
+/**
  * What a bake is for, and specifically whether it also replaces the scene's diffuse ambient.
  *
  * **The two halves of a probe were one decision until 2026-09-03, and nothing could ask for the

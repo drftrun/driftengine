@@ -14,6 +14,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { TEST_ROOTS, surveyTestFiles } from './docs-counts.mjs';
+
 const ROOT = path.resolve(import.meta.dirname, '..');
 /*
  * Directories this walk must not descend into.
@@ -38,7 +40,19 @@ const SKIP = new Set([
   // whatever site was open, so they carry consumer nouns verbatim and turned the guard below red
   // without a contributor having typed anything. Gitignored as well, so they cannot be committed.
   '.playwright-mcp',
+  // Somebody else's code, fetched for a port or a parity check, and a virtualenv to run it: its
+  // documents link their own tree, and a virtualenv's scripts carry the machine's home directory.
+  // Gitignored, so nothing in it ships.
+  '.reference',
 ]);
+
+/*
+ * Directories skipped at the root only. **`models/` holds fetched checkpoints and bought assets**,
+ * gitignored because they are their authors' to distribute, so nothing in it ships — and since a
+ * tokenizer's vocabulary is fetched there too, it holds every English word, names and nouns
+ * included. Anchored rather than by name, because `packages/capture/src/models/` is source.
+ */
+const SKIP_AT_ROOT = new Set(['models']);
 
 /**
  * The archive directory that this exempted is gone, and so is the exemption. It held files that
@@ -60,7 +74,7 @@ const FUTURE_NAMES = new Set(['PRIORITY.md', 'ASSESSMENT.md', 'ROADMAP.md']);
 
 export function walk(dir, filter, out = []) {
   for (const entry of readdirSync(dir)) {
-    if (SKIP.has(entry)) continue;
+    if (SKIP.has(entry) || (dir === ROOT && SKIP_AT_ROOT.has(entry))) continue;
     const full = path.join(dir, entry);
     if (statSync(full).isDirectory()) walk(full, filter, out);
     else if (filter(full)) out.push(full);
@@ -221,10 +235,16 @@ function sentinels() {
  * the capability is built, which is exactly the day the document needs editing.
  */
 test('every absent capability is still absent', () => {
-  const sources = walk(
-    path.join(ROOT, 'packages'),
-    (f) => f.endsWith('.ts') && !f.endsWith('.test.ts'),
-  ).map((f) => ({ rel: path.relative(ROOT, f), code: stripComments(readFileSync(f, 'utf8')) }));
+  /* `editor/` as well as `packages/`, because the editor is a product this repository ships and a
+     capability it grew would otherwise arrive with the guard green. It is the fourth list here
+     found describing less than it was believed to — see `deps.test.mjs` and `platform.test.mjs`. */
+  const keep = (f) => f.endsWith('.ts') && !f.endsWith('.test.ts');
+  /* The native host is a package now, `packages/native-host`, so the walk above reaches it and the
+     sentinel naming a capability it would grow there and nowhere else. */
+  const sources = [
+    ...walk(path.join(ROOT, 'packages'), keep),
+    ...walk(path.join(ROOT, 'editor'), keep),
+  ].map((f) => ({ rel: path.relative(ROOT, f), code: stripComments(readFileSync(f, 'utf8')) }));
 
   const arrived = [];
   for (const { name, pattern } of sentinels()) {
@@ -232,6 +252,39 @@ test('every absent capability is still absent', () => {
     if (hit) arrived.push(`${name} now exists (${hit.rel}) — correct CAPABILITIES.md`);
   }
   assert.deepEqual(arrived, [], arrived.join('\n'));
+});
+
+/**
+ * **What a row says one host has, the other way round.** The block above guards what is absent;
+ * `present` guards what the native host is recorded as having that a browser does not — a line is
+ * a name, a file, and a pattern that occurs in it while the row is true. A capability that goes, or
+ * a binding that moves under a measured row, fails here rather than leaving the row a claim about
+ * a host that no longer exists. JSON is read as it is; source has its comments stripped.
+ */
+function present() {
+  const doc = readFileSync(path.join(ROOT, 'docs', 'CAPABILITIES.md'), 'utf8');
+  const block = doc.match(/```present\n([\s\S]*?)```/);
+  assert.ok(block, 'CAPABILITIES.md must carry a ```present block');
+  return block[1]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, file, ...rest] = line.split(/\s+/);
+      return { name, file, pattern: new RegExp(rest.join(' ')) };
+    });
+}
+
+test('every capability the native host is recorded as having is still there', () => {
+  const gone = [];
+  for (const { name, file, pattern } of present()) {
+    const full = path.join(ROOT, file);
+    const text = existsSync(full) ? readFileSync(full, 'utf8') : '';
+    const code = file.endsWith('.json') ? text : stripComments(text);
+    if (!pattern.test(code))
+      gone.push(`${name} is no longer in ${file} — correct CAPABILITIES.md §2a`);
+  }
+  assert.deepEqual(gone, [], gone.join('\n'));
 });
 
 /**
@@ -593,22 +646,34 @@ test('the test-file count CAPABILITIES.md quotes is current', () => {
   const quoted = doc.match(/([\d,]+) test files/);
   assert.ok(quoted, 'CAPABILITIES.md must quote a test-file count');
 
-  let actual = 0;
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.test.ts')) actual += 1;
-    }
-  };
-  for (const root of ['packages', 'demo']) walk(path.join(ROOT, root));
+  /* The walk `docs:counts` does, rather than a second copy of it: two copies of this list drifted
+     apart the day the suite grew `tools/`. */
+  const actual = surveyTestFiles().total;
 
   assert.equal(
     Number(quoted[1].replace(/,/g, '')),
     actual,
     `there are ${actual} test files; CAPABILITIES.md says ${quoted[1]} — run \`npm run docs:counts\``,
   );
+});
+
+/**
+ * **The walk that counts test files covers every root the suite runs.**
+ *
+ * The count is taken by walking the tree, and a run is known to be a full one by comparing its file
+ * count against that walk. So a root the suite includes and the walk does not makes every full run
+ * look filtered, and `docs:counts` refuses to write the count it should — which is what happened
+ * the day `vitest.config.ts` grew `tools/**`. Read off the configuration rather than restated, so
+ * the next root added there fails here rather than in a count.
+ */
+test('the test-file walk covers every root vitest.config.ts includes', () => {
+  const config = readFileSync(path.join(ROOT, 'vitest.config.ts'), 'utf8');
+  const include = config.match(/include:\s*\[([^\]]*)\]/);
+  assert.ok(include, 'vitest.config.ts must carry an include list');
+  const roots = [...include[1].matchAll(/'([^'/]+)\//g)].map((match) => match[1]);
+  assert.ok(roots.length > 0, 'the include list names no roots');
+  const missing = roots.filter((root) => !TEST_ROOTS.includes(root));
+  assert.deepEqual(missing, [], `the suite runs roots the walk does not: ${missing.join(', ')}`);
 });
 
 /**
@@ -731,6 +796,12 @@ test('README names no gap the capability map does not', () => {
  * `docs/PORTING.md` is exempt by name and for one reason: a porting guide's whole job is to print
  * the import that stopped working, beside the one that replaced it. Every other document is
  * telling somebody what to write today.
+ *
+ * **So are implementation plans and design specs, for the opposite reason.** A plan is written
+ * before its code: its tenth task imports what its first task creates, and until the first task
+ * lands the import names nothing. Found on 2026-09-17, when the plan for the second pipeline's
+ * textures could not be committed with this gate green. What a plan promises is checked when its
+ * tasks run — by the type checker, on the code — and a finished plan's imports exist anyway.
  */
 test('every import the docs print names something the package exports', () => {
   const barrels = new Map();

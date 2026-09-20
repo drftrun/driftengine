@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, test } from 'vitest';
 
 import { GLYPH_HEIGHT } from '../geometry/pixelFont.ts';
-import { TextLayout, textHeightPx, textWidthPx } from './textLayout.ts';
+import { TEXT_CUBE, TextLayout, textHeightPx, textWidthPx } from './textLayout.ts';
 
 describe('the text layout', () => {
   /* The cells are what a backend uploads; the count is what it instances over. */
@@ -77,4 +77,39 @@ describe('the text layout', () => {
     expect(textHeightPx(3)).toBe(GLYPH_HEIGHT * 3);
     expect(textWidthPx('AB', 2)).toBeGreaterThan(textWidthPx('A', 2));
   });
+});
+
+test('EVERY FACE OF THE TEXT CUBE IS WOUND SO ITS GEOMETRIC NORMAL IS THE ONE IT DECLARES', () => {
+  /*
+   * **The cube was wound backwards on purpose until 2026-09-16, and nothing checked it.** The
+   * comment said the vertex shader's Y flip mirrors the winding so faces authored the usual way
+   * are all culled; measured on both backends, the opposite holds — the usual winding draws solid
+   * glyphs on each, and the reversed one drew a **one-pixel sliver of every cell on WebGL2** while
+   * WebGPU drew them solid. The text on the default backend was a dotted outline of itself, and it
+   * survived because it is still legible.
+   *
+   * Each triangle carries the normal of the face it belongs to, so the invariant needs nothing
+   * external: the cross product of a triangle's own edges must point the way its own normal does.
+   * A cube wound the other way fails every one of its twelve triangles.
+   */
+  const { positions, normals, vertexCount } = TEXT_CUBE;
+  expect(vertexCount).toBe(36);
+  for (let triangle = 0; triangle < vertexCount / 3; triangle += 1) {
+    const at = triangle * 9;
+    const ux = (positions[at + 3] as number) - (positions[at] as number);
+    const uy = (positions[at + 4] as number) - (positions[at + 1] as number);
+    const uz = (positions[at + 5] as number) - (positions[at + 2] as number);
+    const vx = (positions[at + 6] as number) - (positions[at] as number);
+    const vy = (positions[at + 7] as number) - (positions[at + 1] as number);
+    const vz = (positions[at + 8] as number) - (positions[at + 2] as number);
+    const geometric = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    const declared = [normals[at] as number, normals[at + 1] as number, normals[at + 2] as number];
+    const agreement =
+      (geometric[0] as number) * (declared[0] as number) +
+      (geometric[1] as number) * (declared[1] as number) +
+      (geometric[2] as number) * (declared[2] as number);
+    expect(agreement, `triangle ${triangle} faces away from the normal it carries`).toBeGreaterThan(
+      0,
+    );
+  }
 });

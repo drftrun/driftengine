@@ -163,15 +163,15 @@ function sourceSize(source: TexImageSource): { width: number; height: number } {
 
 /** An image uploaded once and bound per material. */
 export class GpuSurfaceTexture {
-  readonly view: GPUTextureView;
   readonly sampler: GPUSampler;
 
   private texture: GPUTexture | null;
+  private current: GPUTextureView;
   private readonly format: GPUTextureFormat;
   private readonly mipmapped: boolean;
-  private readonly levels: number;
-  private readonly width: number;
-  private readonly height: number;
+  private levels: number;
+  private width: number;
+  private height: number;
 
   constructor(
     private readonly device: GPUDevice,
@@ -180,36 +180,15 @@ export class GpuSurfaceTexture {
     options: SurfaceTextureOptions = {},
   ) {
     const { width, height } = sourceSize(source);
-    this.width = width;
-    this.height = height;
     this.mipmapped = options.mipmap ?? true;
-    this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
        place it is correct — `surfaceTexture.ts` makes the argument in full. */
     this.format = (options.colorSpace ?? 'linear') === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
-
-    this.texture = device.createTexture({
-      label: 'surface.texture',
-      size: [width, height],
-      format: this.format,
-      mipLevelCount: this.levels,
-      /*
-       * **`RENDER_ATTACHMENT` is required by `copyExternalImageToTexture`, not by the mip
-       * chain**, and the difference matters enough to state.
-       *
-       * This used to say the flag was there "because building the chain renders into levels 1
-       * and below", which is true and is not the reason. The upload itself demands it: Dawn
-       * rejects a destination without `CopyDst | RenderAttachment` outright, whatever its mip
-       * count. Gating it on `levels > 1` therefore breaks every unmipped texture, and the read
-       * of the old comment that led there cost a broken build to disprove.
-       *
-       * So it cannot be dropped to make a sampled-only allocation, and anything that wants one
-       * has to leave `copyExternalImageToTexture` behind and write raw pixels instead, which
-       * trades a driver cost for a CPU readback.
-       */
-      usage: 0x2 | 0x4 | 0x10, // COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT
-    });
-    this.view = this.texture.createView();
+    this.width = width;
+    this.height = height;
+    this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
+    this.texture = this.allocate();
+    this.current = this.texture.createView();
 
     const wrap: GPUAddressMode =
       (options.wrap ?? 'repeat') === 'repeat' ? 'repeat' : 'clamp-to-edge';
@@ -247,16 +226,64 @@ export class GpuSurfaceTexture {
     this.upload(source);
   }
 
+  /** The view every binding of this image holds. A new one when `update` changes the size. */
+  get view(): GPUTextureView {
+    return this.current;
+  }
+
   /**
-   * Replace the pixels, keeping the texture, its view and its sampler.
+   * Replace the pixels, keeping the handle and its sampler.
    *
-   * The binding a draw loop already holds stays valid, so the swap is a swap rather than a
-   * rebuild — the same argument `surfaceTexture.ts` makes. Not a hot path: it re-uploads the
-   * whole image and rebuilds the chain.
+   * **At the same size, the texture and its view are kept**, so a binding a draw loop already holds
+   * stays valid and the swap is a swap rather than a rebuild — the same argument `surfaceTexture.ts`
+   * makes. Not a hot path: it re-uploads the whole image and rebuilds the chain.
+   *
+   * **At another size, a texture of that size replaces it**, which is what WebGL2's `texImage2D`
+   * does by itself. This used to keep the old size and copy that much of the new image — its
+   * top-left corner, stretched — and a model loader updating a small preview with the real image
+   * hit that whenever the preview's decode won the race. The view is new then, and the texture it
+   * replaced is handed back rather than destroyed: a draw recorded earlier in this frame may still
+   * read it, so the renderer destroys it once nothing can, and drops every binding of the old view.
    */
-  update(source: TexImageSource): void {
-    if (this.texture === null) return;
+  update(source: TexImageSource): GPUTexture | null {
+    const replaced = this.texture;
+    if (replaced === null) return null;
+    const { width, height } = sourceSize(source);
+    if (width === this.width && height === this.height) {
+      this.upload(source);
+      return null;
+    }
+    this.width = width;
+    this.height = height;
+    this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
+    this.texture = this.allocate();
+    this.current = this.texture.createView();
     this.upload(source);
+    return replaced;
+  }
+
+  private allocate(): GPUTexture {
+    return this.device.createTexture({
+      label: 'surface.texture',
+      size: [this.width, this.height],
+      format: this.format,
+      mipLevelCount: this.levels,
+      /*
+       * **`RENDER_ATTACHMENT` is required by `copyExternalImageToTexture`, not by the mip
+       * chain**, and the difference matters enough to state.
+       *
+       * This used to say the flag was there "because building the chain renders into levels 1
+       * and below", which is true and is not the reason. The upload itself demands it: Dawn
+       * rejects a destination without `CopyDst | RenderAttachment` outright, whatever its mip
+       * count. Gating it on `levels > 1` therefore breaks every unmipped texture, and the read
+       * of the old comment that led there cost a broken build to disprove.
+       *
+       * So it cannot be dropped to make a sampled-only allocation, and anything that wants one
+       * has to leave `copyExternalImageToTexture` behind and write raw pixels instead, which
+       * trades a driver cost for a CPU readback.
+       */
+      usage: 0x2 | 0x4 | 0x10, // COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT
+    });
   }
 
   dispose(): void {

@@ -6,6 +6,8 @@ import {
   ggxMaxLevelFor,
   irradianceLevelFor,
   octahedralEdgeFor,
+  probeLevelEdge,
+  probeLevelMix,
   roughnessForLevel,
   sourceLevelForSample,
 } from './prefilterEnvMap.ts';
@@ -164,4 +166,32 @@ describe('the octahedral edge and the levels of its chain', () => {
     /* Half-float RGBA, which is what a scene keeping its range gets. 683 KB a layer. */
     expect(Math.round((texels * 8) / 1024)).toBe(683);
   });
+});
+
+it('A LEVEL OF THE CHAIN HAS ITS OWN EDGE, because the gutter does not shrink with it', () => {
+  /*
+   * One texel of gutter at every level, so its *share* of the map doubles as the chain coarsens —
+   * which is why an inset has to be computed per level rather than once from the map's own size.
+   * `flat/probeGrid.ts` carries the same expression and the visible slide it prevents.
+   */
+  expect(probeLevelEdge(256, 0)).toBe(256);
+  expect(probeLevelEdge(256, 3)).toBe(32);
+  /* Floored at four, which is where the chain stops: a two-texel level is all gutter. */
+  expect(probeLevelEdge(256, 9)).toBe(4);
+});
+
+it('a roughness reads the two levels either side of it, in proportion', () => {
+  const out = new Float32Array(3);
+  probeLevelMix(2.25, 5, out);
+  expect(Array.from(out)).toEqual([2, 3, 0.25]);
+
+  /* At the coarse end both levels are the last one, so the mix cannot read past the chain. */
+  probeLevelMix(5, 5, out);
+  expect(Array.from(out)).toEqual([5, 5, 0]);
+  probeLevelMix(9, 5, out);
+  expect(Array.from(out)).toEqual([5, 5, 1]);
+
+  /* And below the chain it is level zero with nothing to blend toward. */
+  probeLevelMix(-1, 5, out);
+  expect(Array.from(out)).toEqual([0, 1, 0]);
 });

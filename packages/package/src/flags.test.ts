@@ -11,6 +11,7 @@ const base: PackageManifest = {
   backend: { webgpu: 'prefer', allowSoftwareRenderer: false },
   features: { clipExport: false, gamepad: true },
   targets: ['linux-x64'],
+  native: null,
   steam: { appId: null },
   android: { permissions: [], cleartextTraffic: false },
   splash: { show: true, minMs: 1400 },
@@ -197,5 +198,27 @@ describe('planFlags against the runtime it will be applied to', () => {
       expect(plan.notes).toEqual([]);
       expect(plan.refusal).toBeNull();
     }
+  });
+
+  /*
+   * **The native host has no Chromium to pass switches to**, and no WebGL2 beneath its WebGPU: Dawn
+   * is its renderer. So a switch is nothing there, and a manifest declining WebGPU is refused
+   * rather than shipped a window that cannot draw.
+   */
+  it('passes the native host no switches, and refuses it a manifest that turns WebGPU off', () => {
+    for (const webgpu of ['prefer', 'require'] as const) {
+      const plan = planFlags(
+        { ...base, backend: { webgpu, allowSoftwareRenderer: false } },
+        'native-linux-x64',
+        OLD,
+      );
+      expect([plan.switches, plan.notes, plan.refusal]).toEqual([[], [], null]);
+    }
+    const off = planFlags(
+      { ...base, backend: { webgpu: 'off', allowSoftwareRenderer: false } },
+      'native-linux-x64',
+    );
+    expect(off.switches).toEqual([]);
+    expect(off.refusal).toMatch(/native-linux-x64 draws with WebGPU alone/);
   });
 });

@@ -114,10 +114,24 @@ export interface ScreenSpaceHit {
   v: number;
   /** How far along the ray it was found, world metres. */
   distanceM: number;
+  /**
+   * The closest this ray's whole path came to the edge of the frame, 0 to 0.5. Zero if it left.
+   *
+   * **Fading the *hit* is not enough, and that is what this is for.** `screenEdgeFade` softens a
+   * hit near the border so a reflection leaves rather than being cut off along a line — but a ray
+   * that runs off the edge *before* it hits anything returns no hit at all, and that is still a
+   * line. The two cases are adjacent: one pixel's ray grazes the border and lands, the next
+   * pixel's leaves and answers nothing.
+   *
+   * So the fade has to be driven by how close the *path* came, which only the march can see. A
+   * ray that stayed in the middle of the frame reports 0.5; one that skimmed the border reports
+   * almost nothing and fades out before its neighbour disappears.
+   */
+  margin: number;
 }
 
 export function newScreenSpaceHit(): ScreenSpaceHit {
-  return { hit: false, u: 0, v: 0, distanceM: 0 };
+  return { hit: false, u: 0, v: 0, distanceM: 0, margin: 0 };
 }
 
 /**
@@ -185,6 +199,9 @@ export function traceScreenSpaceRay(
   out.u = 0;
   out.v = 0;
   out.distanceM = 0;
+  out.margin = 0;
+  /* The closest the path has come to the border so far. See `ScreenSpaceHit.margin`. */
+  let margin = 0.5;
 
   const steps = Math.max(1, Math.round(march.steps));
   const ox = origin[0] ?? 0;
@@ -216,6 +233,7 @@ export function traceScreenSpaceRay(
     const y = oy + dy * t;
     const z = oz + dz * t;
     if (!project(x, y, z, UV)) return false;
+    margin = Math.min(margin, edgeMargin(UV[0] ?? 0, UV[1] ?? 0));
 
     const scene = sceneDistance(UV[0] ?? 0, UV[1] ?? 0);
     /* Nothing was drawn here, so there is no surface to cross. Carried rather than treated as a
@@ -267,6 +285,7 @@ export function traceScreenSpaceRay(
       out.u = hitU;
       out.v = hitV;
       out.distanceM = far;
+      out.margin = margin;
       return true;
     }
 
@@ -290,8 +309,23 @@ export function traceScreenSpaceRay(
  */
 export function screenEdgeFade(u: number, v: number, band: number): number {
   if (band <= 0) return u < 0 || u > 1 || v < 0 || v > 1 ? 0 : 1;
-  const nearest = Math.min(u, 1 - u, v, 1 - v);
-  return Math.min(1, Math.max(0, nearest / band));
+  return edgeFade(edgeMargin(u, v), band);
+}
+
+/** How far a screen position is from the nearest border, 0 at it and 0.5 in the middle. */
+export function edgeMargin(u: number, v: number): number {
+  return Math.min(u, 1 - u, v, 1 - v);
+}
+
+/**
+ * A margin turned into a fade, so `screenEdgeFade` and `ScreenSpaceHit.margin` cannot disagree.
+ *
+ * One expression rather than two copies of it — the rule `REFLECTION_EDGE_FADE` states about the
+ * band applied one level down, to the arithmetic the band goes into.
+ */
+export function edgeFade(margin: number, band: number): number {
+  if (band <= 0) return margin < 0 ? 0 : 1;
+  return Math.min(1, Math.max(0, margin / band));
 }
 
 /**

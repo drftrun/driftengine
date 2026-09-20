@@ -273,3 +273,42 @@ test('an absent attribute reaches the driver with every component the table gave
     ...(ABSENT_ATTRIBUTE['channel'] as readonly number[]),
   ]);
 });
+
+test('A MESH WITH AN INSTANCED BATCH STILL DRAWS WITH ITS OWN CHANNEL, not the batch’s matrix', () => {
+  /*
+   * **`attachInstances` claims locations 11 to 14 for the model matrix, and 13 is the channel.**
+   * A `Mesh` owns one vertex array, so enabling the instance attributes on it leaves them enabled
+   * for the *plain* draw as well — and location 13 then reads the third column of instance zero's
+   * matrix instead of the absent-attribute constant `[0, 1, 1, 1]`. For a placement with no
+   * rotation that column is `(0, 0, 1, 0)`, so `aChannel.y` is **zero**, and
+   * `vSkyDirect = aChannel.y` scales the directional term to nothing: the mesh renders lit by the
+   * hemispheric ambient alone, with correct normals, correct albedo and no error anywhere.
+   *
+   * Measured on `demo/instancing.ts`, which draws two ranks of one box — thirty `drawMesh` calls
+   * against one `drawInstanced` — so that the two must match. With a constant tint of
+   * (1, 0.5, 0.25) the `drawMesh` rank's top face read (51, 30, 21) against the other rank's
+   * (218, 110, 59), and 51 *is* the ambient. WebGPU has no vertex array to share and drew them
+   * alike, which is how it was found.
+   *
+   * The shader already refuses the pair — `flatVert` throws on channel-with-instancing rather than
+   * dropping the attribute — and this is the same refusal one layer down, where the vertex array
+   * was quietly allowing it.
+   */
+  const { gl, calls } = recordingGl();
+  const mesh = new Mesh(gl, base);
+  mesh.attachInstances(gl, gl.createBuffer() as WebGLBuffer, 76);
+
+  calls.length = 0;
+  mesh.draw(gl);
+  const disabled = calls
+    .filter((call) => call.name === 'disableVertexAttribArray')
+    .map((call) => call.args[0]);
+  expect(disabled, 'the instance columns are left enabled over a plain draw').toContain(13);
+
+  calls.length = 0;
+  mesh.drawInstances(gl, 3);
+  const enabled = calls
+    .filter((call) => call.name === 'enableVertexAttribArray')
+    .map((call) => call.args[0]);
+  expect(enabled, 'the instance columns are not put back for the instanced draw').toContain(13);
+});

@@ -54,7 +54,9 @@ interface AudioSessionLike {
  * that goes quiet in a pocket.
  */
 export function claimPlaybackSession(): void {
+  // platform: feature probe — absent is a defined state, and the line below reads it
   if (typeof navigator === 'undefined') return;
+  // platform: feature probe — guarded by the line above; absent is a defined state
   const session = (navigator as Navigator & { audioSession?: AudioSessionLike }).audioSession;
   if (session === undefined || session === null) return;
   try {

@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.build.json",
+  /* Node's types by name: this package runs in Node and nowhere else, unlike the engine's. */
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "types": ["node"] },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

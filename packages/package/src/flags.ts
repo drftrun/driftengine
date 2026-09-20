@@ -70,6 +70,24 @@ export function planFlags(
    */
   if (target === 'android' || target === 'ios') return { switches: [], refusal: null, notes: [] };
 
+  /*
+   * **The native host has no Chromium either, and no WebGL2 beneath its WebGPU**: Dawn is its whole
+   * renderer. So a switch is nothing there, and a manifest that turns WebGPU off asks for the one
+   * backend that target does not have — refused, rather than shipped as a window that cannot draw.
+   */
+  if (target === 'native-linux-x64') {
+    return {
+      switches: [],
+      notes: [],
+      refusal:
+        manifest.backend.webgpu === 'off'
+          ? "native-linux-x64 draws with WebGPU alone — Dawn is the host's renderer and there is " +
+            'no WebGL2 beneath it — so backend.webgpu "off" cannot be honoured there. Set it to ' +
+            '"prefer" or "require", or build a desktop target for WebGL2.'
+          : null,
+    };
+  }
+
   const switches: (readonly [string, string])[] = [];
   const notes: string[] = [];
   const wantsWebGpu = manifest.backend.webgpu !== 'off';

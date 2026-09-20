@@ -119,9 +119,25 @@ describe('the march', () => {
      * records the same trap in its own reprojection.
      *
      * The wall is there and the ray would reach it; it exits the frame first.
+     *
+     * **Counted rather than inferred from the outcome, since 2026-09-16.** Asserting only that
+     * there is no hit passed a march that clamped every out-of-frame sample to the border and went
+     * on reading it: the crossing it then found was rejected by the *thickness* check instead,
+     * because the refinement bails out on the same failed projection and leaves the coarse gap in
+     * place. Two guards, one assertion, and the one the test is named for was the one not being
+     * checked. The count is the claim: after the ray leaves the frame, the frame is not sampled.
      */
     const { project, sceneDistance } = orthographic(-10);
     const hit = newScreenSpaceHit();
+    let samples = 0;
+    const counted = (u: number, v: number): number => {
+      samples++;
+      expect(u).toBeGreaterThanOrEqual(0);
+      expect(u).toBeLessThanOrEqual(1);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+      return sceneDistance(u);
+    };
 
     const found = traceScreenSpaceRay(
       [1.9, 0, -2],
@@ -130,11 +146,13 @@ describe('the march', () => {
       [0, 0, 0],
       MARCH,
       project,
-      sceneDistance,
+      counted,
       hit,
     );
 
     expect(found).toBe(false);
+    /* The first sample is already past the edge, so the frame is never read at all. */
+    expect(samples).toBe(0);
   });
 
   test('does not hit a surface it only ever passes behind', () => {

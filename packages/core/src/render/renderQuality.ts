@@ -328,6 +328,23 @@ export interface RenderQuality {
    */
   readonly frameGraph: boolean;
   /**
+   * Schedule each flush through the identifier graph rather than through masks. WebGPU only.
+   *
+   * **Off, and nothing a consumer can see changes with it on.** The graph `frameGraph` records is
+   * the same either way; this chooses which scheduler groups it into passes and derives what each
+   * attachment loads and stores. The mask scheduler is exactly right for a frame whose composition
+   * is fixed, and the identifier graph is what can also express a frame whose composition is not —
+   * the second pipeline's — so this is the switch that says the second is a generalisation of the
+   * first: the eighteen scenes the harness walks are pixel-identical with it on, measured
+   * 2026-09-17 — `showroom` in six captures a side, because it varies between runs of one build
+   * whatever this says. `frame/flushGraph.ts` says where the two can part, and why no flush the
+   * renderer makes reaches it.
+   *
+   * Ignored where `frameGraph` is off, which records nothing to schedule, and on WebGL2, which has no
+   * verb-level graph. `?idgraph=1` turns it on in one reload.
+   */
+  readonly identifierGraph: boolean;
+  /**
    * Light the world from a froxel table rather than from a fixed set of uniform-array slots.
    *
    * **Off, and off is what every published scene is gated at.** With it off the clustered lines
@@ -493,6 +510,53 @@ export interface RenderQuality {
    * it be identical on both backends and asserted without one.
    */
   readonly occlusionCulling: number;
+  /**
+   * Reconstruction: how many output pixels the renderer draws for each render pixel, each axis.
+   * **0 is off and is the default.**
+   *
+   * On, the scene and everything that reads it before the resolve are drawn at
+   * `ceil(output / ratio)` and a compute dispatch reconstructs the output-size picture from this
+   * frame and the accumulated history — DriftTR, `render/recon/`. What it saves is `1 - 1/r²` of
+   * the scene's fragment work, which at 1.5 is 56%; what it costs is one motion target and one
+   * previous depth at render size, two output-size histories and one dispatch.
+   *
+   * **Off is byte-for-byte what the renderer does today**, which is what the published scenes are
+   * gated at. WebGPU only: WebGL2 has no compute stage, and it keeps the temporal resolve at native
+   * size, which is what it does now.
+   *
+   * **Zero is off rather than one, because one is a thing somebody might mean** — the resolve at
+   * the output size with no upscaling, which is a temporal antialiaser with a better neighbourhood
+   * rule than `temporalAa`'s. A sentinel that collided with it would make that unaskable.
+   *
+   * The range is 1.3 to 2 and a value inside it is clamped to the end it is nearest. Below 1.3 the
+   * render saves less than a third of the fragment work and the resolve's own cost eats it; above 2
+   * the render is a quarter of the output and no reconstruction holds an edge through that. A
+   * negative number is off, not a clamp to the bottom: it cannot mean "a little".
+   *
+   * `?recon=` is how it gets A/B'd in one reload.
+   */
+  readonly reconstruction: number;
+  /**
+   * Light a scene from what bounces, rather than from what was baked. **Off by default.**
+   *
+   * On, the probe grid the shading already samples is filled by tracing `render/gi/`'s three-level
+   * chain — the world distance field, and behind it the probes themselves, which is what makes the
+   * solution converge on several bounces over a few refreshes. Off, the probes hold one bounce of
+   * the rasterised scene, which is what this engine has always baked.
+   *
+   * **A switch rather than a strength.** Half an indirect bounce is not a thing to ask for: a probe
+   * either holds what the chain traced or it holds what the cube held, and mixing them is two
+   * solutions averaged rather than one at a lower quality. What is adjustable is how many probes
+   * refresh a frame, and that belongs to the grid.
+   *
+   * **WebGPU only**, and refused in words elsewhere — `INDIRECT_LIGHT_WEBGL2_REFUSAL`. A probe is a
+   * few hundred rays and that is a compute dispatch; WebGL2 has no stage for one, and the
+   * alternative — the two backends lighting one scene differently — is the disagreement the
+   * published pixel gate exists to prevent.
+   *
+   * `?indirect=1` turns it on in one reload.
+   */
+  readonly indirectLight: boolean;
   /**
    * Ambient occlusion, 0 to 1. Off by default.
    *
@@ -774,6 +838,8 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   temporalAa: false,
   orderIndependent: false,
   depthOfField: 0,
+  reconstruction: 0,
+  indirectLight: false,
   occlusionCulling: 0,
   ambientOcclusion: 0,
   nightEmissive: false,
@@ -851,6 +917,7 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   discardResolvedAttachments: true,
   deferFramePass: true,
   frameGraph: true,
+  identifierGraph: false,
   clusteredLights: false,
   cullDraws: false,
   /*
@@ -862,6 +929,22 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
 });
 
 /** Resolve and validate once at renderer construction, never in a hot path. */
+/** The narrowest and widest ratio a reconstruction runs at; outside them a caller means the end. */
+export const RECONSTRUCTION_RANGE = { least: 1.3, most: 2 } as const;
+
+/**
+ * Off, or a ratio inside the range.
+ *
+ * Anything that is not a positive number is off, which covers the default, a negative, and a
+ * `NaN` arriving from a query string somebody spelled wrong — none of those can mean "a little
+ * reconstruction", and a renderer that guessed one would be drawing at a size nobody asked for.
+ */
+function resolveReconstruction(asked: number | undefined): number {
+  const value = asked ?? DEFAULT_RENDER_QUALITY.reconstruction;
+  if (!(value > 0)) return 0;
+  return Math.min(RECONSTRUCTION_RANGE.most, Math.max(RECONSTRUCTION_RANGE.least, value));
+}
+
 export function resolveRenderQuality(options: RenderQualityOptions = {}): Readonly<RenderQuality> {
   const quality: RenderQuality = {
     outputTransform: options.outputTransform ?? DEFAULT_RENDER_QUALITY.outputTransform,
@@ -914,6 +997,9 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     ),
     temporalAa: options.temporalAa ?? DEFAULT_RENDER_QUALITY.temporalAa,
     orderIndependent: options.orderIndependent ?? DEFAULT_RENDER_QUALITY.orderIndependent,
+    /* Off, or a ratio at least 1.3 and at most 2 — never a number between zero and the range. */
+    reconstruction: resolveReconstruction(options.reconstruction),
+    indirectLight: options.indirectLight ?? DEFAULT_RENDER_QUALITY.indirectLight,
     depthOfField: Math.min(
       1,
       Math.max(0, options.depthOfField ?? DEFAULT_RENDER_QUALITY.depthOfField),
@@ -969,6 +1055,7 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
       options.discardResolvedAttachments ?? DEFAULT_RENDER_QUALITY.discardResolvedAttachments,
     deferFramePass: options.deferFramePass ?? DEFAULT_RENDER_QUALITY.deferFramePass,
     frameGraph: options.frameGraph ?? DEFAULT_RENDER_QUALITY.frameGraph,
+    identifierGraph: options.identifierGraph ?? DEFAULT_RENDER_QUALITY.identifierGraph,
     clusteredLights: options.clusteredLights ?? DEFAULT_RENDER_QUALITY.clusteredLights,
     cullDraws: options.cullDraws ?? DEFAULT_RENDER_QUALITY.cullDraws,
     waterReflectionFilterTaps:

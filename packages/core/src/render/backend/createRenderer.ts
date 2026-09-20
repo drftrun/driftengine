@@ -4,6 +4,49 @@ import type { RenderBackend, RendererApi } from './api.ts';
 import { BACKEND_TIMEOUT_MS, forcedBackend, selectBackend } from './select.ts';
 import { TIMED_OUT, withDeadline } from './deadline.ts';
 import { mountSplash, type MountedSplash, type SplashOptions } from '../../ui/splash.ts';
+import { gpuDrivenRefusal, gpuDrivenSupported } from '../gpudriven/pipeline.ts';
+
+/**
+ * Which of the two pipelines is drawing.
+ *
+ * A union rather than a boolean because a third is foreseeable and a boolean named for one of them
+ * is what makes the third awkward — `ROADMAP.md`'s own note about `hdrScene` starting life as
+ * `bool hdr`.
+ */
+export type RenderPipeline = 'forward' | 'gpu-driven';
+
+/**
+ * What a caller who says nothing gets.
+ *
+ * **A named constant rather than a literal in the `??`**, because the literal is unreachable from
+ * a test here: nothing in this environment resolves a renderer, so flipping it changed no answer
+ * and no test noticed. The constant is where the decision lives and it is asserted directly.
+ *
+ * Forward, and it stays forward until the second pipeline has drawn the six published scenes.
+ */
+export const DEFAULT_PIPELINE: RenderPipeline = 'forward';
+
+/**
+ * Why a requested pipeline cannot run on the backend that is about to draw, or null where it can.
+ *
+ * **Its own function because it is the only part of the decision a test in this environment can
+ * reach.** Nothing here can resolve a renderer — there is no GL context and no adapter — so every
+ * test of `createRenderer` ends in a rejection, and a check that lives only inside the factory is
+ * a check nothing exercises. `built` is this function's one caller and every return from the
+ * factory passes through it.
+ *
+ * **The backend is the one that will draw, not the one that was asked for.** Three paths into
+ * `built` arrive having fallen back from WebGPU, and a check written against the request passes on
+ * all three.
+ */
+export function pipelineRefusal(
+  pipeline: RenderPipeline,
+  backend: RenderBackend,
+  reason: string,
+): string | null {
+  if (pipeline !== 'gpu-driven' || gpuDrivenSupported(backend)) return null;
+  return `[driftengine] ${gpuDrivenRefusal(backend)} (${reason})`;
+}
 
 /** Everything about selection a caller may want to decide instead of inherit. */
 export interface CreateRendererOptions {
@@ -23,6 +66,23 @@ export interface CreateRendererOptions {
    * shows that, and the fallback is silent when it happens.
    */
   readonly preferWebGpu?: boolean;
+  /**
+   * Which pipeline to draw with. **Defaults to `'forward'`.**
+   *
+   * `'gpu-driven'` selects the cluster pipeline: instances and clusters culled on the device
+   * against a depth pyramid built this frame, a visibility buffer, and one shading dispatch per
+   * material. It needs indirect draws and dispatches, which WebGL2 does not have.
+   *
+   * **Asking for it where it cannot run throws.** Not a warning and not a fallback: a silent
+   * fallback means a consumer ships believing they have a pipeline they do not, and the difference
+   * only shows as a frame time on somebody else's machine. The throw carries the reason in words,
+   * from `gpuDrivenRefusal`.
+   *
+   * **This includes a WebGPU request that fell back**, which is the case a check written against
+   * the *asked-for* backend would miss: every fallback path here is a path where the pipeline
+   * became unavailable after the choice was made.
+   */
+  readonly pipeline?: RenderPipeline;
   /**
    * The query string to read `?backend=` from. Defaults to the document's own.
    *
@@ -122,6 +182,14 @@ export interface CreatedRenderer {
    * renderer knows.
    */
   readonly reversedDepth: boolean;
+  /**
+   * Which pipeline is drawing: the forward path, or the one driven from buffers the GPU wrote.
+   *
+   * Reported for the same reason `backend` is — a consumer who asked for one and got the other
+   * has to be able to find out. They cannot, here: asking for `gpu-driven` on a backend that
+   * cannot run it throws rather than answering `forward`. See `CreateRendererOptions.pipeline`.
+   */
+  readonly pipeline: RenderPipeline;
 }
 
 /**
@@ -189,9 +257,25 @@ export async function createRenderer(
    * the two failure paths — a fallback still paints, and a badge that outlived a fallback would
    * sit on the screen until the cap for a game that was running perfectly well underneath it.
    */
+  const pipeline: RenderPipeline = options.pipeline ?? DEFAULT_PIPELINE;
+
   const built = (
-    result: Omit<CreatedRenderer, 'rendererName' | 'reversedDepth'>,
+    result: Omit<CreatedRenderer, 'rendererName' | 'reversedDepth' | 'pipeline'>,
   ): CreatedRenderer => {
+    /*
+     * **Checked here rather than at the top, because every return passes through here.** The
+     * question is not which backend was *asked for* — it is which one is about to draw, and three
+     * of the paths into this function arrive having fallen back. A check against the request would
+     * pass on all three and hand back a forward renderer with `pipeline: 'gpu-driven'` on it.
+     *
+     * The splash goes down first. A page that throws out of `createRenderer` with a badge mounted
+     * leaves it on screen over nothing, for as long as the tab is open.
+     */
+    const refused = pipelineRefusal(pipeline, result.backend, result.reason);
+    if (refused !== null) {
+      splash?.present();
+      throw new Error(refused);
+    }
     if (splash !== null) presentOnFirstFrame(result.renderer, splash);
     /*
      * **Read off the renderer here rather than carried down from the choice**, and the difference
@@ -210,6 +294,7 @@ export async function createRenderer(
       ...result,
       rendererName: result.renderer.rendererName,
       reversedDepth: result.renderer.reversedDepth,
+      pipeline,
     };
   };
 
@@ -224,7 +309,11 @@ export async function createRenderer(
    * the promise the deadline was racing.
    */
   const budgetMs = options.backendTimeoutMs ?? BACKEND_TIMEOUT_MS;
-  const startedAt = Date.now();
+  /* Monotonic, and it has to be: `budgetMs - spent` below subtracts two readings. The wall clock
+     steps — daylight saving, an NTP correction, a laptop resuming with a stale clock — and a
+     forward step makes `spent` exceed the budget, so the engine falls back to WebGL2 reporting
+     "WebGPU stalled" about a device that was fine. */
+  const startedAt = performance.now();
   const choice = await selectBackend(
     search,
     options.preferWebGpu ?? true,
@@ -270,7 +359,7 @@ export async function createRenderer(
         return { surface, WebGPURenderer };
       })();
 
-      const spent = Date.now() - startedAt;
+      const spent = performance.now() - startedAt;
       const settled = await withDeadline(construction, budgetMs - spent);
       if (settled === TIMED_OUT) {
         device.destroy();

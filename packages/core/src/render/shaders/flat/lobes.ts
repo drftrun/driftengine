@@ -1,6 +1,35 @@
 /** How light falls off with distance, and the specular lobes a highlight is made of. */
 import { POINT_SHADOW_FADE_START } from '../../renderQuality.ts';
 
+/**
+ * How much of a self-lit surface's glow a shadow may take. See the GLSL constant's own comment.
+ *
+ * Exported because the GPU-driven pipeline dims its emission by the same share, and a number two
+ * shaders read is a number that belongs in one place.
+ */
+export const EMISSIVE_SHADOW_SHARE = 0.55;
+
+/**
+ * The narrowest lobe this engine draws, as the distribution's own width.
+ *
+ * **Derived rather than chosen.** These lobes are divided by their own peak, `a2*a2 / (d*d)`, and
+ * the division is guarded at `1e-8` so a mirror cannot divide by nothing. At the peak `d` *is*
+ * `a2`, so the guard starts binding exactly where `a2*a2` reaches `1e-8` — at `a = 0.01` — and
+ * below that it scales the answer instead of protecting it: the peak fell to **0.0039 at roughness
+ * 0.05, 256 times dimmer than at 0.1**, so a polished surface had a fainter highlight than a satin
+ * one. Flooring `a` here keeps the peak at one for every roughness and leaves the guard as the
+ * guard it was meant to be.
+ *
+ * **What it gives up**: a surface smoother than this is drawn at this width rather than narrower.
+ * That is the same trade `sphereLobe` argues below — a reflection narrower than a fragment cannot
+ * be sampled and comes back as speckle — so the floor is where the engine stops pretending to
+ * resolve something it cannot. **What would make it wrong** is a path that integrates the lobe
+ * rather than sampling it at a point, where the narrow tail is carried by the integral;
+ * `prefilter.ts`'s `ggxDistribution` is that path, keeps the honest normalisation, and is
+ * deliberately not this.
+ */
+export const MIN_LOBE_ALPHA = 0.01;
+
 export const LOBES_GLSL = `float shadowReach(float distance, float maxDistance) {
   return 1.0 - smoothstep(
     maxDistance * ${POINT_SHADOW_FADE_START.toFixed(2)},
@@ -53,7 +82,10 @@ const float MAX_FILTER_RADIUS = 0.25;
  * something passed in front of it, which is worse. Just over half reads as an inlay lit
  * from within a deck that is itself in shade.
  */
-const float EMISSIVE_SHADOW_SHARE = 0.55;
+const float EMISSIVE_SHADOW_SHARE = ${EMISSIVE_SHADOW_SHARE};
+
+/* The narrowest lobe this engine draws. See MIN_LOBE_ALPHA in this module for why it is this. */
+const float MIN_LOBE_ALPHA = ${MIN_LOBE_ALPHA};
 
 /*
  * Trowbridge-Reitz, because the width of a highlight is the whole effect.
@@ -77,7 +109,7 @@ const float EMISSIVE_SHADOW_SHARE = 0.55;
  * is a multiply cheaper than the honest spelling as well.
  */
 float specularLobe(float ndh, float roughness) {
-  float a = max(roughness * roughness, 1e-3);
+  float a = max(roughness * roughness, MIN_LOBE_ALPHA);
   float a2 = a * a;
   float d = ndh * ndh * (a2 - 1.0) + 1.0;
   return (a2 * a2) / max(d * d, 1e-8);
@@ -103,7 +135,7 @@ float specularLobe(float ndh, float roughness) {
  * scene ever does, so r/d is large and its highlight is genuinely broad.
  */
 float sphereLobe(float ndh, float roughness, float sourceRadius, float dist) {
-  float a = max(roughness * roughness, 1e-3);
+  float a = max(roughness * roughness, MIN_LOBE_ALPHA);
   float widened = clamp(a + sourceRadius / max(2.0 * dist, 1e-3), a, 1.0);
   float energy = (a / widened) * (a / widened);
   float w2 = widened * widened;

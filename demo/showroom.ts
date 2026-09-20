@@ -564,11 +564,15 @@ function paint(mesh: MeshData, material: DrftMaterial | undefined): MeshData {
  * costs this engine no decoder and no dependency. `RAW` is uncompressed RGBA8 and is what
  * the baker substitutes for a texture it could not find, so it has to work: without it a
  * missing file would take the whole model down at load rather than leaving one surface flat.
+ *
+ * **Straight alpha and no colour conversion**, as `@driftengine/assets`' loader decodes: premultiplied,
+ * the emblem's transparent texels lose the colour padded past its edge and filtering draws that as
+ * a dark rim, and colour management would rewrite the normal and ORM maps' values.
  */
 async function decode(texture: DrftTexture): Promise<ImageBitmap> {
   if (texture.codec === CODEC_RAW) {
     const pixels = new Uint8ClampedArray(texture.bytes.slice().buffer);
-    return createImageBitmap(new ImageData(pixels, texture.width, texture.height));
+    return createImageBitmap(new ImageData(pixels, texture.width, texture.height), AS_AUTHORED);
   }
   const type =
     texture.codec === CODEC_PNG
@@ -578,8 +582,13 @@ async function decode(texture: DrftTexture): Promise<ImageBitmap> {
         : 'image/jpeg';
   /* `slice` because the bytes are a view over the whole asset, and a Blob over the view
      would otherwise carry the entire file. */
-  return createImageBitmap(new Blob([texture.bytes.slice()], { type }));
+  return createImageBitmap(new Blob([texture.bytes.slice()], { type }), AS_AUTHORED);
 }
+
+const AS_AUTHORED = {
+  premultiplyAlpha: 'none',
+  colorSpaceConversion: 'none',
+} as const satisfies ImageBitmapOptions;
 
 /**
  * What a car looks like from the side, for the engine's interior fill.

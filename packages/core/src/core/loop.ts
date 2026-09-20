@@ -124,7 +124,19 @@ export function startLoop(hooks: LoopHooks, options: LoopOptions = {}): () => vo
   const fixedDt = options.fixedDt ?? 1 / 60;
   const maxFrameTime = options.maxFrameTime ?? 0.25;
 
-  let last = performance.now();
+  /**
+   * When the last frame arrived, on the timebase the frames themselves use.
+   *
+   * **Null until the first frame whenever a source was supplied, because that source owns the
+   * timebase and this loop has no way to ask what it is.** Seeding from `performance.now()`
+   * regardless is what this did, and for the window it is right — a `DOMHighResTimeStamp` and
+   * `performance.now()` share an origin. For anything else it mixes two clocks: the synthetic
+   * session in `@driftengine/xr` counts from its own zero, so the first delta became sixteen
+   * milliseconds minus a process uptime, the accumulator went as negative as that, and the
+   * simulation stopped ticking until it climbed back — one dead frame per sixteen milliseconds the
+   * process had been alive. A caller that supplies the frames supplies the timebase.
+   */
+  let last: number | null = options.frameSource === undefined ? performance.now() : null;
   let accumulator = 0;
   /**
    * Fixed steps taken, offset by `startTick`.
@@ -145,14 +157,19 @@ export function startLoop(hooks: LoopHooks, options: LoopOptions = {}): () => vo
    * another, because the two run at different rates and share no accumulator worth carrying across.
    */
   const source: FrameSource = options.frameSource ?? {
+    // platform: browser default — `LoopOptions.frameSource` is the seam
     requestAnimationFrame: (callback) => requestAnimationFrame(callback),
     cancelAnimationFrame: (handle) => {
+      // platform: browser default — as above
       cancelAnimationFrame(handle);
     },
   };
 
   const frame = (now: number, xrFrame?: unknown): void => {
     rafId = source.requestAnimationFrame(frame);
+
+    /* The first frame of a supplied source establishes the origin, so it advances nothing. */
+    const previous = last ?? now;
 
     /*
      * **Held: draw nothing, advance nothing, and bank nothing.**
@@ -173,7 +190,7 @@ export function startLoop(hooks: LoopHooks, options: LoopOptions = {}): () => vo
       return;
     }
 
-    let frameDt = (now - last) / 1000;
+    let frameDt = (now - previous) / 1000;
     last = now;
     const wallDt = frameDt;
     if (frameDt > maxFrameTime) frameDt = maxFrameTime;

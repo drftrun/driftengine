@@ -15,10 +15,10 @@ import { convolverInsert, delayInsert, type DelayInsert } from './returns.ts';
  * The mix as it has always been, expressed in buses and inserts.
  *
  * ```
- *   music ─ [lift] ─ tap ─ [slam] ─┐
- *     └─ sends from tap ───────────┼→ master ─ [master lowpass] ─ out ─→ destination
- *   effects ─────────────────────── ┘                                    ↑
- *   reverb · longReverb · delay ────────────────────────────────────────┘
+ *   music ─ [align] ─ [lift] ─ tap ─ [slam] ─┐
+ *     └─ sends from tap ─────────────────────┼→ master ─ [master lowpass] ─ out ─→ destination
+ *   effects ───────────────────────────────── ┘                                    ↑
+ *   reverb · longReverb · delay ──────────────────────────────────────────────────┘
  * ```
  *
  * **This is a transcription and it is meant to stay one.** Every level, every frequency and every
@@ -67,9 +67,14 @@ export function defaultLayout(mix: MixConsole, levels: MixLevels): DefaultLayout
    * muting the score while keeping the game audible is the single most-used audio setting there is.
    */
   const music = mix.bus('music', { level: levels.music });
+  const slam = slamInsert(mix.context, () => mix.scheduleAt());
+  /*
+   * The slam's wet arm is late by its shaper's latency and meets the dry arm and every send at the
+   * output, so all of them wait for it here, at the head of the bus. See `SlamInsert.align`.
+   */
+  music.insert(slam.align);
   const lift = liftInsert(mix.context, () => mix.scheduleAt());
   music.insert(lift);
-  const slam = slamInsert(mix.context, () => mix.scheduleAt());
   /*
    * Below the tap, so the sends never hear it: a six-second convolution of a clipped bass hit is a
    * mess, and it would still be arriving three gates later.

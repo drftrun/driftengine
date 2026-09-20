@@ -13,10 +13,34 @@ import { TEXT_VERT_FIELDS } from './textPass.ts';
 import { DEFAULT_TEXT_STYLE } from '../../textLayout.ts';
 import { bloomLevelSizes } from '../../bloomChain.ts';
 import { MAX_POINT_LIGHTS } from '../../lightBudget.ts';
-import { resolveRenderQuality, type RenderQuality } from '../../renderQuality.ts';
+import {
+  resolveRenderQuality,
+  type RenderQuality,
+  type RenderQualityOptions,
+} from '../../renderQuality.ts';
 import type { GpuSurface } from './device.ts';
 import type { ParticleInstances } from '../../particlePool.ts';
 import { WebGPURenderer } from './renderer.ts';
+import type { RendererApi } from '../api.ts';
+import { WebGL2Renderer } from '../webgl2/renderer.ts';
+import { recordingGl } from '../../rendererHarness.ts';
+import { createLineSegments } from '../../linePoints.ts';
+import { createWindField } from '../../windField.ts';
+import { parseSdfFont } from '../../sdfFont.ts';
+import { createMeshInstances } from '../../instances.ts';
+import { createInstanceData } from '../../instancedMesh.ts';
+import { DEFAULT_SDF_TEXT_STYLE } from '../../sdfTextLayout.ts';
+import { Camera } from '../../camera.ts';
+import { MeshBuilder } from '../../../geometry/meshBuilder.ts';
+import { createEnvironment } from '../webgl2/renderer.ts';
+import {
+  BODY_DYNAMIC,
+  BODY_STATIC,
+  PhysicsWorld,
+  boxShape,
+  createRayHit,
+  fingerprintBodies,
+} from '@driftengine/physics';
 
 /**
  * A surface with no GPU behind it, whose loss can be flipped on demand.
@@ -26,7 +50,7 @@ import { WebGPURenderer } from './renderer.ts';
  * needs the ceiling this project's `select.ts` actually requests and this machine actually
  * grants, which is 48 sampled textures.
  */
-function stubSurface(limits: Record<string, number> = {}) {
+function stubSurface(limits: Record<string, number> = {}, features: string[] = []) {
   const pass = {
     end: vi.fn(),
     setPipeline: vi.fn(),
@@ -50,6 +74,12 @@ function stubSurface(limits: Record<string, number> = {}) {
     /* Typed, so the descriptor a test reads back is not inferred as a zero-argument call. */
     beginRenderPass: vi.fn((_descriptor: GPURenderPassDescriptor) => pass),
     beginComputePass: vi.fn((_descriptor?: GPUComputePassDescriptor) => computePass),
+    /* The temporal resolve copies its result back over the scene and a reconstruction keeps the
+       previous depth the same way; neither had a test until reconstruction landed. */
+    copyTextureToTexture: vi.fn(),
+    /* The pair a measured pass resolves its stamps through. Only reached with `timestamp-query`. */
+    resolveQuerySet: vi.fn(),
+    copyBufferToBuffer: vi.fn(),
     finish: vi.fn(() => ({ label: 'commands' })),
   };
   /* The swap-chain image, whose size is the canvas' rather than a descriptor's. */
@@ -69,6 +99,8 @@ function stubSurface(limits: Record<string, number> = {}) {
   const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => {
     const size = descriptor.size as number[];
     return {
+      /* Its own label, so a copy between two of them can be read back as what it copied. */
+      label: descriptor.label ?? '',
       width: size[0] ?? texture.width,
       height: size[1] ?? texture.height,
       createView: vi.fn(() => ({ label: descriptor.label ?? 'view' })),
@@ -93,10 +125,26 @@ function stubSurface(limits: Record<string, number> = {}) {
      */
     pushErrorScope: vi.fn(),
     popErrorScope: vi.fn(async () => null),
+    /*
+     * What the device granted, which a real one always reports and this stub did not.
+     *
+     * Empty by default, so everything that asks takes its unmeasured path — which is what
+     * `gpuTimer.ts` says an unmeasured frame looks like. The field composer asked first and got
+     * `undefined.has`. A test that wants the measured path names the feature it wants.
+     */
+    features: new Set<string>(features),
     createCommandEncoder: vi.fn(() => encoder),
+    /* Only reached when `features` names `timestamp-query`, which a test asks for explicitly. */
+    createQuerySet: vi.fn((descriptor: GPUQuerySetDescriptor) => ({
+      label: descriptor.label ?? '',
+      destroy: vi.fn(),
+    })),
     createBindGroupLayout: vi.fn(() => ({ label: 'layout' })),
     createPipelineLayout: vi.fn(() => ({ label: 'pipelineLayout' })),
-    createBindGroup: vi.fn(() => ({ label: 'bindGroup' })),
+    /* Its own label, so a pass can be asked which of two groups over the same layout it bound. */
+    createBindGroup: vi.fn((descriptor: GPUBindGroupDescriptor) => ({
+      label: descriptor.label ?? 'bindGroup',
+    })),
     /* Labelled, so a test can tell one uniform ring's upload from another's. */
     createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => ({
       label: descriptor.label,
@@ -554,6 +602,468 @@ describe('the webgpu renderer', () => {
       .map(([descriptor]) => String(descriptor.label ?? ''))
       .filter((label) => label.startsWith('post.ao'));
     expect(targets.sort()).toEqual(['post.ao', 'post.aoScratch']);
+  });
+
+  /**
+   * A reconstruction draws the world small and lets the composite enlarge it.
+   *
+   * **The split is the whole of this change**: everything before the resolve is the render size and
+   * everything after it is the drawing buffer's. Getting one target on the wrong side of the line
+   * does not fail — the device accepts it, and the picture comes out with a piece of it at the
+   * wrong scale, which reads as a driver fault.
+   */
+  it('DRAWS THE SCENE AT THE RECONSTRUCTION SIZE while the swap chain keeps the drawing buffer', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+
+    const sized = (label: string): number[] | undefined =>
+      stub.device.createTexture.mock.calls
+        .map(([descriptor]) => descriptor)
+        .find((descriptor) => descriptor.label === label)?.size as number[] | undefined;
+
+    /* 640 by 480 over 1.5, each axis rounded up on its own: 427 by 320. */
+    for (const label of ['post.sceneColor', 'flat.depth', 'refract.snapshot', 'post.ao']) {
+      expect(sized(label)?.slice(0, 2), label).toEqual([427, 320]);
+    }
+    /* The canvas is untouched, which is what the composite draws into. */
+    expect(stub.surface.canvas.width).toBe(640);
+    expect(stub.surface.canvas.height).toBe(480);
+  });
+
+  it('draws everything at the drawing buffer when no reconstruction was asked for', () => {
+    /* The gate every published scene is held to: off allocates exactly what it always did. */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+    const scene = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'post.sceneColor');
+    expect((scene?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+  });
+
+  it('REFUSES TO SHRINK WITHOUT A COMPOSITE, because there would be nothing to enlarge from', () => {
+    /*
+     * With `screenEffects` off the world draws straight into the swap chain, so a smaller render
+     * size would be a smaller *picture* in the corner of the frame rather than an upscaled one.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: false, reconstruction: 2 }),
+    );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+    const depth = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'flat.depth');
+    expect((depth?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+  });
+
+  /**
+   * The resolve runs, and it runs where the temporal resolve would have.
+   *
+   * **Two dispatches and not one**: the first writes the next history and the second sharpens it
+   * into the picture that is shown, because the history holds the *unsharpened* result — sharpening
+   * into the history sharpens an already sharpened picture every frame.
+   */
+  it('DISPATCHES THE RESOLVE AND THE SHARPEN while reconstruction is on', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+
+    const compute = stub.encoder.beginComputePass.mock.calls
+      .map(([descriptor]) => String(descriptor?.label ?? ''))
+      .filter((label) => label.startsWith('recon.'));
+    expect(compute).toEqual(['recon.resolve']);
+
+    /* Two dispatches, and the two pipelines are the two entry points rather than one twice. */
+    expect(stub.computePass.dispatchWorkgroups).toHaveBeenCalledTimes(2);
+    const set = stub.computePass.setPipeline.mock.calls.map(([pipeline]) =>
+      String((pipeline as { label?: string }).label ?? ''),
+    );
+    expect(set).toEqual(['recon.resolve', 'recon.sharpen']);
+
+    /* Last frame's depth is kept, which is what the disocclusion tests against. */
+    const copies = stub.encoder.copyTextureToTexture.mock.calls.map(([from, to]) => [
+      String((from.texture as { label?: string }).label ?? ''),
+      String((to.texture as { label?: string }).label ?? ''),
+    ]);
+    expect(copies).toContainEqual(['post.resolvedDepth', 'recon.previousDepth']);
+
+    /*
+     * **And the composite reads the resolved picture rather than the scene.** The temporal resolve
+     * copies its result back over the scene target so that nothing downstream needs a second bind
+     * group; across two sizes that copy cannot happen, so this group is the one it declined.
+     */
+    const bound = stub.pass.setBindGroup.mock.calls.map(([, group]) =>
+      String((group as { label?: string }).label ?? ''),
+    );
+    expect(bound).toContain('recon.rushBindGroup');
+    expect(bound).not.toContain('post.rushBindGroup');
+  });
+
+  /**
+   * The depth the resolve reprojects through is this frame's, resolved before the resolve reads it.
+   *
+   * **Nothing else in the frame asked for it**, which is the case this is about. The depth survives
+   * the main pass only when something after it declares that it reads it, and reconstruction was
+   * missing from that list — so the attachment was discarded, the resolve read zero, and zero is
+   * the far plane reversed. Every surface stood at infinity: a camera that turned reprojected
+   * correctly, since a turn moves every depth alike, and a camera that slid moved nothing, so the
+   * history trailed behind every slide by the parallax it never saw. Measured on a probe before
+   * this line existed: a turn within a quarter of a pixel of the native frame, a slide 1.5 to 3
+   * pixels behind it.
+   */
+  it('RESOLVES THE DEPTH BEFORE THE RESOLVE, when nothing else in the frame reads it', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+
+    const order = (
+      mock: { mock: { calls: unknown[][]; invocationCallOrder: number[] } },
+      label: string,
+    ): number => {
+      const at = mock.mock.calls.findIndex(
+        ([descriptor]) => (descriptor as { label?: string } | undefined)?.label === label,
+      );
+      return at < 0 ? -1 : (mock.mock.invocationCallOrder[at] as number);
+    };
+    const depth = order(stub.encoder.beginRenderPass, 'post.depthResolve');
+    const resolve = order(stub.encoder.beginComputePass, 'recon.resolve');
+    expect(depth).toBeGreaterThan(0);
+    expect(resolve).toBeGreaterThan(depth);
+  });
+
+  /**
+   * A contributed pass is handed the jitter the frame's own verbs were drawn with.
+   *
+   * **The resolve un-jitters every sample it takes**, so geometry a pass drew without the frame's
+   * offset is placed a fraction of a render pixel from where it was, differently every frame — and
+   * the GPU-driven pipeline, which draws its whole world in `prepare`, drew all of it that way.
+   * `prepare` runs at `beginFrame` and the jitter used to be settled in `bindMeshPass`, after it, so
+   * no pass could have had it. Settled once a frame now: a frame binding its mesh pass twice, as one
+   * with an inset does, advanced the sequence twice and resolved against the second offset.
+   */
+  it('HANDS A PASS THE FRAME’S OWN JITTER, settled once a frame and before it prepares', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const seen: number[][] = [];
+    let reconstructs: boolean | null = null;
+    renderer.registerPass({
+      label: 'probe',
+      init(device) {
+        if (device.backend === 'webgpu') reconstructs = device.reconstruction;
+      },
+      prepare(ctx) {
+        if (ctx.backend === 'webgpu') seen.push(Array.from(ctx.jitter));
+      },
+      draw() {},
+    });
+    const { camera, env } = stubScene();
+    /* The offset each frame's resolve un-jittered by, in render pixels, and the render's size —
+       copied after each frame, because every frame writes from the same staging buffer. */
+    const resolved: { u: Uint32Array; f: Float32Array }[] = [];
+    for (let frame = 0; frame < 2; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+      const call = stub.device.queue.writeBuffer.mock.calls
+        .filter(([buffer]) => String((buffer as { label?: string }).label ?? '') === 'recon.params')
+        .at(-1);
+      if (call === undefined) continue;
+      const bytes = (call[2] as ArrayBuffer).slice(0);
+      resolved.push({ u: new Uint32Array(bytes), f: new Float32Array(bytes) });
+    }
+    expect(resolved).toHaveLength(2);
+    expect(reconstructs).toBe(true);
+    for (let frame = 0; frame < 2; frame += 1) {
+      const { u, f } = resolved[frame] as { u: Uint32Array; f: Float32Array };
+      const jitter = seen[frame] as number[];
+      /* A fraction of the clip square: two over the render's size a pixel, y upward as the
+         resolve's own rows run. */
+      expect(jitter[0]).toBeCloseTo((2 * (f[4] as number)) / (u[0] as number), 6);
+      expect(jitter[1]).toBeCloseTo((2 * (f[5] as number)) / (u[1] as number), 6);
+      expect(Math.abs(jitter[0] as number) + Math.abs(jitter[1] as number)).toBeGreaterThan(0);
+    }
+    /* And the sequence moved between them, once. */
+    expect((resolved[1] as { f: Float32Array }).f[6]).toBe(
+      (resolved[0] as { f: Float32Array }).f[4],
+    );
+    expect((resolved[1] as { f: Float32Array }).f[7]).toBe(
+      (resolved[0] as { f: Float32Array }).f[5],
+    );
+  });
+
+  it('hands a pass no jitter, and says it does not reconstruct, when nothing is reconstructed', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
+    const seen: number[][] = [];
+    let reconstructs: boolean | null = null;
+    renderer.registerPass({
+      label: 'probe',
+      init(device) {
+        if (device.backend === 'webgpu') reconstructs = device.reconstruction;
+      },
+      prepare(ctx) {
+        if (ctx.backend === 'webgpu') seen.push(Array.from(ctx.jitter));
+      },
+      draw() {},
+    });
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    expect(reconstructs).toBe(false);
+    expect(seen).toEqual([[0, 0]]);
+  });
+
+  /**
+   * The uniform block the resolve reads, at the offsets its struct declares.
+   *
+   * **A block of seventy-two floats has seventy-two chances to be one out**, and every one of them
+   * is a plausible picture rather than a failure: a jitter read out of the previous jitter's slot
+   * resolves against a frame half a texel from where it was, and a `hasHistory` read out of the
+   * clamp's slot trusts a history on the first frame. Nothing validates a uniform's *meaning*.
+   */
+  it('WRITES THE RESOLVE’S PARAMETERS WHERE ITS STRUCT SAYS, and says it has no history first', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+
+    const params = (): { u: Uint32Array; f: Float32Array } | null => {
+      const call = stub.device.queue.writeBuffer.mock.calls
+        .filter(([buffer]) => String((buffer as { label?: string }).label ?? '') === 'recon.params')
+        .at(-1);
+      if (call === undefined) return null;
+      /* Copied, because the renderer writes from one staging buffer every frame and a view of it
+         is a view of whatever the *last* frame put there. */
+      const bytes = (call[2] as ArrayBuffer).slice(0);
+      return { u: new Uint32Array(bytes), f: new Float32Array(bytes) };
+    };
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    const first = params();
+    expect(first).not.toBeNull();
+    /* 640 by 480 over 1.5, rounded up per axis, against the drawing buffer. */
+    expect(Array.from((first as NonNullable<typeof first>).u.slice(0, 4))).toEqual([
+      427, 320, 640, 480,
+    ]);
+    /* No history on the first frame, whatever is in the texture. */
+    expect((first as NonNullable<typeof first>).u[67]).toBe(0);
+    /* The disocclusion's four numbers, last, in the order the struct lists them. A hundredth is
+       not a float32, so this reads them as the single-precision numbers the device gets. */
+    expect(Array.from((first as NonNullable<typeof first>).f.slice(68, 72))).toEqual(
+      [0.01, 0.5, 0, 0.5].map((value) => Math.fround(value)),
+    );
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    const second = params() as NonNullable<ReturnType<typeof params>>;
+    expect(second.u[67]).toBe(1);
+    /*
+     * And the jitter moved, with the previous frame's kept beside it — the resolve reads both,
+     * because the history was drawn at last frame's sub-pixel offset and this frame's is not it.
+     */
+    const firstJitter = [
+      (first as NonNullable<typeof first>).f[4],
+      (first as NonNullable<typeof first>).f[5],
+    ];
+    expect([second.f[6], second.f[7]]).toEqual(firstJitter);
+    expect([second.f[4], second.f[5]]).not.toEqual(firstJitter);
+  });
+
+  /**
+   * A draw that says where it was gets drawn again into the motion target.
+   *
+   * **And a draw that says nothing does not**, which is the property that keeps this free for every
+   * scene that never moves anything: the pass still runs, because its clear is what stops last
+   * frame's motion being read as this frame's, but it draws nothing.
+   */
+  it('DRAWS A MOVER INTO THE MOTION TARGET, and only a mover', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const model = mat4.create();
+    const previous = mat4.fromTranslation(mat4.create(), [1, 0, 0]);
+
+    const motionDraws = (): number => {
+      stub.pass.drawIndexed.mockClear();
+      stub.encoder.beginRenderPass.mockClear();
+      return 0;
+    };
+    motionDraws();
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, model, 0, null, previous);
+    renderer.endFrame();
+    const passes = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    expect(passes).toContain('recon.motion');
+    /*
+     * The pipeline it bound is keyed by **this mesh's** stride, which is the bug that cost the
+     * afternoon: a mesh's first vertex buffer is interleaved, not positions, so a layout that
+     * assumed twelve bytes read a position out of the middle of a vertex and drew geometry that
+     * was not the mesh — and nothing validated it.
+     */
+    const bound = stub.pass.setPipeline.mock.calls.map(([p]) =>
+      String((p as { label?: string }).label ?? ''),
+    );
+    expect(mesh.vertexStride).toBeGreaterThan(12);
+    expect(bound).toContain(`recon.motion.${String(mesh.vertexStride)}`);
+
+    /* And the next frame draws nothing, because a frame states its movers afresh. */
+    stub.pass.setPipeline.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, model);
+    renderer.endFrame();
+    const after = stub.pass.setPipeline.mock.calls.map(([p]) =>
+      String((p as { label?: string }).label ?? ''),
+    );
+    expect(after.some((label) => label.startsWith('recon.motion.'))).toBe(false);
+  });
+
+  it('runs the motion pass even when nothing moved, because its clear is what it is for', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const passes = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    expect(passes).toContain('recon.motion');
+    const bound = stub.pass.setPipeline.mock.calls.map(([p]) =>
+      String((p as { label?: string }).label ?? ''),
+    );
+    expect(bound.some((label) => label.startsWith('recon.motion.'))).toBe(false);
+  });
+
+  it('REFUSES TO RECONSTRUCT A MULTISAMPLED FRAME, in words, rather than drawing it wrong', () => {
+    /*
+     * The motion pass draws the frame's movers again against the depth the scene left, and every
+     * attachment in a pass has to agree about its sample count — so a multisampled depth would want
+     * a multisampled motion target, a resolve of it, and a second set of everything downstream. It
+     * is also a combination nobody should want: the accumulation *is* the antialiasing.
+     */
+    const stub = stubSurface();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const renderer = freshRenderer(
+        stub,
+        resolveRenderQuality({ screenEffects: true, reconstruction: 1.5, sceneSamples: 4 }),
+      );
+      const { camera, env } = stubScene();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+      const passes = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+      expect(passes).not.toContain('recon.motion');
+      expect(warned.mock.calls.map(([line]) => String(line)).join('\n')).toContain('choice of one');
+      /* And the scene is drawn at the drawing buffer, not at a size nothing will enlarge. */
+      const scene = stub.device.createTexture.mock.calls
+        .map(([descriptor]) => descriptor)
+        .find((descriptor) => descriptor.label === 'post.sceneColor');
+      expect((scene?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  it('ALTERNATES THE TWO HISTORIES, because a dispatch cannot read what it is writing', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const resolves: string[] = [];
+    for (let frame = 0; frame < 3; frame += 1) {
+      stub.computePass.setBindGroup.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+      resolves.push(
+        String(
+          (stub.computePass.setBindGroup.mock.calls[0]?.[1] as { label?: string } | undefined)
+            ?.label ?? '',
+        ),
+      );
+    }
+    expect(resolves).toEqual(['recon.resolve0', 'recon.resolve1', 'recon.resolve0']);
+  });
+
+  it('runs neither the resolve nor the temporal one when reconstruction is off', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, temporalAa: false }),
+    );
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    const compute = stub.encoder.beginComputePass.mock.calls
+      .map(([descriptor]) => String(descriptor?.label ?? ''))
+      .filter((label) => label.startsWith('recon.'));
+    expect(compute).toEqual([]);
+  });
+
+  it('RECONSTRUCTION REPLACES THE TEMPORAL RESOLVE rather than running beside it', () => {
+    /*
+     * Both accumulate a history out of a jittered sequence. Running them together resolves the
+     * frame twice — once at the render size and again at the output size, against a history whose
+     * frames had already been mixed — so a consumer asking for both gets reconstruction.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, temporalAa: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    const taa = stub.encoder.beginRenderPass.mock.calls
+      .map(([descriptor]) => String(descriptor.label ?? ''))
+      .filter((label) => label === 'post.taa');
+    expect(taa).toEqual([]);
   });
 
   it('builds the whole bloom pyramid rather than only its first level', () => {
@@ -1234,6 +1744,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
 
     renderer.beginShadowPass(mat4.create(), 'static');
@@ -1301,6 +1813,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
     const submit = (layer: 'static' | 'static-peel' | 'dynamic'): boolean => {
       const opened = renderer.beginShadowPass(mat4.create(), layer);
@@ -1613,6 +2127,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }, { label: 'constants' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
     const cullModes = (): (GPUCullMode | undefined)[] =>
       device.createRenderPipeline.mock.calls.map((call) => call[0].primitive?.cullMode);
@@ -1684,6 +2200,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
     const data = { count: 4 } as never;
 
@@ -1714,6 +2232,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }, { label: 'constants' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
 
     renderer.beginShadowPass(mat4.create(), 'static');
@@ -1753,6 +2273,8 @@ describe('the webgpu renderer', () => {
       vertexBuffers: [{ label: 'vertices' }],
       indexBuffer: { label: 'indices' },
       indexCount: 3,
+      /* A real mesh says whether its geometry has landed, and nothing incomplete is drawn. */
+      complete: true,
     };
 
     renderer.beginFrame([0, 0, 0]);
@@ -1815,6 +2337,36 @@ describe('the webgpu renderer', () => {
       }
       const said = warn.mock.calls.some((c) => String(c[0]).includes('text draws in a frame'));
       expect(said, 'the ceiling is announced rather than silently applied').toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /*
+   * **And the panels, which had neither the warning nor a line.** `fillPanel` takes a slot of the
+   * same `MAX_OVERLAYS` ring its text and line siblings do, and past it returned without a word, so
+   * an interface drawn of panels lost everything after its sixty-fourth on this backend and nothing
+   * on WebGL2. Found by an editor on the native host whose props stopped being drawn after the
+   * second.
+   */
+  it('counts the panels a frame asks for and says once when it runs past the ceiling', () => {
+    const { surface } = stubSurface();
+    const renderer = new WebGPURenderer(surface, resolveRenderQuality({}));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const panels = renderer.frameBudget.lines.find((line) => line.name === 'panels');
+      const ceiling = panels?.ceiling ?? 0;
+      for (let frame = 0; frame < 2; frame += 1) {
+        renderer.beginFrame([0, 0, 0]);
+        for (let i = 0; i < ceiling + 16; i++) {
+          renderer.fillPanel({ left: i, top: 0, width: 1, height: 1 }, [1, 1, 1], 1);
+        }
+      }
+      expect(panels?.used).toBe(ceiling + 16);
+      expect(panels?.dropped).toBe(16);
+      expect(renderer.frameBudget.dropped).toBe(true);
+      const said = warn.mock.calls.filter((c) => String(c[0]).includes('panels in a frame'));
+      expect(said.length, 'announced, and once rather than every frame').toBe(1);
     } finally {
       warn.mockRestore();
     }
@@ -1977,7 +2529,7 @@ describe('the webgpu renderer', () => {
       scratch[uLightingEnabled],
       'the scratch default is restored, not left dirtied at 0',
     ).toBe(1);
-    const materialSlot = (renderer as unknown as { materialSlot: number }).materialSlot;
+    const materialSlot = (renderer as unknown as { materials: { slot: number } }).materials.slot;
     expect(
       materialSlot,
       'the cache is invalidated too, so the next successful draw takes a fresh slot ' +
@@ -2789,7 +3341,44 @@ describe('particle batches', () => {
   });
 });
 
-describe('the frame graph', () => {
+describe.each([
+  ['masks', false],
+  ['identifiers', true],
+] as const)('the frame graph, scheduled by %s', (scheduler, identifierGraph) => {
+  /*
+   * **Every test in this block holds under either scheduler**, which is the claim
+   * `quality.identifierGraph` makes: the identifier graph groups a flush into the passes, clears
+   * and discards the mask scheduler does, so nothing downstream of the schedule can tell them apart.
+   */
+  const graphQuality = (options: RenderQualityOptions = {}) =>
+    resolveRenderQuality({ ...options, identifierGraph });
+
+  /*
+   * And the switch is shown to engage, because two schedulers that agree are indistinguishable from
+   * one that never ran. The identifier graph keeps what it last scheduled; the mask path has none.
+   */
+  it(`schedules a flush by ${scheduler}`, () => {
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
+    const mesh = stubMesh(renderer);
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const state = (renderer as unknown as { flushSchedule: { deps: { count: number } } | null })
+      .flushSchedule;
+    if (identifierGraph) {
+      expect(state?.deps.count, 'the last flush was recorded as identifier nodes').toBeGreaterThan(
+        1,
+      );
+    } else {
+      expect(state, 'a renderer scheduling by masks carries no graph').toBeNull();
+    }
+    expect(renderer.graphPasses).toBe(1);
+  });
+
   /**
    * The switch has to be shown to *do* something.
    *
@@ -2800,7 +3389,7 @@ describe('the frame graph', () => {
    */
   it('records a mesh draw and replays it exactly once', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
     stub.pass.drawIndexed.mockClear();
@@ -2826,7 +3415,7 @@ describe('the frame graph', () => {
    */
   it('loses no draw when a frame ends on one', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
     stub.pass.drawIndexed.mockClear();
@@ -2852,7 +3441,7 @@ describe('the frame graph', () => {
    */
   it('loses no overlay draw when the frame ends on one', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
 
     renderer.beginFrame([0, 0, 0]);
     renderer.endFrame();
@@ -2883,7 +3472,7 @@ describe('the frame graph', () => {
    */
   it('flushes at an inset boundary, so a draw lands in the viewport it was issued under', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
 
@@ -2918,7 +3507,7 @@ describe('the frame graph', () => {
    */
   it('costs one flush a frame however many verbs record', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
 
@@ -2965,7 +3554,7 @@ describe('the frame graph', () => {
    */
   it('records the sky and the wind streaks rather than issuing them', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const streaks = renderer.createWindStreaks();
     const { camera, env } = stubScene();
     stub.pass.draw.mockClear();
@@ -3010,7 +3599,7 @@ describe('the frame graph', () => {
     const renderer = new WebGPURenderer(
       stub.surface,
       /* `planarReflections` is what allocates the mirror at all; without it the verb declines. */
-      resolveRenderQuality({ frameGraph: true, planarReflections: true }),
+      graphQuality({ frameGraph: true, planarReflections: true }),
     );
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
@@ -3043,7 +3632,7 @@ describe('the frame graph', () => {
    */
   it('records a light volume rather than issuing it', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera } = stubScene();
 
@@ -3076,7 +3665,7 @@ describe('the frame graph', () => {
    */
   it('costs no verb flush once every verb records', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const streaks = renderer.createWindStreaks();
     const { camera, env } = stubScene();
@@ -3127,7 +3716,7 @@ describe('the frame graph', () => {
     const renderer = new WebGPURenderer(
       stub.surface,
       /* No motion blur and no occlusion, so the composite never resolves depth out. */
-      resolveRenderQuality({ frameGraph: true, cameraMotionBlur: 0, ambientOcclusion: 0 }),
+      graphQuality({ frameGraph: true, cameraMotionBlur: 0, ambientOcclusion: 0 }),
     );
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
@@ -3152,7 +3741,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({ frameGraph: true, ambientOcclusion: 0.5 }),
+      graphQuality({ frameGraph: true, ambientOcclusion: 0.5 }),
     );
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
@@ -3180,7 +3769,7 @@ describe('the frame graph', () => {
     stub.sizeCanvas(412, 915);
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         sceneSamples: 4,
         cameraMotionBlur: 0,
@@ -3211,7 +3800,7 @@ describe('the frame graph', () => {
     stub.sizeCanvas(412, 915);
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         sceneSamples: 4,
         planarReflections: true,
@@ -3251,7 +3840,7 @@ describe('the frame graph', () => {
    */
   it('opens no pass while verbs are recording', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
 
@@ -3292,7 +3881,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         discardResolvedAttachments: true,
         cameraMotionBlur: 0,
@@ -3320,7 +3909,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         discardResolvedAttachments: true,
         ambientOcclusion: 0.5,
@@ -3351,7 +3940,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         discardResolvedAttachments: true,
         cameraMotionBlur: 0,
@@ -3396,7 +3985,7 @@ describe('the frame graph', () => {
    */
   it('derives the frame clear, and derives it once', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
 
@@ -3425,7 +4014,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({ frameGraph: true, planarReflections: true }),
+      graphQuality({ frameGraph: true, planarReflections: true }),
     );
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
@@ -3459,7 +4048,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({
+      graphQuality({
         frameGraph: true,
         planarReflections: true,
         discardResolvedAttachments: true,
@@ -3506,7 +4095,7 @@ describe('the frame graph', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(
       stub.surface,
-      resolveRenderQuality({ frameGraph: true, planarReflections: true }),
+      graphQuality({ frameGraph: true, planarReflections: true }),
     );
     const { camera, env } = stubScene();
     renderer.resize();
@@ -3586,7 +4175,7 @@ describe('the frame graph', () => {
    */
   it('records a registered pass and runs it at the flush', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: true }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: true }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
     let ran = 0;
@@ -3624,11 +4213,11 @@ describe('the frame graph', () => {
     };
     const withPass = new WebGPURenderer(
       stubSurface({ maxSampledTexturesPerShaderStage: 48 }).surface,
-      resolveRenderQuality(quality),
+      graphQuality(quality),
     );
     const withoutPass = new WebGPURenderer(
       stubSurface({ maxSampledTexturesPerShaderStage: 48 }).surface,
-      resolveRenderQuality(quality),
+      graphQuality(quality),
     );
     const { camera, env } = stubScene();
 
@@ -3679,7 +4268,7 @@ describe('the frame graph', () => {
   /** The query a consumer uses, which is the half that can save more than a draw. */
   it('says what is on screen and what is behind the camera', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({}));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({}));
     const mesh = stubMesh(renderer);
     const { env } = stubScene();
 
@@ -3706,7 +4295,7 @@ describe('the frame graph', () => {
     const far = () => mat4.fromTranslation(mat4.create(), [0, 0, 400]);
     const run = (cullDraws: boolean): number => {
       const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
-      const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ cullDraws }));
+      const renderer = new WebGPURenderer(stub.surface, graphQuality({ cullDraws }));
       const mesh = stubMesh(renderer);
       const { env } = stubScene();
       renderer.beginFrame([0, 0, 0]);
@@ -3724,7 +4313,7 @@ describe('the frame graph', () => {
   it('draws exactly as before when the switch is off', () => {
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     /* Explicit now that the switch defaults on: this test is the one that says what "off" means. */
-    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ frameGraph: false }));
+    const renderer = new WebGPURenderer(stub.surface, graphQuality({ frameGraph: false }));
     const mesh = stubMesh(renderer);
     const { camera, env } = stubScene();
     stub.pass.drawIndexed.mockClear();
@@ -3768,7 +4357,7 @@ describe('the frame graph', () => {
    * resolution it is about.
    */
   it('replays a draw recorded after the frame with the pipeline of the pass it lands in', () => {
-    const quality = resolveRenderQuality({ frameGraph: true });
+    const quality = graphQuality({ frameGraph: true });
     const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
     const renderer = new WebGPURenderer(stub.surface, quality);
     const mesh = stubMesh(renderer);
@@ -3876,6 +4465,65 @@ it('rebuilds the blank flat group when a map it was built against is disposed', 
     stub.device.createBindGroup.mock.calls.length,
     'the blank group no longer holds the destroyed view',
   ).toBeGreaterThan(0);
+});
+
+/**
+ * **A map updated to another size is a new GPU texture, so every group holding its view is
+ * rebuilt, and the texture it replaced outlives any draw already recorded against it.**
+ *
+ * Found as the showroom not repeating itself: a model's preview image lands first, the real image
+ * then updates it at four times the size, and the texture was left the preview's size. The fix
+ * makes a new texture — which is a new view — so this is `disposeSurfaceTexture`'s invalidation
+ * again, for the same reason, plus one thing disposal does not need: the old texture may already
+ * be read by a draw recorded earlier in this frame, so it is destroyed when the next frame begins
+ * rather than now.
+ */
+it('rebuilds the groups of a map updated to another size, and retires the old texture at the next frame', () => {
+  const stub = stubSurface();
+  const renderer = freshRenderer(stub);
+  const map = renderer.createSurfaceTexture(
+    { width: 4, height: 4 } as unknown as TexImageSource,
+    {},
+  );
+  const old = stub.device.createTexture.mock.results
+    .map((result) => result.value)
+    .filter((texture) => texture.label === 'surface.texture')
+    .at(-1);
+  renderer.setMaterial({ albedo: map });
+  /* A group naming the map's view, which only a material group does: the mip chain's groups name
+     single levels. */
+  const groupsNaming = (view: unknown) =>
+    stub.device.createBindGroup.mock.calls.filter(([descriptor]) =>
+      Array.from(descriptor.entries).some((entry) => entry.resource === view),
+    ).length;
+
+  /* The same size first: nothing to rebuild and nothing to retire, which a video relies on. */
+  stub.device.createBindGroup.mockClear();
+  renderer.updateSurfaceTexture(map, { width: 4, height: 4 } as unknown as TexImageSource);
+  expect(groupsNaming(map.view)).toBe(0);
+
+  renderer.updateSurfaceTexture(map, { width: 8, height: 2 } as unknown as TexImageSource);
+  expect(groupsNaming(map.view), 'the groups are rebuilt around the new view').toBeGreaterThan(0);
+  expect(old?.destroy, 'still readable by what this frame recorded').not.toHaveBeenCalled();
+
+  renderer.beginFrame([0, 0, 0]);
+  expect(old?.destroy, 'and destroyed once nothing recorded can read it').toHaveBeenCalledTimes(1);
+});
+
+it('destroys a retired texture with the renderer when no frame follows the update', () => {
+  const stub = stubSurface();
+  const renderer = freshRenderer(stub);
+  const map = renderer.createSurfaceTexture(
+    { width: 4, height: 4 } as unknown as TexImageSource,
+    {},
+  );
+  const old = stub.device.createTexture.mock.results
+    .map((result) => result.value)
+    .filter((texture) => texture.label === 'surface.texture')
+    .at(-1);
+  renderer.updateSurfaceTexture(map, { width: 8, height: 2 } as unknown as TexImageSource);
+  renderer.dispose();
+  expect(old?.destroy).toHaveBeenCalledTimes(1);
 });
 
 /**
@@ -4580,6 +5228,7 @@ describe('the frame budget', () => {
       'text draws',
       'sdf text draws',
       'line draws',
+      'panels',
     ]);
     for (const line of renderer.frameBudget.lines) {
       /*
@@ -4744,5 +5393,852 @@ describe('order-independent transparency against multisampling', () => {
   /** And nothing at all where nobody asked for it, multisampled or not. */
   it('says nothing to a profile that never asked for it', () => {
     expect(refusals({ sceneSamples: 4 })).toEqual([]);
+  });
+});
+
+/**
+ * The fields a frame declares, and the field the renderer composes from them.
+ *
+ * **The gate here is the first test, not the rest of them.** Wave 4A's own constraint is that
+ * indirect light off is byte-for-byte what the renderer did before it existed, and a composition
+ * that ran anyway would be a compute pass in every frame of every scene that never asked. The
+ * others are about the seam being wired at all.
+ */
+describe('the distance fields a frame declares', () => {
+  /** A field small enough that a test allocates nothing worth mentioning. */
+  function field(): { field: Float32Array; dims: [number, number, number]; bounds: Float32Array } {
+    return {
+      field: new Float32Array(4 ** 3).fill(1),
+      dims: [4, 4, 4],
+      bounds: Float32Array.from([-1, -1, -1, 1, 1, 1]),
+    };
+  }
+
+  /** One frame that declares `count` fields, under the asked profile. */
+  function frame(quality: RenderQualityOptions, count: number) {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality(quality));
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    const source = field();
+    for (let i = 0; i < count; i += 1) renderer.addDistanceField(source, mat4.create());
+    stub.encoder.beginComputePass.mockClear();
+    renderer.endFrame();
+    return { stub, renderer };
+  }
+
+  it('COMPOSES NOTHING AT ALL WITH INDIRECT LIGHT OFF, whatever was declared', () => {
+    const { stub } = frame({}, 3);
+    expect(stub.encoder.beginComputePass).not.toHaveBeenCalled();
+  });
+
+  it('ALLOCATES NOTHING WHEN THE FLAG IS ON AND NO FIELD WAS DECLARED', () => {
+    /*
+     * **The dispatch is not what this guard saves, and a test that only counted dispatches passed
+     * with the guard removed.** `FieldComposer.compose` already returns early on an empty scene,
+     * so the renderer's own check changes no command it records. What it changes is whether the
+     * composer is *built* — 1.4 MB of device buffers and a compute pipeline — for a profile with
+     * the flag on that declares no fields, which is a scene lit entirely from a baked grid.
+     */
+    const { stub } = frame({ indirectLight: true }, 0);
+    expect(stub.encoder.beginComputePass).not.toHaveBeenCalled();
+    const made = stub.device.createBuffer.mock.calls.filter((call) =>
+      String(call[0]?.label ?? '').startsWith('gi-field'),
+    );
+    expect(made, 'no composer was built at all').toEqual([]);
+  });
+
+  it('composes one pass a frame once the flag is on and a field was declared', () => {
+    const { stub } = frame({ indirectLight: true }, 1);
+    const composed = stub.encoder.beginComputePass.mock.calls.filter(
+      (call) => call[0]?.label === 'gi compose',
+    );
+    expect(composed).toHaveLength(1);
+  });
+
+  it('offers the composed field to a pass, and offers null before one was composed', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ indirectLight: true }));
+    const { camera, env } = stubScene();
+    const seen: (unknown | null)[] = [];
+    renderer.registerPass({
+      label: 'reader',
+      prepare: (ctx) => {
+        seen.push(ctx.backend === 'webgpu' ? ctx.distanceField : null);
+      },
+      draw: () => undefined,
+    });
+
+    /* The first frame prepares before anything has been composed, so it is offered null. */
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.addDistanceField(field(), mat4.create());
+    renderer.endFrame();
+
+    /* And the second is offered the field the first composed — one frame behind, by design. */
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBeNull();
+    expect(seen[1]).toMatchObject({ levels: 3, side: 49 });
+  });
+
+  it('forgets what a frame declared, so a field nobody redeclares stops lighting', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ indirectLight: true }));
+    const { camera, env } = stubScene();
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.addDistanceField(field(), mat4.create());
+    renderer.endFrame();
+
+    stub.encoder.beginComputePass.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    expect(stub.encoder.beginComputePass).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The probes traced from the field, and the gate that says off costs nothing.
+ *
+ * **The first test is the gate and the rest are the wiring.** Wave 4A's constraint is that indirect
+ * light off is byte-for-byte what the renderer did before it existed, and a bake that ran anyway
+ * would be two compute dispatches and five render passes in every frame of every scene.
+ */
+describe('the probes a frame traces', () => {
+  function field(): { field: Float32Array; dims: [number, number, number]; bounds: Float32Array } {
+    return {
+      field: new Float32Array(4 ** 3).fill(1),
+      dims: [4, 4, 4],
+      bounds: Float32Array.from([-2, -2, -2, 2, 2, 2]),
+    };
+  }
+
+  /** Two frames, because the field is composed at the end of one and traced against in the next. */
+  function frames(quality: RenderQualityOptions, count: number) {
+    /*
+     * The ceiling `select.ts` actually requests, because `probeFits` refuses a probe array on a
+     * device that reports the bare minimum — and with no array there is nothing to bake into.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, ...quality }),
+    );
+    const { camera, env } = stubScene();
+    const source = field();
+    for (let frame = 0; frame < count; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.addDistanceField(source, mat4.create());
+      renderer.endFrame();
+    }
+    return stub;
+  }
+
+  /** Every compute pass this frame opened, by the label its descriptor carries. */
+  function computeLabels(stub: ReturnType<typeof stubSurface>): string[] {
+    return stub.encoder.beginComputePass.mock.calls.map((call) => String(call[0]?.label ?? ''));
+  }
+
+  it('TIMES ITS OWN DISPATCHES where the device has a clock, so the cost is measured', () => {
+    /*
+     * **The figure `CAPABILITIES.md` quotes has to come from the pass that pays it.** The field
+     * composer carries a `timestamp-query` pair around its dispatch for that reason, and the bake
+     * beside it had none — so the only cost ever published for indirect light was the composition's
+     * and the trace's was left to be guessed at.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 }, ['timestamp-query']);
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+    const source = field();
+    for (let frame = 0; frame < 3; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.addDistanceField(source, mat4.create());
+      renderer.endFrame();
+    }
+
+    const timed = stub.encoder.beginComputePass.mock.calls
+      .map((call) => call[0] as GPUComputePassDescriptor)
+      .filter((descriptor) => String(descriptor.label ?? '') === 'probe bake')
+      .filter((descriptor) => descriptor.timestampWrites !== undefined);
+    expect(timed.length, 'the bake opened no measured pass').toBeGreaterThan(0);
+    /* And nothing is reported until a readback has landed, which is a frame behind by design. */
+    expect(renderer.indirectBakeMs).toBe(null);
+  });
+
+  it('CLEARS THE PROBE ARRAY WHEN IT ALLOCATES IT, because an unwritten texture is not black', () => {
+    /*
+     * **The same reason the directional shadow maps are cleared in the constructor**, arrived at
+     * from the other end. A WebGPU texture no pass has written holds undefined contents, and a
+     * traced grid reads its own irradiance level back as the bounce that has already happened —
+     * so an unwritten array is not "no light yet", it is whatever the allocator left.
+     *
+     * Measured on `demo/dev/bounce.html` with `?seed=0`: a room whose grid was never rasterised
+     * settled on a uniform **209 of 255** in every channel, which looks like a working ambient
+     * term and is memory. That is what made a rasterised seed look mandatory, and with the array
+     * cleared the trace bootstraps from black — which is what Wave 4's "no baked lighting" asks.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    stub.encoder.beginRenderPass.mockClear();
+    stub.device.queue.submit.mockClear();
+
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+    ).toBe(true);
+
+    /* **And submitted**, because an encoder nobody finishes clears nothing on a device. */
+    expect(stub.device.queue.submit).toHaveBeenCalledTimes(1);
+
+    const clears = stub.encoder.beginRenderPass.mock.calls
+      .map((call) => call[0] as GPURenderPassDescriptor)
+      .filter((descriptor) => String(descriptor.label ?? '') === 'probe.clear');
+    /*
+     * **Two layers times every mip the array was created with**, read off the descriptor rather
+     * than written down: the edge is twice the asked-for probe size and the level count follows
+     * from it, so a number here would be a second spelling of `octahedralEdgeFor` that drifts.
+     */
+    const array = stub.device.createTexture.mock.calls
+      .map((call) => call[0])
+      .find((descriptor) => descriptor.label === 'probe.array');
+    expect(array).toBeDefined();
+    expect(clears.length).toBe(2 * Number(array?.mipLevelCount));
+    for (const descriptor of clears) {
+      const attachment = [...descriptor.colorAttachments][0];
+      expect(attachment?.loadOp).toBe('clear');
+      expect(attachment?.clearValue).toEqual({ r: 0, g: 0, b: 0, a: 1 });
+    }
+  });
+
+  it('BINDS THE PROBE ARRAY TO THE SHADING ONCE THE TRACE HAS FILLED IT', () => {
+    /*
+     * **A bind group holds whatever texture existed when it was built, for ever**, and this
+     * backend has now paid for that three times: the refraction snapshot, the point shadow array,
+     * and this. `flatTextures` resolves `uEnvironment` to a one-texel **white** stand-in until the
+     * grid is baked, so a renderer whose grid is filled by the trace rather than by
+     * `bakeProbeGrid` builds its flat groups before there is anything to bind and keeps the white
+     * for the life of the renderer. The uniform flips to "use the grid" and the grid the shader
+     * reads is pure white.
+     *
+     * Measured on `demo/dev/bounce.html?seed=0`: every surface in the room came back at exactly
+     * its own albedo times 255 — 209 for the white walls, 229 for the red one — with the sun
+     * switched off entirely and with the trace pinned to a constant. Nothing about the bake could
+     * change it, which is what said the shading was not reading the bake at all. It had been
+     * recorded as undefined memory; it is a deliberate white texture, read on purpose.
+     */
+    const stub = frames({ indirectLight: true }, 30);
+    const boundToProbes = stub.device.createBindGroup.mock.calls
+      .map((call) => call[0] as GPUBindGroupDescriptor)
+      .filter((descriptor) => String(descriptor.label ?? '') !== 'probe bake')
+      .some((descriptor) =>
+        [...descriptor.entries].some(
+          (entry) => String((entry.resource as { label?: string }).label ?? '') === 'probe.array',
+        ),
+      );
+    expect(boundToProbes, 'the shading is still reading the one-texel white stand-in').toBe(true);
+  });
+
+  it('TRACES NOTHING WITH INDIRECT LIGHT OFF, however many fields were declared', () => {
+    const stub = frames({}, 3);
+    expect(computeLabels(stub)).toEqual([]);
+  });
+
+  it('traces once the flag is on and a field has been composed', () => {
+    const stub = frames({ indirectLight: true }, 3);
+    const labels = computeLabels(stub);
+    expect(labels.filter((label) => label === 'gi compose').length).toBeGreaterThan(0);
+    expect(labels.filter((label) => label === 'probe bake').length).toBeGreaterThan(0);
+  });
+
+  it('TRACES NOTHING IN THE FRAME THAT FIRST DECLARED A FIELD, because none is composed yet', () => {
+    /*
+     * The composition runs at `endFrame` and the bake runs after it on the same encoder, so the
+     * first frame does compose and then does bake. What it cannot do is bake against a field from
+     * a frame that never happened — this pins the order rather than the count.
+     */
+    const stub = frames({ indirectLight: true }, 1);
+    const labels = computeLabels(stub);
+    expect(labels.indexOf('gi compose')).toBeLessThan(labels.indexOf('probe bake'));
+  });
+
+  it('STOPS TRACING WHEN A FRAME STOPS DECLARING, rather than tracing a field it no longer has', () => {
+    /*
+     * The composer survives the frame that made it, so a frame declaring nothing finds it there
+     * and holding the *previous* frame's field. Tracing against that would light a room out of
+     * geometry a consumer has deleted — so `FieldComposer.compose` reports no field at all for an
+     * empty frame, and this is the branch that depends on it.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.addDistanceField(field(), mat4.create());
+    renderer.endFrame();
+
+    stub.encoder.beginComputePass.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    expect(computeLabels(stub)).toEqual([]);
+  });
+
+  it('fits a grid to the declared fields when the scene declared none', () => {
+    const stub = frames({ indirectLight: true }, 2);
+    /*
+     * The probe array is reallocated for the fitted grid, so its descriptor names more than one
+     * layer — a scene with no grid starts at a single probe.
+     */
+    const arrays = stub.device.createTexture.mock.calls
+      .map((call) => call[0])
+      .filter((descriptor) => descriptor?.label === 'probe.array');
+    const layers = arrays.map((descriptor) => (descriptor.size as number[])[2]);
+    expect(Math.max(...layers), 'a grid was fitted and is larger than one probe').toBeGreaterThan(
+      1,
+    );
+  });
+
+  it('THE BAKED GRID BECOMES SAMPLEABLE, which is the only way the traced light reaches a pixel', () => {
+    /*
+     * **`probeBaked` gates the whole array**, and it used to be set only by a rasterised bake. A
+     * grid filled entirely by tracing would otherwise never be bound: the lit pass would keep the
+     * hemispheric gradient, every number here would be right, and the picture would not change.
+     * The seam that shows it from outside is `PrepareContext.environment`, which the renderer
+     * offers only once every layer holds a convolution.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+    const offered: boolean[] = [];
+    renderer.registerPass({
+      label: 'reader',
+      prepare: (ctx) => {
+        offered.push(ctx.backend === 'webgpu' && ctx.environment !== null);
+      },
+      draw: () => undefined,
+    });
+
+    const source = field();
+    /* Enough frames for a round robin of five to reach every layer of the fitted grid. */
+    for (let frame = 0; frame < 24; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.addDistanceField(source, mat4.create());
+      renderer.endFrame();
+    }
+
+    expect(offered[0], 'nothing is offered before anything is baked').toBe(false);
+    expect(offered.at(-1), 'and the grid is offered once every layer holds one').toBe(true);
+  });
+
+  it('writes the whole roughness chain of a layer once and its irradiance level after', () => {
+    const stub = frames({ indirectLight: true }, 2);
+    const blits = stub.encoder.beginRenderPass.mock.calls
+      .map((call) => String((call[0] as GPURenderPassDescriptor).label ?? ''))
+      .filter((label) => label.startsWith('probe blit'));
+    expect(blits.length, 'something was blitted at all').toBeGreaterThan(0);
+    /* A first fill writes level 0 as well, which only a first fill does. */
+    expect(blits.some((label) => label.endsWith('.0'))).toBe(true);
+  });
+});
+
+/**
+ * **One scene, the same numbers on both backends** — which is what a line named alike on both
+ * promises. WebGL2 imposes no ceilings, so it reports each line with a `null` one; what it must
+ * report is the same count, so a consumer developing on the fallback reads the number this backend
+ * will refuse past. The count is only the same if it is taken after the same guards: a panel with
+ * no alpha, a string with no glyphs, a beam with no strength and a calm wind draw nothing on either,
+ * and a count taken before one of those checks is a number the other backend never reaches.
+ *
+ * Run here rather than in a file of its own because this backend's stub surface lives in this file,
+ * and a module importing it would re-run every test here.
+ */
+describe('the frame budget, against WebGL2', () => {
+  /** A metrics document with one glyph, which is all a label of one letter lays out against. */
+  const ONE_GLYPH_FONT = {
+    version: 1,
+    family: 'Test',
+    atlas: { width: 128, height: 64, distanceRange: 4 },
+    metrics: { unitsPerEm: 1000, ascender: 800, descender: -200, lineHeight: 1200 },
+    glyphs: {
+      A: {
+        advance: 640,
+        planeLeft: 20,
+        planeBottom: 0,
+        planeRight: 620,
+        planeTop: 700,
+        atlasLeft: 4,
+        atlasBottom: 4,
+        atlasRight: 44,
+        atlasTop: 52,
+      },
+    },
+    kerning: {},
+  };
+
+  function verbs(renderer: RendererApi): void {
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+
+    const rect = { left: 0, top: 0, width: 10, height: 10 };
+    renderer.fillPanel(rect, [1, 1, 1], 1);
+    renderer.fillPanel(rect, [1, 1, 1], 0.5);
+    renderer.fillPanel(rect, [1, 1, 1], 0);
+
+    const text = renderer.createText();
+    renderer.setText(text, 'budget');
+    renderer.drawText(text, 640, 480, 0, 0, DEFAULT_TEXT_STYLE, 0);
+    renderer.drawText(text, 640, 480, 0, 0, { ...DEFAULT_TEXT_STYLE, alpha: 0 }, 0);
+    renderer.drawText(renderer.createText(), 640, 480, 0, 0, DEFAULT_TEXT_STYLE, 0);
+
+    /* No font set, which both refuse before anything is drawn; then one with a font, drawn once
+       and once at no opacity. */
+    renderer.drawSdfText(renderer.createSdfText(), new Float32Array(16), [1, 1, 1], 1);
+    const label = renderer.createSdfText();
+    const atlas = renderer.createSurfaceTexture(
+      { width: 4, height: 4 } as unknown as TexImageSource,
+      {},
+    );
+    renderer.setSdfText(label, parseSdfFont(ONE_GLYPH_FONT), atlas, 'A', DEFAULT_SDF_TEXT_STYLE);
+    renderer.drawSdfText(label, new Float32Array(16), [1, 1, 1], 1);
+    renderer.drawSdfText(label, new Float32Array(16), [1, 1, 1], 0);
+
+    const lines = renderer.createLines(4);
+    const polyline = createLineSegments(4);
+    polyline.from.set([0, 0, 0, 1, 0, 0]);
+    polyline.to.set([1, 0, 0, 1, 1, 0]);
+    polyline.count = 2;
+    renderer.drawLines(lines, polyline, mat4.create(), camera, env, [1, 1, 1], 0.1, 1);
+    renderer.drawLines(lines, createLineSegments(4), mat4.create(), camera, env, [1, 1, 1], 0.1, 1);
+    renderer.drawLines(
+      renderer.createLines(0),
+      polyline,
+      mat4.create(),
+      camera,
+      env,
+      [1, 1, 1],
+      0.1,
+      1,
+    );
+
+    const bolts = renderer.createBolts(4);
+    const arc = {
+      from: new Float32Array([0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]),
+      to: new Float32Array([0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]),
+      along: new Float32Array([0, 0.5, 0, 0]),
+      fade: new Float32Array([1, 1, 0, 0]),
+      seed: new Float32Array([1, 1, 0, 0]),
+      brightness: new Float32Array([1, 1, 0, 0]),
+      count: 2,
+      capacity: 4,
+    };
+    renderer.drawBolts(bolts, arc, camera, env, 0, [1, 1, 1], [1, 1, 1], 0.1, 1);
+    renderer.drawBolts(bolts, { ...arc, count: 0 }, camera, env, 0, [1, 1, 1], [1, 1, 1], 0.1, 1);
+    /* Segments asked for, and a batch with room for none: the expansion writes nothing. */
+    const noRoom = renderer.createBolts(0);
+    renderer.drawBolts(noRoom, arc, camera, env, 0, [1, 1, 1], [1, 1, 1], 0.1, 1);
+
+    const water = renderer.createWater();
+    const body = { level: 0, deepColor: [0, 0.1, 0.2], shallowColor: [0, 0.3, 0.4] } as never;
+    renderer.drawWater(water, camera, 0, body, env);
+
+    const beam = renderer.createMesh({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    } as never);
+    renderer.drawLightVolume(beam, mat4.create(), camera, 1, 10, 0.3);
+    renderer.drawLightVolume(beam, mat4.create(), camera, 0, 10, 0.3);
+    /* Geometry still on its way: the surface's contract is that nothing incomplete is drawn. */
+    const arriving = renderer.createMeshIncremental({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    } as never).mesh;
+    renderer.drawLightVolume(arriving, mat4.create(), camera, 1, 10, 0.3);
+
+    const streaks = renderer.createWindStreaks();
+    const gale = createWindField();
+    gale.speed = 30;
+    renderer.drawWindStreaks(streaks, camera, gale, 0, [1, 1, 1], env);
+    renderer.drawWindStreaks(streaks, camera, createWindField(), 0, [1, 1, 1], env);
+
+    const flock = renderer.createFlock(4);
+    const params = { center: [0, 10, 0], radius: 5, height: 1, count: 4, speed: 2, scale: 0.5 };
+    renderer.drawFlock(flock, camera, 0, params as never, [1, 1, 1]);
+
+    /* Two cross-sections, which is the least a sheet is built between. */
+    const sheet = {
+      spans: [
+        { x0: -1, z0: -1, x1: 1, z1: -1, y: 0 },
+        { x0: -1, z0: 1, x1: 1, z1: 1, y: 0 },
+      ],
+      waterY: 1,
+    };
+    renderer.drawCaustics(renderer.createCaustics([sheet]), camera, 0, env);
+    renderer.drawCaustics(null, camera, 0, env);
+    /* One cross-section, which builds no triangles: a set with nothing in it. */
+    const flat = { spans: [{ x0: -1, z0: -1, x1: 1, z1: -1, y: 0 }], waterY: 1 };
+    renderer.drawCaustics(renderer.createCaustics([flat]), camera, 0, env);
+  }
+
+  const counted = (renderer: RendererApi, names: readonly string[]) =>
+    names.map((name) => [name, renderer.frameBudget.lines.find((l) => l.name === name)?.used]);
+
+  const TRIANGLE = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+    colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+    emissive: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+  } as never;
+
+  /**
+   * Material changes and a shadow round. A run of draws shares one material; a setter, a pass,
+   * or a draw carrying options of its own — which it takes for itself and puts back after —
+   * makes the next draw open another. The shadow round casts meshes, instances and a scatter
+   * field, and an empty batch and an empty field that cast nothing.
+   */
+  function meshes(renderer: RendererApi): void {
+    const { camera, env } = stubScene();
+    const mesh = renderer.createMesh(TRIANGLE);
+    const at = mat4.create();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, at);
+    renderer.drawMesh(mesh, at);
+    renderer.drawMesh(mesh, at);
+    renderer.setSurfaceReflectivity(0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.drawTranslucentMesh(mesh, at, 0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.drawTranslucentMesh(mesh, at, 1, { fog: false });
+    renderer.drawTranslucentMesh(mesh, at, 1);
+    renderer.drawTranslucentMesh(mesh, at, 1);
+    renderer.setMaterial(null);
+    renderer.drawMesh(mesh, at);
+    /* Every other setter, each followed by the draw that has to open a material for it. */
+    renderer.setEmissiveGain(0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.setEnvironmentGain(0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.setSurfaceGrain(0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.setSurfaceRelief(0.5);
+    renderer.drawMesh(mesh, at);
+    renderer.setSurfaceTextureRelief(0.5);
+    renderer.drawMesh(mesh, at);
+    const batch = renderer.createInstanced(mesh, 4);
+    const placed = createMeshInstances(4);
+    placed.count = 2;
+    renderer.drawInstanced(batch, placed);
+    renderer.drawTranslucentInstanced(batch, placed, 0.5);
+    renderer.drawInstanced(batch, placed);
+
+    const scatter = renderer.createScatter(TRIANGLE, createInstanceData(4));
+    const blades = createInstanceData(4);
+    blades.count = 3;
+    renderer.beginShadowPass(at, 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(mesh, at);
+      sink.mesh(mesh, at);
+      sink.instanced?.(batch, placed);
+      sink.instanced?.(batch, createMeshInstances(4));
+      sink.scatter?.(scatter, blades, 0, 0, 0, 0);
+      sink.scatter?.(scatter, createInstanceData(4), 0, 0, 0, 0);
+    });
+    renderer.endShadowPass();
+  }
+
+  it('COUNTS DRAWS, MATERIAL CHANGES AND SHADOW DRAWS ALIKE ON BOTH, by one rule', () => {
+    const quality = resolveRenderQuality({});
+    const gpu = new WebGPURenderer(stubSurface().surface, quality);
+    const gl = new WebGL2Renderer(recordingGl().canvas, quality);
+    meshes(gpu);
+    meshes(gl);
+    const names = ['draws', 'materials', 'shadow draws', 'scatter shadow draws'];
+    expect(counted(gl, names)).toEqual(counted(gpu, names));
+    expect(counted(gpu, names)).toEqual([
+      ['draws', 18],
+      ['materials', 14],
+      ['shadow draws', 3],
+      ['scatter shadow draws', 1],
+    ]);
+  });
+
+  /*
+   * **Under order-independent transparency a translucent draw is recorded and replayed**, once
+   * into each of two buffers, and both backends count it where it is submitted. WebGL2 counted it
+   * once more on the way in until 2026-09-19, so the same frame read three draws there and two here.
+   */
+  it('COUNTS A REPLAYED TRANSLUCENT DRAW ALIKE ON BOTH, where it is submitted', () => {
+    const quality = resolveRenderQuality({ screenEffects: true, orderIndependent: true });
+    const gpu = new WebGPURenderer(stubSurface().surface, quality);
+    const gl = new WebGL2Renderer(
+      recordingGl({ extensions: ['EXT_color_buffer_float'] }).canvas,
+      quality,
+    );
+    for (const renderer of [gpu, gl] as RendererApi[]) {
+      const { camera, env } = stubScene();
+      const mesh = renderer.createMesh(TRIANGLE);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+      renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { lit: false });
+      renderer.endFrame();
+    }
+    const names = ['draws', 'materials'];
+    expect(counted(gl, names)).toEqual(counted(gpu, names));
+    expect(counted(gpu, names)).toEqual([
+      ['draws', 5],
+      ['materials', 5],
+    ]);
+  });
+
+  /** A frame starts with no material open, whether or not it opens a mesh pass before drawing. */
+  it('OPENS A MATERIAL IN A NEW FRAME ON BOTH, even one that draws without opening a pass', () => {
+    const quality = resolveRenderQuality({});
+    const gpu = new WebGPURenderer(stubSurface().surface, quality);
+    const gl = new WebGL2Renderer(recordingGl().canvas, quality);
+    for (const renderer of [gpu, gl] as RendererApi[]) {
+      const { camera, env } = stubScene();
+      const mesh = renderer.createMesh(TRIANGLE);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.beginFrame([0, 0, 0]);
+      renderer.drawMesh(mesh, mat4.create());
+    }
+    expect(counted(gl, ['draws', 'materials'])).toEqual(counted(gpu, ['draws', 'materials']));
+    expect(counted(gpu, ['draws', 'materials'])).toEqual([
+      ['draws', 1],
+      ['materials', 1],
+    ]);
+  });
+
+  it('NAMES THE SAME LINES, IN THE SAME ORDER, on both', () => {
+    const gpu = new WebGPURenderer(stubSurface().surface, resolveRenderQuality({}));
+    const gl = new WebGL2Renderer(recordingGl().canvas, resolveRenderQuality({}));
+    expect(gl.frameBudget.lines.map((l) => l.name)).toEqual(
+      gpu.frameBudget.lines.map((l) => l.name),
+    );
+  });
+
+  it('COUNTS THE ONE-CALL VERBS ALIKE ON BOTH, after the same guards', () => {
+    const quality = resolveRenderQuality({ water: true });
+    const gpu = new WebGPURenderer(stubSurface().surface, quality);
+    const gl = new WebGL2Renderer(recordingGl().canvas, quality);
+    verbs(gpu);
+    verbs(gl);
+    const names = [
+      'water bodies',
+      'light volumes',
+      'wind streak fields',
+      'flocks',
+      'bolt batches',
+      'caustics',
+      'text draws',
+      'sdf text draws',
+      'line draws',
+      'panels',
+    ];
+    expect(counted(gl, names)).toEqual(counted(gpu, names));
+    /* And the scene is the one described: each verb drawn once or twice, and every guard held. */
+    expect(counted(gpu, names)).toEqual([
+      ['water bodies', 1],
+      ['light volumes', 1],
+      ['wind streak fields', 1],
+      ['flocks', 1],
+      ['bolt batches', 1],
+      ['caustics', 1],
+      ['text draws', 1],
+      ['sdf text draws', 1],
+      ['line draws', 1],
+      ['panels', 2],
+    ]);
+  });
+});
+
+/**
+ * **A pane refracts under order-independent transparency as it does under sorted blending.**
+ * WebGL2 replays a recorded pane's refraction on purpose — its replay says a pane that refracts
+ * one way and stands clear the other reads as a bug in the transparency mode — and this backend's
+ * replay dropped it, so every refracting pane stood clear here with the effect on. The copy a pane
+ * reads is taken when the replay begins, from the finished opaque frame, because the snapshot the
+ * immediate path takes works by ending the scene's pass, and by then that pass has ended.
+ */
+describe('refraction under order-independent transparency', () => {
+  function replayOnePane(refraction: number) {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({ screenEffects: true, orderIndependent: true });
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const field =
+      (flatFragmentBindings(variantFor(quality)).fields['uRefractStrength']?.offset ?? -4) / 4;
+    const submitted: number[] = [];
+    const ring = (renderer as unknown as { perFrame: { writeBlock: (...a: never[]) => void } })
+      .perFrame;
+    const write = ring.writeBlock.bind(ring);
+    ring.writeBlock = ((slot: number, ints: Int32Array) => {
+      submitted.push(new Float32Array(ints.buffer, ints.byteOffset)[field] ?? Number.NaN);
+      write(slot as never, ints as never);
+    }) as never;
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { refraction });
+    renderer.endFrame();
+    const copies = stub.encoder.copyTextureToTexture.mock.calls.map(([, to]) =>
+      String((to.texture as { label?: string }).label ?? ''),
+    );
+    return { submitted, snapshots: copies.filter((label) => label === 'refract.snapshot').length };
+  }
+
+  it('REPLAYS A PANE WITH ITS REFRACTION, into both buffers, against one copy of the frame', () => {
+    const { submitted, snapshots } = replayOnePane(0.5);
+    /* The opaque draw's material, then the pane's in each of the two replay passes. */
+    expect(submitted.filter((strength) => strength === 0.5)).toHaveLength(2);
+    expect(snapshots).toBe(1);
+  });
+
+  it('TAKES NO COPY WHEN NOTHING IN THE SET REFRACTS', () => {
+    const { submitted, snapshots } = replayOnePane(0);
+    expect(submitted.every((strength) => strength === 0)).toBe(true);
+    expect(snapshots).toBe(0);
+  });
+});
+
+/**
+ * Reconstruction cannot change what the simulation computes.
+ *
+ * All of it is view-dependent: it reads colour, depth and motion, and it writes colour. None of that
+ * is simulation state. So this test ought to pass by construction — which is precisely why it is
+ * written, because "ought to by construction" is what every subsequent change will assume without
+ * checking.
+ *
+ * **The run feeds the camera back into the simulation**, as a game's pointer does: every tick a ray
+ * through the screen, unprojected through the camera's matrix as the renderer left it, picks a body
+ * and shoves it. A renderer that jittered the caller's camera in place — the one way reconstruction
+ * could reach the simulation, since the jitter is exactly a change to that matrix — would move the
+ * ray, the shove and every body after it. The run moves, because a reconstruction that fed a
+ * resolved value back would only diverge once something did.
+ *
+ * Tier 0 at every ratio reconstruction accepts, against reconstruction off. Tier 1 was withdrawn and
+ * tier 2 is not in the frame (`recon/tier.ts`), so there is nothing else to run.
+ */
+describe('the replay fingerprint, with reconstruction and without', () => {
+  const run = (reconstruction: number, nudge = 0): string => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction }),
+    );
+    const world = new PhysicsWorld({ allowSleep: false });
+    world.addBody({ type: BODY_STATIC, shape: boxShape(30, 1, 30), y: -1 });
+    const bodies = [-2, 0, 2].map((x) =>
+      world.addBody({ type: BODY_DYNAMIC, shape: boxShape(0.5, 0.5, 0.5), x, y: 1 }),
+    );
+    const mesh = renderer.createMesh(
+      new MeshBuilder().addBox([0, 0, 0], [0.5, 0.5, 0.5], [1, 1, 1]).build(),
+    );
+    const env = createEnvironment();
+    const camera = new Camera();
+    camera.position[0] = 0;
+    camera.position[1] = 4;
+    camera.position[2] = 8;
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrices(16 / 9);
+    const model = mat4.create();
+    const inverse = mat4.create();
+    const near = vec4.create();
+    const far = vec4.create();
+    const hit = createRayHit();
+    let picks = '';
+    for (let tick = 0; tick < 90; tick += 1) {
+      /* The pointer: a ray just off the middle of the screen, where the body the camera follows
+         stands, unprojected through the matrix the frame before left behind. */
+      mat4.invert(inverse, camera.viewProjection);
+      vec4.transformMat4(near, [0.02, -0.03, -1, 1], inverse);
+      vec4.transformMat4(far, [0.02, -0.03, 1, 1], inverse);
+      const ox = (near[0] as number) / (near[3] as number);
+      const oy = (near[1] as number) / (near[3] as number);
+      const oz = (near[2] as number) / (near[3] as number);
+      const dx = (far[0] as number) / (far[3] as number) - ox;
+      const dy = (far[1] as number) / (far[3] as number) - oy;
+      const dz = (far[2] as number) / (far[3] as number) - oz;
+      if (world.raycast(ox, oy, oz, dx, dy, dz, 100, hit) && hit.body !== 0) {
+        picks += `${hit.body}:${hit.fraction};`;
+        world.applyImpulse(hit.body, 0.2, 0.5, 0, hit.x, hit.y, hit.z);
+      }
+      /* And a replayed input that does not depend on the camera at all. */
+      if (tick % 30 === 0) {
+        const body = bodies[(tick / 30) % 3] as number;
+        world.applyImpulse(body, 1, 2, -0.5, 0, 1, 0);
+      }
+      world.step(1 / 60);
+
+      const leader = bodies[1] as number;
+      const lx = world.bodies.posX[leader] ?? 0;
+      const ly = world.bodies.posY[leader] ?? 0;
+      const lz = world.bodies.posZ[leader] ?? 0;
+      camera.position[0] = lx;
+      camera.position[1] = ly + 4;
+      camera.position[2] = lz + 8;
+      camera.lookAt(lx, ly, lz);
+      camera.updateMatrices(16 / 9);
+
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      for (const body of bodies) {
+        mat4.fromTranslation(model, [
+          world.bodies.posX[body] ?? 0,
+          world.bodies.posY[body] ?? 0,
+          world.bodies.posZ[body] ?? 0,
+        ]);
+        renderer.drawMesh(mesh, model as Float32Array, 0, [1, 1, 1]);
+      }
+      renderer.endFrame();
+      /* The control's fault, made by hand: the camera's own matrix moved a hundredth of a pixel. */
+      if (nudge !== 0) camera.viewProjection[8] = (camera.viewProjection[8] as number) + nudge;
+    }
+    expect(picks.length, 'a run whose pointer never lands tests nothing').toBeGreaterThan(0);
+    return `${fingerprintBodies(world.bodies)} ${picks}`;
+  };
+
+  it('A REPLAY IS BYTE-IDENTICAL WITH RECONSTRUCTION OFF AND AT EVERY RATIO IT RUNS AT', () => {
+    const off = run(0);
+    for (const ratio of [1.3, 1.5, 2]) expect(run(ratio), `at ${ratio}`).toBe(off);
+  });
+
+  it('and the fingerprint sees a camera a hundredth of a pixel out, which is what it guards', () => {
+    /* 2 / 1280 of the clip square a pixel, and a hundredth of that. Without this, a run whose pick
+       never landed would pass above whatever the renderer did to the camera. */
+    expect(run(0, 0.02 / 1280)).not.toBe(run(0));
   });
 });

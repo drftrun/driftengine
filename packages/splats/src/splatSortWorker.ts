@@ -86,6 +86,7 @@ export function createSplatSortWorker(sortSource: string): SplatSortFn {
 
   try {
     if (
+      // platform: feature probe — the fallback sorts on this thread and says so
       typeof Worker === 'undefined' ||
       typeof Blob === 'undefined' ||
       typeof URL === 'undefined'
@@ -95,6 +96,7 @@ export function createSplatSortWorker(sortSource: string): SplatSortFn {
     const url = URL.createObjectURL(
       new Blob([workerSource(sortSource)], { type: 'text/javascript' }),
     );
+    // platform: browser default — a blob worker, guarded by the probe above
     worker = new Worker(url);
     /* The blob is referenced by the live worker; the URL is only the handle. */
     URL.revokeObjectURL(url);

@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DriftEngine — a clip through every capture stage</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      13px/1.5 ui-monospace,
+      monospace;
+    overflow: hidden;
+  }
+  #scene {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+  #stats,
+  #error {
+    position: fixed;
+    left: 8px;
+    top: 8px;
+    padding: 6px 10px;
+    background: #0b0d10ee;
+    border: 1px solid #1e242c;
+    white-space: pre;
+    pointer-events: none;
+  }
+  #error {
+    top: auto;
+    bottom: 8px;
+    color: #f7768e;
+    border-color: #3a2630;
+  }
+</style>
+<canvas id="scene"></canvas>
+<div id="stats">starting</div>
+<div id="error"></div>
+<script type="module" src="./clip.ts"></script>

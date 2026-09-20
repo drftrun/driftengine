@@ -13,7 +13,8 @@
 import { checkPermission, fullPermissionName } from './mobile/androidManifest.ts';
 
 export type WebGpuPolicy = 'prefer' | 'require' | 'off';
-export type Target = 'win-x64' | 'mac-arm64' | 'mac-x64' | 'linux-x64' | 'android' | 'ios';
+export type Target =
+  'win-x64' | 'mac-arm64' | 'mac-x64' | 'linux-x64' | 'native-linux-x64' | 'android' | 'ios';
 
 /** The two that are a phone rather than a desktop, and differ in almost every way that matters. */
 export const MOBILE_TARGETS: readonly Target[] = ['android', 'ios'];
@@ -24,6 +25,7 @@ const TARGETS: readonly Target[] = [
   'mac-arm64',
   'mac-x64',
   'linux-x64',
+  'native-linux-x64',
   'android',
   'ios',
 ];
@@ -54,6 +56,11 @@ export interface PackageManifest {
   readonly backend: { readonly webgpu: WebGpuPolicy; readonly allowSoftwareRenderer: boolean };
   readonly features: { readonly clipExport: boolean; readonly gamepad: boolean };
   readonly targets: readonly Target[];
+  /**
+   * The module a native target mounts: it exports `mount(canvas)`, which the native host calls with
+   * its canvas, since there is no page there to find one in. Null unless a native target is built.
+   */
+  readonly native: { readonly entry: string } | null;
   readonly steam: { readonly appId: number | null };
   readonly splash: { readonly show: boolean; readonly minMs: number };
   /**
@@ -133,6 +140,16 @@ export function parseManifest(raw: unknown): PackageManifest {
     }
   }
 
+  const nativeRaw = (source.native ?? {}) as Record<string, unknown>;
+  const nativeEntry =
+    typeof nativeRaw.entry === 'string' && nativeRaw.entry.length > 0 ? nativeRaw.entry : null;
+  if ((targetsRaw as unknown[]).includes('native-linux-x64') && nativeEntry === null) {
+    throw new Error(
+      'drift.package.json: the native-linux-x64 target needs "native.entry", the module whose ' +
+        '`mount(canvas)` the native host calls — there is no page there to find a canvas in',
+    );
+  }
+
   const windowRaw = (source.window ?? {}) as Record<string, unknown>;
   const featuresRaw = (source.features ?? {}) as Record<string, unknown>;
   const steamRaw = (source.steam ?? {}) as Record<string, unknown>;
@@ -175,6 +192,7 @@ export function parseManifest(raw: unknown): PackageManifest {
       gamepad: featuresRaw.gamepad !== false,
     },
     targets: targetsRaw as readonly Target[],
+    native: nativeEntry === null ? null : { entry: nativeEntry },
     steam: { appId: typeof appId === 'number' ? appId : null },
     publisher:
       typeof source.publisher === 'string' && source.publisher.length > 0

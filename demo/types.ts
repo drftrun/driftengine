@@ -207,6 +207,15 @@ export interface RevealControl {
  */
 export type DemoBudget = 'full' | 'lean';
 
+/**
+ * A pipeline a scene can be drawn on: the forward path every backend runs, or the GPU-driven one,
+ * which needs WebGPU's compute stage and indirect draws and refuses at mount where they are not.
+ */
+export type DemoPipeline = 'forward' | 'gpu-driven';
+
+/** Every pipeline a scene may name, for a host that checks what it was handed. */
+export const DEMO_PIPELINES: readonly DemoPipeline[] = ['forward', 'gpu-driven'];
+
 /*
  * `overrides` on `mount` exist for one job: taking a feature away on a device the author
  * cannot reach, one at a time, to find which one is at fault.
@@ -260,6 +269,11 @@ export interface DemoSceneOptions {
    * host that has looked at its own model and seen that is the only party that knows.
    */
   readonly outline?: boolean | number;
+  /**
+   * Which of the scene's `pipelines` to mount on, where it offers more than one. Absent is its
+   * first. The harness's `?pipeline=` is its own way in; a host that chose wins over it.
+   */
+  readonly pipeline?: DemoPipeline;
 }
 
 export interface DemoScene {
@@ -286,6 +300,13 @@ export interface DemoScene {
    * exception is the thing that should have to declare itself.
    */
   loadsModel?: boolean;
+  /**
+   * The pipelines this scene can be drawn on, the one it opens on first. **Absent means the forward
+   * path alone**, which is every scene that says nothing — and the exception declares itself, as
+   * `loadsModel`'s does: a host that cannot run the second pipeline asks the list which scenes
+   * need it rather than finding out from a mount that refuses.
+   */
+  pipelines?: readonly DemoPipeline[];
   /**
    * Build the scene against a canvas, and let the engine decide what draws into it.
    *

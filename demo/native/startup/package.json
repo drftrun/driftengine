@@ -1,0 +1,7 @@
+{
+  "name": "native-startup",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The program the native host's start is measured with: the starter's lit cube, mounted on a canvas it is given"
+}

@@ -12,6 +12,12 @@ import type { ReadonlyMat4 } from 'gl-matrix';
  */
 export type Frustum = Float32Array;
 
+/**
+ * Planes in either precision. **Double precision is for a world past 2^24 units**, where a plane's
+ * offset is a number a single float cannot hold to the metre; `cellsInFrustum` asks for it.
+ */
+export type FrustumPlanes = Float32Array | Float64Array;
+
 /** Left, right, bottom, top, near, far — the order the extraction below produces. */
 const PLANE_COUNT = 6;
 
@@ -36,7 +42,10 @@ export function createFrustum(): Frustum {
  *
  * gl-matrix stores column-major, so `m[column * 4 + row]`.
  */
-export function frustumFromViewProjection(m: ReadonlyMat4, out: Frustum): Frustum {
+export function frustumFromViewProjection<T extends FrustumPlanes>(
+  m: ReadonlyMat4 | Float64Array,
+  out: T,
+): T {
   const m0 = m[0] ?? 0;
   const m1 = m[1] ?? 0;
   const m2 = m[2] ?? 0;
@@ -71,7 +80,14 @@ export function frustumFromViewProjection(m: ReadonlyMat4, out: Frustum): Frustu
   return out;
 }
 
-function setPlane(out: Frustum, index: number, x: number, y: number, z: number, d: number): void {
+function setPlane(
+  out: FrustumPlanes,
+  index: number,
+  x: number,
+  y: number,
+  z: number,
+  d: number,
+): void {
   const length = Math.sqrt(x * x + y * y + z * z);
   /* A degenerate matrix gives a zero-length normal; leaving it unscaled is better than NaN,
      and the plane then accepts everything, which is the safe direction for a cull to fail. */
@@ -96,7 +112,7 @@ function setPlane(out: Frustum, index: number, x: number, y: number, z: number, 
  * a draw that was visible, which is the only asymmetry a cull may have.
  */
 export function sphereInFrustum(
-  frustum: Frustum,
+  frustum: FrustumPlanes,
   x: number,
   y: number,
   z: number,
@@ -110,6 +126,39 @@ export function sphereInFrustum(
       (frustum[at + 2] ?? 0) * z +
       (frustum[at + 3] ?? 0);
     if (distance < -radius) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether an axis-aligned box is anywhere inside the frustum, by the same question the sphere test
+ * asks: outside only when wholly beyond one plane.
+ *
+ * **The corner that decides it is chosen per plane** — the one furthest along that plane's normal.
+ * A fixed corner answers correctly for the planes whose normals happen to point its way and culls a
+ * box straddling any of the others. Conservative at the edges, as the sphere test is: a box near a
+ * corner of the frustum can be outside it and still kept.
+ */
+export function boxInFrustum(
+  frustum: FrustumPlanes,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+): boolean {
+  for (let plane = 0; plane < PLANE_COUNT; plane += 1) {
+    const at = plane * 4;
+    const nx = frustum[at] ?? 0;
+    const ny = frustum[at + 1] ?? 0;
+    const nz = frustum[at + 2] ?? 0;
+    const reach =
+      nx * (nx >= 0 ? maxX : minX) +
+      ny * (ny >= 0 ? maxY : minY) +
+      nz * (nz >= 0 ? maxZ : minZ) +
+      (frustum[at + 3] ?? 0);
+    if (reach < 0) return false;
   }
   return true;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/package",
-  "version": "3.63.0",
+  "version": "4.0.0",
   "description": "Builds an installable application from a game built on the engine",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,6 +11,16 @@
       "drift-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./bridge": {
+      "drift-source": "./src/preload/bridge.ts",
+      "types": "./dist/preload/bridge.d.ts",
+      "default": "./dist/preload/bridge.js"
+    },
+    "./store": {
+      "drift-source": "./src/main/storeFile.ts",
+      "types": "./dist/main/storeFile.d.ts",
+      "default": "./dist/main/storeFile.js"
     },
     "./package.json": "./package.json",
     "./*": "./*"
@@ -35,7 +45,7 @@
     "drift-package": "bin/drift-package.mjs"
   },
   "peerDependencies": {
-    "@driftengine/core": "3.63.0",
+    "@driftengine/core": "4.0.0",
     "steamworks.js": ">=0.4.0"
   },
   "dependencies": {

@@ -166,10 +166,15 @@ const MODULES = [
    * `dev/` is deliberately not here. Those are diagnostic rigs rather than demonstrations, they
    * reach into `src/` on purpose to instrument it, and holding them to a rule about the public
    * surface would be holding the wrong files to it.
+   *
+   * **Nor is `native/`, for the same reason**, since 2026-09-19 when the native host became a
+   * package and its harness moved here: the scene runner, the editor runner and the device check
+   * drive the host's readback and replay and the renderer's feature probe, which is instrumenting.
+   * The program the host's start is measured with sits a level deeper and uses the barrels only.
    */
   ...Object.entries(
     import.meta.glob('./*/*.ts', { query: '?raw', import: 'default', eager: true }),
-  ).filter(([id]) => !id.startsWith('./dev/')),
+  ).filter(([id]) => !id.startsWith('./dev/') && !id.startsWith('./native/')),
 ].filter(([id]) => !id.endsWith('.test.ts'));
 
 test('every scene reaches the engine through the public barrel alone', () => {
@@ -229,14 +234,29 @@ test('every scene reaches the engine through the public barrel alone', () => {
  * cause this. Every method a frame reaches is covered, not only `frame` itself, because
  * the allocation that matters is the one three calls down.
  */
-const FRAME_METHODS = /\n {2}(?:private )?(frame|drawWorld|drawScene|step|simulate)\(/g;
+/*
+ * **The `{` is load-bearing**: without it this matches an interface member as well as a method,
+ * and `types.ts` declares `frame(dtSec: number): DemoStats;` with no body at all. The body lookup
+ * then finds nothing and reports the corpus as stale, which is the widening above meeting a regex
+ * that was only ever pointed at classes.
+ */
+const FRAME_METHODS =
+  /\n {2}(?:private )?(frame|drawWorld|drawScene|step|simulate)\([^)]*\)[^{;]*\{/g;
 
 test('the frame path of every scene allocates nothing', () => {
-  for (const [id, source] of SOURCES) {
+  /*
+   * **Every module here, not only the ones that declare a scene**, and the widening is a gate
+   * scope that had shrunk against the directory. A scene's frame path may live in a rig its module
+   * imports — three GPU-driven drafts share one — and the old corpus was the scene modules, so a
+   * shared frame path was checked by nothing while the rule read as though it covered everything.
+   * Found by a scene whose own module has no `frame` at all, which the staleness guard reported as
+   * itself having gone stale.
+   */
+  let found = 0;
+  for (const [id, source] of MODULES) {
+    if (id.endsWith('.test.ts')) continue;
     const names = [...source.matchAll(FRAME_METHODS)].map(([, name]) => name);
-    expect(names.includes('frame'), `${id} has no frame method; this test has gone stale`).toBe(
-      true,
-    );
+    if (names.includes('frame')) found += 1;
 
     for (const name of new Set(names)) {
       const body = methodBody(source, name);
@@ -247,6 +267,26 @@ test('the frame path of every scene allocates nothing', () => {
         false,
       );
     }
+  }
+  /* What the old shape got from insisting every scene file had one: a regex that matches nothing
+     passes every assertion inside the loop, which is the second explanation for a surviving
+     perturbation and is worth one line to refuse. */
+  expect(found, 'no frame method was found at all; this test has gone stale').toBeGreaterThan(0);
+});
+
+test('every scene module reaches a frame path, its own or one it imports', () => {
+  /*
+   * The half of the old staleness guard that was about the scenes rather than about the regex. A
+   * scene whose handle has no `frame` draws nothing, and the module that owns the handle is either
+   * the scene's own or a sibling it imports by relative path — there is no third place in this
+   * directory for it to be.
+   */
+  for (const [id, source] of SOURCES) {
+    const siblings = [...source.matchAll(/from '(\.\/[a-zA-Z0-9]+)'/g)].map(([, at]) => at);
+    const reachable = [id, ...siblings.map((at) => `${at}.ts`)];
+    const byId = new Map(MODULES);
+    const has = reachable.some((at) => /\n {2}(?:private )?frame\(/.test(byId.get(at) ?? ''));
+    expect(has, `${id} has no frame method and imports no module that has one`).toBe(true);
   }
 });
 

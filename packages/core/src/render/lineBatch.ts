@@ -1,6 +1,6 @@
 import { compileProgram, uniformLocations } from './shader.ts';
 import { LINE_FRAG, LINE_VERT } from './shaders/line.ts';
-import { buildSegmentQuads } from './segmentQuads.ts';
+import { buildSegmentQuads, expandLineSegments } from './segmentQuads.ts';
 import type { LineSegments } from './linePoints.ts';
 
 /**
@@ -71,31 +71,11 @@ export class LineBatch {
   /**
    * Send this frame's polyline, expanding each segment to its four vertices.
    *
-   * The expansion is written here rather than folded into `expandBoltSegments`: that
-   * function reads a `BoltSegments` — five arrays beyond `from`/`to` — and teaching it to
-   * read a `LineSegments` too would grow a union that couples two renderers sharing only a
-   * quad. This walk is the same shape with none of that: two positions in, copied to four
-   * vertices each.
+   * The expansion is `expandLineSegments`, which the other backend calls too, so the number of
+   * segments drawn — and whether anything is — is decided in one place.
    */
   upload(gl: WebGL2RenderingContext, data: LineSegments): number {
-    const count = Math.min(data.count, this.capacity);
-    for (let s = 0; s < count; s++) {
-      const fx = data.from[s * 3] as number;
-      const fy = data.from[s * 3 + 1] as number;
-      const fz = data.from[s * 3 + 2] as number;
-      const tx = data.to[s * 3] as number;
-      const ty = data.to[s * 3 + 1] as number;
-      const tz = data.to[s * 3 + 2] as number;
-      for (let c = 0; c < 4; c++) {
-        const v = s * 4 + c;
-        this.from[v * 3] = fx;
-        this.from[v * 3 + 1] = fy;
-        this.from[v * 3 + 2] = fz;
-        this.to[v * 3] = tx;
-        this.to[v * 3 + 1] = ty;
-        this.to[v * 3 + 2] = tz;
-      }
-    }
+    const count = expandLineSegments(data, this.capacity, this.from, this.to);
     if (count === 0) return 0;
     const verts = count * 4;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.fromBuffer);

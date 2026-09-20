@@ -286,11 +286,27 @@ export function buildApi({ root = ROOT } = {}) {
 
     const byArea = new Map();
     const barrels = [];
+    /** Packages this project does not compile, so the caller can say so rather than wonder. */
+    const skipped = [];
     for (const pkg of publishedPackages(root)) {
       const prefix = `packages/${pkg}/src/`;
       const files = emitted.filter((file) => relative(file).startsWith(prefix));
       const index = files.find((file) => relative(file) === `${prefix}index.d.ts`);
-      if (index === undefined) continue;
+      /*
+       * **A package that emitted no declarations is skipped, and skipping it silently was a
+       * defect** — it sat one line above two `throw`s written to stop a package going quiet, and
+       * did the exact thing they forbid. `@driftengine/native-host` is Node-only and excluded from
+       * this project on purpose, so it emits nothing here and its whole surface was missing from
+       * the reference with nothing saying so; a consumer's site then described a capability the
+       * reference did not group, which is how it was finally noticed.
+       *
+       * It cannot throw, because that exclusion is correct. So it is **reported**: the caller gets
+       * the list and decides. A package that ought to be here and is not now says its own name.
+       */
+      if (index === undefined) {
+        skipped.push(pkg);
+        continue;
+      }
 
       const wanted = barrelExports(readFileSync(index, 'utf8'));
       if (wanted.size === 0) {
@@ -360,7 +376,7 @@ export function buildApi({ root = ROOT } = {}) {
       }));
 
     const pkg = JSON.parse(readFileSync(path.join(root, 'packages/core/package.json'), 'utf8'));
-    return { generatedFrom: barrels.join(', '), version: pkg.version, groups };
+    return { generatedFrom: barrels.join(', '), version: pkg.version, groups, skipped };
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

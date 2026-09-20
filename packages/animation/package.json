@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/animation",
-  "version": "3.63.0",
+  "version": "4.0.0",
   "description": "Skeletons, clips, poses and the graphs over them: sampling as a pure function of a caller-supplied time",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,10 +27,11 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/drft": "3.63.0"
+    "@driftengine/drft": "4.0.0",
+    "gl-matrix": "^3.4.3"
   },
   "peerDependencies": {
-    "@driftengine/core": "3.63.0"
+    "@driftengine/core": "4.0.0"
   },
   "author": "Drift Technologies",
   "repository": {

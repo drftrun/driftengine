@@ -1,0 +1,15 @@
+{
+  "why": "Two frames of one scene from Depth Anything 3's own repository, at the revision its code is pinned at: the images its authors chose to show the model on, licensed with it, and a pair, so the across-view blocks run too.",
+  "images": [
+    {
+      "url": "https://raw.githubusercontent.com/ByteDance-Seed/Depth-Anything-3/3d835ec1a5802d64a8b8b15f817a1ab54809bfe4/assets/examples/SOH/000.png",
+      "sha256": "ea78c3b872b1e8b27de48cadf1d4a692cd42ddf5f72fcab78e2be2937935fb79",
+      "file": "000.png"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ByteDance-Seed/Depth-Anything-3/3d835ec1a5802d64a8b8b15f817a1ab54809bfe4/assets/examples/SOH/010.png",
+      "sha256": "c91a69d4e050e75e3760fbacda18a452b9abcf3065e6d6bd940b4a99d48f7982",
+      "file": "010.png"
+    }
+  ]
+}

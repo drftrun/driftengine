@@ -63,6 +63,31 @@ absence removes samplers and a 190-line filter rather than an arm of one branch.
 how large it is. Clustered lighting is a bigger job than the splat renderer and belongs in core;
 splats are smaller and belong in a package.
 
+## 1a. Two hosts, one engine
+
+**A host is capability implementations plus a surface**, and the engine has two: a browser, and
+`@driftengine/native-host` — Node, Dawn and SDL, with the page a game expects installed around one
+canvas. The engine does not know which it is on. That is only possible because `AGENTS.md` already
+forbade calling a platform API directly: persistence is a `KeyValueStore` the caller supplies, time
+is a clock, files are a `FetchLike` or a `TileSource`, so a second host implements those and the
+browser's surface around the canvas, and changes no engine code.
+
+**The rule had been reviewed rather than tested until the host was begun**, and the audit that
+opened it (`scripts/platform.test.mjs`, 2026-09-15) found eleven places it had not held: the loader
+for the engine's own container fetched through the global, three deadlines read `Date.now`, and a
+media query sat unguarded in a constructor. The test holds it now. **The host then found what a
+second implementation finds**: defects that were there in every browser, fixed in the engine and
+not worked around in the host — a model's images decoded premultiplied, a WebGPU texture resize
+that kept the old size, a store written in place, panels dropped without a word, a master filter
+that started closed, an insert that combed against its own dry arm, and a published build that
+named its worker by a file it did not hold.
+
+**Pixel-identical is the gate**: the published scenes are drawn by both hosts on one machine and
+compared pixel for pixel (`npm run native:gate`), and a difference is the host's fault until shown
+otherwise. What each host can do that the other cannot is `CAPABILITIES.md` §2a, in both
+directions; `@driftengine/package` builds for either (`native-linux-x64` beside the Electron and
+mobile targets).
+
 ## 2. The packages
 
 | Package                  | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -78,10 +103,13 @@ splats are smaller and belong in a package.
 | `@driftengine/splats`    | readers, worker sort, splat pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `@driftengine/ui2d`      | sprites, sheets, tilemaps, retained tree, layout, focus                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `@driftengine/xr`        | sessions, stereo rendering, XR input                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `@driftengine/net`       | transport seam, replication, prediction, rollback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `@driftengine/network`   | transport seam, replication, prediction, rollback. **Named `net` in this table until 2026-09-15**, which is the error a table nobody reads back keeps indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `@driftengine/terrain`   | heightfield rendering, LOD, splat maps, terrain collision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `@driftengine/entities`  | entity identity, component storage, queries, the system schedule, prefabs, scene serialization. **Imports no other engine package** — see Track M's design §2                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `@driftengine/ai`        | the provider seam and capability probe, the agent session and its four states, the deterministic policy floor, tool and context registries, admission guards, budgets, the command log. **Depends on core alone** — for `MessageQueue`, and for nothing else — see Track O's design §2                                                                                                                                                                                                                                                                                                                            |
+| `@driftengine/texture`   | the DriftTexture decode program and its reference decoder, residency and streaming, the writable overlay and its journal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `@driftengine/nav`       | geometry to a walkable voxel field, watershed regions, contours, convex polygons, and a query over core's own `NavSearch`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `@driftengine/tools`     | the in-game tool surfaces — command stack, selection, inspector, console, profiler, network and divergence panels                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `@driftengine/editor`    | inspector, gizmos, scene tree, play-in-editor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 **Core depends on `@driftengine/physics`, and it is the only package where the arrow runs that
@@ -181,6 +209,68 @@ So the graph is what makes the package architecture possible at all, which is wh
 before the packages that need it rather than deferred again. It was deferred once, on the
 reasoning that the WebGPU work would decide it; what that work produced was a second hand-ordered
 renderer nearly twice the size of the first.
+
+**The paragraph above is half out of date and is kept because its reasoning is not.** A package
+_can_ register a pass now — `registerPass` ships, `splats` and `ui2d` both use it, and
+`CAPABILITIES.md`'s Structure row is the current account. What is still true is the sentence about
+where pass _order_ lives.
+
+**Two schedulers now exist, and which one a frame uses is decided by whether its composition is
+fixed.** `schedule.ts` groups a fixed composition addressed by a fourteen-entry bit mask, and it is
+right for the forward path. Beside it, `virtual.ts`, `lifetime.ts`, `alias.ts`, `graphSchedule.ts`
+and `validate.ts` address transients by identifier, because a mask cannot hold the hierarchical
+depth chains, visibility buffers and per-material bin lists a GPU-driven frame allocates against
+what it contains. `graphParity.test.ts` asserts the two agree on a frame both can express, which is
+what keeps the second a generalisation of the first rather than a second renderer.
+
+**Both drive production frames now, 2026-09-17.** The second pipeline's frame is genuinely not
+fixed — an unshadowed frame has no map to draw — so `GpuDrivenPass` records its twelve stages into a
+`Deps` table every `prepare` (`gpudriven/pipeline.ts`), `scheduleGraph` keeps what something reads,
+and the pass encodes the kept stages in order: command for command the frame it encoded before, and
+without the map pass where nothing samples it. The forward renderer's flush can be scheduled either
+way: `quality.identifierGraph` sends it through `frame/flushGraph.ts`, which records each mask bit as
+an identifier and derives the same passes, clears and discards, and every frame-graph test in
+`webgpu/renderer.test.ts` runs under both. Off by default, and the eighteen scenes the harness walks
+are pixel-identical with it on — `CAPABILITIES.md` §3 has the captures, and the one scene that varies
+between runs of a single build whatever the flag says.
+
+**Where pass order lives is unchanged.** Both renderers are still hand-ordered; what the graph now
+decides is which recorded work runs and how it is grouped, which is the half that a package
+contributing a pass, and a frame whose composition moves, both needed. The pure modules stay off the
+package barrel, as `frame/index.ts` says — their public shape is still nobody's decision to make.
+
+## 3a. A world bigger than a float: two coordinate systems, not one
+
+**The simulation never rebases. Rendering does.** This is one rule and it decides the whole
+large-world arrangement, so it is here rather than only in `core/src/world/rebase.ts`.
+
+Simulation coordinates are absolute and double precision. A rebase that touched them would change
+floating-point results, and therefore the replay fingerprint, for no reason a player could see —
+and only in sessions that happened to cross an origin boundary, which is a divergence nobody
+reproduces on demand and nobody attributes correctly.
+
+Render coordinates are single precision relative to an origin that follows the camera **in whole
+cells**. Whole cells, because a continuously-moving origin re-quantises every vertex every frame:
+the world is numerically correct at every instant and shimmers, which is the precision problem it
+was meant to solve wearing a different hat. Measured over a walk of two hundred and twenty ticks at
+the far end of the world, the origin moves seventy-five times rather than two hundred and twenty.
+
+**Three consequences a reader will otherwise meet as surprises.**
+
+A view matrix is a `Float32Array`, so it cannot carry an absolute position in a world this large —
+at 2²⁵ single precision counts in fours. Predicted views are therefore render-space and
+`CellStream` is told the origin, which it adds back in double precision before anything is
+quantised into a cell.
+
+A navigation mesh is authored and queried in render space for the same reason, and
+`nav/src/query.ts` never sees a large coordinate.
+
+**Freezing is a simulation decision and unloading is a memory one.** A cell outside the simulated
+radius freezes whether or not its contents are resident, and only a frozen cell may be unloaded. The
+alternative — unloading causes freezing — makes the simulation depend on how much memory a machine
+had, which is a divergence that appears on one player's computer and nowhere else.
+`core/src/world/seam.test.ts` walks a world at six magnitudes and asserts the streamed run's
+fingerprint against a run holding every cell, and asserts that the forbidden arrangement diverges.
 
 ## 4. Versioning and migration
 

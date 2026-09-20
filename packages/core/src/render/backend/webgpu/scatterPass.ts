@@ -245,7 +245,21 @@ export function scatterDepthPipeline(
       targets: [],
     },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: shadowFormat, depthWriteEnabled: true, depthCompare: DEPTH_COMPARE },
+    /*
+     * **`less`, not the frame's `DEPTH_COMPARE`, because a shadow map is not reversed.**
+     * `depthConvention.ts` says so in as many words: the cascades are orthographic, where depth
+     * is already linear and a float buffer gains nothing, so `SHADOW_DEPTH_CLEAR` is 1 and
+     * `beginShadowPass` clears to 1. This pipeline took the scene's compare, which under
+     * `REVERSED_DEPTH` is `greater` — and a fragment at depth 0.3 tested with `greater` against a
+     * map cleared to 1 fails. **Nothing was ever written**, so a scatter batch cast no shadow at
+     * all on this backend: no error, no warning, an ordinary-looking frame.
+     *
+     * `depthPass.ts` has had `'less'` for the mesh path all along, which is why meshes cast and
+     * scatter did not, and why it took a scene whose only caster is a scatter batch to show it.
+     * `demo/windField.ts` is that scene — turning directional shadows off there changed 2,628
+     * pixels on WebGL2 and 0 on WebGPU.
+     */
+    depthStencil: { format: shadowFormat, depthWriteEnabled: true, depthCompare: 'less' },
   }));
 }
 

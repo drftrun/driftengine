@@ -19,6 +19,9 @@ const atlas: BlockAtlas = {
   texture: null as never,
   rects: new Map(),
   fallback: { u0: 0, v0: 0, u1: 1, v1: 1 },
+  pixels: new Uint8ClampedArray(4),
+  width: 1,
+  height: 1,
 };
 
 describe('streaming chunks under a frame budget', () => {
@@ -65,5 +68,46 @@ describe('streaming chunks under a frame budget', () => {
 
     /* The warm-up runs before the first frame, so it has no frame to protect. */
     expect(chunks.activeCount).toBeGreaterThan(1);
+  });
+});
+
+describe('streaming chunks into the second pipeline', () => {
+  /**
+   * **The sandbox's port builds the same chunks and hands them somewhere else.** Generation, the
+   * light flood, the mesher and the budget are this class's and do not change; what changes is
+   * where a chunk's three meshes go — to `createMesh` and a scene node, or to the GPU-driven
+   * pipeline's streaming scene, which culls them itself.
+   */
+  it('HANDS A BUILT CHUNK TO THE SINK AND UPLOADS NOTHING ITSELF', () => {
+    let uploads = 0;
+    const counting = {
+      createMesh: () => ((uploads += 1), { bounds: createBounds() }),
+      disposeMesh: () => {},
+      height: 1,
+    } as never;
+    const added: string[] = [];
+    const removed: string[] = [];
+    const sink = {
+      add: (cx: number, cz: number) => (added.push(`${cx},${cz}`), true),
+      remove: (cx: number, cz: number) => void removed.push(`${cx},${cz}`),
+    };
+    const chunks = new ChunkRenderer(counting, new World(1337), atlas, { radius: 1, sink });
+    chunks.update(0, 0);
+    chunks.processQueue(Infinity, Infinity, Infinity);
+    expect(uploads).toBe(0);
+    expect(added.length).toBe(9);
+    expect(chunks.activeCount).toBe(9);
+    /* Nothing in the tree either: the frustum visit is the pipeline's now. */
+    expect(chunks.root.children.length).toBe(0);
+
+    /* An edit rebuilds: the chunk is let go and added again. */
+    chunks.remesh(0, 0);
+    expect(added.filter((key) => key === '0,0').length).toBe(2);
+    expect(removed).toEqual(['0,0']);
+
+    /* Walking away retires every chunk that falls outside the keep ring. */
+    chunks.update(16 * 10, 0);
+    expect(new Set(removed.slice(1)).size).toBe(9);
+    expect(uploads).toBe(0);
   });
 });

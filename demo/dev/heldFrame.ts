@@ -59,7 +59,13 @@ export function releaseHeldClock(): void {
   released = true;
 }
 
-export function holdFrames(frames: number): void {
+/**
+ * `stop`: draw the held frame and then no more. **For a capture of history, not of a scene.** A held
+ * page redraws one state for ever, so a reconstruction accumulating over it converges before the
+ * shutter opens and the picture says nothing about motion; stopped, the frame on screen is frame N
+ * with the history the frames before it built. `tools/recon-train/pairs.mjs` is what asks for it.
+ */
+export function holdFrames(frames: number, stop = false): void {
   const wanted = Math.max(1, Math.floor(frames));
   let virtualMs = 0;
   let advanced = 0;
@@ -111,6 +117,7 @@ export function holdFrames(frames: number): void {
       }
     }
     for (const callback of due) callback(virtualMs);
+    if (stop && advanced >= wanted) return;
     /* A task rather than a microtask, so fetch, worker and decode callbacks get their turn. */
     setTimeout(pump, 0);
   };
@@ -127,6 +134,11 @@ export function holdFrames(frames: number): void {
     'color:#0f0;background:#000;font:12px monospace';
   document.body.append(badge);
   setTimeout(pump, 0);
+}
+
+/** `&holdstop=1` beside `?hold=N`: draw the held frame and stop. See `holdFrames`. */
+export function askedHoldStop(): boolean {
+  return new URLSearchParams(location.search).get('holdstop') === '1';
 }
 
 /** `?hold=N`, or nothing at all. Absent is the normal case and costs nothing. */

@@ -12,6 +12,10 @@
  *     node scripts/ibl-check.mjs --base=http://localhost:5202
  *     node scripts/ibl-check.mjs --base=http://localhost:5202 --backend=webgpu
  *
+ * **The page takes `?axis=`, `?roomlit=1`, `?detail=` and `?band=1` as well**, and the last of
+ * those is the one this file now drives: every other room it can build is symmetric under a
+ * vertical flip, so none of them could see a cubemap face stored upside down. `?band=1` is not.
+ *
  * Exits non-zero on the first failed check, so it can gate a commit.
  *
  * **Every sphere is measured where the page said it drew it**, read from `globalThis.__cells`
@@ -68,6 +72,20 @@ function sample(image, cx, cy) {
 function halves(image, cx, cy) {
   const offset = RADIUS * 0.55;
   return { toBright: sample(image, cx + offset, cy), toDark: sample(image, cx - offset, cy) };
+}
+
+/**
+ * The top and bottom of one sphere, which is where a probe stored the wrong way up shows.
+ *
+ * **Everything else this file measures is horizontal, and that is how a vertically mirrored cube
+ * survived.** The room has a bright wall at +X and a dark one at -X; its ceiling and floor are the
+ * same neutral grey, so flipping every cube face top to bottom draws an identical picture and
+ * every figure above comes back unchanged. `?band=1` builds the room that cannot be fooled — four
+ * side walls bright above and dark below — and this is what reads it.
+ */
+function vertical(image, cx, cy) {
+  const offset = RADIUS * 0.55;
+  return { above: sample(image, cx, cy - offset), below: sample(image, cx, cy + offset) };
 }
 
 async function shoot(page, query) {
@@ -195,6 +213,36 @@ check(
  *    the *sign* is the substance — a compensated ladder rises slightly at the rough end, because
  *    the recovered energy is returned against the prefiltered radiance rather than the irradiance.
  */
+/*
+ * 5. **Which way up the probe is**, and this is the check the other four could not make.
+ *
+ *    A cubemap face's texel rows run downward and a GL framebuffer's run upward, and rendering a
+ *    face without reconciling them stores it mirrored — so an up-facing surface takes the light
+ *    that belongs under it. Measured 2026-09-16 before the correction: the tops of these spheres
+ *    came back at 26 to 55 of 255 against the bottoms' 67 to 73, in a room whose light is entirely
+ *    above them. See `cubeFaceProjection`.
+ *
+ *    The margin is large by construction: the walls are an emissive bright above a near-black
+ *    below, so a correct probe separates the two halves of a sphere by tens of levels and a
+ *    mirrored one separates them by as much the other way. A threshold in the middle would pass a
+ *    probe that had lost its direction altogether, so the check is the *sign* and a floor under
+ *    the size.
+ */
+const banded = await shoot(page, '&band=1');
+let litAbove = 0;
+let verticalMargin = 0;
+for (const cell of banded.cells ?? on.cells) {
+  const { above, below } = vertical(banded.image, cell.x, cell.y);
+  if (above > below + 1) litAbove++;
+  verticalMargin += above - below;
+}
+const bandedCells = (banded.cells ?? on.cells).length;
+check(
+  'a room lit from above lights the tops of the spheres',
+  litAbove === bandedCells && verticalMargin / bandedCells > 8,
+  `${litAbove} of ${bandedCells} spheres, mean margin ${(verticalMargin / bandedCells).toFixed(1)}/255`,
+);
+
 const ladder = await shoot(page, '&ladder=1&metal=1&uniform=1&gain=1.5');
 if (!Array.isArray(ladder.cells) || ladder.cells.length < 2) {
   check('the metal ladder published its rungs', false, 'no cells, so the energy check is blind');

@@ -44,7 +44,24 @@ export type DrftFit =
       readonly fit: 'none';
     };
 
+/**
+ * How a container is reached. `typeof fetch`, narrowed to the one call shape this file makes.
+ *
+ * `@driftengine/audio` has had the identical seam since it was written, under the same name, and
+ * this package went without it — so the loader for the engine's *own* format was the one that
+ * could not be pointed at a service worker, a packed archive, a memory map or a fixture.
+ */
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
 export interface DrftLoaderOptions {
+  /**
+   * Where the bytes come from. The global `fetch` unless a consumer says otherwise.
+   *
+   * Optional and defaulting to the browser's, so no existing caller changes — the shape
+   * `AGENTS.md` asks for: take the capability as a parameter, ship a browser implementation as
+   * the default.
+   */
+  readonly fetchImpl?: FetchLike;
   /**
    * The most parts one `update` may take, however cheap they turn out to be.
    *
@@ -451,7 +468,8 @@ export class DrftLoader {
        * to the *baker* appears to have changed nothing, and the time lost to that is out of all
        * proportion to the saving.
        */
-      const response = await fetch(url, { cache: 'no-store' });
+      // platform: browser default — `DrftLoaderOptions.fetchImpl` is the seam
+      const response = await (this.options.fetchImpl ?? fetch)(url, { cache: 'no-store' });
       if (!response.ok) {
         this.set({ phase: 'absent', message: `no model at ${url}` });
         return;
@@ -1143,6 +1161,24 @@ export function isRawCodec(codec: number): boolean {
  * The `.slice()` matters: the bytes are a view into the streamed buffer, and a `Blob` built on
  * the view would keep the whole file alive for as long as the image does.
  */
+/**
+ * How every image a model carries is decoded: **straight alpha, and no colour conversion.**
+ *
+ * `createImageBitmap` premultiplies unless told not to, and the upload into a straight-alpha
+ * texture then divides back out. A texel with no alpha comes back with no colour, so a cutout or an
+ * emblem loses the colour its author padded past its edge, and filtering pulls black into the edge;
+ * a partly transparent one comes back rounded to a coarser step. Colour management rewrites a normal
+ * or ORM map, whose values are not colours at all, and glTF — which these assets are baked from —
+ * says an image's own colour metadata is ignored. `render/imageTexels.ts` asks for the same two.
+ *
+ * What it gives up: an albedo authored in a wide-gamut space with a profile saying so is read as
+ * sRGB. The baker is where that conversion belongs, and it has no colour management either.
+ */
+const AS_AUTHORED = {
+  premultiplyAlpha: 'none',
+  colorSpaceConversion: 'none',
+} as const satisfies ImageBitmapOptions;
+
 async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<ImageBitmap> {
   /*
    * **A raw texture has no decoder, because it is already decoded.**
@@ -1172,10 +1208,11 @@ async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<
         texture.width,
         texture.height,
       ),
+      AS_AUTHORED,
     );
   }
   const blob = new Blob([texture.bytes.slice()], { type: imageTypeFor(texture.codec) });
-  if (longestSide === undefined) return await createImageBitmap(blob);
+  if (longestSide === undefined) return await createImageBitmap(blob, AS_AUTHORED);
   /*
    * Resized while it decodes, which is the point: asking for a 256 pixel version of a 2048
    * square is a fraction of the work of decoding one and throwing most of it away, and the
@@ -1187,9 +1224,10 @@ async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<
    * is the honest answer.
    */
   const longest = Math.max(texture.width, texture.height);
-  if (longest <= 0 || longest <= longestSide) return await createImageBitmap(blob);
+  if (longest <= 0 || longest <= longestSide) return await createImageBitmap(blob, AS_AUTHORED);
   const scale = longestSide / longest;
   return await createImageBitmap(blob, {
+    ...AS_AUTHORED,
     resizeWidth: Math.max(1, Math.round(texture.width * scale)),
     resizeHeight: Math.max(1, Math.round(texture.height * scale)),
     resizeQuality: 'medium',

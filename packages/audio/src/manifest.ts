@@ -20,6 +20,7 @@ import type { FetchLike } from './registry.ts';
 /** Every name in a manifest, or an empty list if there is not one. */
 export async function fetchAudioManifest(
   url: string,
+  // platform: browser default — `FetchLike` is the seam and this is its default
   fetchImpl: FetchLike = (target) => fetch(target),
 ): Promise<string[]> {
   let parsed: unknown;

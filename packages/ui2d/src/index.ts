@@ -53,3 +53,57 @@ export { uiFocusNext, uiFocusOrder, uiFocusPrevious, uiHitTest } from './uiFocus
 
 export { createUiInput, resetUiInput, routeUiKey, routeUiPointer, setUiFocus } from './uiInput.ts';
 export type { UiInput } from './uiInput.ts';
+
+/*
+ * The interface framework: what an editor needs from a 2D layer and a game's interface wants too.
+ *
+ * Every platform touch below is a capability the caller supplies — `TextHost` for composition and
+ * the clipboard, `A11yHost` for assistive technology — because this has to run under a host with
+ * no document object model. That is the same rule `AGENTS.md` already applies to persistence.
+ */
+export { clipRectFor, intersectClip } from './uiClip.ts';
+export { clampScroll, routeScrollWheel, scrollBy, scrollExtent } from './uiScroll.ts';
+export { layerOrder } from './uiLayer.ts';
+export { SLICE_STRIDE, sliceInto } from './uiSlice.ts';
+export type { SliceInset } from './uiSlice.ts';
+export {
+  createTextModel,
+  deleteBackward,
+  deleteForward,
+  insertText,
+  moveCaret,
+  moveToLineEdge,
+  selectAll,
+  selectedText,
+  selectionRange,
+} from './textModel.ts';
+export type { TextModel } from './textModel.ts';
+export { applyComposition, createNullTextHost } from './textHost.ts';
+export type { TextHost } from './textHost.ts';
+export { runsFor } from './richText.ts';
+export type { TextRun } from './richText.ts';
+export { visibleRange, visibleRangeVariable } from './virtualList.ts';
+export type { RowWindow } from './virtualList.ts';
+export {
+  createTheme,
+  deriveTheme,
+  themeColour,
+  themeRgba,
+  themeSize,
+  unpackRgba,
+} from './theme.ts';
+export type { Theme } from './theme.ts';
+export { clearDirty, createDirtyTracker, diffTree, dirtyBounds, markDirty } from './uiDirty.ts';
+export type { DirtyTracker } from './uiDirty.ts';
+export {
+  beginDrag,
+  capturePointer,
+  createPointerState,
+  dropTarget,
+  endDrag,
+  pointerTarget,
+  releasePointer,
+} from './uiPointer.ts';
+export type { PointerState } from './uiPointer.ts';
+export { a11yTree, createNullA11yHost } from './a11y.ts';
+export type { A11yHost, A11yNode } from './a11y.ts';

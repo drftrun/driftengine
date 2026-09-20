@@ -278,7 +278,10 @@ rest reuse the last` went in alongside `if (material === null) return;` in one d
 
   **The general shape.** Thirteen ceilings on WebGPU and none on WebGL2, with one warn-once each as
   the only signal. Both report the same line names now, WebGPU with its ceiling and WebGL2 with
-  `null`, and `frameBudget.dropped` is a boolean a consumer's suite can fail on.
+  `null`, and `frameBudget.dropped` is a boolean a consumer's suite can fail on. **That was three
+  of the lines on WebGL2 until 2026-09-19**, whatever this said; all fifteen now, each counted after
+  the guards its WebGPU twin counts after, material changes by one shared rule, and a test running
+  one scene through both backends and comparing every line.
 
   **And the two that measure how much world is in frame grow.** Growing _mid-frame_ stays refused
   for the reason `UniformRing` gives at its own `allocate`; growing at `beginFrame` is a different

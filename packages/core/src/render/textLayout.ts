@@ -217,13 +217,19 @@ function buildCube(): { positions: Float32Array; normals: Float32Array; vertexCo
   for (const face of faces) {
     const [a, b, c, d] = face.corners as [Vec3, Vec3, Vec3, Vec3];
     /*
-     * Wound clockwise, which is backwards — deliberately. The vertex shader flips Y to put the
-     * origin at the top left, and a mirror reverses winding, so faces authored the usual way
-     * come out back-facing and every one of them is culled. The symptom is text that renders
-     * with no GL error and no pixels, which is a genuinely difficult thing to look at and
-     * diagnose.
+     * **Wound the usual way, and it was wound backwards on purpose until 2026-09-16.**
+     *
+     * The comment that stood here said the vertex shader's Y flip mirrors the winding, so faces
+     * authored the usual way "come out back-facing and every one of them is culled". Measured on
+     * both backends, that is not what happens: with the usual winding both draw solid glyphs, and
+     * with the reversed one **WebGL2 draws a one-pixel sliver of every cell** while WebGPU draws
+     * them solid. The text on the default backend has been a dotted outline of itself.
+     *
+     * It survived because it is legible. A reader sees letters; only a capture beside the other
+     * backend says the cells are hollow, and `demo/dev/overlay.html` is where that comparison is
+     * cheap — 7,678 lit pixels against 14,982 for the same string.
      */
-    for (const corner of [a, c, b, a, d, c]) {
+    for (const corner of [a, b, c, a, c, d]) {
       positions.push(corner[0], corner[1], corner[2]);
       normals.push(face.normal[0], face.normal[1], face.normal[2]);
     }

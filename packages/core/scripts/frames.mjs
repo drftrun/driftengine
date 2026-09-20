@@ -143,6 +143,98 @@ export function speckle(image, { threshold = 12, region } = {}) {
   return count;
 }
 
+/**
+ * Where the differing pixels are, as connected regions rather than as a count.
+ *
+ * **A defect arrives as a region and noise arrives as dust, and a pixel count cannot tell them
+ * apart.** Two shader compilers disagreeing in the last bits scatter single pixels along every
+ * silhouette of every blade of grass; a missing shadow or an unlit surface arrives as one solid
+ * block. Measured on `wind-field`, the same 29,094 changed pixels were 56% islands of one and two
+ * around a single region of 6,176 — and the 6,176 was a scatter batch casting no shadow at all on
+ * one backend, while the rest was nothing at all. Three of the four backend defects this
+ * repository has found were named by running this first and the query knobs second.
+ *
+ * **Four-connected, not eight.** A rasteriser leaves staircases of edge pixels that touch only at
+ * their corners, and joining those into one region reports a defect where one backend merely
+ * stepped a pixel earlier. The diagonal case is pinned by a test.
+ *
+ * Answers the islands sorted largest first, the largest size, and how many changed pixels sit in
+ * islands of four or fewer — the *dust*, which is the figure that says "this is the noise floor".
+ */
+export function islands(one, two, { region, tolerance = 1 } = {}) {
+  if (one.width !== two.width || one.height !== two.height) {
+    throw new Error(
+      `frames are ${one.width}x${one.height} and ${two.width}x${two.height}; nothing to compare`,
+    );
+  }
+  const box = {
+    x0: region?.x0 ?? 0,
+    y0: region?.y0 ?? 0,
+    x1: region?.x1 ?? one.width,
+    y1: region?.y1 ?? one.height,
+  };
+  const width = one.width;
+  const changedAt = new Uint8Array(width * one.height);
+  let changed = 0;
+  for (let y = box.y0; y < box.y1; y++) {
+    for (let x = box.x0; x < box.x1; x++) {
+      const at = (y * width + x) * one.channels;
+      if (Math.abs(luminance(one.pixels, at) - luminance(two.pixels, at)) > tolerance) {
+        changedAt[y * width + x] = 1;
+        changed++;
+      }
+    }
+  }
+
+  /* An explicit stack rather than recursion: a region can be the whole frame, and a call stack
+     that deep is a crash rather than a slow answer. */
+  const seen = new Uint8Array(width * one.height);
+  const stack = [];
+  const found = [];
+  for (let start = 0; start < changedAt.length; start++) {
+    if (changedAt[start] === 0 || seen[start] === 1) continue;
+    let size = 0;
+    let x0 = width;
+    let y0 = one.height;
+    let x1 = -1;
+    let y1 = -1;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const at = stack.pop();
+      const x = at % width;
+      const y = (at - x) / width;
+      size++;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+      if (x + 1 < box.x1 && changedAt[at + 1] === 1 && seen[at + 1] === 0) {
+        seen[at + 1] = 1;
+        stack.push(at + 1);
+      }
+      if (x - 1 >= box.x0 && changedAt[at - 1] === 1 && seen[at - 1] === 0) {
+        seen[at - 1] = 1;
+        stack.push(at - 1);
+      }
+      if (y + 1 < box.y1 && changedAt[at + width] === 1 && seen[at + width] === 0) {
+        seen[at + width] = 1;
+        stack.push(at + width);
+      }
+      if (y - 1 >= box.y0 && changedAt[at - width] === 1 && seen[at - width] === 0) {
+        seen[at - width] = 1;
+        stack.push(at - width);
+      }
+    }
+    found.push({ size, box: { x0, y0, x1, y1 } });
+  }
+
+  found.sort((a, b) => b.size - a.size);
+  let dust = 0;
+  for (const island of found) if (island.size <= 4) dust += island.size;
+  return { changed, islands: found, largest: found[0]?.size ?? 0, dust };
+}
+
 /** One line per band, for printing a `compare` result without every caller writing the format. */
 export function formatComparison(result) {
   const lines = [

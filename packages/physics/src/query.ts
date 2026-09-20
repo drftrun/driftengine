@@ -71,6 +71,37 @@ const manifold = createManifold();
  */
 const MESH_ONE = [createManifold()] as const;
 
+/**
+ * Manifolds a sweep against a mesh gathers before it decides how far it may advance.
+ *
+ * **Which triangle stopped a sweep is not a question one manifold can answer.** `collideMesh` fills
+ * its output in the order the tree hands triangles over, and the sweep read one of them — so near a
+ * crease, where a wall meets a floor, a downward sweep was answered with the wall's horizontal
+ * normal and nothing stopped the fall. Found by the first test of `CharacterController` against a
+ * triangle mesh: a capsule on a captured room's floor sank straight through it, while the same
+ * floor **on its own** held it, because adding the walls changed which triangle came back first.
+ * Sixteen is far more than a sweep meets at once, and the one facing back along the travel is the
+ * one in the way.
+ */
+const MESH_SET = [
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+  createManifold(),
+] as const;
+
 function copyManifold(from: typeof manifold, to: typeof manifold): void {
   to.nx = from.nx;
   to.ny = from.ny;
@@ -792,10 +823,40 @@ export function shapecastWorld(
        * since a step short of the true one converges rather than missing.
        */
       if (isMesh(shape) || isMesh(other)) {
-        if (collideMesh(shape, poseA, other, poseB, 1e9, MESH_ONE) === 0) break;
-        const first = MESH_ONE[0];
-        if (first === undefined) break;
-        copyManifold(first, manifold);
+        /*
+         * **Asked for within the travel that is left, not within everything.** The margin inflates
+         * the tree query's box, so a margin of a billion metres makes every triangle of the mesh a
+         * candidate — which is both the whole mesh's cost per step and the reason the set that came
+         * back was arbitrary. Nothing further away than the sweep can reach can stop it.
+         */
+        const reach = travel * (1 - t) + 1e-4;
+        const met = collideMesh(shape, poseA, other, poseB, reach, MESH_SET);
+        if (met === 0) break;
+        /*
+         * **Two different questions, and one manifold cannot answer both.** How far the sweep may
+         * advance is bounded by the *nearest* surface, whichever way it faces. Which surface
+         * *stopped* it is the nearest one facing back along the travel — and near a crease, where a
+         * wall meets a floor, those are not the same triangle. Answering the first for both is what
+         * made a capsule walking at a captured step sink through the floor: the wall beside it was
+         * always the nearer contact, so every downward sweep reported a horizontal normal and
+         * nothing ever stopped the fall. On box bodies, which have one manifold, the same walk is
+         * fine — which is why this only ever showed on a mesh.
+         */
+        let blocking = -1;
+        let into = 1e-9;
+        for (let m = 0; m < met; m++) {
+          const held = MESH_SET[m];
+          if (held === undefined) continue;
+          if ((held.separations[0] ?? 0) >= 1e-4) continue;
+          const opposes = dx * held.nx + dy * held.ny + dz * held.nz;
+          if (opposes > into) {
+            into = opposes;
+            blocking = m;
+          }
+        }
+        const chosen = MESH_SET[blocking >= 0 ? blocking : 0];
+        if (chosen === undefined) break;
+        copyManifold(chosen, manifold);
       } else if (!collideShapes(shape, poseA, other, poseB, 1e9, manifold)) break;
       const gap = manifold.separations[0] ?? 0;
       if (gap < 1e-4) {

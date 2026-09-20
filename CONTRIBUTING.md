@@ -163,6 +163,53 @@ A release is then tagged `v<version>`, annotated, on the commit that bumped it, 
 the GitHub release body is `npm run changelog` — the same file the build reads, so the
 two cannot disagree.
 
+## Auditing a piece of work you believe is finished
+
+**A task is marked done when its commit lands, and a commit that delivers most of a
+task reads exactly like one that delivers all of it.** Four pieces of work here were
+recorded as complete and were not; in three of the four, the part left out was the
+part that connects the piece to the frame — the dispatch, the chunk it travels in,
+the query that turns a prediction into work.
+
+The method, so it can be run again:
+
+1. Every path the work said it would create, checked with `ls`.
+2. Every function it said it would produce, checked with `git grep -w` across
+   `packages`, `editor` and `scripts`.
+3. **Then grep for who _calls_ the thing, not only for whether it exists.** That is
+   the step that catches the shape above. One pass sat in the backend directory
+   beside the passes the renderer owns, named like them, reachable only from
+   outside — and nothing in its path said so.
+
+**A debt is closed by a measurement, not by a plausible fix elsewhere.** A debt
+nobody re-measures stays open in the record long after it is gone from the code, and
+the reverse is worse: three recorded diagnoses here turned out to have the wrong
+cause, and the tell each time was a fix that did not move the number.
+
+## What perturbation is for, and what it keeps finding
+
+`AGENTS.md` requires that you break the fix and watch the test go red. Some notes on
+what that has actually turned up here, because the failure modes repeat:
+
+- **The gaps cluster around the claim you are proudest of.**
+- **A survivor is sometimes a declaration rather than dead code**, and then the test
+  has to assert the declaration itself. A declaration is indistinguishable from dead
+  code to a perturbation.
+- **A survivor is sometimes a cost guard, and then it needs a number.** Measure it,
+  write the figure in the comment, and say a perturbation is expected to survive.
+- **Write the expected value out by hand.** Never build an expectation with the code
+  under test.
+- **A fixture with a symmetry in it tests less than it looks like it does.** The
+  common shape is an input that is regular in a way the arithmetic is insensitive to.
+  Ask what every fixture is symmetric under, and make it asymmetric under that. One
+  layout's "nothing overlaps" test passed while placing every node at `NaN`, because
+  every comparison against `NaN` is false.
+- **Two assertion styles keep turning out to be the strong ones**: count an _area_
+  rather than spot-checking cells, and assert against the mechanism turned _off_. A
+  number on its own says a test ran; a pair says the mechanism does something.
+- **Say what is not true.** A limitation with a test beside it is one somebody can
+  find; a limitation in a comment is one they discover by hitting it.
+
 ## Browser verification
 
 Visual checks must run on the machine's real GPU. Never force SwiftShader or

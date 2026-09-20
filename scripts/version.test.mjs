@@ -34,12 +34,31 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const read = (path) => JSON.parse(readFileSync(join(ROOT, path), 'utf8'));
 
-/** Every manifest a release has to move: the workspace root and each package under it. */
+/**
+ * Every manifest a release has to move: the workspace root and **every workspace it declares**.
+ *
+ * **It read `packages/` alone until 2026-09-20, and `editor` is a workspace too.** That manifest
+ * carries a version and seven `@driftengine/*` ranges pinned exactly, and not one of them was
+ * counted here, quoted in `AGENTS.md`, or checked by any test — so a release that moved the
+ * eighty-four places this file knew about would leave the editor asking the registry for an
+ * engine version that has never been published, which is the exact failure the paragraph in
+ * `AGENTS.md` opens by describing. Read from `workspaces` rather than from a list, so the next
+ * workspace anybody adds is counted the day it is added.
+ */
 function manifests() {
-  const packages = readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `packages/${entry.name}/package.json`);
-  return ['package.json', ...packages.sort()];
+  const out = ['package.json'];
+  for (const pattern of read('package.json').workspaces ?? []) {
+    if (!pattern.endsWith('/*')) {
+      out.push(`${pattern}/package.json`);
+      continue;
+    }
+    const dir = pattern.slice(0, -2);
+    const found = readdirSync(join(ROOT, dir), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => `${dir}/${entry.name}/package.json`);
+    out.push(...found.sort());
+  }
+  return out;
 }
 
 const RANGE_FIELDS = [
@@ -150,7 +169,23 @@ test('every engine manifest carries the workspace version', () => {
    * is the finding this paragraph has recorded twice already: the commit that adds a *peer* is as much
    * a correction to this number as the commit that adds a package.
    */
-  assert.ok(engine.length >= 18, `only ${engine.length} engine manifests found`);
+  /*
+   * **Raised to 23 on 2026-09-19, by `@driftengine/native-host`, and this is the ninth time — with
+   * the floor stale by four before this commit added one.** `nav`, `texture`, `tools` and `xr` had
+   * each landed a manifest underneath 18 without failing anything, so the tree stood at twenty-two
+   * when the native host made it twenty-three. Found, again, by running the snippet in `AGENTS.md`.
+   */
+  /*
+   * **Raised to 24 on 2026-09-19, by `@driftengine/capture`, at the commit that created it** — the
+   * first package in four to move this floor in the same commit, because the snippet was run first.
+   */
+  /*
+   * **Raised to 25 on 2026-09-20 by a workspace that had always been there.** `editor` is the
+   * editor application, declared in `workspaces` beside `packages/*` and never walked by this
+   * file — see `manifests()`. Nothing was added to the tree; what changed is that the count is
+   * now taken from what a release actually has to move.
+   */
+  assert.ok(engine.length >= 25, `only ${engine.length} engine manifests found`);
 });
 
 test('every engine range pins the workspace version, and the language pin agrees with itself', () => {
@@ -200,7 +235,60 @@ test('every engine range pins the workspace version, and the language pin agrees
    *
    * So a release is sixteen manifests, twenty-six ranges and the lockfile: **forty-three places**.
    */
-  assert.ok(engineRanges >= 33, `only ${engineRanges} engine ranges found`);
+  /*
+   * **Raised to 53 on 2026-09-19, by `@driftengine/native-host`, from 33 — fifteen of the difference
+   * landed before it.** The host brings five: its peers on core, the packager, texture and ui2d, and
+   * a devDependency on audio for a test. The packager names no range on it, and that is the build
+   * order rather than an omission: the host depends on the packager, so a range back would be a
+   * cycle, and the packager resolves the host from the game's own tree as it does `steamworks.js`,
+   * refusing one at another version. The other fifteen came in with `nav`, `texture`, `tools`, `xr`
+   * and the peers others grew on them, and passed a floor of 33 at forty-eight exactly as this file
+   * says a floor will.
+   *
+   * So a release is twenty-three manifests, fifty-three ranges and the lockfile: **seventy-seven
+   * places**.
+   */
+  /*
+   * **Raised to 55 the same day, by `@driftengine/capture`'s two peers**, on core and texture. So a
+   * release is twenty-four manifests, fifty-five ranges and the lockfile: **eighty places**.
+   *
+   * **Then to 59, as that package grew four more peers** — drft, nav, physics and splats — one per
+   * task that needed one, each raised with the commit that added it. Twenty-four manifests,
+   * fifty-nine ranges and the lockfile: **eighty-four places**.
+   *
+   * **Raised to 60 on 2026-09-20, by a *devDependency*: `@driftengine/drft` on
+   * `@driftengine/entities`.** The container carries a scene in `ENTS` and must not depend on the
+   * entity model to do it — the types agree structurally, which is the same arrangement `DTEX` has
+   * with `@driftengine/texture`, and a rule that cannot be shared as code is shared as a test. So
+   * the range exists for that test and for nothing at run time. **It is the fourth time a range
+   * arrived with no new package in `packages/`**, and the second time the field was one nobody
+   * scans. Twenty-four manifests, sixty ranges and the lockfile: **eighty-five places**.
+   */
+  /*
+   * **Raised to 67 the same day, by the same widening**: the editor application's ranges, pinned
+   * exactly at the workspace's version and uncounted — so twenty-five manifests, sixty-seven
+   * ranges and the lockfile: **ninety-three places**.
+   *
+   * **That sentence said "seven ranges" and named seven packages, and the manifest carries nine**
+   * — `@driftengine/capture` and `@driftengine/drft` were left out of the list while the total
+   * above them was right. Worth keeping as the smallest version of this file's subject: a number
+   * that is counted stays true and a list written out beside it goes stale on its own, because
+   * nothing reads the list. Counted 2026-09-20: capture, core, drft, editor, entities, network,
+   * texture, tools, ui2d.
+   */
+  /*
+   * **Raised to 69 on 2026-09-20, and this time by the release itself rather than by a commit that
+   * added something.** The snippet was run before bumping 4.0.0, as the rule says to, and answered
+   * two ranges more than the paragraph in `AGENTS.md` claimed — a twelfth staleness, found by
+   * counting rather than by anything going red. Twenty-five manifests, sixty-nine ranges and the
+   * lockfile: **ninety-five places**.
+   *
+   * **The lockfile is what confirmed it independently.** Bumping every place and regenerating gave
+   * a diff of ninety-six insertions against ninety-five deletions: ninety-five versions moved, and
+   * one `license` field the root manifest had gained earlier. A count that agrees with itself from
+   * two directions is the only kind this paragraph has ever been able to trust.
+   */
+  assert.ok(engineRanges >= 69, `only ${engineRanges} engine ranges found`);
 
   /*
    * The language pins, which are now pins on a published package.

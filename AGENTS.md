@@ -120,6 +120,25 @@ supplies, so a save can live in a browser, on a server, in a native shell, or no
 clock, network or filesystem access — take the capability as a parameter, ship a browser
 implementation as the default.
 
+**`scripts/platform.test.mjs` asserts this**, and until 2026-09-15 nothing did. The first run found
+eleven defects: the loader for this engine's _own_ container format fetched through the global while
+two audio modules a directory away took a `FetchLike`; three deadlines were measured with `Date.now`,
+which steps, so a clock correction either fired them at once or never; and a media query sat
+unguarded in a constructor, so an embedder without `matchMedia` could not construct input at all.
+Two exemptions exist. **A marked line** — `// platform: browser default — <reason>` — is a call
+that _is_ the documented default of a capability the caller may replace, and the rest of the file
+stays scanned. **A declared browser module**, listed in the gate with its reason, is a file a
+runtime with no DOM never loads; that list is also what a native host has to reimplement.
+
+**And a second host is what the rule was for, 2026-09-19.** `@driftengine/native-host` runs the
+engine on Node, Dawn and SDL with no engine code changed, and draws the published scenes
+pixel-identically to Chrome: every platform touch it had to answer was a capability or a page
+global, never a call buried in the engine. **The count above is the finding worth keeping**: the
+rule had been held by review for years, and the first test of it found eleven places it had not
+held. What each host can do that the other cannot is recorded both ways in
+`docs/CAPABILITIES.md` §2a, the host's side guarded by a `present` block so a capability cannot
+quietly go.
+
 The test for anything new: **if a second, unrelated game would want it unchanged, it belongs here.**
 
 ## Looking at what you changed
@@ -217,6 +236,66 @@ curl -s "http://localhost:5202/@fs/$PWD/packages/core/src/render/backend/webgpu/
 That is the same rule as verifying a deploy by its content rather than by its asset hash, one layer
 down, and it fails the same way: silently, in the direction that looks like a working measurement.
 
+### An instrument that reports success on an empty input is the worst kind — hard rule (2026-09-20)
+
+**`diff` prints "identical" when it compared nothing.** Check the PNGs exist before believing a
+green diff, and pass the same `--scenes=` to both halves of a comparison — `diff` takes it as well
+as `capture` does. Generally: **before believing a green instrument, check it consumed anything.**
+
+**A knob that does nothing looks exactly like a feature that is not the cause.** Run a flag against
+a page that exercises it before believing a sweep: one point-shadow switch moves 4,803 pixels of the
+page built for it and none at all of a scene with no point shadows.
+
+**The harness keeps calling `frame` after a hold**, with the clock stopped — several hundred times
+in the seconds a capture waits — so a capture labelled by its hold photographed a much later frame.
+Two builds matching under that arrangement can be luck. And **`hold` inside `--query` is ignored**
+when the scene URL already carries one, because `URLSearchParams.get` returns the first; use
+`--hold=`.
+
+**Stop a dev server in a call of its own.** `pkill -f 'vite demo/dev'` matches any shell whose
+command line holds that text, including the one about to restart it. Use a bracket form, or a
+separate call.
+
+**This repository's shell does not split an unquoted variable into words**, so a counting loop over
+one silently iterates once. Run such loops under `bash -c`.
+
+### What only a person at the machine can find — hard rule (2026-09-20)
+
+**Seven defects were found in one day by running the product, and every gate here was green for all
+of them.** Two of the seven the gates actively confirmed as _working_, because the fixture and the
+code were written from the same wrong assumption. The general rule this leaves behind:
+
+> **A gate tests what somebody thought to assert, through a fixture somebody wrote. Where the
+> fixture shares the code's assumption, the gate confirms the defect.** Only running the real thing
+> on real hardware breaks that symmetry.
+
+The four worth carrying as rules of their own:
+
+- **`false !== 0` is `true`.** A platform's types declared a key repeat as a number and it gave a
+  boolean, so `(event.repeat ?? 0) !== 0` marked _every_ press a repeat — and an `InputSource`
+  discards repeats. **What that looks like is half a keyboard**: a digit still switches a hotbar,
+  because a press is an edge, while walking reads a level that is never set. A replayed key carried
+  the number `0`, which coerces correctly, so a unit test and a full scene capture both agreed with
+  the bug.
+- **A handle the platform has already taken away must not take the process with it.** Closing an
+  SDL window and promoting a joystick to a controller each close a handle the platform has already
+  invalidated. Guard the close and free the slot either way.
+- **A keyboard is not a gamepad.** A keyboard exposes a second HID endpoint for its media keys and
+  SDL lists it among the joysticks. The rule is what a pad can be **steered** with — no axes _and_
+  no hats — rather than a name or a vendor, which would be a list to maintain forever.
+- **An instrument can fail to see what it was built to find.** A key probe that polled on a timer
+  and printed only while a key was held could never show a tapped key, which reads exactly like the
+  engine not receiving one. **Check the instrument before believing it**, and before saying
+  "cannot reproduce", say what the instrument can actually see — a readback is not a screen, and a
+  replayed event is not a delivered one.
+
+**Never drive the maintainer's real pointer or keyboard to test something.** Replay through the
+host's own door — `HostWindow.replay`, `--click=`, `--drag=` — and prove it with held captures.
+`xdotool` once pressed and dragged on the desktop because it found no window.
+
+**And typecheck with `npm run typecheck`, never `tsc -p .` alone**: the native host and
+`demo/native` are only in `tsconfig.scripts.json`.
+
 ### A control has to separate the two states it is testing
 
 **A negative needs a positive control, and the control needs to be the right one.** Both halves have
@@ -247,7 +326,7 @@ the tree in April of this repository's life — and it named three documents tha
 the first thing an agent reads, so a wrong map here costs more than a wrong map anywhere else.
 
 ```
-packages/           Thirteen engine packages plus the two on the language's own version line.
+packages/           Twenty-two engine packages, all on the engine's version line.
   core/             The runtime: loop, RNG, storage, input, geometry, cameras, renderer,
                     scene graph and culling. Barrel at src/index.ts, the public surface.
                     Re-exports @driftengine/physics wholesale.
@@ -270,8 +349,12 @@ packages/           Thirteen engine packages plus the two on the language's own 
   chemistry/ drft/ entities/
                     The other three that import nothing: thermochemistry of bulk matter,
                     the container format, and the entity model.
-  animation/ assets/ audio/ media/ splats/ ai/ package/
+  animation/ assets/ audio/ media/ splats/ ai/ package/ nav/ network/ terrain/ texture/
+  tools/ ui2d/ xr/ editor/
                     Optional packages, each taking core as a peer.
+  native-host/      The engine on a native window: Node, Dawn and SDL, with the page a game
+                    expects around its canvas. A host, like package/'s Electron shell, so
+                    platform code is what it is; the packager loads it for the native target.
   script/           Where the engine describes itself to DriftScript. The only place the
                     two are coupled, and the coupling crosses as data.
 scripts/            Tooling a person or an agent runs, never a game. changelog.mjs writes
@@ -279,6 +362,8 @@ scripts/            Tooling a person or an agent runs, never a game. changelog.m
                     shots.mjs is the visual gate; determinism.test.mjs is the physics one.
 examples/           Small runnable programs, one capability each — `npm run examples`.
 demo/               Scenes that prove something about the engine — `npm run demo`.
+  native/           The same scenes on the native host, and its pixel gate against Chrome —
+                    `npm run native:scene -- <id>`, `npm run native:gate`.
 docs/               ARCHITECTURE.md, CAPABILITIES.md, ROADMAP.md, FORMAT.md, HANDBOOK.md,
                     RENDERING.md, IMPROVEMENTS.md, PORTING.md, SHIPPING.md — one job each,
                     listed with that job in docs/README.md. Plus corpus/.
@@ -357,6 +442,13 @@ declarations beside it — so this works whatever the consumer's bundler does wi
 `node_modules`. `npm run build` emits that with `rewriteRelativeImportExtensions`, a type strip with
 no code generation in it, and the build config is a separate file precisely so the fast gate never
 emits. `npm run cleanroom` proves the result imports under plain Node from a real tarball.
+
+**A module started by URL is not an import, so `tsc` does not see it** (2026-09-19). The published
+physics build started its island worker from `new URL('./islandWorker.ts', import.meta.url)` beside
+a `dist` holding only `islandWorker.js`, and the native host's hand-written `workerScope.mjs` was not
+in its `dist` at all — both invisible from the workspace, which resolves source, and found only by
+packaging a game from the build. `scripts/emitModules.mjs` now renames such URLs and copies such
+modules after `tsc`, and the clean room checks every module a tarball names by URL is in it.
 
 **A path dependency is the other arrangement, and it is for developing the engine**, not for
 shipping against it:
@@ -473,10 +565,10 @@ a changelog entry, because shipping it a fragment at a time would have announced
 imports without materials and a format not yet frozen. It went out as one release in **0.12.0**, so
 anything added to it now is an ordinary change and follows the rule above.
 
-### A version bump is fifty-two places, not two — hard rule (2026-08-08, widened 2026-09-03)
+### A version bump is eighty-four places, not two — hard rule (2026-08-08, widened 2026-09-20)
 
-**Never bump one without the others.** A release moves `version` in **eighteen manifests** — the
-workspace root and each of the seventeen engine packages — the **thirty-three internal
+**Never bump one without the others.** A release moves `version` in **twenty-four manifests** —
+the workspace root and each of the twenty-three engine packages — the **fifty-nine internal
 `@driftengine/*` ranges** that pin them to each other, and **`package-lock.json`**, and writes
 `CHANGELOG.json` in the same commit.
 
@@ -496,6 +588,39 @@ it, and a **devDependency** on `@driftengine/core` — test-only, declared so th
 core's reproducible transcendentals in a test while importing nothing but entities at run time. That
 last one is a new shape of invisible: not a peer this time, but an entry in a field nobody scans
 when they are looking for versions.
+
+**And an eleventh time, 2026-09-20 — by a workspace that had been there all along.** The count
+walked `packages/*` and the root, and `editor` is a workspace too: the editor application, with a
+version of its own and **seven `@driftengine/*` ranges pinned exactly**, none of them counted here
+or checked by `scripts/version.test.mjs`. A release moving the eighty-five places this paragraph
+knew about would have left the editor asking the registry for an engine version nobody published —
+**the exact failure this paragraph opens by describing, sitting inside the instrument written to
+catch it.** So: **twenty-five manifests, sixty-nine ranges and the lockfile, ninety-five places**,
+and it was sixty-seven ranges in this same paragraph until 2026-09-20, when the snippet was run
+before a release and answered two more — **a twelfth staleness, found by counting rather than by
+anything failing**,
+and the snippet below and the gate both read `workspaces` now rather than a list, so the next
+workspace is counted the day it is added.
+
+**And a tenth time, 2026-09-20, by a range with no package behind it**: `@driftengine/drft` took a
+**devDependency** on `@driftengine/entities`, so that the `ENTS` chunk's structural agreement with
+`SerializedScene` is asserted by a test rather than by review — twenty-four manifests and sixty
+ranges, **eighty-five places**. Nothing new appears in `packages/` for it, which is the shape of
+drift this paragraph is worst at.
+
+**And a ninth time, 2026-09-19, by `@driftengine/native-host`, to twenty-three and fifty-three —
+and the number was already stale by four manifests and fifteen ranges before it.** `nav`, `texture`,
+`tools` and `xr` had landed underneath "eighteen and thirty-three", with the peers others grew on
+them, and neither this paragraph nor the floors moved, so the truth was twenty-two and forty-eight
+when the host added one manifest and five ranges: its peers on core, the packager, texture and ui2d,
+and a devDependency on audio for a test. The packager names no range back, because that would be a
+build cycle; it resolves the host from the game's own tree and refuses one at another version. Four
+packages in a row shipped without anybody running the snippet below, which is the finding: the rule
+is only as good as the habit of counting at the commit that adds.
+
+**And a tenth, the same day, by `@driftengine/capture`, to twenty-four and fifty-five** — one
+manifest and its two peers, on core and texture — counted with the snippet in the commit that
+created the package, the first of five to be.
 
 **This number has been stale six times, and the sixth ran for a whole release.** It said ten and
 thirteen against eleven and sixteen; corrected to eleven and sixteen it was already wrong, because
@@ -517,8 +642,14 @@ while saying it:
 ```sh
 node --input-type=module -e '
 import { readFileSync, readdirSync } from "node:fs";
-const files = ["package.json", ...readdirSync("packages").map((d) => `packages/${d}/package.json`)];
 const read = (f) => JSON.parse(readFileSync(f, "utf8"));
+const files = ["package.json"];
+for (const pattern of read("package.json").workspaces ?? []) {
+  if (!pattern.endsWith("/*")) { files.push(`${pattern}/package.json`); continue; }
+  const dir = pattern.slice(0, -2);
+  files.push(...readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => `${dir}/${e.name}/package.json`));
+}
 const engine = files;
 const ranges = files.flatMap((f) => {
   const m = read(f);
@@ -544,6 +675,23 @@ adding `@driftengine/splats` turned five releases of drift into a red CI with an
 missing package. `npm install --package-lock-only` writes it, and the diff should contain nothing but
 workspace versions and any package genuinely added. **Run `npm ci` before pushing a release** — it is
 the one command that reads the lockfile the way CI does.
+
+**A tenth time, 2026-09-20, by `@driftengine/capture` — and for once by a package that already
+existed.** The package landed earlier in the wave with two peers, and both halves were corrected
+with it. What moved the number again is a _capability inside it_: the Gaussian fit's output **is**
+`@driftengine/splats`' `SplatSource`, so that is a peer, and the test that loads a fit through the
+container is a devDependency on `@driftengine/drft`. Twenty-four and fifty-seven.
+
+**Which is the shape worth adding to the nine above.** Every previous entry was a new package
+carrying ranges in with it, and a reader could come away thinking the count only moves when
+`packages/` grows. It moves whenever a package reaches for another one — and the commit that
+writes the import is the commit that owes the count, whether or not anything was created.
+
+**And twice more the same day, by the same package**, which is what that paragraph predicts: the
+surface work gave `@driftengine/capture` a peer on `@driftengine/drft` for `MeshData` (its
+devDependency for the round trip became a real one), and the collision work gave it peers on
+`@driftengine/physics` and `@driftengine/nav`. Twenty-four and fifty-nine. A package that is being
+built reaches for a new neighbour every few days, and each time is a correction here.
 
 **The commit that adds a package or a range is the commit that corrects this paragraph and raises the floors.**
 A package once moved to 0.7.1 with no changelog entry, leaving a consumer failing on its engine
@@ -833,6 +981,29 @@ hoisting SSBO declarations it has never seen, and a workgroup declaration with n
 equivalent — so the source would be authored in a dialect **no backend in this engine can run**.
 **What would make it wrong** is a compute and a fragment shader wanting to share substantial source;
 the sharing is then the thing to solve.
+
+### A device's arithmetic is not your arithmetic — hard rule (2026-09-20)
+
+Four rules, each of which cost a session.
+
+- **An index lattice is integer arithmetic and has to be written as integer arithmetic.** A shader
+  compiler implements a division as a multiplication by a reciprocal, so a GPU here answers **3 for
+  `3.0 % 3.0`** and **0 for `floor(12.0 / 12.0)`**. Use `u32` division and `%`, which are exact.
+- **A `vec3<f32>` is sixteen-byte aligned and twelve bytes long**, so an `f32` declared after one
+  lands at the fourth float of that row rather than the first float of the next. **A caller that
+  counts rows gets this wrong and a caller that names the field cannot.**
+- **Never put a backtick or a `${...}` inside a WGSL template literal**, and avoid WGSL's reserved
+  words as identifiers: `register`, `target`, `set`, `mod`, `filter`, `layout`, `pass`, `ref`,
+  `self`, `type`, `use`, `with`, `of`, `new`, `meta`, `match`, `static`, `resource`, `sample`.
+- **An A/B of a shader constant changes WebGL2 and not WebGPU.** The GLSL is assembled from those
+  constants at runtime; the WGSL is generated and committed, so a WebGPU capture keeps drawing the
+  old number until `npm run wgsl` runs. Editing the constant and capturing twice on WebGPU
+  therefore compares a build with itself. **Either regenerate between the two captures, or run the
+  A/B on WebGL2.**
+
+The WebGPU defaults the GPU-driven design is built on, so a budget can be checked against them: **8
+storage buffers per stage, 65,536-byte uniform bindings, 16 sampled textures and 16 samplers per
+stage, 4 storage textures.**
 
 ### Two backends, one decision — hard rule (2026-08-13)
 
@@ -1138,12 +1309,81 @@ stems; the payload budget applies to audio too.
   boot, the frame loop never throws.
 - TypeScript strict; no `any`; no non-null assertions — narrow explicitly. `verbatimModuleSyntax`:
   type-only imports use `import type`.
-- Dependencies: MIT-compatible only, each justified. Current allowance: `gl-matrix`, and `mp4-muxer`
-  behind a dynamic import in `src/media/`. The bar for adding more is high.
+- Dependencies: MIT-compatible only, each justified, and the bar for adding one is high.
+  **Count them rather than reading this line** — it said "`gl-matrix`, and `mp4-muxer`" long after
+  there were eleven, which is the same drift the version-bump paragraph documents about itself:
+  `node -e` over every manifest's `dependencies`, `peerDependencies` and `optionalDependencies`.
+  As of 2026-09-20: `gl-matrix`, `driftscript`, `mp4-muxer`, `@jsquash/jpeg` (Apache-2.0),
+  `ogg-opus-decoder`, `node-web-audio-api` (BSD-3-Clause), `@kmamal/gpu`, `@kmamal/sdl`,
+  `electron`, `electron-builder`, `esbuild` and `tsx`.
+  - **One copyleft package reaches the tree, transitively, and it must never be bundled.**
+    `ogg-opus-decoder` depends on `codec-parser`, which is **LGPL-3.0-or-later** — the only
+    copyleft package in the non-dev graph. `packages/package/src/nativeLicenses.ts` names every
+    copyleft part and `native.ts` refuses to bundle one; a packaged game gets it as a replaceable
+    file with `licenses/GPL-3.0.txt` beside it. **Adding a dependency without checking what it
+    drags in is how the second one arrives**, and nothing in `npm test` would say so: there is no
+    automated licence scan of the dependency graph.
+  - **`@webgpu/glslang`'s licence cannot be stated.** Its manifest names a file (`glslang/LICENSE.txt`)
+    that the published package does not contain, and nothing here records it. It is a
+    devDependency, never shipped and not importable from `src/`, which is why it is tolerated —
+    but it is the one dependency whose terms nobody in this repository can quote.
   - `mp4-muxer` warns on install that Mediabunny supersedes it. **We stay, and the warning alone is
     not a reason to revisit.** Mediabunny is MPL-2.0 against mp4-muxer's MIT, which is a
     source-availability obligation on every site shipping a clip encoder, and the current one is
     frozen rather than broken.
+
+### A list of roots is a scope, and a scope nobody re-reads shrinks — hard rule (2026-09-20)
+
+**Eleven gates here described less than everybody believed**, and they failed in one shape: each
+holds a hand-written list of directories, the repository grew a directory, and the list did not.
+Nothing goes red when a gate stops covering something — that is the whole difficulty.
+
+- **The editor was never typechecked.** `tsconfig.json`'s `include` read `["packages/*/src",
+"demo", "examples"]` while `vitest.config.ts`, `scripts/docs.test.mjs` and
+  `scripts/docs-counts.mjs` all walked `['packages', 'demo', 'editor']`. Forty files across three
+  waves were tested and never checked; adding `editor/src` surfaced seven real errors at once.
+- **Four workspaces imported packages they never declared.** One hoisted `node_modules` makes that
+  invisible until somebody installs the package on its own.
+- **No gate asked whether a package carried the licence it promised.** One shipped with neither
+  `LICENSE` nor `NOTICE` while every other gate was green — a tarball claiming a licence with no
+  licence text in it, and no NOTICE, which section 4(d) requires to travel with the work.
+- **The package-count regex could not match a hyphenated number word**, so at twenty-one packages
+  the sentence being _correct_ is what failed the gate.
+
+**So: when you add a root, a package or a product directory, change every list** — `tsconfig.json`,
+`vitest.config.ts`, `scripts/docs.test.mjs`, `scripts/docs-counts.mjs`, `scripts/platform.test.mjs`,
+`scripts/deps.test.mjs` — and **audit the gate the way you audit anything here, by running it
+against a deliberate violation and watching it fail.**
+
+**What a new package owes the repository**, six things, each behind a gate:
+
+1. `tsconfig.build.json`, copied from a sibling, **plus `LICENSE` and `NOTICE`, byte for byte from
+   the root**. `scripts/packages.test.mjs` gates them.
+2. The licence banner as the first line of `src/index.ts`. It costs about 79 real gzipped bytes.
+3. A `README.md` quoting its measured gzipped cost.
+4. A fixture at `scripts/fixtures/size/<name>-only.ts` and a floor in `scripts/size-floors.mjs`.
+5. A row in the root `README.md` table, and the package-count **word** updated with it.
+6. Every dependency its shipped source imports, declared. `scripts/deps.test.mjs` refuses otherwise.
+
+And **do not exclude a tracked file from `files`**.
+
+### Two ways a check can be worth nothing, both found here — hard rule (2026-09-20)
+
+**A check that runs two copies of one expression proves they agree and nothing else.** Where the
+reference and the implementation are the same arithmetic typed twice, the check is testing a
+transcription. That is worth having — most of the WGSL here is exactly that, and it caught five
+deliberate breakages out of five — but it must say so, and it must be **perturbed with the mistake
+somebody would actually make** rather than an obvious one: negating a term fires every assertion
+and tells you nothing, while reading the neighbouring texel fires none.
+
+**And a test named for a mechanism can assert only an outcome.** Perturb the line the name refers
+to; if the test still passes, the name is a claim the test does not make. Around twenty test
+premises were wrong across this programme, all found this way.
+
+**`npm run wgsl:check` reads the generated WGSL only.** A hand-written shader has no generator to
+disagree with, so nothing reads it until a device does — which is true of most of
+`shaders/gpudriven/` and all of `shaders/gi/`. Those need `scripts/gpu-parity.mjs` or they need a
+person with a GPU, and there is no third option.
 
 ## Testing — few tests, each load-bearing
 
@@ -1178,7 +1418,7 @@ must be told not to here, and a trailer that slips in is removed before the comm
 
 **A commit log is a statement about provenance**, and this repository now makes three others that
 have to agree with it: the copyright line in `LICENSE`, the holder named in `NOTICE`, and the
-`author` field in eighteen manifests. A trailer naming a tool as co-author contradicts all three at
+`author` field in twenty-four manifests. A trailer naming a tool as co-author contradicts all three at
 once, in the one record a reader checks when they want to know who stands behind the code.
 
 ## Definition of done

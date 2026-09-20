@@ -44,9 +44,9 @@ export function digest(samples) {
 /**
  * Level in each quarter of the render, which is what turns "the mix changed" into "where".
  *
- * The opening samples are useless for this and were tried first: the master filter starts at 320 Hz,
- * so the first milliseconds of any render are its impulse climbing out of zero, and eight leading
- * samples agree to nine decimal places between two mixes that differ everywhere after.
+ * The opening samples are useless for this and were tried first: the master filter then started at
+ * 320 Hz, so the first milliseconds of any render were its impulse climbing out of zero, and eight
+ * leading samples agreed to nine decimal places between two mixes that differed everywhere after.
  */
 function quarterRms(samples) {
   const span = Math.floor(samples.length / 4);

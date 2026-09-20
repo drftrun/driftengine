@@ -1,0 +1,145 @@
+{
+  "checked": "2026-09-19",
+  "models": [
+    {
+      "name": "depth-anything-3-small",
+      "title": "Depth Anything 3 Small",
+      "use": "Depth, confidence and camera poses from frames: the browser's depth model",
+      "targets": ["browser", "native"],
+      "upstream": "https://huggingface.co/depth-anything/DA3-SMALL",
+      "revision": "e08cab65ca0ec38e7826075418411ab90cab4da3",
+      "file": "model.safetensors",
+      "url": "https://huggingface.co/depth-anything/DA3-SMALL/resolve/e08cab65ca0ec38e7826075418411ab90cab4da3/model.safetensors",
+      "format": "safetensors",
+      "bytes": 137248940,
+      "sha256": "364492e38a3a06d221ac75da7f6621ada3f2361cd24fde11ba79091e9f40efcf",
+      "licence": "Apache-2.0",
+      "attribution": "Depth Anything 3, Copyright (c) 2025 ByteDance Ltd. and/or its affiliates",
+      "datasetTerms": "None. The card at this revision says the model was trained on public academic datasets only, and attaches none of their terms to the weights.",
+      "code": {
+        "upstream": "https://github.com/ByteDance-Seed/Depth-Anything-3",
+        "revision": "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4",
+        "licence": "Apache-2.0"
+      }
+    },
+    {
+      "name": "depth-anything-3-base",
+      "title": "Depth Anything 3 Base",
+      "use": "The same, larger: the native host's heavier path",
+      "targets": ["native"],
+      "upstream": "https://huggingface.co/depth-anything/DA3-BASE",
+      "revision": "f4a6c9b3c95e41c82048423d3493a81ec3fa810e",
+      "file": "model.safetensors",
+      "url": "https://huggingface.co/depth-anything/DA3-BASE/resolve/f4a6c9b3c95e41c82048423d3493a81ec3fa810e/model.safetensors",
+      "format": "safetensors",
+      "bytes": 541518028,
+      "sha256": "e01067dc1659613083d9145a9a2547ccdbe6ccbbf83c4fe7b3e8a4e2bdae78b5",
+      "licence": "Apache-2.0",
+      "attribution": "Depth Anything 3, Copyright (c) 2025 ByteDance Ltd. and/or its affiliates",
+      "datasetTerms": "None. The card at this revision says the model was trained on public academic datasets only, and attaches none of their terms to the weights.",
+      "code": {
+        "upstream": "https://github.com/ByteDance-Seed/Depth-Anything-3",
+        "revision": "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4",
+        "licence": "Apache-2.0"
+      }
+    },
+    {
+      "name": "depth-anything-2-small",
+      "title": "Depth Anything V2 Small",
+      "use": "Relative depth from one frame: the lighter fallback in the browser",
+      "targets": ["browser", "native"],
+      "upstream": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf",
+      "revision": "5426e4f0f36572d16453bbda7a8389317b1bef99",
+      "file": "model.safetensors",
+      "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf/resolve/5426e4f0f36572d16453bbda7a8389317b1bef99/model.safetensors",
+      "format": "safetensors",
+      "bytes": 99173660,
+      "sha256": "3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70",
+      "licence": "Apache-2.0",
+      "attribution": "Depth Anything V2, by The University of Hong Kong and TikTok; converted to the Transformers layout by The HuggingFace Team",
+      "datasetTerms": "None stated on the card at this revision. Only the Small model is Apache-2.0; the upstream's Base, Large and Giant are CC-BY-NC-4.0 and are not used.",
+      "code": {
+        "upstream": "https://github.com/huggingface/transformers",
+        "revision": "c587bc884db2c2e31fc2b8102314656b17aa07b1",
+        "licence": "Apache-2.0"
+      }
+    },
+    {
+      "name": "mobilesam",
+      "title": "MobileSAM",
+      "use": "Masks from a point or a box: the browser's segmentation model",
+      "targets": ["browser", "native"],
+      "upstream": "https://github.com/ChaoningZhang/MobileSAM",
+      "revision": "f706ad9c4eb7f219c00d9050e46328518ffb65d2",
+      "file": "weights/mobile_sam.pt",
+      "url": "https://raw.githubusercontent.com/ChaoningZhang/MobileSAM/f706ad9c4eb7f219c00d9050e46328518ffb65d2/weights/mobile_sam.pt",
+      "format": "pytorch",
+      "bytes": 40728226,
+      "sha256": "6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f",
+      "licence": "Apache-2.0",
+      "attribution": "MobileSAM (Faster Segment Anything); its image encoder is TinyViT, Copyright (c) 2022 Microsoft, and its prompt encoder and mask decoder are Segment Anything's, Copyright (c) Meta Platforms, Inc. and affiliates",
+      "datasetTerms": "None stated in the repository at this revision. Pinned from the project's own repository: the file's git blob and its SHA-256 were both checked, and a mirror on Hugging Face holds the identical bytes.",
+      "code": {
+        "upstream": "https://github.com/ChaoningZhang/MobileSAM",
+        "revision": "f706ad9c4eb7f219c00d9050e46328518ffb65d2",
+        "licence": "Apache-2.0"
+      }
+    },
+    {
+      "name": "sam-2.1-tiny",
+      "title": "SAM 2.1 tiny",
+      "use": "Masks, and masks tracked through video: the native host's segmentation model",
+      "targets": ["native"],
+      "upstream": "https://huggingface.co/facebook/sam2.1-hiera-tiny",
+      "revision": "de431c4043854a71d8101e17995dfe596bf101a5",
+      "file": "model.safetensors",
+      "url": "https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/de431c4043854a71d8101e17995dfe596bf101a5/model.safetensors",
+      "format": "safetensors",
+      "bytes": 155908064,
+      "sha256": "48c14467e5cf9e51870511feb72c89688e82dd74523142c0538b663e193ac2a7",
+      "licence": "Apache-2.0",
+      "attribution": "SAM 2.1, Copyright (c) Meta Platforms, Inc. and affiliates",
+      "datasetTerms": "None stated on the card at this revision; the upstream's README releases the checkpoints under Apache-2.0.",
+      "code": {
+        "upstream": "https://github.com/huggingface/transformers",
+        "revision": "c587bc884db2c2e31fc2b8102314656b17aa07b1",
+        "licence": "Apache-2.0"
+      }
+    },
+    {
+      "name": "owlv2-base-patch16",
+      "title": "OWLv2 base patch16",
+      "use": "Boxes from text queries: the native host's labels for segmented objects",
+      "targets": ["native"],
+      "upstream": "https://huggingface.co/google/owlv2-base-patch16-ensemble",
+      "revision": "cfd3195ba4ea9592eec887ded089f4c08eff231d",
+      "file": "model.safetensors",
+      "url": "https://huggingface.co/google/owlv2-base-patch16-ensemble/resolve/cfd3195ba4ea9592eec887ded089f4c08eff231d/model.safetensors",
+      "format": "safetensors",
+      "bytes": 619918824,
+      "sha256": "e1e130b9e404cf91a75ad45644c1da9d7fa5284085eecc864266a6923efb99e7",
+      "extra": [
+        {
+          "file": "merges.txt",
+          "url": "https://huggingface.co/google/owlv2-base-patch16-ensemble/resolve/cfd3195ba4ea9592eec887ded089f4c08eff231d/merges.txt",
+          "bytes": 524619,
+          "sha256": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a"
+        },
+        {
+          "file": "vocab.json",
+          "url": "https://huggingface.co/google/owlv2-base-patch16-ensemble/resolve/cfd3195ba4ea9592eec887ded089f4c08eff231d/vocab.json",
+          "bytes": 1059962,
+          "sha256": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349"
+        }
+      ],
+      "licence": "Apache-2.0",
+      "attribution": "OWLv2, Copyright 2023 Google AI and The HuggingFace Team",
+      "datasetTerms": "None stated on the card at this revision. The card describes the training data — web image-caption pairs, YFCC100M, COCO and OpenImages — and attaches none of their terms to the weights.",
+      "code": {
+        "upstream": "https://github.com/huggingface/transformers",
+        "revision": "c587bc884db2c2e31fc2b8102314656b17aa07b1",
+        "licence": "Apache-2.0"
+      }
+    }
+  ]
+}

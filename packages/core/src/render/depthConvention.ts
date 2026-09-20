@@ -154,6 +154,21 @@ export function glslSceneDepthToNdc(depth: string): string {
 }
 
 /**
+ * The same conversion as WGSL, for the hand-written compute shaders that have no GLSL to generate
+ * from.
+ *
+ * **It is the same text, and that is the point of it being here.** The reconstruction resolve picks
+ * the *nearest* of nine depths and dilates that texel's motion, which is the rule every temporal
+ * upscaler uses because an edge's motion belongs to the nearer of the two surfaces meeting there.
+ * Under a reversed buffer the nearest is the largest number, so a shader reading the attachment
+ * without this conversion picks the furthest and drags the background's motion over every
+ * silhouette — a defect that draws a plausible picture and moves the wrong way.
+ */
+export function wgslSceneDepthToNdc(depth: string): string {
+  return REVERSED_DEPTH ? `(1.0 - ${depth} * 2.0)` : `(${depth} * 2.0 - 1.0)`;
+}
+
+/**
  * The clip-space z of the far plane, as GLSL, for geometry that writes a fixed depth.
  *
  * **The sky is the whole reason this exists.** It is a full-screen triangle written straight into

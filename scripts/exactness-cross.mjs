@@ -23,7 +23,13 @@
  * It prints no timings, no paths and no versions above the header, so a diff of two runs is empty
  * or is a finding. The header carries the platform, and is the one part expected to differ.
  */
-import { exactAcos, exactCos, exactExp, exactSin } from '../packages/core/src/math/exact.ts';
+import {
+  exactAcos,
+  exactCos,
+  exactExp,
+  exactLog,
+  exactSin,
+} from '../packages/core/src/math/exact.ts';
 import { savableMulberry32 } from '../packages/core/src/core/rng.ts';
 import { World, createWorldSnapshot, defineComponent } from '../packages/entities/src/index.ts';
 import { fingerprintSnapshot } from '../packages/network/src/fingerprint.ts';
@@ -42,6 +48,9 @@ const ANGLES = [
 ];
 const EXPONENTS = [0, 1, -1, 0.5, -0.5, 5, -5, 20, -20, 100, -100, 709, -700];
 const COSINES = [1, -1, 0, 0.5, -0.5, 0.7071067811865476, 0.9999999, -0.9999999, 0.25, -0.75];
+const LOGARITHMS = [
+  5e-324, 1e-310, 0.1, 0.5, 1, 1.0000004768371582, 1.5, 3, 100, 1.7976931348623157e308,
+];
 
 /**
  * A simulation whose only job is to exercise the pieces a divergence would come from.
@@ -93,6 +102,7 @@ for (const x of ANGLES) lines.push(`sin  ${x}  ${bits(exactSin(x))}`);
 for (const x of ANGLES) lines.push(`cos  ${x}  ${bits(exactCos(x))}`);
 for (const x of EXPONENTS) lines.push(`exp  ${x}  ${bits(exactExp(x))}`);
 for (const x of COSINES) lines.push(`acos ${x}  ${bits(exactAcos(x))}`);
+for (const x of LOGARITHMS) lines.push(`log  ${x}  ${bits(exactLog(x))}`);
 
 lines.push('');
 lines.push('# a seeded generator, which is a frozen contract about every stored replay');

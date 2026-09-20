@@ -24,6 +24,17 @@ export function cutoffForSpeed(speed: number, maxSpeed: number): number {
   return 320 * (18000 / 320) ** t;
 }
 
+/**
+ * Where the master low-pass stands until somebody moves it: open, at the top of its range.
+ *
+ * **It stood at `cutoffForSpeed(0, 1)` — 320 Hz — until 2026-09-19**, so every mix was heard
+ * through a wall until its caller drove the speed curve above: one game's "the filter opens as you
+ * sprint" standing in as every consumer's default. A game that wants its world muffled at rest
+ * says so with `setCutoff(cutoffForSpeed(0, max))`, and one that never thought about it hears its
+ * mix.
+ */
+export const MASTER_OPEN_HZ = 20000;
+
 export function clamp01(value: number): number {
   return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0;
 }

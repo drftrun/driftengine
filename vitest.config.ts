@@ -87,7 +87,21 @@ export default defineConfig({
   ssr: { resolve: { conditions: ['drift-source', 'module', 'node'] } },
   test: {
     environment: 'node',
-    include: ['packages/*/src/**/*.test.ts', 'demo/**/*.test.ts'],
+    /*
+     * `editor/` is here for the reason decision 2.2 put it outside `packages/`: it is a consumer of
+     * the engine's public surface rather than part of the engine, so it is not a published package
+     * and does not belong to the `packages/*` glob — but its logic is the most demanding consumer
+     * the engine has and is exactly what wants testing.
+     *
+     */
+    /* `tools/` for the trainers that live outside every package, whose exports are checked against
+       the runtime's own evaluator. */
+    include: [
+      'packages/*/src/**/*.test.ts',
+      'demo/**/*.test.ts',
+      'editor/src/**/*.test.ts',
+      'tools/**/*.test.ts',
+    ],
     reporters: ['default', ['json', { outputFile: SUMMARY_FILE }]],
   },
 });

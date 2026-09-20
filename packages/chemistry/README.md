@@ -1,7 +1,7 @@
 # @driftengine/chemistry
 
 Thermochemistry of bulk matter: what a material is made of, what temperature it is, and what it
-turns into. **18.0 KB gzipped**, standalone — it imports no other engine package, so a consumer who
+turns into. **18.1 KB gzipped**, standalone — it imports no other engine package, so a consumer who
 wants matter and no renderer pays for matter and no renderer.
 
 **This is the whole of Track P, CH-0 through CH-10.**

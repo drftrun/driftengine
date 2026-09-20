@@ -72,6 +72,8 @@ const SIMULATION_ROOTS = [
   ['packages/core/src/scene', 'node transforms; a world matrix feeds a query'],
   ['packages/core/src/physics', 'height and ribbon surfaces'],
   ['packages/core/src/behavior', 'behaviour trees run in the step'],
+  ['packages/nav/src', 'an agent re-paths inside a tick, and two peers have to agree on where'],
+  ['packages/capture/src', 'a capture reproduces: the same frames and seed, the same scene'],
 ];
 
 function simulationFiles() {
@@ -152,7 +154,7 @@ test('every simulation root is a directory that exists', () => {
 
 /** And the scope really is wider than the one package it used to be. */
 test('the scope covers more than the collision kernel', () => {
-  assert.ok(SIMULATION_ROOTS.length >= 13, `${SIMULATION_ROOTS.length} roots`);
+  assert.ok(SIMULATION_ROOTS.length >= 14, `${SIMULATION_ROOTS.length} roots`);
   const files = simulationFiles();
   /* 170 on 2026-09-03, against the 40 the collision kernel alone contributed. A floor rather than
      an equality, because a file added to a scanned package should not fail this. */

@@ -1,7 +1,12 @@
 import { mat4 } from 'gl-matrix';
 import { expect, test } from 'vitest';
 
-import { createFrustum, frustumFromViewProjection, sphereInFrustum } from './frustum.ts';
+import {
+  boxInFrustum,
+  createFrustum,
+  frustumFromViewProjection,
+  sphereInFrustum,
+} from './frustum.ts';
 
 /** A camera at the origin looking down -Z with a ninety-degree field of view. */
 function lookingDownZ(): Float32Array {
@@ -78,4 +83,52 @@ test('it fills the frustum it was given rather than making one', () => {
   const out = createFrustum();
   expect(frustumFromViewProjection(lookingDownZ(), out)).toBe(out);
   expect(out.length, 'six planes of four').toBe(24);
+});
+
+/**
+ * A box is outside only when it is wholly beyond one plane, which is the corner of it furthest
+ * along that plane's normal being beyond it.
+ *
+ * **The corner is chosen per plane**, and a test that took one fixed corner — the maximum, say —
+ * would answer correctly for half the planes and cull a box straddling the other half.
+ */
+test('a box is kept unless it lies wholly beyond one plane', () => {
+  const frustum = ahead();
+  /* In front, across the right edge at x = 10 when z = -10, and wholly past it. */
+  expect(boxInFrustum(frustum, -1, -1, -11, 1, 1, -9)).toBe(true);
+  expect(boxInFrustum(frustum, 9, -1, -11, 12, 1, -9)).toBe(true);
+  expect(boxInFrustum(frustum, 12, -1, -11, 14, 1, -9)).toBe(false);
+  /* Across the left edge, where the corner that matters is the minimum rather than the maximum. */
+  expect(boxInFrustum(frustum, -12, -1, -11, -9, 1, -9)).toBe(true);
+  expect(boxInFrustum(frustum, -14, -1, -11, -12, 1, -9)).toBe(false);
+  /* Behind the eye, and past the far plane. */
+  expect(boxInFrustum(frustum, -1, -1, 1, 1, 1, 3)).toBe(false);
+  expect(boxInFrustum(frustum, -1, -1, -300, 1, 1, -200)).toBe(false);
+  /*
+   * A box meeting the frustum only along the edge where the right plane crosses z = -10 is kept,
+   * as a sphere touching it is: the question is "wholly beyond", and touching is not beyond.
+   */
+  expect(boxInFrustum(frustum, 10, -1, -10, 12, 1, -8)).toBe(true);
+  /* A box around the whole frustum contains it, and no plane has all of that box beyond it. */
+  expect(boxInFrustum(frustum, -500, -500, -500, 500, 500, 500)).toBe(true);
+});
+
+test('the planes come out in double precision when they are asked for in it', () => {
+  /*
+   * A world past 2^24 metres has plane offsets a single-precision array cannot hold to the metre.
+   * The same extraction writes whichever array it is handed.
+   */
+  const eye = 2 ** 26 + 0.25;
+  const projection = mat4.perspective(new Float64Array(16), Math.PI / 2, 1, 1, 100);
+  const view = mat4.lookAt(new Float64Array(16), [eye, 0, 0], [eye, 0, -1], [0, 1, 0]);
+  const planes = frustumFromViewProjection(
+    mat4.multiply(new Float64Array(16), projection, view),
+    new Float64Array(24),
+  );
+  expect(planes).toBeInstanceOf(Float64Array);
+  /* The left plane passes through the eye: its offset is the eye's x along its normal, exactly. */
+  const offset = -((planes[0] as number) * eye + (planes[3] as number));
+  expect(Math.abs(offset)).toBeLessThan(1e-6);
+  expect(sphereInFrustum(planes, eye, 0, -10, 0.01)).toBe(true);
+  expect(sphereInFrustum(planes, eye + 10.5, 0, -10, 0.25)).toBe(false);
 });

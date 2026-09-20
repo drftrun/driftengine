@@ -1,4 +1,6 @@
-/** The two matrix operations this package needs, written once so no two callers disagree. */
+/** The matrix operations this package needs, written once so no two callers disagree. */
+
+import { jitterClip } from '@driftengine/core';
 
 /**
  * `out = a * b`, column-major, sixteen multiply-adds and no dependency.
@@ -79,3 +81,25 @@ export function cameraInCaptureSpace(
 
 /** Scratch for the product above, so a frame allocates nothing. */
 const PRODUCT = new Float32Array(16);
+
+/**
+ * The projection a frame draws a capture with: the caller's, moved by the frame's jitter, then
+ * corrected for the backend. `scratch` holds sixteen floats and is overwritten.
+ *
+ * **In that order, because the jitter is stated in the camera's own convention** — see
+ * `PrepareContext.jitter`. A reconstructed frame un-jitters every sample it takes, so a capture
+ * drawn without the offset is placed up to half a render pixel from where the resolve looks for it,
+ * differently each frame; and the correction negates y, so the same offset applied after it lands
+ * on the other side of the pixel. A frame that is not reconstructed hands a zero jitter, and the
+ * result is the corrected projection it always was.
+ */
+export function projectionForFrame(
+  out: Float32Array,
+  correction: ArrayLike<number>,
+  projection: ArrayLike<number>,
+  jitter: ArrayLike<number>,
+  scratch: Float32Array,
+): void {
+  jitterClip(scratch, projection, jitter);
+  multiplyMat4(out, correction, scratch);
+}

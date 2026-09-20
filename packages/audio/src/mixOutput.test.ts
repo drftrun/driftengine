@@ -171,6 +171,42 @@ test('an injected context is used, and automation lands where it was scheduled',
   expect(master?.frequency.ramps.at(-1)?.at, 'and back to now when released').toBe(2);
 });
 
+/**
+ * **A mix nobody has asked to muffle is not muffled.** The master low-pass started at
+ * `cutoffForSpeed(0, 1)` — 320 Hz — so every graph was a mix heard through a wall until its
+ * caller drove the speed curve, which is one game's feel standing in as everybody's default.
+ * Reported by the maintainer on 2026-09-19, while comparing the native host's render with Chrome's.
+ * It starts open, at the top of `setCutoff`'s own range, and muffling is what a caller asks for.
+ */
+test('the master filter starts open, so a mix nobody muffled is heard whole', async () => {
+  const context = new StubContext();
+  const graph = await AudioGraph.create({
+    stemCount: 1,
+    context: context as unknown as BaseAudioContext,
+  });
+  expect(graph?.layout.masterFilter.filter.frequency.value).toBe(20000);
+});
+
+/**
+ * **The slam's alignment heads the music bus**, ahead of the lift and so of the tap the sends hang
+ * off, and it is fed from the node the wet arm is. The wet arm is late by its shaper's latency and
+ * sums at the output with the dry arm *and* with the reverb and delay returns; an alignment on the
+ * dry arm alone would leave the returns arriving before the note they are the room of.
+ */
+test('the slam’s alignment heads the music bus, so everything the wet arm meets is as late', async () => {
+  const graph = await AudioGraph.create({
+    stemCount: 1,
+    context: new StubContext() as unknown as BaseAudioContext,
+  });
+  if (graph === null) throw new Error('the graph did not build');
+  const { slam, lift } = graph.layout;
+  const inputsOf = (node: AudioNode): StubNode[] => (node as unknown as StubNode).inputs;
+  expect(inputsOf(lift.input), 'the lift follows the alignment').toContain(slam.align.output);
+  const busInput = inputsOf(slam.wetInput)[0];
+  expect(busInput, 'the wet arm is fed').toBeDefined();
+  expect(inputsOf(slam.align.input), 'from where the wet arm is').toContain(busInput);
+});
+
 test('an offline graph launches its stems with no lead', async () => {
   /*
    * Live, the stems are launched slightly ahead so the layers start sample-locked

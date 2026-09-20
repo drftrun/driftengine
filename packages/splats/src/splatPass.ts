@@ -2,7 +2,7 @@
 
 import { SPLAT_BINDINGS } from './shaders/generated/splat.wgsl.ts';
 import { SPLAT_STRIDE, splatRows, splatTexels } from './splatLayout.ts';
-import { cameraInCaptureSpace, multiplyMat4 } from './splatMatrix.ts';
+import { cameraInCaptureSpace, multiplyMat4, projectionForFrame } from './splatMatrix.ts';
 import { splatBoundsVisible } from './splatCull.ts';
 import {
   createWebgl2Splats,
@@ -126,6 +126,12 @@ export function createSplatPass(splats: SplatData, label = 'splats'): SplatPass 
   /** The caller's projection, pre-multiplied by the backend's clip correction. */
   const projection = new Float32Array(16);
   /**
+   * The caller's projection as given, kept so a WebGPU frame can move it by the frame's jitter
+   * before correcting it. See `projectionForFrame`.
+   */
+  const callerProjection = new Float32Array(IDENTITY);
+  const jitterScratch = new Float32Array(16);
+  /**
    * Where the camera is in the capture's own space, which is where the harmonics were trained.
    *
    * Recomputed whenever the view or the model changes rather than every frame, because both are
@@ -186,6 +192,7 @@ export function createSplatPass(splats: SplatData, label = 'splats'): SplatPass 
 
     setView(next: SplatView): void {
       view.set(next.view);
+      callerProjection.set(next.projection);
       multiplyMat4(projection, clipCorrection, next.projection);
       viewportX = next.widthPx;
       viewportY = next.heightPx;
@@ -291,6 +298,8 @@ export function createSplatPass(splats: SplatData, label = 'splats'): SplatPass 
         uploadGpuOrder(device, gpu, pendingOrder, paddedOrder);
         pendingOrder = null;
       }
+      /* The frame's jitter, which is zero unless the frame is reconstructed. */
+      projectionForFrame(projection, clipCorrection, callerProjection, ctx.jitter, jitterScratch);
       writeVertexUniforms(gpu);
       device.queue.writeBuffer(gpu.vertexUniforms, 0, gpu.vertexScratch);
       gpu.fragmentInts[FRAG.fields.uOutputTransform.offset / 4] = ctx.outputTransform;

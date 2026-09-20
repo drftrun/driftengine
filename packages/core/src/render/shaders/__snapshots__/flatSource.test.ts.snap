@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "f7b86f5a:157523",
-  "directionalShadows+environmentProbe": "e6c48785:176467",
-  "directionalShadows+environmentProbe+nightEmissive": "10ad88af:178953",
-  "directionalShadows+nightEmissive": "d2c5b85c:160009",
-  "environmentProbe": "a30449b5:163651",
-  "environmentProbe+nightEmissive": "406ea3c1:166137",
-  "nightEmissive": "83b86c0c:147193",
-  "none": "43c087c4:144707",
-  "pointShadows": "634281f4:169124",
-  "pointShadows+directionalShadows": "3376dcca:181940",
-  "pointShadows+directionalShadows+environmentProbe": "1f5f3eb3:200884",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "59e5a983:203370",
-  "pointShadows+directionalShadows+nightEmissive": "ac83741a:184426",
-  "pointShadows+environmentProbe": "3d7068cb:188068",
-  "pointShadows+environmentProbe+nightEmissive": "607108d1:190554",
-  "pointShadows+nightEmissive": "bdf7aebe:171610",
+  "directionalShadows": "fd947913:157677",
+  "directionalShadows+environmentProbe": "7f7adc72:180663",
+  "directionalShadows+environmentProbe+nightEmissive": "d38fc6b8:183149",
+  "directionalShadows+nightEmissive": "ef6df741:160163",
+  "environmentProbe": "bc0ba14a:167847",
+  "environmentProbe+nightEmissive": "3bee902e:170333",
+  "nightEmissive": "fe6740cf:147347",
+  "none": "eb029993:144861",
+  "pointShadows": "e5bc5f23:169278",
+  "pointShadows+directionalShadows": "1367ee5f:182094",
+  "pointShadows+directionalShadows+environmentProbe": "b2db2140:205080",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "b25002d8:207566",
+  "pointShadows+directionalShadows+nightEmissive": "e14f4f6b:184580",
+  "pointShadows+environmentProbe": "d80c5338:192264",
+  "pointShadows+environmentProbe+nightEmissive": "355423a2:194750",
+  "pointShadows+nightEmissive": "499bd209:171764",
 }
 `;
 
@@ -533,6 +533,22 @@ uniform float uEnvironmentMaxLod;
  */
 uniform float uEnvironmentEdge;
 /**
+ * Whether the probe blend consults what each probe can see, and where those moments are.
+ *
+ * **Zero is off, and off is what every published scene is gated at.** On, each probe's visibility
+ * map is a *layer of this same array*, offset past the radiance layers by the grid's probe count:
+ * two moments a texel, the mean distance to geometry along a direction and the mean of its square.
+ *
+ * **In this array rather than a sampler of its own, and branched at run time rather than compiled
+ * in or out.** A sampler of its own would be a seventeenth on a backend that guarantees sixteen
+ * units — the reason \`environmentProbe\` is a permutation at all — and a permutation flag of its
+ * own would double the generated shader corpus for every consumer, which \`scripts/wgsl.ts\` prices
+ * at 400,728 to 597,638 gzipped bytes. Sharing the array costs neither: no new unit, no new
+ * permutation, and the arithmetic sits behind a branch on this uniform the way the clustered light
+ * table's does.
+ */
+uniform float uProbeVisibilityEnabled;
+/**
  * The level holding the cosine convolution, which is the scene's diffuse ambient.
  *
  * **One binding carries both integrals**, and this is the line between them. Levels up to
@@ -1008,6 +1024,9 @@ const float MAX_FILTER_RADIUS = 0.25;
  */
 const float EMISSIVE_SHADOW_SHARE = 0.55;
 
+/* The narrowest lobe this engine draws. See MIN_LOBE_ALPHA in this module for why it is this. */
+const float MIN_LOBE_ALPHA = 0.01;
+
 /*
  * Trowbridge-Reitz, because the width of a highlight is the whole effect.
  *
@@ -1030,7 +1049,7 @@ const float EMISSIVE_SHADOW_SHARE = 0.55;
  * is a multiply cheaper than the honest spelling as well.
  */
 float specularLobe(float ndh, float roughness) {
-  float a = max(roughness * roughness, 1e-3);
+  float a = max(roughness * roughness, MIN_LOBE_ALPHA);
   float a2 = a * a;
   float d = ndh * ndh * (a2 - 1.0) + 1.0;
   return (a2 * a2) / max(d * d, 1e-8);
@@ -1056,7 +1075,7 @@ float specularLobe(float ndh, float roughness) {
  * scene ever does, so r/d is large and its highlight is genuinely broad.
  */
 float sphereLobe(float ndh, float roughness, float sourceRadius, float dist) {
-  float a = max(roughness * roughness, 1e-3);
+  float a = max(roughness * roughness, MIN_LOBE_ALPHA);
   float widened = clamp(a + sourceRadius / max(2.0 * dist, 1e-3), a, 1.0);
   float energy = (a / widened) * (a / widened);
   float w2 = widened * widened;
@@ -2016,6 +2035,41 @@ vec3 probeRadiance(vec3 dir, float lod, float layer) {
   return mix(fine, coarse, clamp(lod - lo, 0.0, 1.0));
 }
 
+/** Layers of radiance in the array, which is where the visibility moments start. */
+float probeLayerCount() {
+  return uProbeGridCounts.x * uProbeGridCounts.y * uProbeGridCounts.z;
+}
+
+/**
+ * How much of a probe a point can actually see, from one to zero.
+ *
+ * **The same arithmetic as "probeVisibilityWeight", and the constants are interpolated from it**
+ * rather than written again: one in front of what the probe saw along that direction, and behind it
+ * a Chebyshev bound on the variance of the distances the probe recorded — confident where the
+ * geometry is flat, uncertain where it is not, which is exactly where a hard answer would be wrong.
+ *
+ * The variance floor is not a tolerance. A probe facing a flat wall records the same distance in
+ * every direction of its cone, so the variance is exactly zero and the bound becomes a step: one in
+ * front of the wall and zero behind it, with a hard line between them that crawls every time the
+ * probes are rebaked.
+ *
+ * The moments live in the radiance array, offset past its layers by the grid's probe count, at
+ * level zero. See "uProbeVisibilityEnabled".
+ */
+float probeVisible(vec3 fromProbe, float distanceM, float layer) {
+  vec2 moments = textureLod(
+    uEnvironment,
+    vec3(octInsetUv(fromProbe, uEnvironmentEdge), layer + probeLayerCount()),
+    0.0
+  ).rg;
+  if (distanceM <= moments.x) return 1.0;
+  float variance =
+    max(abs(moments.x * moments.x - moments.y), 0.02);
+  float beyond = distanceM - moments.x;
+  float chebyshev = variance / (variance + beyond * beyond);
+  return pow(chebyshev, 3.0);
+}
+
 /**
  * The grid's diffuse light at a point, trilinear over the eight probes around it.
  *
@@ -2034,14 +2088,43 @@ vec3 gridIrradiance(vec3 dir, vec3 worldPos) {
   vec3 frac;
   probeCell(worldPos, base, frac);
   vec3 sum = vec3(0.0);
+  /*
+   * **The weights are renormalised rather than used as they fall.** Multiplying by visibility takes
+   * energy out of the blend, and a blend that quietly drops a share of its probes darkens every
+   * bounce — the property "visibleProbes" states and the white furnace rests on.
+   *
+   * And a point every probe is blind to still gets an answer: inside a solid, or in a sealed void
+   * with a probe on each side of a wall, every weight crushes to nothing and the nearest probe
+   * takes the lot. This is the last level of the chain and there is nothing behind it.
+   */
+  float total = 0.0;
+  float nearestDistance = 1.0e30;
+  vec3 nearestColour = vec3(0.0);
   for (int c = 0; c < 8; c++) {
     vec3 corner = vec3(float(c & 1), float((c >> 1) & 1), float((c >> 2) & 1));
     vec3 axisWeight = mix(1.0 - frac, frac, corner);
     float weight = axisWeight.x * axisWeight.y * axisWeight.z;
     if (weight <= 0.0) continue;
-    sum += probeIrradiance(dir, probeLayer(base + corner)) * weight;
+    float layer = probeLayer(base + corner);
+    vec3 colour = probeIrradiance(dir, layer);
+    float kept = weight;
+    if (uProbeVisibilityEnabled > 0.5) {
+      vec3 fromProbe = worldPos - (uProbeGridOrigin + (base + corner) / uProbeGridInvSpacing);
+      float distanceM = length(fromProbe);
+      /* A point standing exactly on a probe is seen by it, and has no direction to ask about. */
+      float seen = distanceM > 0.0 ? probeVisible(fromProbe / distanceM, distanceM, layer) : 1.0;
+      kept = weight * seen;
+      kept = kept < 0.01 ? 0.0 : kept;
+      if (distanceM < nearestDistance) {
+        nearestDistance = distanceM;
+        nearestColour = colour;
+      }
+    }
+    sum += colour * kept;
+    total += kept;
   }
-  return sum;
+  if (uProbeVisibilityEnabled <= 0.5) return sum;
+  return total > 0.0 ? sum / total : nearestColour;
 }
 
 /**

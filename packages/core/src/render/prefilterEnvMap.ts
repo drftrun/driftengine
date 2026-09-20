@@ -160,3 +160,36 @@ export function sourceLevelForSample(
 
   return Math.min(maxLevel, Math.max(0, level));
 }
+
+/**
+ * A level's own edge in texels, which is not the map's.
+ *
+ * **The gutter is one texel at every level**, so its share of the map doubles as the chain
+ * coarsens and an inset computed once from the map's own size is wrong everywhere but level zero.
+ * `flat/probeGrid.ts` carries the same expression for the forward path and records the slide it
+ * prevents: a thirty-second of the map at the top of the chain, visible as a reflection sliding as
+ * roughness rises.
+ *
+ * Floored at four, which is where the chain stops — a level two texels across is all gutter.
+ */
+export function probeLevelEdge(edge: number, level: number): number {
+  return Math.max(edge / 2 ** level, 4);
+}
+
+/**
+ * The two levels a roughness reads and how far between them it sits, as `lo`, `hi`, `t`.
+ *
+ * **Mixed by hand rather than by hardware trilinear**, for the reason above: the two levels have
+ * different insets and hardware applies one coordinate to both. So the two fetches are issued at
+ * their own insets and blended here, and this is the arithmetic that says which two and by how
+ * much. Clamped at both ends, so a lod past the chain reads the coarsest level twice rather than
+ * sampling a level that does not exist.
+ */
+export function probeLevelMix(lod: number, maxLevel: number, out: Float32Array): Float32Array {
+  const lo = Math.min(Math.max(Math.floor(lod), 0), maxLevel);
+  const hi = Math.min(lo + 1, maxLevel);
+  out[0] = lo;
+  out[1] = hi;
+  out[2] = Math.min(Math.max(lod - lo, 0), 1);
+  return out;
+}

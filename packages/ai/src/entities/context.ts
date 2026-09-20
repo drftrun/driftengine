@@ -15,6 +15,19 @@ import type { ToolDefinition, ToolSchema } from '../tools/registry.ts';
  * This is the half of AI-6 that links. The other half — a bridge that moves something
  * along a path — is refused in writing, because nothing pathfinds and `drift/navigation`
  * waits on no track at all. A seam with no implementation behind it is what R1 withdrew.
+ *
+ * **Amended 2026-09-15, and the refusal stands on a different line than it did.** Pathfinding
+ * arrived: `NavSearch` and `NavPath` ship in core, `bridges/navigation.ts` routes an agent through
+ * them, and `@driftengine/nav` turns geometry into a navigation mesh for a world whose walkable
+ * space is a region rather than a set of lanes. So the clause "nothing pathfinds" is no longer
+ * true and the sentence is not deleted for it, because **the thing refused was never the search.**
+ *
+ * What is still refused is steering — how an agent accelerates, avoids another agent, hugs a
+ * corner, decides it has arrived. A path is a function of geometry and the engine can own one; how
+ * a character moves along it is a particular game's feel, and an engine that picks it has picked
+ * the game. `@driftengine/nav`'s own header holds the same line, and `bridges/navigation.ts` says
+ * it differently: the route object belongs to the consumer, along with its steering options,
+ * because a second one owned here would be a second answer to where the agent is going.
  */
 
 /** A stable, printable name for an entity, and the only form a model ever sees. */

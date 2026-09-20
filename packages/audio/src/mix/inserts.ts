@@ -1,6 +1,7 @@
 import type { ScheduleClock } from '../ambientLoop.ts';
 import {
   LIFT_FLOOR_HZ,
+  MASTER_OPEN_HZ,
   SLAM_ATTACK_SEC,
   SLAM_CLIP_KNEE,
   SLAM_CLOSED_HZ,
@@ -11,7 +12,6 @@ import {
   SLAM_SHELF_DB,
   SLAM_SHELF_HZ,
   clamp01,
-  cutoffForSpeed,
   liftFrequencyHz,
   liftGainFor,
 } from '../filters.ts';
@@ -54,14 +54,14 @@ export function masterFilterInsert(
 ): MasterFilterInsert {
   const filter = context.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.frequency.value = cutoffForSpeed(0, 1);
+  filter.frequency.value = MASTER_OPEN_HZ;
   filter.Q.value = 0.7;
   return {
     input: filter,
     output: filter,
     filter,
     setCutoff(hz: number): void {
-      ramp(filter.frequency, Math.min(Math.max(hz, 40), 20000), scheduleAt);
+      ramp(filter.frequency, Math.min(Math.max(hz, 40), MASTER_OPEN_HZ), scheduleAt);
     },
     /*
      * Not a second filter in the chain: the master low-pass is already there and already ramped, so
@@ -128,11 +128,41 @@ export interface SlamInsert extends MixInsert {
    * been removed, and would be at its weakest where half the gates are taken.
    */
   readonly wetInput: AudioNode;
+  /**
+   * The wet arm's latency, given to everything the wet arm is summed with: a stage for the head of
+   * the bus, fed from the node `wetInput` is, ahead of the dry arm and of every send.
+   *
+   * The wet arm's shaper is oversampled, and an oversampler is a pair of resampling filters that
+   * delay what passes by an amount no specification fixes — measured 2026-09-19, 192 samples at 4x
+   * in Chrome and 128 in `node-web-audio-api`. With nothing on the other side waiting for it, a
+   * strike combed against the very score it was blended into: 1.6 dB of a full strike cancelled in
+   * Chrome, and a different comb on each implementation. So this is the same oversampling around a
+   * curve that changes nothing, and it is as late as the wet arm wherever it runs, with nothing
+   * measured and nothing looked up.
+   *
+   * **What it costs.** The bus it heads is late by that latency, about four milliseconds, against
+   * every bus it does not head; it is band-limited as the oversampler band-limits, which is
+   * −98 dB of difference from a plain delay up to 20 kHz, measured in Chrome; and the bus pays for
+   * a second oversampler, about 7 ms of render per two seconds of mono there. What would make it
+   * wrong: an implementation whose oversampling latency depends on the curve, or a shaper that
+   * reports its latency, which would let a plain `DelayNode` do this for less.
+   */
+  readonly align: MixInsert;
   /** The dry path's duck and the wet path's blend, exposed so a test can assert an idle stage. */
   readonly dryGain: GainNode;
   readonly wetGain: GainNode;
   strike(amount: number): void;
 }
+
+/** The wet arm's oversampling, which `align` repeats on the other side. */
+const SLAM_OVERSAMPLE: OverSampleType = '4x';
+/**
+ * How far from zero `align` passes a signal unchanged: 18 dB above full scale, for a bus that sums
+ * stems each mastered near it. What it gives up is the floor — the curve is looked up at a position
+ * scaled down by this, which rounds, measured at −123 dB on a sine at half scale in Chrome; the
+ * range is a power of two so the scaling itself is exact.
+ */
+const ALIGN_RANGE = 8;
 
 /**
  * The slam: a parallel band of driven low end, blended in for a fraction of a second and gone.
@@ -145,10 +175,21 @@ export interface SlamInsert extends MixInsert {
  * music path colours the score for the whole run — a track mastered near full scale is already
  * touching any knee low enough to be useful — so the effect would stop being an event and become
  * the sound of the game. With a dry path at unity and a wet path at zero, an idle graph is
- * sample-identical to one without this stage in it, which is what lets the identity gate pass
- * across a rewrite that moved it into a bus.
+ * sample-identical to one without this stage in it but for `align`, which is what lets the identity
+ * gate pass across a rewrite that moved it into a bus.
  */
 export function slamInsert(context: BaseAudioContext, scheduleAt: ScheduleClock): SlamInsert {
+  /*
+   * A two-point curve is a straight line from end to end, so scaled down by the range going in and
+   * back up by it coming out, it is the identity for anything within ±`ALIGN_RANGE`.
+   */
+  const alignInput = context.createGain();
+  alignInput.gain.value = 1 / ALIGN_RANGE;
+  const align = context.createWaveShaper();
+  align.curve = new Float32Array([-ALIGN_RANGE, ALIGN_RANGE]);
+  align.oversample = SLAM_OVERSAMPLE;
+  alignInput.connect(align);
+
   const dry = context.createGain();
   dry.gain.value = 1;
   const output = context.createGain();
@@ -175,7 +216,7 @@ export function slamInsert(context: BaseAudioContext, scheduleAt: ScheduleClock)
   shaper.curve = softClipCurve();
   // The clip generates harmonics well above the band it came from; without oversampling those
   // alias back down as grit that does not belong to the hit.
-  shaper.oversample = '4x';
+  shaper.oversample = SLAM_OVERSAMPLE;
   const wet = context.createGain();
   wet.gain.value = 0;
 
@@ -189,6 +230,7 @@ export function slamInsert(context: BaseAudioContext, scheduleAt: ScheduleClock)
     input: dry,
     output,
     wetInput: shelf,
+    align: { input: alignInput, output: align },
     dryGain: dry,
     wetGain: wet,
     /**

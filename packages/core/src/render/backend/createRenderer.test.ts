@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createRenderer } from './createRenderer.ts';
+import { DEFAULT_PIPELINE, createRenderer, pipelineRefusal } from './createRenderer.ts';
 
 /*
  * No GL context exists in this environment, so what is checked here is the contract around
@@ -189,4 +189,45 @@ describe('a WebGPU backend that never finishes loading', () => {
     vi.doUnmock('./webgpu/device.ts');
     vi.unstubAllGlobals();
   }, 20_000);
+});
+
+/**
+ * The pipeline request, which is the one decision in this factory that refuses rather than falls
+ * back.
+ *
+ * **Nothing in this environment can resolve a renderer** — there is no GL context and no adapter,
+ * so every test above ends in a rejection — which is why the decision is a function rather than an
+ * expression buried in the factory. `built` is its only caller and every return passes through
+ * `built`, including the three that arrive having fallen back from WebGPU.
+ */
+describe('the pipeline a caller asks for', () => {
+  it('IS CHECKED AGAINST THE BACKEND THAT WILL DRAW, not the one that was asked for', () => {
+    /* The reason string is the fallback's own, which is exactly the case a check written against
+       the request would pass: WebGPU was asked for and WebGL2 is drawing. */
+    const refused = pipelineRefusal('gpu-driven', 'webgl2', 'WebGPU stalled, fell back');
+    expect(refused).not.toBeNull();
+    expect(refused).toContain('indirect');
+    expect(refused).toContain('WebGPU stalled');
+  });
+
+  it('is allowed where the backend can run it', () => {
+    expect(pipelineRefusal('gpu-driven', 'webgpu', 'WebGPU requested')).toBeNull();
+  });
+
+  it('and the forward path is allowed everywhere, which is why it is the default', () => {
+    expect(pipelineRefusal('forward', 'webgl2', 'no adapter')).toBeNull();
+    expect(pipelineRefusal('forward', 'webgpu', 'WebGPU requested')).toBeNull();
+  });
+
+  it('DEFAULTS TO FORWARD, which is the constraint this whole wave is built around', () => {
+    /* A literal inside the `??` was unreachable from here and flipping it changed no test. The
+       constant is where the decision lives, so the constant is what is asserted. */
+    expect(DEFAULT_PIPELINE).toBe('forward');
+  });
+
+  it('SAYS WHY IN WORDS, because a consumer cannot read a stack out of a packaged build', () => {
+    const refused = pipelineRefusal('gpu-driven', 'webgl2', 'no adapter') ?? '';
+    expect(refused).toContain('driftengine');
+    expect(refused).toContain('readback');
+  });
 });

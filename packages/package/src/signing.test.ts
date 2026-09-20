@@ -98,6 +98,16 @@ describe('planSigning', () => {
   it('never signs Linux', () => {
     expect(planSigning('linux-x64', { CSC_LINK: '/tmp/cert.p12' }, 'linux').mode).toBe('none');
   });
+
+  /*
+   * **The native host's Linux build is a Linux artifact too**, and before it was named here it fell
+   * through to the Mac branch: a Linux build reported as ad-hoc signed by rcodesign, and refused
+   * outright with a certificate in the environment.
+   */
+  it('never signs the native host on Linux either, and never refuses it over a certificate', () => {
+    const plan = planSigning('native-linux-x64', { CSC_LINK: '/tmp/cert.p12' }, 'linux');
+    expect([plan.mode, plan.crossSign, plan.refusal]).toEqual(['none', false, null]);
+  });
 });
 
 /*
@@ -153,7 +163,7 @@ describe('planSigning across hosts', () => {
 
   /* Nothing else cross-signs: Linux is unsigned, and Android and iOS carry their own signers. */
   it('never cross-signs a target that is not macOS', () => {
-    for (const target of ['linux-x64', 'win-x64', 'android', 'ios'] as const) {
+    for (const target of ['linux-x64', 'native-linux-x64', 'win-x64', 'android', 'ios'] as const) {
       expect(planSigning(target, {}, 'linux').crossSign).toBe(false);
       expect(planSigning(target, {}, 'linux').refusal).toBeNull();
     }

@@ -83,10 +83,19 @@ function newRecord(): PooledDraw {
 export class TranslucentQueue {
   private readonly pool: PooledDraw[] = [];
   private count = 0;
+  private refracting = 0;
 
   /** How many draws this frame has recorded. */
   get length(): number {
     return this.count;
+  }
+
+  /**
+   * Whether anything recorded this frame refracts, so a backend replaying the set knows to copy the
+   * frame behind it first, and does not copy it for a set that never reads it.
+   */
+  get refracts(): boolean {
+    return this.refracting > 0;
   }
 
   /** How many records are pooled, which a test uses to assert a steady scene stops allocating. */
@@ -128,6 +137,7 @@ export class TranslucentQueue {
       record.tint = record.tintStore;
     }
     record.refraction = options.refraction ?? 0;
+    if (record.refraction > 0) this.refracting++;
     record.thicknessM = options.thicknessM ?? 0;
     const refractTint = options.refractTint ?? null;
     if (refractTint === null) {
@@ -157,5 +167,6 @@ export class TranslucentQueue {
   /** Empty it for the next frame, keeping the storage. */
   reset(): void {
     this.count = 0;
+    this.refracting = 0;
   }
 }

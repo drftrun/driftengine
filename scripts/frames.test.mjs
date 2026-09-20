@@ -11,7 +11,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compare, luminance, speckle } from '../packages/core/scripts/frames.mjs';
+import { compare, islands, luminance, speckle } from '../packages/core/scripts/frames.mjs';
 
 /** A grey image, so luminance equals the value written and the arithmetic stays checkable. */
 function grey(width, height, fill) {
@@ -100,4 +100,50 @@ test('the interior of a real highlight is not speckle, which is why the median i
    */
   const block = grey(7, 7, (x, y) => (x >= 2 && x <= 4 && y >= 2 && y <= 4 ? 200 : 20));
   assert.equal(speckle(block, { threshold: 12, region: { x0: 3, y0: 3, x1: 4, y1: 4 } }), 0);
+});
+
+/*
+ * A frame differing from another in a known shape, so the island arithmetic is checkable.
+ *
+ * `islands` is what separates a defect from noise in a backend comparison: two shader compilers
+ * disagreeing in the last bits scatter single pixels over thin geometry, and a real defect arrives
+ * as a solid region. The number of changed pixels cannot tell them apart — on `wind-field` the same
+ * 29,094 was 56% dust around one region of 6,176 — and this is what does.
+ */
+test('one solid block of changed pixels is one island, and its size is its area', () => {
+  const one = grey(8, 8, 100);
+  const two = grey(8, 8, (x, y) => (x >= 2 && x < 5 && y >= 1 && y < 4 ? 200 : 100));
+  const result = islands(one, two, { tolerance: 16 });
+  assert.equal(result.changed, 9);
+  assert.equal(result.islands.length, 1);
+  assert.equal(result.islands[0].size, 9);
+  assert.deepEqual(result.islands[0].box, { x0: 2, y0: 1, x1: 4, y1: 3 });
+});
+
+test('SCATTERED PIXELS ARE COUNTED APART FROM REGIONS, which is the whole point of the measure', () => {
+  /* Four separated single pixels and one block of four: five islands, and the dust is half. */
+  const lit = new Set(['0,0', '7,0', '0,7', '7,7', '3,3', '4,3', '3,4', '4,4']);
+  const one = grey(8, 8, 100);
+  const two = grey(8, 8, (x, y) => (lit.has(`${x},${y}`) ? 200 : 100));
+  const result = islands(one, two, { tolerance: 16 });
+  assert.equal(result.changed, 8);
+  assert.equal(result.islands.length, 5);
+  assert.equal(result.largest, 4);
+  assert.equal(result.dust, 8);
+});
+
+test('a diagonal touch is two islands, because four-connected is what a rasteriser leaves', () => {
+  /* Eight-connected would join a staircase of edge pixels into one region and report a defect
+     where a rasteriser merely stepped. Four-connected keeps them apart. */
+  const lit = new Set(['1,1', '2,2']);
+  const one = grey(8, 8, 100);
+  const two = grey(8, 8, (x, y) => (lit.has(`${x},${y}`) ? 200 : 100));
+  assert.equal(islands(one, two, { tolerance: 16 }).islands.length, 2);
+});
+
+test('a region is confined to the region asked for', () => {
+  const one = grey(8, 8, 100);
+  const two = grey(8, 8, (x, y) => (y < 4 ? 200 : 100));
+  const result = islands(one, two, { tolerance: 16, region: { x0: 0, y0: 4, x1: 8, y1: 8 } });
+  assert.equal(result.changed, 0);
 });

@@ -808,8 +808,12 @@ export class MeshBuilder {
     emissive = 0,
     segments = 12,
     rings = 6,
+    /* `addCapsule` has taken one since it existed; forwarding it is what was missing, and a
+       sphere that cannot carry the specular a box can is the reason no page here could draw a
+       polished surface under a direct light. */
+    specular = 0,
   ): this {
-    return this.addCapsule(center, radius, 0, color, emissive, segments, rings);
+    return this.addCapsule(center, radius, 0, color, emissive, segments, rings, specular);
   }
 
   /** Add a faceted cylinder aligned to one principal axis. */

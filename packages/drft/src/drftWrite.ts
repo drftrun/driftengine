@@ -28,6 +28,9 @@ import {
   CHUNK_ENTRY_BYTES,
   CHUNK_HEAD,
   CHUNK_ANIM,
+  CHUNK_DTEX,
+  CHUNK_ENTS,
+  CHUNK_NAVM,
   CHUNK_LODM,
   CHUNK_LODF,
   CHUNK_MORP,
@@ -39,6 +42,9 @@ import {
   CHUNK_MESH,
   CHUNK_REQUIRED,
   CHUNK_COLL,
+  CHUNK_NNET,
+  CHUNK_NGRF,
+  CHUNK_SDFV,
   CHUNK_SUBS,
   CHUNK_TEXS,
   MATERIAL_ENTRY_BYTES,
@@ -53,6 +59,12 @@ import {
 import type { DrftHead, DrftMaterial, DrftSplats } from './drftFormat.ts';
 import { coarseFirstOrder } from './coarseFirst.ts';
 import { type DrftSubstanceEntry, buildSubs } from './drftSubs.ts';
+import { type DrftSdfvEntry, buildSdfv } from './sdfv.ts';
+import { type DrftNetwork, buildNnet } from './nnet.ts';
+import { type DtexEntry, buildDtex } from './dtex.ts';
+import { type EntsScene, buildEnts } from './ents.ts';
+import { type NavPolyMesh, buildNavm } from './navm.ts';
+import { type DrftGraph, buildNgrf } from './ngrf.ts';
 import { buildColliders } from './drftColliders.ts';
 
 /** An image to embed, already compressed, with what its own header said about it. */
@@ -91,6 +103,25 @@ export interface DrftSource {
    * than by position, so a file labelling only its fourth material says so.
    */
   readonly substances?: readonly DrftSubstanceEntry[];
+  /**
+   * The signed distance field of each mesh that has one, or absent for a file carrying none.
+   *
+   * Written as one `SDFV` chunk at 1.13. It pairs by the mesh ordinal carried per entry rather
+   * than by position, so a file with a field for only its fourth mesh says so — `SUBS`'s rule,
+   * and `MORP` is the chunk that found out why it is a rule.
+   */
+  readonly fields?: readonly DrftSdfvEntry[];
+  /**
+   * The networks this file carries, or absent for a file carrying none.
+   *
+   * Written as one `NNET` chunk at 1.14, each network found by its role rather than by position.
+   */
+  readonly networks?: readonly DrftNetwork[];
+  /**
+   * The graphs this file carries — networks built from operators rather than dense layers — or
+   * absent for a file carrying none. Written as one `NGRF` chunk at 1.15, each found by its role.
+   */
+  readonly graphs?: readonly DrftGraph[];
   /**
    * The convex hulls this asset collides as, or absent for a file that carries none.
    *
@@ -136,6 +167,29 @@ export interface DrftSource {
    * `CHUNK_SPLT` for why it is several chunks rather than one.
    */
   readonly splats?: DrftSplats;
+  /**
+   * A decode program per material, or absent for a file whose materials are ordinary.
+   *
+   * One `DTEX` chunk each, **paired to a `MATL` entry by the index inside the chunk** rather than
+   * by the order they appear. A file may carry one for some of its materials and not others — a
+   * scene where one surface came from a capture and the rest were authored — and a reader pairing
+   * by position would hand the wrong material the wrong texture with nothing to fail on.
+   */
+  readonly dtex?: readonly DtexEntry[];
+  /**
+   * A way across the scene, or absent for a file nobody navigates.
+   *
+   * The mesh carries the origin and cell size it was built at, because the numbers in it are cell
+   * indices and a reader without those has a mesh in the wrong units at the wrong place.
+   */
+  readonly navigation?: NavPolyMesh;
+  /**
+   * The things in the scene, as `serializeWorld` wrote them.
+   *
+   * A *scene*, not an asset: this is what a capture proposes or an editor saves, and a file may
+   * carry geometry with no scene at all — which is every baked model this format has ever held.
+   */
+  readonly entities?: EntsScene;
 }
 
 /**
@@ -442,8 +496,20 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
    * ordinary asset and the reader accepts it, so refusing to write one would be the two halves of
    * the format disagreeing about what a file may contain.
    */
-  if (source.meshes.length === 0 && (source.splats === undefined || source.splats.count === 0)) {
-    throw new DrftError('an asset must contain at least one mesh or a capture with splats in it');
+  /*
+   * **And networks, since 1.15**, on the same argument: a converted model is weights and nothing
+   * else, and refusing it for the absence of geometry would be the format telling a consumer what
+   * an asset may be made of.
+   */
+  if (
+    source.meshes.length === 0 &&
+    (source.splats === undefined || source.splats.count === 0) &&
+    (source.networks?.length ?? 0) === 0 &&
+    (source.graphs?.length ?? 0) === 0
+  ) {
+    throw new DrftError(
+      'an asset must contain at least one mesh, a capture with splats in it, or a network',
+    );
   }
 
   const materials = source.materials;
@@ -508,6 +574,26 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
   for (const clip of source.clips ?? []) {
     chunks.push({ code: CHUNK_ANIM, flags: 0, bytes: buildClip(clip) });
   }
+  for (const entry of source.dtex ?? []) {
+    /*
+     * **Refused here rather than at the reader**, because a decode program for a material the file
+     * does not carry is a bake that went wrong, and the writer is where the author can still be
+     * told. A reader meeting one has nothing useful to do with it.
+     */
+    if (entry.material >= (source.materials?.length ?? 0)) {
+      throw new DrftError(
+        `drft: DTEX names material ${entry.material} and the file carries ` +
+          `${source.materials?.length ?? 0}`,
+      );
+    }
+    chunks.push({ code: CHUNK_DTEX, flags: 0, bytes: buildDtex(entry) });
+  }
+  if (source.navigation !== undefined) {
+    chunks.push({ code: CHUNK_NAVM, flags: 0, bytes: buildNavm(source.navigation) });
+  }
+  if (source.entities !== undefined) {
+    chunks.push({ code: CHUNK_ENTS, flags: 0, bytes: buildEnts(source.entities) });
+  }
   source.meshes.forEach((mesh, ordinal) => {
     /*
      * **Its deltas immediately before it, not after.** A streaming consumer uploads a mesh the
@@ -537,6 +623,30 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
       code: CHUNK_SUBS,
       flags: 0,
       bytes: buildSubs({ entries: source.substances as readonly DrftSubstanceEntry[] }),
+    });
+  }
+  /* And one `SDFV`, on exactly the same terms. */
+  if ((source.fields?.length ?? 0) > 0) {
+    chunks.push({
+      code: CHUNK_SDFV,
+      flags: 0,
+      bytes: buildSdfv({ entries: source.fields as readonly DrftSdfvEntry[] }),
+    });
+  }
+  /* And one `NNET`, on the same terms again. */
+  if ((source.networks?.length ?? 0) > 0) {
+    chunks.push({
+      code: CHUNK_NNET,
+      flags: 0,
+      bytes: buildNnet({ networks: source.networks as readonly DrftNetwork[] }),
+    });
+  }
+  /* And one `NGRF`, for the networks a perceptron's table cannot describe. */
+  if ((source.graphs?.length ?? 0) > 0) {
+    chunks.push({
+      code: CHUNK_NGRF,
+      flags: 0,
+      bytes: buildNgrf(source.graphs as readonly DrftGraph[]),
     });
   }
 

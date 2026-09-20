@@ -31,6 +31,21 @@ describe('parseManifest', () => {
     expect(() => parseManifest({ ...valid, targets: ['ps5'] })).toThrow(/ps5/);
   });
 
+  /*
+   * **A game on the native host is mounted rather than loaded.** There is no page there to find a
+   * canvas in, so the manifest names the module whose `mount(canvas)` the host calls — and a native
+   * target with no such module is refused here, where the reason is one field, rather than after a
+   * bundle has been built around nothing.
+   */
+  it('takes the module a native target mounts, and refuses the target without one', () => {
+    const native = { ...valid, targets: ['native-linux-x64'], native: { entry: 'src/native.ts' } };
+    expect(parseManifest(native).native).toEqual({ entry: 'src/native.ts' });
+    expect(parseManifest(valid).native).toBeNull();
+    expect(() => parseManifest({ ...valid, targets: ['native-linux-x64'] })).toThrow(
+      /native-linux-x64.*"native.entry"/,
+    );
+  });
+
   it('refuses an unknown webgpu policy', () => {
     expect(() =>
       parseManifest({ ...valid, backend: { webgpu: 'maybe', allowSoftwareRenderer: false } }),

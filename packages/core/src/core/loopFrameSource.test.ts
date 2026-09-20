@@ -126,6 +126,52 @@ describe('a loop driven by something other than the window', () => {
   });
 
   /**
+   * **A source that supplies the frames supplies the timebase, and the loop may not mix in another.**
+   *
+   * `last` used to be seeded with `performance.now()` — a process uptime in Node, a page age in a
+   * browser — while every frame's `now` arrives from the source. For the window the two share an
+   * origin and nothing is wrong. For anything else they do not: the synthetic session in
+   * `@driftengine/xr` delivers `advance(16)`, and subtracting a process uptime from sixteen gives a
+   * hugely negative first delta. The accumulator goes negative with it and **the simulation stops
+   * ticking entirely** until it climbs back to zero, which is one stalled frame for every sixteen
+   * milliseconds the process had been alive.
+   *
+   * Stubbed at 100_000 because vitest's real `performance.now()` is a few seconds at most and the
+   * bug would then hide behind `maxFrameTime`. A browser tab open for two minutes reaches this.
+   */
+  it('takes its timebase from the source rather than the process clock', () => {
+    vi.stubGlobal('performance', { now: () => 100_000 });
+    const source = manualSource();
+    const h = hooks();
+    const stop = startLoop(h, { frameSource: source });
+
+    /* A session that has just started, counting from its own zero. */
+    source.fire(16);
+    source.fire(32);
+    source.fire(48);
+
+    expect(h.simulate, 'three frames of a session must simulate').toHaveBeenCalled();
+    stop();
+    vi.unstubAllGlobals();
+  });
+
+  /** And the first frame of such a source advances nothing, because nothing has elapsed yet. */
+  it('treats the first frame from a source as zero elapsed', () => {
+    vi.stubGlobal('performance', { now: () => 100_000 });
+    const source = manualSource();
+    const h = hooks();
+    const stop = startLoop(h, { frameSource: source });
+
+    source.fire(5_000);
+    expect(h.simulate, 'the session was not running before its first frame').not.toHaveBeenCalled();
+
+    source.fire(5_020);
+    expect(h.simulate, 'and twenty milliseconds later it is').toHaveBeenCalledTimes(1);
+    stop();
+    vi.unstubAllGlobals();
+  });
+
+  /**
    * **The control, and the reason this option is optional.** Every existing caller passes no source
    * and must keep using the window, so a default that quietly changed the frame driver would be a
    * change to every game that never asked for one.

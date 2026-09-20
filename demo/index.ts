@@ -15,12 +15,14 @@
  */
 export type {
   DemoBudget,
+  DemoPipeline,
   DemoScene,
   DemoHandle,
   DemoSceneOptions,
   DemoStats,
   ResolutionControl,
 } from './types';
+export { DEMO_PIPELINES } from './types';
 /*
  * The answer a host should reach for before it reaches for stopping a scene. See
  * `sceneGovernor.ts`: a machine that cannot hold the rate is owed a softer picture, and until
@@ -30,9 +32,14 @@ export { SceneGovernor } from './sceneGovernor';
 export { demoQualityFor, isHandheld, readDemoDeviceHints } from './deviceBudget';
 export type { DemoDeviceHints } from './deviceBudget';
 
-import type { DemoScene } from './types';
+import { DEMO_PIPELINES, type DemoScene } from './types';
 import { collapse } from './collapse';
 import { contributedPass } from './contributedPass';
+import { giField } from './giField';
+import { city } from './city';
+import { gpuDrivenDense } from './gpuDrivenDense';
+import { gpuDrivenMaterials } from './gpuDrivenMaterials';
+import { gpuDrivenOcclusion } from './gpuDrivenOcclusion';
 import { character } from './character';
 import { hierarchy } from './hierarchy';
 import { instancing } from './instancing';
@@ -63,6 +70,15 @@ export function isDemoScene(value: unknown): boolean {
   if (typeof scene.id !== 'string' || !ID_PATTERN.test(scene.id)) return false;
   if (typeof scene.title !== 'string' || scene.title.trim().length === 0) return false;
   if (typeof scene.note !== 'string' || scene.note.trim().length === 0) return false;
+  /* Absent is the forward path alone; present is a list of known pipelines, each named once. */
+  const pipelines = scene.pipelines as unknown;
+  if (pipelines !== undefined) {
+    if (!Array.isArray(pipelines) || pipelines.length === 0) return false;
+    if (new Set(pipelines).size !== pipelines.length) return false;
+    if (!pipelines.every((one) => (DEMO_PIPELINES as readonly unknown[]).includes(one))) {
+      return false;
+    }
+  }
   return typeof scene.mount === 'function';
 }
 
@@ -106,6 +122,14 @@ export const SCENES: readonly DemoScene[] = [
   stormSea,
   collapse,
   dayClock,
+  /*
+   * **The city at dusk, the second pipeline's own scene**, published by the demos plan's Task 12
+   * once its flight and its measurements were in — this line is that act. Last, so every published
+   * scene before it keeps the index a capture already names it by; the drafts each move up one.
+   * It says `pipelines: ['gpu-driven']`, so a host that cannot run the second pipeline can say so
+   * from the list rather than from a mount that refuses.
+   */
+  city,
 ];
 
 /*
@@ -146,6 +170,11 @@ export const DRAFT_SCENES: readonly DemoScene[] = [
    */
   contributedPass,
   /*
+   * The distance field on a device. A draft because a marched field is a diagnostic rather than a
+   * material — what it is here for is that `GiFieldPass` runs and reports what it costs.
+   */
+  giField,
+  /*
    * A rig for the same reason: it puts a number on what a hierarchy prunes, which is an argument
    * about the engine rather than a picture of what it can do.
    */
@@ -171,6 +200,15 @@ export const DRAFT_SCENES: readonly DemoScene[] = [
    * Arguing about a refusal is not what a demos page is for, so it stays here.
    */
   smokeRoom,
+  /*
+   * Three rigs for the second pipeline, and they stay here until it draws the standard material.
+   * What they show is a pipeline rather than a picture — a million triangles through one indirect
+   * draw, a wall and what is not drawn behind it, and sixteen material bins — and each of the
+   * three exists because a stage of it does no visible work in the other two.
+   */
+  gpuDrivenDense,
+  gpuDrivenOcclusion,
+  gpuDrivenMaterials,
 ];
 
 export { bindOrbitControls } from './controls';

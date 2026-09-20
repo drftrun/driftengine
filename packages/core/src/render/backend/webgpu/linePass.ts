@@ -21,10 +21,10 @@ import { shaderModule } from './shaderModules.ts';
  * the extra `uModel` field `LINE_VERT` carries and `BOLT_VERT` does not.
  *
  * The per-frame streams are two positions, not bolt's five — no `along`/`fade`/`seed`/
- * `brightness` to carry, because a line has no envelope. `expandLineSegments` is written here
- * rather than folded into `expandBoltSegments` in `segmentQuads.ts`, for the reason
- * `lineBatch.ts` gives on the WebGL2 side: teaching that function a `LineSegments` shape too
- * would grow a union coupling two renderers that share only a quad.
+ * `brightness` to carry, because a line has no envelope. `expandLineSegments` is its own function
+ * beside `expandBoltSegments` in `segmentQuads.ts` rather than folded into it — teaching that one a
+ * `LineSegments` shape too would grow a union coupling two renderers that share only a quad — and
+ * both backends call it, so the count a batch draws is decided once.
  *
  * **Uniforms are a `UniformRing`, one slot a draw, not a single block like `boltPass.ts`'s.**
  * A bolt pool is drawn once a frame in every scene that has shipped so far, so a single block
@@ -107,41 +107,6 @@ export function createGpuLines(device: GPUDevice, capacity: number, label: strin
       indices.destroy();
     },
   };
-}
-
-/**
- * Expand this frame's segments to their four vertices each, into arrays the caller owns.
- *
- * Returns how many segments were written, which is the list's count clamped to the batch's
- * capacity — a caller that overruns loses its tail rather than its frame, the same rule
- * `expandBoltSegments` follows. Reads only `LineSegments.from`/`.to`, the same walk `lineBatch.ts`
- * writes inline in `upload()` on the WebGL2 side.
- */
-export function expandLineSegments(
-  data: LineSegments,
-  capacity: number,
-  from: Float32Array,
-  to: Float32Array,
-): number {
-  const count = Math.min(data.count, capacity);
-  for (let s = 0; s < count; s++) {
-    const fx = data.from[s * 3] as number;
-    const fy = data.from[s * 3 + 1] as number;
-    const fz = data.from[s * 3 + 2] as number;
-    const tx = data.to[s * 3] as number;
-    const ty = data.to[s * 3 + 1] as number;
-    const tz = data.to[s * 3 + 2] as number;
-    for (let c = 0; c < 4; c++) {
-      const v = s * 4 + c;
-      from[v * 3] = fx;
-      from[v * 3 + 1] = fy;
-      from[v * 3 + 2] = fz;
-      to[v * 3] = tx;
-      to[v * 3 + 1] = ty;
-      to[v * 3 + 2] = tz;
-    }
-  }
-  return count;
 }
 
 /** `aFrom`, `aTo`, `aCorner` — one buffer each, at the locations `line.ts` declares. No fourth

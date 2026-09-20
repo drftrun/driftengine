@@ -199,3 +199,28 @@ function chunk(type, body) {
   out.writeUInt32BE(crc32(out.subarray(4, 8 + body.length)), 8 + body.length);
   return out;
 }
+
+/** A decoded PNG as four bytes a pixel, whether it was written with three channels or four. */
+export function rgbaOf(decoded) {
+  const count = decoded.width * decoded.height;
+  if (decoded.channels === 4)
+    return { width: decoded.width, height: decoded.height, rgba: decoded.pixels };
+  const rgba = new Uint8Array(count * 4);
+  for (let at = 0; at < count; at += 1) {
+    rgba[at * 4] = decoded.pixels[at * decoded.channels];
+    rgba[at * 4 + 1] = decoded.pixels[at * decoded.channels + 1];
+    rgba[at * 4 + 2] = decoded.pixels[at * decoded.channels + 2];
+    rgba[at * 4 + 3] = 255;
+  }
+  return { width: decoded.width, height: decoded.height, rgba };
+}
+
+/** A rectangle of a four-byte-a-pixel image, as a new image. */
+export function crop(image, rect) {
+  const rgba = new Uint8Array(rect.width * rect.height * 4);
+  for (let y = 0; y < rect.height; y += 1) {
+    const from = ((rect.y + y) * image.width + rect.x) * 4;
+    rgba.set(image.rgba.subarray(from, from + rect.width * 4), y * rect.width * 4);
+  }
+  return { width: rect.width, height: rect.height, rgba };
+}

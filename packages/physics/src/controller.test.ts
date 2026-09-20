@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BODY_DYNAMIC, BODY_STATIC } from './bodies.ts';
 import { AIRBORNE, CharacterController, GROUNDED, SLIDING } from './controller.ts';
 import type { ControllerInput, ControllerOptions } from './controller.ts';
+import { meshShape } from './meshShape.ts';
 import { boxShape } from './shape.ts';
 import { PhysicsWorld } from './world.ts';
 
@@ -520,5 +521,127 @@ describe('a command that leaves the plane', () => {
     /* A quarter of the authority is a quarter of the step toward the same command. */
     expect(half.velX).toBeCloseTo(full.velX * 0.25, 9);
     expect(half.velX).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * **A controller on a triangle mesh, which nothing in this file tested until 2026-09-20.**
+ *
+ * Every other test here stands the capsule on a box: one shape, one manifold, one plane under the
+ * feet. A captured room is thousands of triangles, and a sweep against a mesh asks for a *set* —
+ * which is where two defects lived, both silent, both found the first time a character was put on
+ * one.
+ *
+ * The room below is written by hand rather than captured, because a regression test for physics
+ * must not need `@driftengine/capture` to run.
+ */
+describe('a controller on a triangle mesh', () => {
+  /** A floor of small triangles at y = 0, with four walls around it. */
+  function roomMesh(cells: number, half: number, wallHeight: number) {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const step = (half * 2) / cells;
+    const at = (x: number, y: number, z: number): number => {
+      const index = positions.length / 3;
+      positions.push(x, y, z);
+      return index;
+    };
+    for (let j = 0; j < cells; j++) {
+      for (let i = 0; i < cells; i++) {
+        const x0 = -half + i * step;
+        const z0 = -half + j * step;
+        const a = at(x0, 0, z0);
+        const b = at(x0 + step, 0, z0);
+        const c = at(x0, 0, z0 + step);
+        const d = at(x0 + step, 0, z0 + step);
+        /* Wound so the normal points up, which is the side the character is on. */
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+    /* Four walls, each a quad of two triangles facing inwards. */
+    const wall = (ax: number, az: number, bx: number, bz: number): void => {
+      const a = at(ax, 0, az);
+      const b = at(bx, 0, bz);
+      const c = at(ax, wallHeight, az);
+      const d = at(bx, wallHeight, bz);
+      indices.push(a, b, c, c, b, d);
+    };
+    wall(-half, -half, half, -half);
+    wall(half, -half, half, half);
+    wall(half, half, -half, half);
+    wall(-half, half, -half, -half);
+    return { positions: Float32Array.from(positions), indices: Uint32Array.from(indices) };
+  }
+
+  function meshWorld(): PhysicsWorld {
+    const { positions, indices } = roomMesh(24, 3, 2.5);
+    const world = new PhysicsWorld();
+    world.addBody({ type: BODY_STATIC, shape: meshShape(positions, indices) });
+    return world;
+  }
+
+  /**
+   * **A sweep against a mesh must step by the nearest triangle, not by whichever one it saw
+   * first.** `collideMesh` fills its manifolds in the order its tree hands triangles over; the
+   * sweep read one of them and advanced by its separation, which is a bound only if it is the
+   * *smallest*. With the walls in the tree the first triangle was often a wall, so the capsule
+   * stepped straight past the floor — and the same floor with the walls removed held it, which is
+   * what made the fault so hard to see.
+   */
+  it('SETTLES ONTO A TRIANGLE FLOOR AND DOES NOT FALL THROUGH IT', () => {
+    const world = meshWorld();
+    const c = new CharacterController();
+    c.teleport(-1.2, 1.0, -1.2);
+    for (let i = 0; i < 120; i++) c.move(world, DT, STILL);
+    expect(c.state).toBe(GROUNDED);
+    expect(c.y).toBeGreaterThan(0.9);
+    expect(c.y).toBeLessThan(1.05);
+  });
+
+  it('walks a square on it and comes back to where it started', () => {
+    const world = meshWorld();
+    const c = new CharacterController();
+    c.teleport(-1.2, 1.0, -1.2);
+    for (let i = 0; i < 120; i++) c.move(world, DT, STILL);
+    const floor = c.y;
+
+    let lowest = floor;
+    for (const [moveX, moveZ] of [
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+      [0, -1],
+    ] as const) {
+      for (let i = 0; i < 90; i++) {
+        c.move(world, DT, { moveX, moveZ, jump: false });
+        lowest = Math.min(lowest, c.y);
+      }
+    }
+    /* Never through the floor, and back where it began. */
+    expect(lowest).toBeGreaterThan(floor - 0.1);
+    expect(Math.abs(c.x + 1.2)).toBeLessThan(0.25);
+    expect(Math.abs(c.z + 1.2)).toBeLessThan(0.25);
+    expect(c.state).toBe(GROUNDED);
+  });
+
+  /**
+   * **Which triangle stopped the sweep is a different question from which one is nearest**, and a
+   * crease is where they differ. Walking into the corner where a wall meets the floor, the wall is
+   * always the nearer contact; reporting its horizontal normal for a downward sweep leaves nothing
+   * to stop the fall, and the capsule sinks into the floor while still calling itself grounded.
+   */
+  it('KEEPS ITS HEIGHT WALKING INTO A CORNER, where the nearest triangle is not the one below', () => {
+    const world = meshWorld();
+    const c = new CharacterController();
+    c.teleport(2.0, 1.0, 2.0);
+    for (let i = 0; i < 120; i++) c.move(world, DT, STILL);
+    const floor = c.y;
+    let lowest = floor;
+    for (let i = 0; i < 180; i++) {
+      c.move(world, DT, { moveX: 1, moveZ: 1, jump: false });
+      lowest = Math.min(lowest, c.y);
+    }
+    expect(lowest).toBeGreaterThan(floor - 0.1);
+    expect(c.state).toBe(GROUNDED);
   });
 });

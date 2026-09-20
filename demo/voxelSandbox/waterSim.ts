@@ -187,6 +187,17 @@ export class WaterSim {
     return this.head >= this.current.length && this.next.length === 0;
   }
 
+  /**
+   * The cells this step decided to fill, reused across steps.
+   *
+   * **Held rather than made, because `step` is on the frame path.** It was a local, so every
+   * generation allocated one — small, and exactly the shape `demo/scenes.test.ts` refuses, which
+   * did not see it until that gate's corpus was widened from the scene modules to every module
+   * under `demo/`. The keys `queued` holds are still strings and still allocate; that is a
+   * different change and this comment is not claiming it.
+   */
+  private readonly fills: number[] = [];
+
   private promote(): void {
     this.head = 0;
     const spent = this.current;
@@ -209,7 +220,8 @@ export class WaterSim {
       this.promote();
     }
 
-    const fills: number[] = [];
+    const fills = this.fills;
+    fills.length = 0;
     let processed = 0;
     while (this.head < this.current.length && processed < MAX_CELLS_PER_STEP) {
       const x = this.current[this.head]!;
@@ -227,7 +239,10 @@ export class WaterSim {
       this.current.length = 0;
       this.head = 0;
     } else if (this.head > 4096) {
-      this.current = this.current.slice(this.head);
+      /* In place rather than `slice`, which allocated a second array of everything left in the
+         generation on every step past the threshold. */
+      this.current.copyWithin(0, this.head);
+      this.current.length -= this.head;
       this.head = 0;
     }
 

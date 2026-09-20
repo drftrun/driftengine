@@ -80,9 +80,11 @@ const SUPPORTED_VERSION = 1;
  * beside a reference and they do not match. Every other required field is checked the same way.
  */
 export function parseSdfFont(document: unknown): SdfFont {
+  // platform: feature probe — a bake and a worker both reach here without one
   if (typeof document !== 'object' || document === null) {
     throw new Error('parseSdfFont: expected a metrics object');
   }
+  // platform: feature probe — guarded by the line above
   const source = document as Record<string, unknown>;
   if (source['version'] !== SUPPORTED_VERSION) {
     throw new Error(

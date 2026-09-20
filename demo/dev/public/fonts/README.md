@@ -14,9 +14,10 @@ carries the original's licence. Both are permissive and both allow this.
 - **Source:** DejaVu Sans, `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf` (Debian package
   `fonts-dejavu-core`).
 - **Licence:** Bitstream Vera License. Free to use, copy, merge, publish and distribute,
-  including modified (the DejaVu changes themselves are public domain). Full text:
-  `/usr/share/doc/fonts-dejavu-core/copyright` on a Debian/Ubuntu system, or
-  <https://dejavu-fonts.github.io/License.html>.
+  including modified (the DejaVu changes themselves are public domain). **Full text:
+  [`latin/LICENSE-DejaVu.txt`](latin/LICENSE-DejaVu.txt)**, committed beside the atlas because
+  the licence requires its text to travel with the work — a path under `/usr/share/doc` is one
+  machine's and a URL is somebody else's server.
 - **Glyphs baked:** `A B C D E G L M N O R T U`, `e f g i n r t`, space, `(`, `)`, `-` — exactly
   what "Drift Engine", "MONTAGEM ABU (…)" and the twelve anchor labels ("L-T", "C-BL", …) need.
 
@@ -32,9 +33,10 @@ npm run sdf-font -- --font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
 
 - **Source:** Noto Sans Arabic, `/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf`
   (Debian package `fonts-noto-core`).
-- **Licence:** SIL Open Font License, Version 1.1. Full text:
-  `/usr/share/doc/fonts-noto-core/copyright` on a Debian/Ubuntu system, or
-  <https://openfontlicense.org/>.
+- **Licence:** SIL Open Font License, Version 1.1, which requires the copyright notice and the
+  licence to accompany a derivative. **Full text:
+  [`arabic-run/LICENSE-NotoSansArabic.txt`](arabic-run/LICENSE-NotoSansArabic.txt)**, committed
+  beside the atlas.
 - **Glyphs baked:** `أ` (U+0623), `ب` (U+0628), `و` (U+0648) — the three characters of `أبو`,
   each rasterised in isolation, as before — plus a fourth cell, `أبو` itself, baked as one
   *run*: the whole string handed to `measureText`/`fillText` at bake time, so the browser's own

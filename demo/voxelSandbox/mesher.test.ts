@@ -11,6 +11,9 @@ const ATLAS: BlockAtlas = {
   texture: null as never,
   rects: new Map(),
   fallback: { u0: 0, v0: 0, u1: 1, v1: 1 },
+  pixels: new Uint8ClampedArray(4),
+  width: 1,
+  height: 1,
 };
 
 /** A fixed packed light, so the mesher's own arithmetic is what a test is measuring. */

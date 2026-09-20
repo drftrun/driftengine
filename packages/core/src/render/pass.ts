@@ -37,22 +37,37 @@ import type { FrameResource } from './frame/index.ts';
  */
 export type PassDevice = {
   /**
-   * Pre-multiply a projection by this before uploading it. Identity on WebGL2.
-   *
-   * **The two APIs do not agree about which way clip space points, and the engine settles it in
-   * the matrix rather than in the shaders** — see `CLIP_CORRECTION`, whose own comment gives the
-   * reason: the shaders are generated from the GLSL the WebGL2 path uses, and a Y flip written
-   * into them would be a difference no generator could keep honest. WebGPU's framebuffer origin
-   * is the top-left and OpenGL's is the bottom-left, and depth clips to [0, 1] rather than
-   * [-1, 1].
+   * Pre-multiply a projection by this **if your WGSL was generated from GLSL**. Identity on WebGL2.
    *
    * A contributed pass takes its camera from its caller, so it never sees the corrected matrix the
    * renderer built for its own verbs. Without this it would have to copy four numbers — and a
    * copied convention is one that silently disagrees the day the original changes. The splat pass
    * drew the world upside down on WebGPU until this existed, which is the same first frame this
    * backend ever produced: a colonnade hanging from the ceiling.
+   *
+   * **It does two things and only one of them is about the APIs.** Depth: OpenGL clips z to
+   * [-1, 1] and WebGPU to [0, 1], so an uncorrected matrix throws away half the buffer. Y: it is
+   * negated — and *not* because the framebuffer origins differ, which is what this comment used to
+   * say. Both viewport transforms put clip `y = +1` at the top of the image. What flips it is
+   * `naga`, which ends every generated vertex entry point with `gl_Position.y = -gl_Position.y`;
+   * the negation here cancels that one. See `CLIP_CORRECTION` in `webgpu/renderer.ts`.
+   *
+   * So **a pass whose shader went through the engine's generator wants this one**, which is every
+   * pass that has ever used it — `@driftengine/splats` writes GLSL and generates its WGSL — and a
+   * pass that wrote WGSL by hand wants `depthCorrection` instead.
    */
   readonly clipCorrection: Float32Array;
+  /**
+   * Pre-multiply a projection by this **if you wrote your WGSL by hand**. Identity on WebGL2.
+   *
+   * The same matrix without the Y negation, because there is no generated negation to cancel.
+   * Taking `clipCorrection` in a hand-written shader mirrors the picture vertically — and mirrors
+   * the triangle winding with it, so it presents as a culling problem and is answered with
+   * `frontFace: 'cw'`, which draws the correct faces of a mirrored world. That is exactly what
+   * happened to the GPU-driven pipeline's raster, and the capture that settled it was the same
+   * scene through `drawMesh`: an exact vertical mirror about the canvas centre.
+   */
+  readonly depthCorrection: Float32Array;
 } & (
   | { readonly backend: 'webgl2'; readonly gl: WebGL2RenderingContext }
   | {
@@ -61,6 +76,19 @@ export type PassDevice = {
       readonly format: GPUTextureFormat;
       readonly depthFormat: GPUTextureFormat;
       readonly samples: number;
+      /**
+       * Whether this renderer reconstructs its frames, which is fixed at construction as `samples`
+       * is.
+       *
+       * **A pass drawing the world into a reconstructed frame owes it two things.** It draws with
+       * the frame's jitter (`PrepareContext.jitter`), and it leaves its depth in the frame's
+       * attachment: the resolve reprojects every pixel's history through that depth, and a pixel
+       * still holding the clear reads as infinitely far away — so a turning camera's history is
+       * moved correctly, since a turn moves every depth alike, and a sliding camera's is not moved
+       * at all and trails the picture. A pass that decides at `init` whether to write depth
+       * decides it by this.
+       */
+      readonly reconstruction: boolean;
     }
 );
 
@@ -90,7 +118,12 @@ export type PassContext = {
   readonly outputExposure: number;
 } & (
   | { readonly backend: 'webgl2'; readonly gl: WebGL2RenderingContext }
-  | { readonly backend: 'webgpu'; readonly pass: GPURenderPassEncoder }
+  | {
+      readonly backend: 'webgpu';
+      readonly pass: GPURenderPassEncoder;
+      /** The frame's jitter, the same array `PrepareContext.jitter` held. */
+      readonly jitter: Float32Array;
+    }
 );
 
 /**
@@ -119,7 +152,119 @@ export type PassContext = {
  */
 export type PrepareContext =
   | { readonly backend: 'webgl2'; readonly gl: WebGL2RenderingContext }
-  | { readonly backend: 'webgpu'; readonly encoder: GPUCommandEncoder };
+  | {
+      readonly backend: 'webgpu';
+      readonly encoder: GPUCommandEncoder;
+      /**
+       * The frame's environment probe, or null where the scene has not baked one.
+       *
+       * **The first thing this seam hands over that a pass could not render for itself**, and it
+       * is here rather than on `PassDevice` because a probe is baked by a scene whenever it likes
+       * — after registration, and again when the world changes — so a value captured once at
+       * `init` would be null for the life of a pass that registered before the bake.
+       *
+       * It is offered rather than promised: a pass that wants to light what it draws by the room
+       * the rest of the frame is lit by has no other way to reach it, and a pass that does not
+       * care ignores the field. What it is *not* is an attachment of the frame — the rule that a
+       * contributed pass renders its own targets is unchanged, and this is a resource the renderer
+       * owns for the whole frame rather than one it is in the middle of writing.
+       */
+      readonly environment: PassEnvironment | null;
+      /**
+       * The world's composed distance field, or null where the frame composed none.
+       *
+       * **One frame behind, and that is what it is for.** The renderer composes at `endFrame`,
+       * because a consumer declares its fields wherever in its own frame the objects live and the
+       * set is not complete until the last verb. `prepare` runs at `beginFrame`, so what a pass is
+       * handed here is the field the *previous* frame declared — which is right for everything
+       * that reads a distance field, since a field is the shape of the world and the world does
+       * not usually change between two frames.
+       *
+       * Offered rather than promised, as `environment` is: a pass that wants to march the world
+       * the renderer's own indirect light marches has no other way to reach it, and one that does
+       * not care ignores the field. It is null whenever `quality.indirectLight` is off, which is
+       * the default, and whenever the frame declared nothing.
+       */
+      readonly distanceField: PassDistanceField | null;
+      /**
+       * The offset the renderer's own verbs are drawn with this frame, as a fraction of the clip
+       * square — x rightward and y upward, the camera's own convention — and zero on a frame that
+       * is not reconstructed. Two floats, the same array every frame.
+       *
+       * **A pass that draws the world applies it**, with `jitterClip`, to the camera matrix it was
+       * given and before any correction. Reconstruction un-jitters every sample it takes, so
+       * geometry drawn without the offset is placed up to half a render pixel from where it was,
+       * differently every frame, and the picture shimmers and softens. Settled at `beginFrame`,
+       * before this runs, and once a frame however many mesh passes the frame binds.
+       *
+       * What it gives up: the temporal resolve's jitter is not handed over. That resolve never
+       * un-jitters, so a pass drawn without its offset is left unantialiased by it rather than
+       * misplaced — a lesser fault, and one a pass can live with. A pass drawing into a mirror
+       * should not apply it either; the renderer's own verbs do not jitter a mirror.
+       */
+      readonly jitter: Float32Array;
+    };
+
+/**
+ * The world's distance field on the device, as the two buffers and four numbers that address it.
+ *
+ * **Cascades rather than one grid.** A single grid fine enough to resolve a doorway and large
+ * enough to hold a street is not a thing that fits on a device; nested cascades each of the same
+ * sample count, each reaching twice as far as the one inside it, spend their resolution where the
+ * camera is. `gi/globalField.ts` composes them and `shaders/gi/sampleField.wgsl.ts` reads them,
+ * and the layout below is what the two agree on.
+ */
+export interface PassDistanceField {
+  /** Every cascade's samples, tightly packed, cascade 0 first. */
+  readonly samples: GPUBuffer;
+  /**
+   * The colour of whatever surface won the union at each sample, three floats, same order.
+   *
+   * **A union loses which instance won**, and a ray that lands on a wall needs to know what colour
+   * it is: what leaves a surface is the light arriving times its albedo, and a distance alone
+   * cannot say. `GlobalFieldCascade.albedo` is the reference's own copy of this.
+   */
+  readonly albedo: GPUBuffer;
+  /** Six bounds and a step per cascade, as `sampleField.wgsl.ts` reads them. */
+  readonly cascades: GPUBuffer;
+  /** How many cascades stand. */
+  readonly levels: number;
+  /** Samples along one side of every cascade. */
+  readonly side: number;
+  /** Metres between samples in the innermost cascade — the finest the field resolves. */
+  readonly finestStep: number;
+  /** The outermost cascade's corners, `[minX, minY, minZ, maxX, maxY, maxZ]`. */
+  readonly outerBounds: Float32Array;
+}
+
+/**
+ * A baked environment probe, as the two things that sample it and the four numbers that address it.
+ *
+ * **Octahedral rather than a cubemap**, which is the engine's own storage: one 2D array texture,
+ * one layer a probe, a one-texel gutter at every level so a bilinear tap at the border reads the
+ * folded direction rather than the other side of the map. `shaders/octahedral.ts` carries the
+ * mapping in GLSL and in TypeScript, and `octInsetUv` is what turns a direction into a coordinate.
+ *
+ * **The chain is roughness, not size.** Level 0 is the mirror and `maxLod` is the roughest GGX
+ * convolution; `irradianceLevel` sits one beyond it and holds the cosine convolution, which is the
+ * diffuse half. `prefilterEnvMap.ts` derives all three from the edge and is the one place that
+ * arithmetic lives.
+ */
+export interface PassEnvironment {
+  /** The whole array, `2d-array`, as the lit pass binds it. */
+  readonly view: GPUTextureView;
+  readonly sampler: GPUSampler;
+  /** Texels across level 0, gutter included. A level's own edge is this over `exp2(level)`. */
+  readonly edge: number;
+  /** The coarsest level of the GGX chain. */
+  readonly maxLod: number;
+  /** Which level holds the cosine convolution. */
+  readonly irradianceLevel: number;
+  /** Whether the scene asked this grid to supply its ambient. `ProbeBakeOptions.irradiance`. */
+  readonly irradiance: boolean;
+  /** How many probes stand in the grid. A pass reading layer 0 alone is right only for one. */
+  readonly layers: number;
+}
 
 export interface PassDefinition {
   /** For diagnostics, and for the label a backend gives the work. */

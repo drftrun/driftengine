@@ -201,11 +201,19 @@ async function acquireWebGpu(
      * the default still refuses the model, and `WebGPURenderer.createMesh` says so in one line
      * rather than letting the driver say it a hundred times.
      */
+    /*
+     * **And the storage binding ceiling, for the same reason one level down.** A buffer that can be
+     * created is not a buffer that can be bound: `maxStorageBufferBindingSize` defaults to 128 MiB
+     * against this machine's 4 GiB, and the GPU-driven pipeline binds its whole vertex buffer as
+     * one storage binding. The voxel sandbox's port at a radius of ten asked for 262,807,200 bytes
+     * and came back as a hundred device warnings and a world with no terrain.
+     */
     const required: Record<string, number> = {};
     for (const limit of [
       'maxSampledTexturesPerShaderStage',
       'maxSamplersPerShaderStage',
       'maxBufferSize',
+      'maxStorageBufferBindingSize',
     ] as const) {
       const ceiling = adapter.limits[limit];
       if (typeof ceiling === 'number' && ceiling > 0) required[limit] = ceiling;

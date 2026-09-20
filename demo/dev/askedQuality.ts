@@ -13,7 +13,7 @@
  * consumer can be in, the renderer warns about it, and being able to reproduce it in one query is
  * how a warning stops being taken on trust.
  *
- *     ?bloom=0.35&bloomthreshold=0.2&hdr=1&exposure=1.9&blur=1&dof=0.02
+ *     ?bloom=0.35&bloomthreshold=0.2&hdr=1&exposure=1.9&blur=1&dof=0.02&recon=1.5&indirect=1
  *
  * Read once, at mount. `frame` may not allocate and a `URLSearchParams` is an allocation.
  *
@@ -24,6 +24,7 @@ import type {
   ColourGradeLut,
   CreateRendererOptions,
   PhotometricProfile,
+  RenderPipeline,
   RenderQualityOptions,
 } from '../../packages/core/src/index';
 
@@ -42,7 +43,29 @@ import type {
  *
  * `?splash=1` still shows it on any of these, which is how the badge itself is looked at.
  */
-export const DEV_RENDERER: CreateRendererOptions = { splash: false };
+export const DEV_RENDERER: CreateRendererOptions = { splash: false, ...askedPipeline() };
+
+/**
+ * `?pipeline=gpu-driven`, which is a *construction* option rather than a quality one.
+ *
+ * It exists here because the one thing that cannot be checked from a unit test is that the refusal
+ * is wired: nothing in a test environment resolves a renderer, so the check inside `createRenderer`
+ * is reached by no test at all. Opening any of these pages with `?backend=webgl2&pipeline=gpu-driven`
+ * reaches it, and what should come back is a loud failure rather than a forward frame.
+ *
+ * Read from `location.search` at module load, like everything else here.
+ */
+export function askedPipeline(
+  search: string = typeof location === 'undefined' ? '' : location.search,
+): { pipeline?: RenderPipeline } {
+  const asked = new URLSearchParams(search).get('pipeline');
+  if (asked === null || asked === '') return {};
+  if (asked !== 'forward' && asked !== 'gpu-driven') {
+    console.warn(`pipeline=${asked} is not a pipeline this engine has; try forward or gpu-driven.`);
+    return {};
+  }
+  return { pipeline: asked };
+}
 
 /**
  * A colour grade named at the address bar, built here so a capture can be attributed to it.
@@ -302,6 +325,9 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
      shape as `discard` and `defer` below, and for the same reason: a switch whose default changed
      has to be bisectable in one reload, in whichever direction the reader needs. */
   const graph = asked.get('graph');
+  /* Which scheduler groups the graph's records, and `?idgraph=0` against `?idgraph=1` is the pair
+     Wave 1A's exit criterion is photographed with. */
+  const identifierGraph = asked.get('idgraph');
   /* `?cull=1`. Skips a mesh draw whose bounds are outside the frame; see RenderQuality. */
   const cullDraws = asked.get('cull') === '1';
   const discard = asked.get('discard');
@@ -325,12 +351,58 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
    * beside this, which is where a per-frame dial belongs.
    */
   const dof = positive(asked, 'dof');
+  /*
+   * The reconstruction ratio, and **`nonNegative` rather than `positive` because zero is the
+   * control**: "reconstruction on" against "off" is what every claim about DriftTR rests on, and
+   * `positive` would drop the off case and leave the default standing, which reads as a knob that
+   * does nothing. The renderer clamps anything inside `(0, 1.3)` up to 1.3, so this passes the
+   * number through rather than deciding the range twice.
+   */
+  const recon = nonNegative(asked, 'recon');
+  /* Light the world from what bounces. One option, like every other here: the comparison is a query. */
+  const indirect = asked.get('indirect');
+  /*
+   * The reflection probe's face size, and **it exists to be set to zero**. A probe is the one
+   * feature a scene turns on for itself rather than taking from the engine's default, so a scene
+   * that bakes one cannot be looked at without one — and "with a probe" against "without" is the
+   * control every claim about the environment term rests on. `nonNegative` rather than `positive`
+   * for exactly that reason: zero is the interesting value here and `positive` would drop it.
+   */
+  const probeSize = nonNegative(asked, 'probesize');
+  /*
+   * The two shadow permutations, reachable so a scene can be captured under each of the sixteen
+   * shaders the lit pass compiles to. A backend difference that appears only when three flags are
+   * on at once cannot be attributed to any of them without turning each off in turn, and these
+   * two are the only ones a published scene does not already expose from the address bar.
+   */
+  const directionalShadows = asked.get('dirshadows');
+  const pointShadows = asked.get('pointshadows');
+  /*
+   * **How many samples the probe's convolution takes, and it is a diagnostic as much as a dial.**
+   * Each sample's source level comes from `1 / (count * pdf)`, so raising the count *lowers* the
+   * level every sample reads: at 16 the diffuse level is integrated from the coarsest end of the
+   * source chain and at 1024 from a much finer one. A difference that shrinks as this rises is a
+   * difference in the coarse levels of that chain; one that does not is somewhere else.
+   */
+  const prefilterSamples = positive(asked, 'prefiltersamples');
+  /* Whether the reflection chain is the GGX convolution rather than the box filter it defaults to. */
+  const prefilter = asked.get('prefilter');
   return {
+    ...(probeSize === undefined ? {} : { reflectionProbeSize: Math.round(probeSize) }),
+    ...(directionalShadows === null ? {} : { directionalShadows: directionalShadows === '1' }),
+    ...(pointShadows === null ? {} : { pointShadows: pointShadows === '1' }),
+    ...(prefilterSamples === undefined
+      ? {}
+      : { environmentPrefilterSamples: Math.round(prefilterSamples) }),
+    ...(prefilter === null ? {} : { environmentPrefilter: prefilter === '1' }),
     ...(bloom === undefined ? {} : { bloom: Math.min(1, bloom) }),
     ...(bloomThreshold === undefined ? {} : { bloomThreshold }),
     ...(blur === undefined ? {} : { cameraMotionBlur: Math.min(1, blur) }),
     ...(dof === undefined ? {} : { depthOfField: Math.min(1, dof) }),
+    ...(recon === undefined ? {} : { reconstruction: recon }),
+    ...(indirect === null ? {} : { indirectLight: indirect === '1' }),
     ...(graph === null ? {} : { frameGraph: graph === '1' }),
+    ...(identifierGraph === null ? {} : { identifierGraph: identifierGraph === '1' }),
     /*
      * Light the world from a froxel table. One option, like every other here: a comparison
      * between clustered and not is a query rather than an edit, which is the whole point of this

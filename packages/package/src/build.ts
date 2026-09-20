@@ -7,6 +7,7 @@ import { buildAndroid } from './android.ts';
 import { buildIos } from './ios.ts';
 import { crossSignMacApp, zipMacApp } from './macCrossSign.ts';
 import type { PackageManifest, Target } from './manifest.ts';
+import { buildNative } from './native.ts';
 import { outFor } from './outDir.ts';
 import { resourceFile } from './resources.ts';
 import { ensureElectronRuntime } from './runtime.ts';
@@ -45,6 +46,9 @@ const HOST_FOR: Readonly<Record<Target, NodeJS.Platform | null>> = {
   'mac-arm64': 'darwin',
   'mac-x64': 'darwin',
   'linux-x64': 'linux',
+  /* The native host ships the Node that runs the build and the binaries installed beside it;
+     `native.ts` refuses the machine itself, architecture included. */
+  'native-linux-x64': 'linux',
   /* Android's toolchain is Java and it runs anywhere; iOS needs Xcode, which is a Mac. */
   android: null,
   ios: 'darwin',
@@ -84,19 +88,6 @@ export async function build(
   targets: readonly Target[],
   options: ResourceOptions = {},
 ): Promise<void> {
-  const { build: run, Arch, Platform } = await import('electron-builder');
-
-  /* One artifact per target, and the architecture is named rather than inherited: a build on an
-     Apple Silicon machine defaults to arm64, so `mac-x64` asked for on one would quietly produce
-     the wrong slice. */
-  const targetFor = (name: Target): ReturnType<typeof Platform.LINUX.createTarget> =>
-    name === 'win-x64'
-      ? Platform.WINDOWS.createTarget(undefined, Arch.x64)
-      : name === 'linux-x64'
-        ? Platform.LINUX.createTarget(undefined, Arch.x64)
-        : Platform.MAC.createTarget(undefined, name === 'mac-x64' ? Arch.x64 : Arch.arm64);
-  const electronVersion = await installedElectronVersion();
-
   for (const target of targets) {
     if (target === 'android') {
       await buildAndroid(manifest, cwd, outFor(cwd, target, options), options);
@@ -106,8 +97,29 @@ export async function build(
       await buildIos(manifest, cwd, outFor(cwd, target, options), options);
       continue;
     }
+    if (target === 'native-linux-x64') {
+      await buildNative(manifest, cwd, outFor(cwd, target, options));
+      continue;
+    }
     const refusal = refuseHost(target, process.platform);
     if (refusal !== null) throw new Error(refusal);
+
+    /*
+     * **Electron's builder and version are read here, for an Electron target**, rather than before
+     * the loop: a build of the native target alone needs neither.
+     *
+     * One artifact per target, and the architecture is named rather than inherited: a build on an
+     * Apple Silicon machine defaults to arm64, so `mac-x64` asked for on one would quietly produce
+     * the wrong slice.
+     */
+    const { build: run, Arch, Platform } = await import('electron-builder');
+    const targetFor = (name: Target): ReturnType<typeof Platform.LINUX.createTarget> =>
+      name === 'win-x64'
+        ? Platform.WINDOWS.createTarget(undefined, Arch.x64)
+        : name === 'linux-x64'
+          ? Platform.LINUX.createTarget(undefined, Arch.x64)
+          : Platform.MAC.createTarget(undefined, name === 'mac-x64' ? Arch.x64 : Arch.arm64);
+    const electronVersion = await installedElectronVersion();
 
     /*
      * **The runtime, before anything is staged.** `installedElectronVersion` below reads a version

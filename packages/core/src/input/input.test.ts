@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { InputSource, askForPointerLock } from './input.ts';
 
 /**
@@ -158,4 +158,34 @@ test('the call site forwards the options rather than dropping them', () => {
   expect(asked, "the browser is asked for the device's own counts, not a plain lock").toEqual([
     { unadjustedMovement: true },
   ]);
+});
+
+/**
+ * **A missing media query costs one hint, not the whole input system.**
+ *
+ * `isCoarse` decides whether a touch-shaped control scheme is offered, and it was read in the
+ * constructor as `window.matchMedia('(pointer: coarse)').matches` with nothing in front of it. The
+ * engine already knows better in two places: `ui/fullscreen.ts` tests `typeof window.matchMedia
+ * !== 'function'` before the identical query, and this very file reads gamepads and animation
+ * frames off `globalThis` defensively. The one unguarded line was the one in the constructor, so
+ * the failure was not a degraded feature but a `new InputSource(...)` that threw — no input at all
+ * in any embedder without the API, which is what the platform audit was looking for.
+ */
+test('input constructs where there is no pointer media query, and is not coarse', () => {
+  const listeners = { addEventListener() {}, removeEventListener() {} };
+  vi.stubGlobal('window', listeners);
+  vi.stubGlobal('document', listeners);
+
+  const target = {
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as HTMLElement;
+
+  try {
+    const input = new InputSource(target, [], { autoPoll: false });
+    expect(input.isCoarse, 'no media query is not a coarse pointer').toBe(false);
+    input.dispose();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

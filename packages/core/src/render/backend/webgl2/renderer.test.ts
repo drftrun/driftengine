@@ -436,3 +436,46 @@ test('names every slot on a part with room for the full budget', () => {
   const roomy = shadowSlotsInUploadedTable(4096);
   expect(roomy).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 });
+
+/**
+ * **A pane refracts under order-independent transparency as it does under sorted blending.**
+ *
+ * The replay passed a pane's refraction along, and the pane still came out flat paint: the copy it
+ * reads was taken at the first refracting draw of the replay, and taking it puts the scene's own
+ * framebuffer back as the one being drawn into — so that pane went into the scene rather than the
+ * transparency buffer. Measured on the refraction rig, 2026-09-19: the boundary behind a clear pane
+ * at 6 with sorted blending and at -1, no bars at all, with the effect on. The copy is taken as the
+ * replay begins, from the finished opaque frame, as the other backend takes it.
+ */
+test('replays a refracting pane into the transparency buffers, never into the scene', () => {
+  const { gl, canvas, calls } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+  const renderer = new Renderer(
+    canvas,
+    resolveRenderQuality({ screenEffects: true, orderIndependent: true }),
+  );
+  const mesh = new Mesh(gl, GEOMETRY);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.drawMesh(mesh, mat4.create());
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { refraction: 0.5 });
+  const start = calls.length;
+  renderer.endFrame();
+
+  const oit = (renderer as unknown as { oit: { accumFbo: unknown; revealFbo: unknown } }).oit;
+  let bound: unknown = null;
+  let inside = false;
+  let astray = 0;
+  let replayed = 0;
+  for (const call of calls.slice(start)) {
+    if (call.name === 'bindFramebuffer' && call.args[0] !== gl.READ_FRAMEBUFFER) {
+      bound = call.args[1];
+      if (bound === oit.accumFbo) inside = true;
+      if (bound === null) inside = false;
+    }
+    if (inside && call.name === 'drawElements') {
+      replayed += 1;
+      if (bound !== oit.accumFbo && bound !== oit.revealFbo) astray += 1;
+    }
+  }
+  expect(replayed, 'the pane is replayed into both buffers').toBe(2);
+  expect(astray, 'and never into anything else').toBe(0);
+});

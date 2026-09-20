@@ -119,6 +119,35 @@ describe('selecting a backend', () => {
     expect(choice.device).toBeNull();
   });
 
+  /*
+   * **The storage binding ceiling, at the adapter's own number.** It defaults to 128 MiB while this
+   * machine's adapter offers 4 GiB, and the GPU-driven pipeline binds its whole vertex buffer as
+   * one storage binding: the voxel sandbox's port at a radius of ten asked for 262,807,200 bytes,
+   * and what came back was a hundred device warnings and a world with no terrain in it.
+   */
+  it('ASKS FOR THE ADAPTER\u2019S LARGEST STORAGE BINDING, as it asks for its largest buffer', async () => {
+    const device = drawableDevice();
+    let asked: GPUDeviceDescriptor | undefined;
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: async () => ({
+          limits: {
+            maxSampledTexturesPerShaderStage: 48,
+            maxBufferSize: 4294967296,
+            maxStorageBufferBindingSize: 4294967292,
+          },
+          requestDevice: async (descriptor: GPUDeviceDescriptor) => {
+            asked = descriptor;
+            return device;
+          },
+        }),
+      },
+    });
+    await selectBackend('', true);
+    expect(asked?.requiredLimits?.['maxStorageBufferBindingSize']).toBe(4294967292);
+    expect(asked?.requiredLimits?.['maxBufferSize']).toBe(4294967296);
+  });
+
   it('reports WebGPU only once it holds a device', async () => {
     const device = drawableDevice();
     vi.stubGlobal('navigator', {

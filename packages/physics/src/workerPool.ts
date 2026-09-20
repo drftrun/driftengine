@@ -141,9 +141,11 @@ export function createIslandPool(request: PoolRequest): PoolOutcome {
  * out, which is why this is a default and not the only path. Null where there is no `Worker` at all.
  */
 const defaultSpawn: (() => PoolWorker) | null =
+  // platform: feature probe — no `Worker` means serial physics, with a reason
   typeof Worker === 'undefined'
     ? null
     : (): PoolWorker =>
+        // platform: browser default — `spawn` is the seam a native host supplies
         new Worker(new URL('./islandWorker.ts', import.meta.url), { type: 'module' }) as PoolWorker;
 
 /**
@@ -227,11 +229,14 @@ export class WorkerPoolExecutor extends StagedExecutor implements Executor {
   private join(): boolean {
     const ctl = this.control;
     const wanted = this.workers.length;
-    const deadline = Date.now() + JOIN_DEADLINE_MS;
+    /* Monotonic, because this is a spin against a deadline and the wall clock moves. A backward
+       step means the deadline never arrives and the join spins until the tab is closed — which is
+       the exact failure the deadline above was added to prevent. */
+    const deadline = performance.now() + JOIN_DEADLINE_MS;
     for (;;) {
       const done = Atomics.load(ctl, CTL_DONE);
       if (done >= wanted) return true;
-      if (Date.now() > deadline) {
+      if (performance.now() > deadline) {
         this.failure =
           'a worker stopped answering, so island solving went back to this thread. The world is ' +
           'correct and serial from here.';
@@ -267,9 +272,9 @@ export class WorkerPoolExecutor extends StagedExecutor implements Executor {
       });
     }
 
-    const deadline = Date.now() + JOIN_DEADLINE_MS;
+    const deadline = performance.now() + JOIN_DEADLINE_MS;
     while (Atomics.load(ctl, CTL_ACK) < this.workers.length) {
-      if (Date.now() > deadline) {
+      if (performance.now() > deadline) {
         this.failure =
           'the workers did not take the shared buffer, so island solving stayed on this thread.';
         return false;

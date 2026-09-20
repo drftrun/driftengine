@@ -8,7 +8,7 @@
 
 export { SoundRegistry } from './registry.ts';
 export { AudioGraph } from './graph.ts';
-export { cutoffForSpeed } from './filters.ts';
+export { MASTER_OPEN_HZ, cutoffForSpeed } from './filters.ts';
 /* The two lines that make Web Audio audible on an iPhone, for a consumer whose audio is one
    decoded file through its own chain rather than a stem player. `AudioGraph` already calls both
    and in this order; anything building its own context has to do the same. */

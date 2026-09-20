@@ -35,6 +35,9 @@ import {
   CHUNK_HEAD,
   CHUNK_LODM,
   CHUNK_LODF,
+  CHUNK_DTEX,
+  CHUNK_ENTS,
+  CHUNK_NAVM,
   CHUNK_SPLT,
   SPLAT_BLOCK_PREFIX,
   CHUNK_MESH,
@@ -53,11 +56,20 @@ import {
   CHUNK_NODE,
   CHUNK_SKIN,
   CHUNK_MORP,
+  CHUNK_NNET,
+  CHUNK_NGRF,
+  CHUNK_SDFV,
   CHUNK_SUBS,
   CHUNK_COLL,
 } from './drftFormat.ts';
 import type { DrftChunk, DrftHead, DrftMaterial, DrftSplatBlock } from './drftFormat.ts';
 import { type DrftSubs, readSubs } from './drftSubs.ts';
+import { type DrftSdfv, type DrftSdfvEntry, readSdfv } from './sdfv.ts';
+import { type DtexEntry, readDtex } from './dtex.ts';
+import { type EntsScene, readEnts } from './ents.ts';
+import { type NavPolyMesh, readNavm } from './navm.ts';
+import { type DrftNetwork, type DrftNnet, readNnet } from './nnet.ts';
+import { type DrftGraph, readNgrf } from './ngrf.ts';
 import { readColliders } from './drftColliders.ts';
 
 /** An embedded image, still compressed. Decoding is the consumer's, through `createImageBitmap`. */
@@ -109,6 +121,24 @@ export interface DrftAsset {
    */
   readonly splats: DrftSplatBlock | null;
   /**
+   * A decode program per material, or empty for a file that carries none.
+   *
+   * Each says which `MATL` entry it belongs to. **A reader that does not know this chunk skips it
+   * by its length** and loses only the material it could not have decoded, which is what keeps the
+   * format's freeze intact.
+   */
+  readonly dtex: readonly DtexEntry[];
+  /**
+   * A way across the scene, or `null` for a file that carries none.
+   *
+   * **`null` rather than an empty mesh**, because *nobody built one* and *there is nowhere to walk*
+   * are different facts, and a consumer that cannot tell them apart cannot decide whether to build
+   * one itself.
+   */
+  readonly navigation: NavPolyMesh | null;
+  /** The things in the scene, or `null` for a file that is an asset rather than a scene. */
+  readonly entities: EntsScene | null;
+  /**
    * The asset's own hierarchy, or empty for a file carrying no `NODE`.
    *
    * Empty means what it always meant — one mesh at the origin — so a caller written before 1.6
@@ -129,6 +159,29 @@ export interface DrftAsset {
    * **exactly** and reports what it could not, rather than guessing.
    */
   readonly substances: readonly { readonly material: number; readonly substance: string }[];
+  /**
+   * The signed distance field of each mesh that carries one, or empty for a file with none.
+   *
+   * The `SDFV` chunk, added at 1.13. Views over the fetched buffer, so a file that carries fields
+   * for geometry a consumer never traces through costs one view apiece and no copy. Hand them to
+   * `composeGlobalField`, which is what turns per-object fields into a world around the camera.
+   */
+  readonly fields: readonly DrftSdfvEntry[];
+  /**
+   * The networks the file carries, each with the role a consumer asks for it by, or empty.
+   *
+   * The `NNET` chunk, added at 1.14. Weights are views over the fetched buffer, in the precision
+   * they were written in — half-precision bits stay bits, because the device uploads them as such.
+   */
+  readonly networks: readonly DrftNetwork[];
+  /**
+   * The graphs the file carries — networks built from operators — each with its role, or empty.
+   *
+   * The `NGRF` chunk, added at 1.15. Tensors are views over the fetched buffer where its alignment
+   * allows, in the precision they were written in. `@driftengine/texture` validates one before it
+   * runs, naming any operator it lacks.
+   */
+  readonly graphs: readonly DrftGraph[];
   /**
    * The convex hulls this asset collides as, or empty for a file carrying no `COLL`.
    *
@@ -300,11 +353,17 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
   const textures: DrftTexture[] = [];
   let materials: DrftMaterial[] = [];
   const splatBlocks: { block: DrftSplatBlock; at: number }[] = [];
+  const dtex: DtexEntry[] = [];
+  let navigation: NavPolyMesh | null = null;
+  let entities: EntsScene | null = null;
   let nodes: DrftNode[] = [];
   const skins: DrftSkin[] = [];
   const clips: AnimationClip[] = [];
   const morphs: DrftMorph[] = [];
   let subs: DrftSubs | null = null;
+  let fields: DrftSdfv | null = null;
+  let nnet: DrftNnet | null = null;
+  let graphs: DrftGraph[] = [];
   let colliders: readonly Float32Array[] = [];
   const skipped: string[] = [];
   let head: DrftHead | null = null;
@@ -357,6 +416,10 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     else if (chunk.code === CHUNK_MATL) materials = readMaterials(buffer, chunk);
     else if (chunk.code === CHUNK_SPLT)
       splatBlocks.push({ block: readSplatBlock(buffer, chunk), at: chunk.index });
+    else if (chunk.code === CHUNK_DTEX) dtex.push(readDtex(buffer, chunk.offset, chunk.byteLength));
+    else if (chunk.code === CHUNK_NAVM)
+      navigation = readNavm(buffer, chunk.offset, chunk.byteLength);
+    else if (chunk.code === CHUNK_ENTS) entities = readEnts(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_NODE) nodes = readNodes(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_SKIN)
       skins.push(readSkin(buffer, chunk.offset, chunk.byteLength));
@@ -365,6 +428,9 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     else if (chunk.code === CHUNK_MORP)
       morphs.push(readMorph(buffer, chunk.offset, chunk.byteLength));
     else if (chunk.code === CHUNK_SUBS) subs = readSubs(buffer, chunk.offset, chunk.byteLength);
+    else if (chunk.code === CHUNK_SDFV) fields = readSdfv(buffer, chunk.offset, chunk.byteLength);
+    else if (chunk.code === CHUNK_NNET) nnet = readNnet(buffer, chunk.offset, chunk.byteLength);
+    else if (chunk.code === CHUNK_NGRF) graphs = readNgrf(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_COLL)
       colliders = readColliders(buffer, chunk.offset, chunk.byteLength);
     /* Every other known chunk is defined but not yet carried; see docs/FORMAT.md phase table. */
@@ -377,8 +443,16 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
    * for the absence of a chunk kind it never needed would be the format telling a consumer what
    * its scene may be made of.
    */
-  if (meshes.length === 0 && splatBlocks.length === 0) {
-    throw new DrftError('no MESH and no SPLT chunk — an asset with neither geometry nor a capture');
+  /* And networks, since 1.15: a converted model is weights and nothing else. */
+  if (
+    meshes.length === 0 &&
+    splatBlocks.length === 0 &&
+    (nnet?.networks.length ?? 0) === 0 &&
+    graphs.length === 0
+  ) {
+    throw new DrftError(
+      'no MESH, SPLT, NNET or NGRF chunk — an asset with no geometry, capture or network',
+    );
   }
 
   /*
@@ -448,7 +522,13 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     materials,
     textures,
     substances: subs?.entries ?? [],
+    fields: fields?.entries ?? [],
+    networks: nnet?.networks ?? [],
+    graphs,
     colliders,
+    dtex,
+    navigation,
+    entities,
     splats: joinSplatBlocks(splatBlocks),
     skipped,
     versionMajor,

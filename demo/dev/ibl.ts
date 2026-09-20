@@ -14,6 +14,27 @@
  *     /ibl.html                    the default backend
  *     /ibl.html?backend=webgpu     the other one
  *     /ibl.html?sh=0               the term held off, which is the control every figure is against
+ *     /ibl.html?axis=y             the bright and dark walls above and below instead of across
+ *     /ibl.html?roomlit=1          a room that emits nothing and is lit by the ambient term
+ *     /ibl.html?detail=8           every wall chequered, so the probe's chain has content to filter
+ *     /ibl.html?band=1             the four side walls bright above and dark below
+ *     /ibl.html?fog=1              showroom's atmosphere, which is what a published probe bakes in
+ *
+ * **The last two exist because this page had a blind spot the shape of its own room.** The
+ * asymmetry was on X and nothing else about the room differed, so a probe folded, mirrored or
+ * flattened along *Y* produced an identical picture here — every up direction and every down
+ * direction read the same neutral ceiling and floor. A backend disagreement worth 174,000 pixels
+ * of `showroom` sat behind that, and this page reported the two backends agreeing throughout.
+ * With `?axis=y` they still agree to the level, and so do `?roomlit=1`, `?detail=` and `?fog=`:
+ * a whole wall, a chequer and an ambient-lit room are all symmetric under a vertical flip, so none
+ * of them can see one. **`?band=1` is the room that can** — four side walls bright above and dark
+ * below — and it found the defect immediately: on WebGL2 the spheres in it were lit from
+ * underneath, because a cubemap face's rows run downward and a GL framebuffer's run upward and
+ * nothing reconciled them. See `cubeFaceProjection`. `?band=x` and `?band=z` turn the same
+ * instrument sideways; they are much the weaker test, because banding the floor, the ceiling and
+ * two walls along X changes *which part* of each is bright without much changing the direction
+ * their light arrives from — measured at 0.4 levels of left-to-right against the vertical room's
+ * 46, identically on both backends.
  *
  * **What a failure looks like**, so it is recognised rather than rationalised:
  *
@@ -44,6 +65,16 @@ import { readRadianceHdr } from '@driftengine/assets';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 const BACKGROUND: Vec3 = [0.02, 0.024, 0.03];
+
+/**
+ * Which axis `?axis=` names, for the readout.
+ *
+ * **The readout said `+X` whatever the room was built as**, which is the failure this page's own
+ * header warns about one level up: an instrument that mislabels its state produces a capture
+ * nobody can attribute, and the first vertical run of this page was read from a picture that said
+ * it was horizontal.
+ */
+const AXIS_NAMES = ['X', 'Y', 'Z'] as const;
 
 /** Five across and five down, which is enough to read a trend and few enough to hold in view. */
 const CELLS = 5;
@@ -82,7 +113,57 @@ function at(x: number, y: number, z: number): Float32Array {
  * Its inward faces are what the probe photographs. It is never drawn into the frame: a viewer
  * would be inside a closed box and see nothing else, and the point of the page is the spheres.
  */
-function buildRoom(uniform: boolean): ReturnType<MeshBuilder['build']> {
+/**
+ * One wall, either as a single slab or as a `detail` by `detail` chequer of them.
+ *
+ * **A room of flat walls cannot see a difference in how a mip chain is built**, because every
+ * level of a flat wall holds the same colour. `showroom`'s probe photographs a tiled floor with
+ * recessed joints and procedural grain on it and a ceiling of bright panels, so its chain has
+ * something to disagree about; every room this page could build until now had nothing. The
+ * chequer is the cheapest content that survives to the coarse levels the irradiance is convolved
+ * from, and it is the one control that separates "the two backends filter alike" from "the two
+ * backends had nothing to filter".
+ */
+function addWall(
+  builder: MeshBuilder,
+  centre: Vec3,
+  half: Vec3,
+  colour: Vec3,
+  emissive: number,
+  detail: number,
+): void {
+  if (detail <= 1) {
+    builder.addBox(centre, half, colour, emissive, 0);
+    return;
+  }
+  /* The two axes the wall spans, which are the ones whose half-extent is not the thickness. */
+  const thin = half[0] < half[1] && half[0] < half[2] ? 0 : half[1] < half[2] ? 1 : 2;
+  const span = [0, 1, 2].filter((k) => k !== thin) as [number, number];
+  const dark: Vec3 = [colour[0] * 0.35, colour[1] * 0.35, colour[2] * 0.35];
+  for (let i = 0; i < detail; i++) {
+    for (let j = 0; j < detail; j++) {
+      const tileCentre: Vec3 = [centre[0], centre[1], centre[2]];
+      const tileHalf: Vec3 = [half[0], half[1], half[2]];
+      const steps: [number, number] = [i, j];
+      for (let k = 0; k < 2; k++) {
+        const axis = span[k] as number;
+        const cell = ((half[axis] as number) * 2) / detail;
+        tileHalf[axis] = cell / 2;
+        tileCentre[axis] =
+          (centre[axis] as number) - (half[axis] as number) + cell * ((steps[k] as number) + 0.5);
+      }
+      builder.addBox(tileCentre, tileHalf, (i + j) % 2 === 0 ? colour : dark, emissive, 0);
+    }
+  }
+}
+
+function buildRoom(
+  uniform: boolean,
+  axis: 0 | 1 | 2,
+  lit: boolean,
+  detail: number,
+  band: number,
+): ReturnType<MeshBuilder['build']> {
   const builder = new MeshBuilder();
   /*
    * **A room of one colour, which the paragraph below rightly calls useless for measuring
@@ -122,12 +203,54 @@ function buildRoom(uniform: boolean): ReturnType<MeshBuilder['build']> {
    * to stand on. A wall that is itself a source makes the room's light unambiguously one-sided,
    * which is the only property this page exists to measure.
    */
-  builder.addBox([ROOM, 0, 0], [0.2, ROOM, ROOM], BRIGHT_WALL, 1, 0);
-  builder.addBox([-ROOM, 0, 0], [0.2, ROOM, ROOM], DARK_WALL, 0, 0);
-  builder.addBox([0, -ROOM, 0], [ROOM, 0.2, ROOM], NEUTRAL, 0, 0);
-  builder.addBox([0, ROOM, 0], [ROOM, 0.2, ROOM], NEUTRAL, 0, 0);
-  builder.addBox([0, 0, -ROOM], [ROOM, ROOM, 0.2], NEUTRAL, 0, 0);
-  builder.addBox([0, 0, ROOM], [ROOM, ROOM, 0.2], NEUTRAL, 0, 0);
+  /*
+   * **The bright pair sits on whichever axis `?axis=` names, and `y` is the one that matters.**
+   *
+   * A room whose only asymmetry is horizontal cannot see a probe that has been mirrored
+   * vertically: every up direction and every down direction reads the same neutral ceiling and
+   * floor, so a map folded the wrong way up produces an identical picture. That is precisely why
+   * this page reported both backends agreeing while `showroom` disagreed on 174,000 pixels.
+   */
+  for (let a = 0; a < 3; a++) {
+    for (const sign of [-1, 1] as const) {
+      const centre: Vec3 = [
+        a === 0 ? sign * ROOM : 0,
+        a === 1 ? sign * ROOM : 0,
+        a === 2 ? sign * ROOM : 0,
+      ];
+      const half: Vec3 = [a === 0 ? 0.2 : ROOM, a === 1 ? 0.2 : ROOM, a === 2 ? 0.2 : ROOM];
+      /*
+       * **`?roomlit=1` builds a room that emits nothing**, so what the probe photographs is the
+       * hemispheric ambient landing on six plain walls rather than a wall that is its own source.
+       * That is the condition `showroom` bakes under and the one this page could not reach: a
+       * room made of light sources is captured identically however the *shading* inside the bake
+       * behaves, because emission does not read the ambient term at all.
+       */
+      /*
+       * **`?band=1` puts the asymmetry *inside* a side face**, which every other room this page
+       * can build deliberately does not. A cube face is rendered by a camera and stored as texel
+       * rows, and the two graphics APIs disagree about which end of the render area row zero is;
+       * a face that is uniform, or chequered, or bright on one whole wall cannot tell a mirrored
+       * face from a correct one, because all three are symmetric under a vertical flip. Four side
+       * walls each bright above and dark below are not: flipping them swaps what an up-facing
+       * surface sees with what a down-facing one sees, and leaves a horizontal one where it was.
+       */
+      if (band >= 0 && a !== band) {
+        const near: Vec3 = [centre[0], centre[1], centre[2]];
+        const far: Vec3 = [centre[0], centre[1], centre[2]];
+        const halfBand: Vec3 = [half[0], half[1], half[2]];
+        halfBand[band] = (half[band] as number) / 2;
+        near[band] = (half[band] as number) / 2;
+        far[band] = -(half[band] as number) / 2;
+        addWall(builder, near, halfBand, BRIGHT_WALL, 1, detail);
+        addWall(builder, far, halfBand, DARK_WALL, 0, detail);
+      } else if (band >= 0) addWall(builder, centre, half, NEUTRAL, 0, detail);
+      else if (lit) addWall(builder, centre, half, NEUTRAL, 0, detail);
+      else if (a !== axis) addWall(builder, centre, half, NEUTRAL, 0, detail);
+      else if (sign > 0) addWall(builder, centre, half, BRIGHT_WALL, 1, detail);
+      else addWall(builder, centre, half, DARK_WALL, 0, detail);
+    }
+  }
   return builder.build({});
 }
 
@@ -202,12 +325,31 @@ function paintMetalOrm(roughness: number): HTMLCanvasElement {
   return canvas;
 }
 
+/**
+ * How much of a direct light the ladder's spheres return, set by `?spec=`.
+ *
+ * **Zero by default, which is what they have always had** — this page measures what a *probe*
+ * returns, and a direct highlight on top of that is a second variable. Above zero it is the only
+ * instrument in the repository that can show the specular lobe's own shape: a row of spheres from
+ * mirror to rough under one light, where a lobe whose peak falls with the roughness makes the
+ * polished end the dim end. That is exactly what it did until 2026-09-20.
+ */
+let ladderSpecular = 0;
+
 function buildLadder(): ReturnType<MeshBuilder['build']> {
   const builder = new MeshBuilder();
   for (let rung = 0; rung < LADDER; rung++) {
     /* Zero to one inclusive across the row, so both ends of the chain are actually shown. */
     builder.setRoughness(rung / (LADDER - 1));
-    builder.addSphere([(rung - (LADDER - 1) / 2) * SPACING, 0, 0], 0.8, SPHERE_COLOR, 0, 28, 16);
+    builder.addSphere(
+      [(rung - (LADDER - 1) / 2) * SPACING, 0, 0],
+      0.8,
+      SPHERE_COLOR,
+      0,
+      28,
+      16,
+      ladderSpecular,
+    );
   }
   builder.setRoughness(null);
   return builder.build({});
@@ -227,6 +369,20 @@ async function main(): Promise<void> {
   /* `?probe=` because a consumer bakes at 512 and this page baked at 128, so every parity claim
      made here was about a chain three levels shorter than the one in the field. */
   const probeAsked = Number(new URLSearchParams(location.search).get('probe') ?? '128');
+  /* A room lit by the ambient term rather than one made of light. See `buildRoom`. */
+  const roomLit = new URLSearchParams(location.search).get('roomlit') === '1';
+  /*
+   * **`?fog=N` puts `showroom`'s atmosphere in this room**, which is the other thing every
+   * published scene with a probe has and this page had not. Height fog is the one term in the lit
+   * pass that varies with *where the eye is* rather than with the surface, so a bake that resolves
+   * it against the frame's camera instead of the probe's fogs the captured room from the wrong
+   * height — and a height falloff makes that an error that runs the opposite way on a floor and on
+   * a ceiling. `showroom` bakes at density 0.004 with a falloff of 0.02, which is what `?fog=1`
+   * reproduces; the scale is there so the term can be exaggerated until it is unmistakable.
+   */
+  const fogScale = Number(new URLSearchParams(location.search).get('fog') ?? '0');
+  const fog = Number.isFinite(fogScale) && fogScale > 0 ? fogScale : 0;
+
   const created = await createRenderer(
     canvas,
     {
@@ -245,11 +401,22 @@ async function main(): Promise<void> {
    * sphere that neither state can drop below, and the difference this page exists to show would be
    * a small perturbation on top of it.
    */
+  /*
+   * **`?sun=` turns the direct highlight up, which is the one thing this ladder could not show.**
+   * The sun here is deliberately almost off, because the page measures what a *probe* returns and
+   * a bright direct term would sit on top of every sphere at a level neither state drops below.
+   * That also means the ladder cannot see the specular lobe's own shape — and the lobe's floor,
+   * which made a mirror dimmer than a satin surface, is exactly a peak that only a direct light
+   * puts on a sphere. One number, so the page's own captures are untouched at its default.
+   */
+  const askedSun = Number(new URLSearchParams(location.search).get('sun') ?? '1');
+  const sun = Number.isFinite(askedSun) && askedSun > 0 ? askedSun : 1;
   const env = createEnvironment({
     directionalDir: [0.4, 0.85, 0.34],
-    directionalColor: [0.05, 0.05, 0.06],
-    ambient: [0.03, 0.032, 0.036],
-    ambientGround: [0.02, 0.021, 0.024],
+    directionalColor: [0.05 * sun, 0.05 * sun, 0.06 * sun],
+    ...(roomLit
+      ? { ambient: [0.52, 0.53, 0.58] as Vec3, ambientGround: [0.26, 0.265, 0.29] as Vec3 }
+      : { ambient: [0.03, 0.032, 0.036] as Vec3, ambientGround: [0.02, 0.021, 0.024] as Vec3 }),
     /*
      * **`nightFactor` at 1, or the emissive wall emits nothing.** `emissiveGain` defaults to 1 and
      * reads like the switch; the multiplier that actually gates the term is this one, which
@@ -260,6 +427,17 @@ async function main(): Promise<void> {
     nightFactor: 1,
     fogColor: BACKGROUND,
     fogDensity: 0,
+    /* After the two lines above rather than before them, because a spread that a later key
+       overrides is a control that silently does nothing — which is how the first run of this
+       one read: four densities, four identical captures, zero pixels apart. */
+    ...(fog > 0
+      ? {
+          fogColor: [0.28, 0.29, 0.32] as Vec3,
+          fogDensity: 0.004 * fog,
+          fogHeightFalloff: 0.02,
+          fogBaseY: 0,
+        }
+      : {}),
   });
 
   /*
@@ -297,6 +475,9 @@ async function main(): Promise<void> {
    * direction and is the only way to measure energy. See `buildRoom`.
    */
   const wantsUniform = params.get('uniform') === '1';
+  /* Which axis carries the bright and dark walls. `x` is the default this page was written for. */
+  const asked = params.get('axis');
+  const axis: 0 | 1 | 2 = asked === 'y' ? 1 : asked === 'z' ? 2 : 0;
   /*
    * **`?metal=1` makes the ladder metallic, and it is the state the ladder could not reach.**
    *
@@ -325,7 +506,19 @@ async function main(): Promise<void> {
    */
   const environmentGain = Number(params.get('gain') ?? '1');
 
-  const room = renderer.createMesh(buildRoom(wantsUniform));
+  /* How finely each wall is chequered. One is a slab, which is what this page always built. */
+  const detail = Math.max(1, Math.trunc(Number(params.get('detail') ?? '1')) || 1);
+  /*
+   * Which axis the *bands* run along, or -1 for no banding. See `buildRoom`.
+   *
+   * `?band=1` and `?band=y` both mean the vertical one, which is the case a cubemap face gets
+   * wrong; `?band=x` and `?band=z` are the same instrument turned sideways, and they are what says
+   * whether the face's other axis is right — a question no room made of whole flat walls can ask.
+   */
+  const bandAsked = params.get('band');
+  const band =
+    bandAsked === '1' || bandAsked === 'y' ? 1 : bandAsked === 'x' ? 0 : bandAsked === 'z' ? 2 : -1;
+  const room = renderer.createMesh(buildRoom(wantsUniform, axis, roomLit, detail, band));
   const sphereMesh = renderer.createMesh(buildSphere());
   const spheres: { mesh: MeshHandle; model: Float32Array; column: number; row: number }[] = [];
   for (let row = 0; row < CELLS; row++) {
@@ -364,6 +557,9 @@ async function main(): Promise<void> {
    * and irradiance has no chain behind it to prefilter.
    */
   const wantsLadder = params.get('ladder') === '1';
+  /* Set before the ladder is built, since a specular attribute is written into its vertices. */
+  const askedSpec = Number(params.get('spec') ?? '0');
+  ladderSpecular = Number.isFinite(askedSpec) && askedSpec > 0 ? askedSpec : 0;
   /*
    * **`?env=<url>` loads an environment instead of photographing one.** The engine ships no image
    * and this page fetches whatever it is pointed at, which is the whole promise: a consumer that
@@ -462,7 +658,7 @@ async function main(): Promise<void> {
 
   renderFrame();
   stats.textContent =
-    `${created.backend} · ${created.reason} · bright wall +X · dark wall -X · probe ${wantsProbe ? 'on' : 'off'}` +
+    `${created.backend} · ${created.reason} · ${roomLit ? 'ambient-lit room, no emitter' : `bright wall +${AXIS_NAMES[axis]} · dark wall -${AXIS_NAMES[axis]}`} · probe ${wantsProbe ? 'on' : 'off'}` +
     `${wantsLadder ? ` · roughness ladder, ${LADDER} rungs, mirror at -X${wantsMetal ? ', metallic' : ''}` : ''}` +
     `${wantsUniform ? ' · uniform room' : ''}` +
     `${environmentGain === 1 ? '' : ` · gain ${environmentGain}`}` +

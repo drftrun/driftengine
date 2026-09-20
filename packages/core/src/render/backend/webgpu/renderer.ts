@@ -8,7 +8,29 @@ import {
 } from '../../temporalAa.ts';
 import { OIT_MULTISAMPLE_REFUSAL } from '../../orderIndependent.ts';
 import { TranslucentQueue } from '../../translucentQueue.ts';
-import { DEPTH_CLEAR, MAX_DEPTH_LAYER, REVERSED_DEPTH } from '../../depthConvention.ts';
+import {
+  DEPTH_CLEAR,
+  DEPTH_COMPARE_EQUAL,
+  MAX_DEPTH_LAYER,
+  REVERSED_DEPTH,
+} from '../../depthConvention.ts';
+import { RECONSTRUCTION_MULTISAMPLE_REFUSAL, reconRenderSize } from '../../recon/frameSizes.ts';
+import { jitterOffset as jitterOffsetFor, reconJitterPhases } from '../../recon/jitter.ts';
+import {
+  RECON_HISTORY_FORMAT,
+  RECON_PARAM_FLOATS,
+  RECON_WORKGROUP,
+  reconResolveWgsl,
+} from '../../shaders/recon/resolve.wgsl.ts';
+import {
+  MOTION_DRAW_FLOATS,
+  MOTION_DRAW_STRIDE,
+  MOTION_FRAME_FLOATS,
+  MOTION_TARGET_FORMAT,
+  RECON_MOTION_WGSL,
+} from '../../shaders/recon/motion.wgsl.ts';
+import { DEFAULT_DISOCCLUSION } from '../../recon/disocclusion.ts';
+import { DEFAULT_RECON_QUALITY } from '../../recon/resolve.ts';
 import type { ReadonlyMat4 } from 'gl-matrix';
 
 import type { Vec3 } from '../../../math/color.ts';
@@ -58,11 +80,18 @@ import {
 import type { WindStreakOptions } from '../../windStreakRenderer.ts';
 import type { WindField } from '../../windField.ts';
 import type { FlockParams } from '../../flockRenderer.ts';
-import { expandBoltSegments } from '../../segmentQuads.ts';
+import { expandBoltSegments, expandLineSegments } from '../../segmentQuads.ts';
 import { LIVE_POINT_SHADOW_MAPS, MAX_POINT_LIGHTS, POINT_SHADOW_POOL } from '../../lightBudget.ts';
 import { roughnessForLevel } from '../../prefilterEnvMap.ts';
 import { equirectToCubeFaces } from '../../equirectToCube.ts';
-import { ProbeGrid, SINGLE_PROBE, UNIT_STEP, WORLD_ORIGIN, sameGrid } from '../../probeGrid.ts';
+import {
+  MAX_ENV_PROBES,
+  ProbeGrid,
+  SINGLE_PROBE,
+  UNIT_STEP,
+  WORLD_ORIGIN,
+  sameGrid,
+} from '../../probeGrid.ts';
 import type { ProbeGridOptions } from '../../probeGrid.ts';
 import { ggxMaxLevelFor, irradianceLevelFor, octahedralEdgeFor } from '../../prefilterEnvMap.ts';
 import { environmentTexels } from './environmentTexels.ts';
@@ -413,7 +442,6 @@ import {
   createGpuLines,
   createLineBindGroup,
   createLineBindGroupLayout,
-  expandLineSegments,
   linePipeline,
   type GpuLines,
 } from './linePass.ts';
@@ -428,8 +456,29 @@ import {
 } from './lightVolumePass.ts';
 import { aimReflection, createGpuReflection, type GpuReflection } from './reflectionPass.ts';
 import { FrameBudget } from '../budget.ts';
+import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
 import { DYNAMIC_ALIGNMENT as DYNAMIC_UNIFORM_ALIGNMENT, UniformRing } from './uniformRing.ts';
 import { DecalQueue, MAX_DRAWN_DECALS } from '../../decalQueue.ts';
+import { DistanceFieldScene } from '../../gi/fieldScene.ts';
+import { DEFAULT_FIELD_COMPOSE, FieldComposer } from './fieldCompose.ts';
+import { ProbeBaker } from './probeBake.ts';
+import { distanceFieldBounds } from '../../gi/fieldScene.ts';
+import { fitProbeGrid } from '../../gi/probeGridFit.ts';
+
+/**
+ * Metres between probes when the renderer fits a grid itself.
+ *
+ * **Two, which is a room rather than a building.** The spacing is what decides how local the light
+ * can be: a bounce off a wall reaches a surface two metres away and no nearer detail than that.
+ * `fitProbeGrid` widens it uniformly when the budget bites, so a large scene gets a coarser grid
+ * rather than a truncated one.
+ */
+const INDIRECT_PROBE_SPACING = 2;
+
+/** What the trace is given when a frame never said what was lighting it. */
+const NO_SUN: readonly number[] = [0, 0, 0];
+import type { ComposedField } from './fieldCompose.ts';
+import type { FieldSource } from '../../gi/globalField.ts';
 import {
   CLIP_Y_FLIP,
   MAX_REFLECTIVE_SURFACES,
@@ -444,6 +493,7 @@ import type { CommandPool, DrawCommand } from './drawCommand.ts';
 import {
   RESOURCE_COUNT,
   createArena,
+  createFlushSchedule,
   keptNodes,
   maskOf,
   nodeCount,
@@ -452,6 +502,7 @@ import {
   recordNode,
   resetArena,
   schedule,
+  scheduleFlush,
   scratchFor,
 } from '../../frame/index.ts';
 import { createFrustum, frustumFromViewProjection } from '../../../math/frustum.ts';
@@ -475,11 +526,12 @@ import type {
   PassContext,
   PassDefinition,
   PassDevice,
+  PassEnvironment,
   PassHandle,
   PassRegistry,
   PrepareContext,
 } from '../../pass.ts';
-import type { Arena, ScheduledPass } from '../../frame/index.ts';
+import type { Arena, FlushSchedule, ScheduledPass } from '../../frame/index.ts';
 import { GpuInstancedBatch } from './instanced.ts';
 import type { MeshInstances } from '../../instances.ts';
 
@@ -799,20 +851,32 @@ function resolvedStoreOp(multisampled: boolean, terminal: boolean, allowed: bool
 }
 
 /**
- * Clip space differs between the two APIs, in two ways, and both must be corrected.
+ * Clip space differs between the two APIs in **one** way, and the other half of `CLIP_CORRECTION`
+ * cancels something this repository writes itself.
  *
- * **Y points the other way on screen.** WebGPU's framebuffer origin is the top-left corner
- * and OpenGL's is the bottom-left, so a projection built for WebGL2 draws the world upside
- * down here. The first frame this backend rendered was a colonnade hanging from the ceiling.
+ * **Depth lands in a different range, and that half is a real difference between the APIs.**
+ * OpenGL clips z to [-1, 1] and WebGPU to [0, 1], so an uncorrected matrix throws away the near
+ * half of the depth buffer and compares what remains against the wrong distances.
  *
- * **Depth lands in a different range.** OpenGL clips z to [-1, 1] and WebGPU to [0, 1], so
- * an uncorrected matrix throws away the near half of the depth buffer and compares what
- * remains against the wrong distances.
+ * **The Y negation cancels one the generator writes, and this comment used to say otherwise.**
+ * It claimed the flip was the framebuffer origin: WebGPU's is the top-left and OpenGL's is the
+ * bottom-left, so a projection built for WebGL2 "draws the world upside down here". That is not
+ * what either viewport transform does — both put clip `y = +1` at the top of the image, because
+ * OpenGL measures its window upward from the bottom-left and WebGPU measures its framebuffer
+ * downward from the top-left. An uncorrected projection lands the same way up on both.
  *
- * Correcting the matrix rather than the shaders is deliberate: the shaders are generated
- * from the GLSL the WebGL2 path uses, and a Y flip written into them would be a difference
- * between the backends that no generator could keep honest. Here it is four numbers, applied
- * once a frame, in one place.
+ * What does flip it is `naga`. Every module in `shaders/generated/` ends its vertex entry point
+ * with `gl_Position.y = -gl_Position.y`, which is how that translator adapts a GLSL shader to
+ * WebGPU — and the first frame this backend rendered, a colonnade hanging from the ceiling, was
+ * *that* line and not the API. So the pair is: the generator negates, this negates back, and the
+ * net effect on a generated shader is the depth remap alone. `shaders/generated.test.ts` pins the
+ * generator's half so the two cannot drift apart.
+ *
+ * **Which makes it the wrong matrix for a shader somebody wrote by hand**, since there is no
+ * negation to cancel — see `DEPTH_CORRECTION` below, and `PassDevice` for the seam where a
+ * contributed pass chooses. Wiring the GPU-driven pipeline's hand-written raster found it: the
+ * picture was an exact vertical mirror of the forward path's, and `frontFace: 'cw'` made it draw
+ * the right faces of a mirrored world.
  *
  * **This one is for a target that gets presented. `SHADOW_CLIP_CORRECTION` is for one that
  * gets sampled, and they are not the same transform.**
@@ -879,6 +943,37 @@ const CLIP_CORRECTION = new Float32Array([
  * against, applied by accident. Without the flip it culls what it says it culls, and matches
  * what `renderer.ts` does through the directional pass.
  */
+/**
+ * `CLIP_CORRECTION` without the Y negation: the depth remap alone, reversed.
+ *
+ * **What a hand-written WGSL shader wants.** The negation in `CLIP_CORRECTION` is there to cancel
+ * the one `naga` writes into every generated vertex entry point; a shader that was not generated
+ * carries no such line, so taking that matrix mirrors its picture vertically — and mirrors its
+ * triangle winding with it, which is how it reads as a culling problem rather than as a flip.
+ *
+ * The depth half is not optional and is the reason this is a matrix rather than nothing: OpenGL
+ * clips z to [-1, 1] and WebGPU to [0, 1], and the row is `0.5 - 0.5z` rather than `0.5z + 0.5`
+ * because `depthConvention.ts` puts the near plane at one.
+ */
+const DEPTH_CORRECTION = new Float32Array([
+  1,
+  0,
+  0,
+  0,
+  0,
+  1,
+  0,
+  0,
+  0,
+  0,
+  REVERSED_DEPTH ? -0.5 : 0.5,
+  0,
+  0,
+  0,
+  0.5,
+  1,
+]);
+
 const SHADOW_CLIP_CORRECTION = new Float32Array([
   1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 1,
 ]);
@@ -1158,6 +1253,17 @@ const NO_CLIP_PLANE = new Float32Array(4);
  * a while telling consumers that working effects did nothing. All three are read by
  * `composite()` now, and each has been compared against WebGL2 on `demo/dev/probe.html`.
  */
+/**
+ * The y negation every generated vertex stage ends with, as a matrix.
+ *
+ * **A hand-written shader has no such line, so it has to carry it.** `CLIP_CORRECTION` negates y
+ * precisely to cancel the one `naga` writes, and the pair's net effect on a generated shader is the
+ * depth remap alone — §3 rows 56 and 57. The motion pass has to put its vertices exactly where the
+ * scene put them or its depth test admits nothing, so the renderer multiplies this through the
+ * matrix the scene drew with and hands over the product.
+ */
+const MOTION_CLIP_FLIP = mat4.fromValues(1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+
 export class WebGPURenderer implements RendererApi {
   /**
    * Real timestamp queries, where the adapter offers them.
@@ -1315,8 +1421,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly perFrameStaging: ArrayBuffer;
   private readonly perFrameFloats: Float32Array;
   private readonly perFrameInts: Int32Array;
-  /** The slot the open material occupies, or -1 when the next draw must take a new one. */
-  private materialSlot = -1;
+  /** The slot the open material occupies, and whether the next draw must take a new one. */
+  private readonly materials = new MaterialChanges();
 
   /*
    * The frame graph's recording, and the machinery that replays it.
@@ -1369,6 +1475,7 @@ export class WebGPURenderer implements RendererApi {
   private readonly textBudget = this.budget.line('text draws', MAX_OVERLAYS);
   private readonly sdfTextBudget = this.budget.line('sdf text draws', MAX_OVERLAYS);
   private readonly lineBudget = this.budget.line('line draws', MAX_OVERLAYS);
+  private readonly panelBudget = this.budget.line('panels', MAX_OVERLAYS);
 
   /**
    * What the frame just drawn asked for, and what it was refused.
@@ -1391,6 +1498,12 @@ export class WebGPURenderer implements RendererApi {
    * scatter, plumes and text reached it long before the draw ring was full.
    */
   private replayScratch: Int32Array = new Int32Array(MAX_DRAWS_PER_FRAME);
+  /**
+   * The identifier graph's working set, where `quality.identifierGraph` asks for it and not
+   * otherwise: a renderer scheduling by masks carries none of it. Sized with the arena, and grown
+   * by `scheduleFlush` the way the arena grows.
+   */
+  private readonly flushSchedule: FlushSchedule | null;
   private readonly scheduledPasses: ScheduledPass[] = Array.from({ length: 64 }, () => ({
     writes: 0,
     first: 0,
@@ -1663,6 +1776,26 @@ export class WebGPURenderer implements RendererApi {
   private bloomGroups: GPUBindGroup[] = [];
   private frameWidth = 1;
   private frameHeight = 1;
+  /**
+   * What the scene is drawn at, which is the drawing buffer unless a reconstruction is enlarging it.
+   *
+   * **Everything before the resolve is this size and everything after it is the drawing buffer's.**
+   * The scene colour and its multisampled twin, the depth, the refraction snapshot, the resolved
+   * depth, the occlusion pair, the medium, the translucent buffers, the reflection march, the
+   * decals, the temporal history and the frame pass's own viewport are all before it; the composite
+   * and the overlay are after it, and they are what the viewer's pixels are counted in.
+   *
+   * **The composite is what enlarges the picture, and it does so by existing.** It draws a
+   * full-screen triangle into the swap chain sampling the scene by `uv` through a linear sampler, so
+   * a smaller scene target is magnified by that sample and nothing else changes — which is why this
+   * needs `screenEffects` and is refused without it: with no composite the world draws straight into
+   * the swap chain and there is nothing to enlarge from.
+   *
+   * Equal to the drawing buffer whenever `quality.reconstruction` is 0, which is the default, and
+   * `recon/frameSizes.ts` is the one place the two are related.
+   */
+  private renderWidth = 0;
+  private renderHeight = 0;
   /** The view-projection this frame was drawn with, for the reprojection motion blur needs. */
   private readonly previousViewProj = new Float32Array(16);
   private readonly reprojection = new Float32Array(16);
@@ -1758,6 +1891,94 @@ export class WebGPURenderer implements RendererApi {
   private temporalJitterX = 0;
   private temporalJitterY = 0;
   private temporalJittering = false;
+  /**
+   * Whether this frame is being reconstructed, settled once in `bindMeshPass`.
+   *
+   * It is not `quality.reconstruction > 0` on its own: a mirror pass is skipped for the same reason
+   * the temporal jitter skips one — a reflection is not the picture the history holds — and without
+   * a composite there is nothing to enlarge the render from.
+   */
+  private reconstructing = false;
+  /** Said once rather than every frame, as the translucent set's own refusal is. */
+  private reconMultisampleSaid = false;
+  private reconFrameIndex = -1;
+  private readonly reconJitter = new Float32Array(2);
+  private readonly reconPreviousJitter = new Float32Array(2);
+  /**
+   * `reconJitter` as a fraction of the clip square, which is what a contributed pass is handed.
+   * See `PrepareContext.jitter`; zero on a frame that is not reconstructed.
+   */
+  private readonly passJitter = new Float32Array(2);
+  /**
+   * The reconstruction's own targets, allocated only while a consumer asks for one.
+   *
+   * **Two histories rather than one**, for the reason the temporal resolve keeps two: a dispatch
+   * cannot read the texture it is writing. The shown picture is a third, because the history holds
+   * the *unsharpened* result — sharpening into the history would sharpen a sharpened picture every
+   * frame, which is the halo the reference's own clamp exists to prevent, compounded.
+   *
+   * The motion target is render size and carries a drawn object's own motion where something wrote
+   * one. **Nothing writes it yet**, so it is cleared every frame and every pixel takes the camera's
+   * motion, which the resolve derives from the depth and the reprojection. Static geometry is
+   * exact that way and a moving object ghosts until the motion pass lands.
+   */
+  private reconHistories: (GPUTexture | null)[] = [null, null];
+  private reconHistoryViews: (GPUTextureView | null)[] = [null, null];
+  private reconWrite = 0;
+  private reconHasHistory = false;
+  private reconShown: GPUTexture | null = null;
+  private reconShownView: GPUTextureView | null = null;
+  private reconMotion: GPUTexture | null = null;
+  private reconMotionView: GPUTextureView | null = null;
+  private reconPreviousDepth: GPUTexture | null = null;
+  private reconPreviousDepthView: GPUTextureView | null = null;
+  private reconParams: GPUBuffer | null = null;
+  private readonly reconStaging = new ArrayBuffer(RECON_PARAM_FLOATS * 4);
+  private readonly reconFloats = new Float32Array(this.reconStaging);
+  private readonly reconInts = new Uint32Array(this.reconStaging);
+  private reconLayout: GPUBindGroupLayout | null = null;
+  private reconResolvePipeline: GPUComputePipeline | null = null;
+  private reconSharpenPipeline: GPUComputePipeline | null = null;
+  private reconGroups: (GPUBindGroup | null)[] = [null, null];
+  private reconSharpenGroups: (GPUBindGroup | null)[] = [null, null];
+  private reconRushGroup: GPUBindGroup | null = null;
+  /**
+   * What the motion pass will draw, recorded by `drawMesh` and spent once a frame.
+   *
+   * A parallel array of meshes and one flat matrix buffer rather than an array of objects, because
+   * this is written on the frame's hot path and the house rule about allocating there binds it: the
+   * matrices are copied into a buffer that only ever grows, and the count is what resets.
+   */
+  private readonly motionMeshes: GpuMesh[] = [];
+  private motionMatrices = new Float32Array(0);
+  private motionCount = 0;
+  private motionLayout: GPUBindGroupLayout | null = null;
+  /**
+   * One pipeline per vertex stride, because a stride is a property of the *mesh*.
+   *
+   * Which optional attributes a mesh supplied decides how far apart its positions are, and this
+   * pass reads nothing but positions — so two meshes drawn by the same shader still need two
+   * vertex layouts. A map rather than a cache key on the pipeline cache: there is one shader here
+   * and a handful of strides in any scene.
+   */
+  private readonly motionPipelines = new Map<number, GPURenderPipeline>();
+  private motionModule: GPUShaderModule | null = null;
+  private motionPipelineLayout: GPUPipelineLayout | null = null;
+  private motionFrameBuffer: GPUBuffer | null = null;
+  private motionDrawBuffer: GPUBuffer | null = null;
+  private motionDrawCapacity = 0;
+  private motionGroup: GPUBindGroup | null = null;
+  private readonly motionFrameStaging = new Float32Array(MOTION_FRAME_FLOATS);
+  private motionDrawStaging = new Uint8Array(0);
+  /** The scene's own clip transform with the generated shaders' y negation folded in. */
+  private readonly motionRaster = mat4.create();
+  private reconSizeKey = '';
+  /** Last frame's raw view-projection and its inverse, and the two eyes. */
+  private readonly reconPreviousRawViewProj = mat4.create();
+  private readonly reconInverseViewProj = mat4.create();
+  private readonly reconPreviousInverseViewProj = mat4.create();
+  private readonly reconEye = new Float32Array(3);
+  private readonly reconPreviousEye = new Float32Array(3);
   private temporalHistoryUsable = false;
 
   private readonly aoStaging = new ArrayBuffer(AO_FRAG_SIZE);
@@ -1797,6 +2018,23 @@ export class WebGPURenderer implements RendererApi {
   /** Whether the profile asked for a composite at all. Everything below is null when it did not. */
   private get hasComposite(): boolean {
     return this.quality.screenEffects;
+  }
+
+  /**
+   * Whether this renderer is set up to reconstruct, asked in one place by everything that cares.
+   *
+   * **One condition and not three**, which §3 row 132 is the lesson of: the frame's flag, the size
+   * the targets are built at and the size the world is drawn at all turn on the same question, and
+   * three copies of it are three lines no test can fail — each covering the others, so breaking any
+   * one of them changes nothing anybody can see.
+   *
+   * A composite, because the composite is what enlarges the render; one sample, because the motion
+   * pass draws against the depth the scene left and every attachment in a pass must agree about its
+   * sample count — `RECONSTRUCTION_MULTISAMPLE_REFUSAL` says the rest. Whether a *frame* is
+   * reconstructed adds one more question, the mirror's, and that one belongs to the frame.
+   */
+  private get reconstructionWanted(): boolean {
+    return this.quality.reconstruction > 0 && this.hasComposite && this.samples === 1;
   }
 
   /** What a frame pass writes into: the scene target where there is one, the swap chain else. */
@@ -1902,6 +2140,31 @@ export class WebGPURenderer implements RendererApi {
    * the frame has drawn, so it cannot run until the opaque world is finished. See `DecalQueue`.
    */
   private readonly decalQueue = new DecalQueue();
+  /** The fields this frame declared, composed at `endFrame`. See `addDistanceField`. */
+  private readonly distanceFields = new DistanceFieldScene();
+  /**
+   * The composition of them, built at the first frame that has both the flag and a field.
+   *
+   * **Not at construction**, because it is 1.4 MB of device buffers and a compute pipeline, and a
+   * profile with `indirectLight` on is entitled to declare no fields at all — a scene that lights
+   * itself entirely from a baked probe grid, for one. Nothing is allocated until something would
+   * be composed.
+   */
+  private fieldComposer: FieldComposer | null = null;
+  /**
+   * The probes' own bake, built at the first frame that has the flag, a field and an array.
+   *
+   * Not at construction, for `fieldComposer`'s reason: it is two compute pipelines, a render
+   * pipeline and a handful of buffers, and a profile with the flag on may never declare a field.
+   */
+  private probeBaker: ProbeBaker | null = null;
+  /** Which array the baker's views were built against, so a replacement is noticed. */
+  private bakerArray: GPUTexture | null = null;
+  /** Reused, because deriving a grid from the declared fields runs in the frame path. */
+  private readonly fieldBoundsMin = new Float32Array(3);
+  private readonly fieldBoundsMax = new Float32Array(3);
+  /** Said once rather than every frame, as the other refusals are. */
+  private indirectGridRefused = false;
   private decalLayout!: GPUBindGroupLayout;
   private decalUniforms!: GPUBuffer;
   private readonly decalStaging = new ArrayBuffer(DECAL_SLOT * MAX_DRAWN_DECALS);
@@ -1937,7 +2200,10 @@ export class WebGPURenderer implements RendererApi {
   private readonly decalScissorRect = new Int32Array(4);
   private oitResolveLayout!: GPUBindGroupLayout;
   private oitResolveGroup: GPUBindGroup | null = null;
-  /** Reused, because the frame loop may not allocate. Mirrors the WebGL2 backend's own. */
+  /**
+   * Reused, because the frame loop may not allocate. Mirrors the WebGL2 backend's own, which it
+   * had stopped doing: the other one carried a pane's refraction and this one did not.
+   */
   private readonly oitReplayOptions: {
     lit: boolean;
     fog: boolean;
@@ -1945,7 +2211,20 @@ export class WebGPURenderer implements RendererApi {
     depthWrite: boolean;
     depthLayer: number;
     tint: Vec3 | null;
-  } = { lit: true, fog: true, toneMapped: true, depthWrite: false, depthLayer: 0, tint: null };
+    refraction: number;
+    refractTint: Vec3 | undefined;
+    thicknessM: number;
+  } = {
+    lit: true,
+    fog: true,
+    toneMapped: true,
+    depthWrite: false,
+    depthLayer: 0,
+    tint: null,
+    refraction: 0,
+    refractTint: undefined,
+    thicknessM: 0,
+  };
 
   private reflectionPassActive = false;
   /** Said once: a mirror asked for outside a frame is a call-order fault, not a device limit. */
@@ -2328,15 +2607,26 @@ export class WebGPURenderer implements RendererApi {
     return new GpuSurfaceTexture(this.surface.device, this.pipelines, source, options);
   }
 
+  /**
+   * GPU textures an `updateSurfaceTexture` replaced, destroyed when the next frame begins.
+   *
+   * Not at once, because a draw recorded earlier in the frame the update landed in may still read
+   * one, and a destroyed texture in a submit loses the whole command buffer. Every encoder a frame
+   * opens is submitted by the time the next one begins.
+   */
+  private readonly retiredTextures: GPUTexture[] = [];
+
   updateSurfaceTexture(texture: GpuSurfaceTexture, source: TexImageSource): void {
     if (this.surface.lost) return;
-    texture.update(source);
+    const replaced = texture.update(source);
+    if (replaced === null) return;
+    /* A new size is a new view, so every group holding the old one is dropped — see below. */
+    this.retiredTextures.push(replaced);
+    this.forgetBindingsOf(texture);
   }
 
   disposeSurfaceTexture(texture: GpuSurfaceTexture): void {
     if (this.surface.lost) return;
-    /* Same reasoning, for whichever SDF labels were bound against this atlas. */
-    this.sdfTextBindGroups.delete(texture);
     if (this.albedo === texture) {
       this.albedo = null;
       this.bindGroup = this.blankAlbedoBindGroup;
@@ -2362,6 +2652,19 @@ export class WebGPURenderer implements RendererApi {
     if (this.normalMap === texture) this.normalMap = null;
     if (this.ormMap === texture) this.ormMap = null;
     if (this.emissiveMap === texture) this.emissiveMap = null;
+    this.forgetBindingsOf(texture);
+    texture.dispose();
+  }
+
+  /**
+   * Drop every bind group that may hold `texture`'s view, and rebuild the ones bound now.
+   *
+   * For a texture going away and for one whose view has been replaced, which are the same problem:
+   * a group holding the old view hands a destroyed texture to the next draw that asks.
+   */
+  private forgetBindingsOf(texture: GpuSurfaceTexture): void {
+    /* Same reasoning, for whichever SDF labels were bound against this atlas. */
+    this.sdfTextBindGroups.delete(texture);
     this.flatBindGroups.clear();
     /*
      * The blank one is built with the albedo held aside, because `buildFlatBindGroup` reads
@@ -2373,7 +2676,6 @@ export class WebGPURenderer implements RendererApi {
     this.blankAlbedoBindGroup = this.buildFlatBindGroup();
     this.albedo = held;
     this.bindGroup = this.flatGroupForMaps(held, this.normalMap, this.ormMap, this.emissiveMap);
-    texture.dispose();
   }
 
   /**
@@ -2537,7 +2839,7 @@ export class WebGPURenderer implements RendererApi {
   private material(write: (f: Float32Array, i: Int32Array) => void): void {
     if (this.surface.lost) return;
     write(this.perFrameFloats, this.perFrameInts);
-    this.materialSlot = -1;
+    this.materials.dirty();
   }
 
   private materialField(name: string): number {
@@ -2628,7 +2930,19 @@ export class WebGPURenderer implements RendererApi {
     if (alpha <= 0 || rect.width <= 0 || rect.height <= 0) return;
     const vertexSlot = this.panelVerts.allocate();
     const fragmentSlot = this.panelFrags.allocate();
-    if (vertexSlot === null || fragmentSlot === null) return;
+    if (vertexSlot === null || fragmentSlot === null) {
+      /*
+       * Said, as its text and line siblings say it: this returned without a word until 2026-09-19,
+       * so an interface of panels lost everything past its sixty-fourth here and nothing on WebGL2.
+       */
+      if (!this.warnedPanelsFull) {
+        this.warnedPanelsFull = true;
+        console.warn(
+          `WebGPU: more than ${MAX_OVERLAYS} panels in a frame; the rest are skipped. renderer.frameBudget names the line and the count.`,
+        );
+      }
+      return;
+    }
 
     const at = (name: string): number => PANEL_VERT_FIELDS[name]?.offset ?? 0;
     this.panelVerts.writeFloats(vertexSlot, at('uRect'), [
@@ -2668,6 +2982,9 @@ export class WebGPURenderer implements RendererApi {
       pass.draw(PANEL_VERTEX_COUNT);
     }
   }
+
+  /** Said once rather than every frame, for the reason `warnedFull` gives. */
+  private warnedPanelsFull = false;
 
   /** A 3D text object. See `textPass.ts`; the layout it holds is shared with WebGL2. */
   createText(): GpuText {
@@ -3757,6 +4074,10 @@ export class WebGPURenderer implements RendererApi {
        before `takeVolumeDepth`, which is the one thing here that genuinely needs one open —
        it ends the current pass to copy the depth out and opens another in its place. */
     if (!this.canDraw()) return;
+    /* Geometry that has not all arrived is not drawn, which is the surface's contract and what
+       every other mesh verb here and the other backend's volume already kept. This one drew a
+       beam from a buffer still filling, and counted it, until 2026-09-19. See `Mesh.complete`. */
+    if (!mesh.complete) return;
     /* At zero it draws nothing rather than adding black, so a caller may keep the call in. That
        now covers a clear night too: a beam with no medium to light is not drawn at all. */
     const shown =
@@ -5037,6 +5358,44 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * The size the world is drawn at this frame, which is **not** the canvas when a reconstruction
+   * is enlarging it.
+   *
+   * **A contributed pass that fills a target of its own must size it from here.** The GPU-driven
+   * rig sized its own targets from `canvas.width` and drew a full drawing-buffer picture into a
+   * scene target two thirds as wide: the frame pass clipped it to the top-left corner and the
+   * composite magnified that corner back over the screen, which is a plausible-looking picture of
+   * the wrong part of the world. The device raises nothing — a viewport smaller than the thing
+   * drawn is legal — so there is no failure to see, only a scene that has moved.
+   *
+   * Valid from `beginFrame`; before the first frame it is the canvas, which is what a pass sizing
+   * itself at registration wants.
+   */
+  get sceneWidth(): number {
+    return this.sceneSize().width;
+  }
+
+  get sceneHeight(): number {
+    return this.sceneSize().height;
+  }
+
+  /**
+   * The render size this frame will use, computed rather than remembered.
+   *
+   * **Computed, because a pass asks before the frame it is asking about.** `GpuDrivenPass.resize`
+   * runs before `beginFrame` — that is when `prepare` records the pipeline — so a stored field
+   * would answer with the previous frame's size, which is right every frame but the one where it
+   * changed. The first frame after a reconstruction is switched on is exactly the frame that
+   * matters.
+   */
+  private sceneSize(): { width: number; height: number } {
+    const { canvas } = this.surface;
+    return this.reconstructionWanted
+      ? reconRenderSize(canvas.width, canvas.height, this.quality.reconstruction)
+      : { width: Math.max(1, canvas.width), height: Math.max(1, canvas.height) };
+  }
+
+  /**
    * Whether the device has gone.
    *
    * Named for the WebGL concept because that is what the shared surface calls it, and the two
@@ -5162,6 +5521,10 @@ export class WebGPURenderer implements RendererApi {
     quality = this.quality;
     this.maxDrawingBufferPixels = quality.maxDrawingBufferPixels;
     this.exposure = quality.outputExposure;
+    this.flushSchedule =
+      quality.frameGraph && quality.identifierGraph
+        ? createFlushSchedule(MAX_DRAWS_PER_FRAME)
+        : null;
 
     const { device } = surface;
     /* Off unless a consumer asked: see `RenderQuality.gpuTiming`. A timer that can
@@ -6111,12 +6474,14 @@ export class WebGPURenderer implements RendererApi {
      */
     this.panelLayout = createPanelBindGroupLayout(device);
     this.panelCorners = createPanelCorners(device);
+    /* The budget on one of the pair only: a panel is one ask, whichever ring runs out. */
     this.panelVerts = new UniformRing(
       device,
       PANEL_VERT_SIZE,
       MAX_OVERLAYS,
       USAGE_UNIFORM_DST,
       'panel.vertRing',
+      this.panelBudget,
     );
     this.panelFrags = new UniformRing(
       device,
@@ -6409,6 +6774,9 @@ export class WebGPURenderer implements RendererApi {
    * uncaught exceptions a second in somebody's error reporting.
    */
   beginFrame(clearColor: Vec3): void {
+    /* Whatever an update replaced during the last frame; nothing recorded can read it now. */
+    for (const texture of this.retiredTextures) texture.destroy();
+    this.retiredTextures.length = 0;
     /*
      * **Decided here and held for the frame**, so a draw cannot be recorded under one rule and
      * replayed under another. Multisampling is excluded: the two buffers are single-sampled and a
@@ -6418,6 +6786,8 @@ export class WebGPURenderer implements RendererApi {
     this.translucentQueue.reset();
     this.decalQueue.reset();
     this.reflectionQueue.reset();
+    /* Redeclared every frame, so a field a consumer stops declaring stops lighting. */
+    this.distanceFields.reset();
     this.oitActive =
       this.quality.orderIndependent && this.quality.screenEffects && this.samples === 1;
     /* Read off the line above rather than restating its last term: with the other two true, the
@@ -6492,7 +6862,9 @@ export class WebGPURenderer implements RendererApi {
     this.lineFrags.reset();
     /* The material ring, and the open slot with it: last frame's slots are gone. */
     this.perFrame.reset();
-    this.materialSlot = -1;
+    this.materials.dirty();
+    /* Spent by `runMotion` at the end of the last frame; a frame states its movers afresh. */
+    this.motionCount = 0;
     /*
      * The canvas rather than the swap chain's texture, and the difference is that reading this
      * does not *acquire* anything. See `swapView`.
@@ -6503,8 +6875,22 @@ export class WebGPURenderer implements RendererApi {
      * without the target it draws into, and a scene is free never to call `resize`.
      */
     const { canvas } = this.surface;
-    this.ensureDepth(canvas.width, canvas.height);
-    this.ensureComposite(canvas.width, canvas.height);
+    /*
+     * **The render size first, because every target below is sized from it.** Off — and without a
+     * composite to enlarge from — it is the drawing buffer exactly, which is what makes a frame
+     * with no reconstruction byte-for-byte the frame this renderer has always drawn.
+     */
+    const render = this.sceneSize();
+    this.renderWidth = render.width;
+    this.renderHeight = render.height;
+    this.ensureDepth(render.width, render.height);
+    this.ensureComposite(render.width, render.height);
+    this.ensureReconstruction(
+      render.width,
+      render.height,
+      Math.max(1, canvas.width),
+      Math.max(1, canvas.height),
+    );
     /*
      * **Not acquired here, and that is the fix for a frame flashing black.**
      *
@@ -6522,6 +6908,7 @@ export class WebGPURenderer implements RendererApi {
      */
     this.frameSwapView = null;
     this.encoder = this.surface.device.createCommandEncoder();
+    this.settleReconJitter();
     /*
      * Passes that own a target fill it here — after the encoder exists and before anything opens
      * the frame's render pass, including the eager path twenty lines below. See
@@ -6822,6 +7209,8 @@ export class WebGPURenderer implements RendererApi {
      */
     if (!this.reflectionPassActive) {
       mat4.copy(this.frameRawViewProj, camera.viewProjection);
+      /* The eye in world space, which the resolve's normals are turned to face. */
+      this.reconEye.set(camera.position);
       this.frameEye.set(camera.position);
       /* Held for the medium's march, which runs long after every draw and needs the sun the
          frame was lit by. Referenced rather than copied, exactly as `renderer.ts` holds its
@@ -6835,25 +7224,69 @@ export class WebGPURenderer implements RendererApi {
      * is skipped by the same guard that skips it for motion blur: it is not the picture the
      * history holds, and jittering it would resolve a reflection against the viewer's frame.
      */
+    /*
+     * **Reconstruction jitters instead of the temporal resolve, never as well as it.** Both
+     * accumulate a history out of a jittered sequence, and running them together would resolve the
+     * frame twice — once at the render size and again at the output size, against a history whose
+     * own frames had already been mixed. So this is a choice rather than a pair, reconstruction
+     * wins where a consumer asked for both, and `temporalResolve` is skipped while it runs.
+     *
+     * Its sequence is its own: `reconJitterPhases` takes eight positions for every output pixel a
+     * render pixel covers, where the temporal resolve's eight are enough at one to one.
+     */
+    this.reconstructing = this.reconstructionWanted && !this.reflectionPassActive;
+    if (this.quality.reconstruction > 0 && this.samples > 1 && !this.reconMultisampleSaid) {
+      this.reconMultisampleSaid = true;
+      console.warn(RECONSTRUCTION_MULTISAMPLE_REFUSAL);
+    }
+    if (this.reconstructing) {
+      /*
+       * The offset `settleReconJitter` chose for the frame at `beginFrame`, applied here and not
+       * advanced here: a frame binding its mesh pass twice is one frame of the sequence.
+       *
+       * **The y offset is negated on the way in, and that is not a preference.** This shifts the
+       * *corrected* matrix, whose y `CLIP_CORRECTION` has already negated so that the negation
+       * every generated vertex stage ends with cancels out — §3 row 56. So an offset added here
+       * arrives on screen with its sign reversed, while x, which nothing negates, arrives as
+       * given. The temporal resolve cannot see this because its shader never reads the offset; the
+       * reconstruction reads it at every texel it unprojects, and a sign error there moves every
+       * sample two jitters away from where the depth says it is.
+       */
+      this.viewProj = jitterProjection(
+        this.jitteredViewProj,
+        this.correctedViewProj,
+        this.reconJitter[0] as number,
+        -(this.reconJitter[1] as number),
+        this.renderWidth,
+        this.renderHeight,
+      ) as Float32Array;
+      this.temporalJittering = false;
+      this.temporalHistoryUsable = false;
+    }
     this.temporalJittering =
-      this.quality.temporalAa && this.quality.screenEffects && !this.reflectionPassActive;
+      !this.reconstructing &&
+      this.quality.temporalAa &&
+      this.quality.screenEffects &&
+      !this.reflectionPassActive;
     if (this.temporalJittering) {
+      /* The scene's size, not the drawing buffer's: the history is a picture of the render. */
       this.temporalHistoryUsable = this.temporalHistory.openFrame(
-        Math.max(1, this.surface.canvas.width),
-        Math.max(1, this.surface.canvas.height),
+        this.renderWidth,
+        this.renderHeight,
       );
       const [jx, jy] = jitterOffset(this.temporalHistory.frameIndex);
       this.temporalJitterX = jx;
       this.temporalJitterY = jy;
+      /* A jitter is half a *render* texel, which is what the sequence is spread over. */
       this.viewProj = jitterProjection(
         this.jitteredViewProj,
         this.correctedViewProj,
         jx,
         jy,
-        Math.max(1, this.surface.canvas.width),
-        Math.max(1, this.surface.canvas.height),
+        this.renderWidth,
+        this.renderHeight,
       ) as Float32Array;
-    } else {
+    } else if (!this.reconstructing) {
       this.temporalHistoryUsable = false;
       this.viewProj = this.correctedViewProj;
     }
@@ -7112,6 +7545,8 @@ export class WebGPURenderer implements RendererApi {
        * face size, and the array's stops one level below the diffuse term.
        */
       f[at('uEnvironmentEdge')] = this.probeEdge;
+      /* Off until the indirect pass fills the moment layers. See `quality.indirectLight`. */
+      f[at('uProbeVisibilityEnabled')] = 0;
       f[at('uEnvironmentIrradianceLevel')] = irradianceLevelFor(this.probeEdge);
       f[at('uProbeGridAmbient')] = usable && this.probeAmbient ? 1 : 0;
     }
@@ -7316,7 +7751,7 @@ export class WebGPURenderer implements RendererApi {
      * block rather than uploading it: the next draw takes the slot. `renderer.ts` resets the
      * same terms here, which is why a pass cannot inherit a material from the one before it.
      */
-    this.materialSlot = -1;
+    this.materials.dirty();
     /* A pass starts with no material, exactly as `renderer.ts` resets these terms. */
     this.albedo = null;
     this.bindGroup = this.blankAlbedoBindGroup;
@@ -7332,7 +7767,7 @@ export class WebGPURenderer implements RendererApi {
    * each, which is what it asked for.
    */
   private materialSlotForDraw(): number | null {
-    if (this.materialSlot >= 0) return this.materialSlot;
+    if (this.materials.open) return this.materials.slot;
     const slot = this.perFrame.allocate();
     if (slot === null) {
       if (!this.warnedMaterialsFull) {
@@ -7344,7 +7779,7 @@ export class WebGPURenderer implements RendererApi {
       return null;
     }
     this.perFrame.writeBlock(slot, this.perFrameInts);
-    this.materialSlot = slot;
+    this.materials.slot = slot;
     return slot;
   }
 
@@ -7370,6 +7805,8 @@ export class WebGPURenderer implements RendererApi {
     model: ArrayLike<number>,
     depthLayer = 0,
     tint: Vec3 | null = null,
+    /** Where it was last frame. See `RendererApi.drawMesh`, and `runMotion` for what reads it. */
+    previousModel: ArrayLike<number> | null = null,
   ): void {
     /*
      * Skipped where the flag asks and the bounds say so.
@@ -7389,6 +7826,12 @@ export class WebGPURenderer implements RendererApi {
      * did before.
      */
     if (this.quality.cullDraws && this.occluded(mesh.bounds, model as ReadonlyMat4)) return;
+    /*
+     * Recorded after the two culls rather than before: a mesh the frame does not draw writes no
+     * depth, so a motion pass drawing it would either be depth-rejected everywhere — wasted — or,
+     * where it happened to pass, write motion for a surface no pixel of the frame belongs to.
+     */
+    if (previousModel !== null) this.recordMotion(mesh, model, previousModel);
     this.submitMesh(mesh, model, tint, 1, false, { depthLayer });
   }
 
@@ -7586,7 +8029,6 @@ export class WebGPURenderer implements RendererApi {
       /* Material state exactly like `uOpacity`, dirtied for the accumulation pass and restored
          below — the revealage pass draws with it at zero and its colour multiplied away. */
       this.perFrameFloats[this.materialField('uOitWeighted')] = this.oitMode === 'accum' ? 1 : 0;
-      this.materialSlot = -1;
     }
     /* Same shape as `dimmed`: a slot is only worth taking when either differs from the default
        `bindMeshPass` already wrote, and both are put back together once the draw is submitted. */
@@ -7597,13 +8039,11 @@ export class WebGPURenderer implements RendererApi {
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
       if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 0;
-      this.materialSlot = -1;
     }
     /* `1` is sRGB alone: the conversion without the curve. `Math.min` rather than a literal, so
        a renderer asked for `none` stays at none. See `TranslucentMeshOptions.toneMapped`. */
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.gradeCode(), 1);
-      this.materialSlot = -1;
     }
     /*
      * **Refraction, and the snapshot it reads is taken here or the draw does not refract.**
@@ -7624,8 +8064,11 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameFloats[tintAt + 1] = refractTint?.[1] ?? 1;
       this.perFrameFloats[tintAt + 2] = refractTint?.[2] ?? 1;
       this.perFrameFloats[this.materialField('uRefractThickness')] = options.thicknessM ?? 0;
-      this.materialSlot = -1;
     }
+    /* Taken for itself when any of those differs from the pass, and put back below: the rule both
+       backends count material changes by. See `materialChanges.ts`. */
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    if (own) this.materials.dirty();
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /*
      * A rigged mesh takes the skinned vertex variant, an unrigged one the plain variant, and the
@@ -7758,23 +8201,20 @@ export class WebGPURenderer implements RendererApi {
     if (dimmed) {
       this.perFrameFloats[this.materialField('uOpacity')] = 1;
       this.perFrameFloats[this.materialField('uOitWeighted')] = 0;
-      this.materialSlot = -1;
     }
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
       if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 1;
-      this.materialSlot = -1;
     }
     if (refracting) {
       /* Back to off for every other draw in the frame, exactly as `uOpacity` is: this scratch is
          shared, so a strength left set is worn by everything drawn after it. */
       this.perFrameFloats[this.materialField('uRefractStrength')] = 0;
-      this.materialSlot = -1;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
-      this.materialSlot = -1;
     }
+    if (own) this.materials.dirty();
   }
 
   /** Release geometry. */
@@ -7912,7 +8352,6 @@ export class WebGPURenderer implements RendererApi {
     const dimmed = opacity < 1;
     if (dimmed) {
       this.perFrameFloats[this.materialField('uOpacity')] = opacity;
-      this.materialSlot = -1;
     }
     const lit = options.lit ?? true;
     const fog = options.fog ?? true;
@@ -7921,15 +8360,16 @@ export class WebGPURenderer implements RendererApi {
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
       if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 0;
-      this.materialSlot = -1;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.gradeCode(), 1);
-      this.materialSlot = -1;
     }
 
     const depthWrite = options.depthWrite ?? true;
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
+    /* An instanced draw does not refract. See `materialChanges.ts`. */
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting: false });
+    if (own) this.materials.dirty();
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
        a third vertex buffer and a different vertex module, and sharing a cache entry with the
@@ -7999,17 +8439,15 @@ export class WebGPURenderer implements RendererApi {
        past the restore leaves the rest of the frame unlit, unfogged or undimmed. */
     if (dimmed) {
       this.perFrameFloats[this.materialField('uOpacity')] = 1;
-      this.materialSlot = -1;
     }
     if (unlitOrUnfogged) {
       this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
       this.perFrameInts[this.materialField('uFogEnabled')] = 1;
-      this.materialSlot = -1;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
-      this.materialSlot = -1;
     }
+    if (own) this.materials.dirty();
   }
 
   /* -- Scatter ------------------------------------------------------------------------ */
@@ -8826,7 +9264,7 @@ export class WebGPURenderer implements RendererApi {
       this.emissiveMap,
     );
     /* The open material lives in a slot of a buffer that no longer exists. */
-    this.materialSlot = -1;
+    this.materials.dirty();
   }
 
   /**
@@ -8970,7 +9408,7 @@ export class WebGPURenderer implements RendererApi {
      * consumer running the temporal resolve without motion blur would have reprojected through a
      * `previousViewProj` nothing had ever written.
      */
-    const wantsReprojection = blur > 0 || this.temporalJittering;
+    const wantsReprojection = blur > 0 || this.temporalJittering || this.reconstructing;
     if (wantsReprojection && this.viewProj !== null) {
       if (this.hasPreviousView) {
         mat4.invert(this.reprojection, this.correctedViewProj);
@@ -9025,6 +9463,15 @@ export class WebGPURenderer implements RendererApi {
     if (mediumActive(this.mediumOptions, this.quality.globalMediumSteps)) this.runMedium(encoder);
     /* After the depth it reprojects through, and before anything reads the scene. */
     this.temporalResolve(encoder);
+    /*
+     * **Reconstruction stands where the temporal resolve stands**, for the same reasons: after
+     * everything that draws into the scene and after the depth it reprojects through, and before
+     * bloom and the composite read the picture. It cannot copy its result back over the scene the
+     * way the temporal resolve does — the two are different sizes — so the composite is given a
+     * bind group of its own instead, which is the second group `temporalResolve` declined.
+     */
+    this.runMotion(encoder);
+    this.runReconstruction(encoder);
     const aoStrength = this.quality.ambientOcclusion;
     if (aoStrength > 0 && this.frameProjection !== null) this.runOcclusion(encoder);
     const bloomStrength = this.quality.bloom * this.bloomScale;
@@ -9087,8 +9534,9 @@ export class WebGPURenderer implements RendererApi {
         this.surface.format,
       ),
     );
-    if (this.rushBindGroup === null) return;
-    pass.setBindGroup(0, this.rushBindGroup, [0]);
+    const rush = this.reconstructing ? this.reconRushGroup : this.rushBindGroup;
+    if (rush === null) return;
+    pass.setBindGroup(0, rush, [0]);
     pass.draw(3);
     pass.end();
   }
@@ -9109,6 +9557,15 @@ export class WebGPURenderer implements RendererApi {
     if (this.sceneColorView === null || this.resolvedDepthView === null) return;
     if (this.aoTargetView === null) return;
     this.rushBindGroup = this.buildRushBindGroup('post.rushBindGroup', this.sceneColorView);
+    /*
+     * **And the reconstruction's twin, from the same three call sites.** A colour grade replaces
+     * the lookup table and a resize replaces the depth and the occlusion target, and both groups
+     * hold all three — so a second place that rebuilt only one of them is how the composite would
+     * come to read a stale view on exactly the frames a consumer changed something.
+     */
+    if (this.reconShownView !== null) {
+      this.reconRushGroup = this.buildRushBindGroup('recon.rushBindGroup', this.reconShownView);
+    }
   }
 
   /** The composite's group over one scene source. See `rebuildRushBindGroup`. */
@@ -9162,6 +9619,506 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /** Sample zero of the depth, into something the generated shaders can sample. */
+  /**
+   * Allocate what a reconstruction needs, and release it when nobody is asking.
+   *
+   * Sized by a key rather than by comparing four numbers, because three of the six targets are the
+   * output's size and three are the render's, and a comparison that checked one pair would rebuild
+   * half of them on a resize and keep the other half at the old size — which the device accepts,
+   * a bind group holding views of two different sizes being perfectly legal, and which draws a
+   * picture with a piece of it at the wrong scale.
+   */
+  private ensureReconstruction(
+    renderWidth: number,
+    renderHeight: number,
+    outputWidth: number,
+    outputHeight: number,
+  ): void {
+    const wanted = this.reconstructionWanted;
+    const key = wanted ? `${renderWidth}x${renderHeight}:${outputWidth}x${outputHeight}` : '';
+    if (key === this.reconSizeKey) return;
+    this.reconSizeKey = key;
+
+    for (const dead of [
+      ...this.reconHistories,
+      this.reconShown,
+      this.reconMotion,
+      this.reconPreviousDepth,
+    ]) {
+      dead?.destroy();
+    }
+    this.reconHistories = [null, null];
+    this.reconHistoryViews = [null, null];
+    this.reconShown = null;
+    this.reconShownView = null;
+    this.reconMotion = null;
+    this.reconMotionView = null;
+    this.reconPreviousDepth = null;
+    this.reconPreviousDepthView = null;
+    this.reconGroups = [null, null];
+    this.reconSharpenGroups = [null, null];
+    this.reconRushGroup = null;
+    /* A history of a size that no longer exists is not a history of this frame. */
+    this.reconHasHistory = false;
+    if (!wanted) return;
+
+    const { device } = this.surface;
+    const HISTORY_USAGE = 0x4 | 0x8; // TEXTURE_BINDING | STORAGE_BINDING
+    for (let i = 0; i < 2; i += 1) {
+      const texture = device.createTexture({
+        label: `recon.history${String(i)}`,
+        size: [outputWidth, outputHeight],
+        format: RECON_HISTORY_FORMAT,
+        usage: HISTORY_USAGE,
+      });
+      this.reconHistories[i] = texture;
+      this.reconHistoryViews[i] = texture.createView();
+    }
+    this.reconShown = device.createTexture({
+      label: 'recon.shown',
+      size: [outputWidth, outputHeight],
+      format: RECON_HISTORY_FORMAT,
+      usage: HISTORY_USAGE,
+    });
+    this.reconShownView = this.reconShown.createView();
+    this.reconMotion = device.createTexture({
+      label: 'recon.motion',
+      size: [renderWidth, renderHeight],
+      format: RECON_HISTORY_FORMAT,
+      /* An attachment as well, because the pass that will write it is a draw. Nothing writes it
+         today and nothing needs to clear it either: WebGPU zero-initialises a new texture, and
+         a zero in the fourth channel is what tells the resolve to derive the camera's motion. */
+      usage: 0x4 | 0x10,
+    });
+    this.reconMotionView = this.reconMotion.createView();
+    this.reconPreviousDepth = device.createTexture({
+      label: 'recon.previousDepth',
+      size: [renderWidth, renderHeight],
+      format: RESOLVED_DEPTH_FORMAT,
+      usage: 0x4 | 0x2, // TEXTURE_BINDING | COPY_DST
+    });
+    this.reconPreviousDepthView = this.reconPreviousDepth.createView();
+
+    this.reconParams ??= device.createBuffer({
+      label: 'recon.params',
+      size: this.reconStaging.byteLength,
+      usage: 0x40 | 0x8, // UNIFORM | COPY_DST
+    });
+    this.buildReconPipelines();
+    this.rebuildReconGroups();
+  }
+
+  /**
+   * The two dispatches, over one explicit layout.
+   *
+   * **Explicit and not `layout: 'auto'`**, which §3 row 51 is about: an inferred layout names only
+   * the bindings its own entry point reads, and these two read different subsets of one module —
+   * the sharpen touches nothing but the history and the target. Two inferred layouts cannot share
+   * a bind group, and building two groups over the same resources is two things to keep in step.
+   */
+  private buildReconPipelines(): void {
+    if (this.reconLayout !== null) return;
+    const { device } = this.surface;
+    const COMPUTE = 0x4; // GPUShaderStage.COMPUTE
+    const sampled = (binding: number, sampleType: GPUTextureSampleType) => ({
+      binding,
+      visibility: COMPUTE,
+      texture: { sampleType, viewDimension: '2d' as const },
+    });
+    this.reconLayout = device.createBindGroupLayout({
+      label: 'recon.layout',
+      entries: [
+        sampled(0, 'float'),
+        /* r32float is not filterable, and the resolve only ever loads a depth texel. */
+        sampled(1, 'unfilterable-float'),
+        sampled(2, 'float'),
+        sampled(3, 'unfilterable-float'),
+        sampled(4, 'float'),
+        { binding: 5, visibility: COMPUTE, sampler: { type: 'filtering' as const } },
+        { binding: 6, visibility: COMPUTE, buffer: { type: 'uniform' as const } },
+        {
+          binding: 7,
+          visibility: COMPUTE,
+          storageTexture: {
+            access: 'write-only' as const,
+            format: RECON_HISTORY_FORMAT,
+            viewDimension: '2d' as const,
+          },
+        },
+      ],
+    });
+    const module = device.createShaderModule({ label: 'recon.resolve', code: reconResolveWgsl() });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [this.reconLayout] });
+    this.reconResolvePipeline = device.createComputePipeline({
+      label: 'recon.resolve',
+      layout,
+      compute: { module, entryPoint: 'resolveMain' },
+    });
+    this.reconSharpenPipeline = device.createComputePipeline({
+      label: 'recon.sharpen',
+      layout,
+      compute: { module, entryPoint: 'sharpenMain' },
+    });
+  }
+
+  /**
+   * The four groups, one a direction of the ping-pong and one a dispatch.
+   *
+   * The resolve reads history `1 - write` and writes history `write`; the sharpen reads history
+   * `write` and writes the shown picture. A group holds the views it was built with, so this is
+   * called whenever any of them is replaced.
+   */
+  private rebuildReconGroups(): void {
+    const layout = this.reconLayout;
+    const params = this.reconParams;
+    if (layout === null || params === null) return;
+    if (this.sceneColorView === null || this.resolvedDepthView === null) return;
+    if (this.reconMotionView === null || this.reconPreviousDepthView === null) return;
+    if (this.reconShownView === null) return;
+    const { device } = this.surface;
+    const build = (label: string, history: GPUTextureView, target: GPUTextureView) =>
+      device.createBindGroup({
+        label,
+        layout,
+        entries: [
+          { binding: 0, resource: this.sceneColorView as GPUTextureView },
+          { binding: 1, resource: this.resolvedDepthView as GPUTextureView },
+          { binding: 2, resource: this.reconMotionView as GPUTextureView },
+          { binding: 3, resource: this.reconPreviousDepthView as GPUTextureView },
+          { binding: 4, resource: history },
+          { binding: 5, resource: this.postSampler },
+          { binding: 6, resource: { buffer: params } },
+          { binding: 7, resource: target },
+        ],
+      });
+    for (let write = 0; write < 2; write += 1) {
+      const read = this.reconHistoryViews[1 - write];
+      const target = this.reconHistoryViews[write];
+      if (read === null || target === null) continue;
+      this.reconGroups[write] = build(`recon.resolve${String(write)}`, read, target);
+      this.reconSharpenGroups[write] = build(
+        `recon.sharpen${String(write)}`,
+        target,
+        this.reconShownView,
+      );
+    }
+    /* The composite's own group, over the resolved picture instead of the scene target. */
+    this.reconRushGroup = this.buildRushBindGroup('recon.rushBindGroup', this.reconShownView);
+    /* And the scene's, because `ensureComposite` built it before this one existed. */
+    this.rebuildRushBindGroup();
+  }
+
+  /**
+   * Remember that this mesh moved, so the motion pass can draw where it was.
+   *
+   * Silent unless a reconstruction is running: a scene that always states its previous transforms
+   * — which is the right thing for a scene to do, the alternative being to know what the renderer
+   * is configured as — must cost nothing at all when nobody is going to read them.
+   */
+  private recordMotion(
+    mesh: GpuMesh,
+    model: ArrayLike<number>,
+    previousModel: ArrayLike<number>,
+  ): void {
+    if (!this.reconstructing) return;
+    const at = this.motionCount;
+    const wanted = (at + 1) * MOTION_DRAW_FLOATS;
+    if (this.motionMatrices.length < wanted) {
+      /* Doubling, so a scene settles on one allocation rather than one a draw. */
+      const grown = new Float32Array(Math.max(wanted, this.motionMatrices.length * 2, 64));
+      grown.set(this.motionMatrices);
+      this.motionMatrices = grown;
+    }
+    this.motionMatrices.set(model as ArrayLike<number> & Iterable<number>, at * MOTION_DRAW_FLOATS);
+    this.motionMatrices.set(
+      previousModel as ArrayLike<number> & Iterable<number>,
+      at * MOTION_DRAW_FLOATS + 16,
+    );
+    this.motionMeshes[at] = mesh;
+    this.motionCount = at + 1;
+  }
+
+  /**
+   * The pipeline the motion pass draws with, built once.
+   *
+   * **The position buffer alone**, because that is all the shader reads and a mesh keeps one buffer
+   * an attribute — so this binds buffer zero and nothing else, whatever else the mesh carries.
+   */
+  private buildMotionPipeline(): void {
+    if (this.motionLayout !== null) return;
+    const { device } = this.surface;
+    this.motionLayout = device.createBindGroupLayout({
+      label: 'recon.motion.layout',
+      entries: [
+        { binding: 0, visibility: 0x1, buffer: { type: 'uniform' as const } },
+        {
+          binding: 1,
+          visibility: 0x1,
+          buffer: { type: 'uniform' as const, hasDynamicOffset: true },
+        },
+      ],
+    });
+    this.motionModule = device.createShaderModule({
+      label: 'recon.motion',
+      code: RECON_MOTION_WGSL,
+    });
+    this.motionPipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [this.motionLayout],
+    });
+  }
+
+  /** The pipeline for one vertex stride, built on first sight of it. */
+  private motionPipelineFor(stride: number): GPURenderPipeline | null {
+    const held = this.motionPipelines.get(stride);
+    if (held !== undefined) return held;
+    const module = this.motionModule;
+    const layout = this.motionPipelineLayout;
+    if (module === null || layout === null) return null;
+    const { device } = this.surface;
+    const pipeline = device.createRenderPipeline({
+      label: `recon.motion.${String(stride)}`,
+      layout,
+      vertex: {
+        module,
+        entryPoint: 'motionVert',
+        /* Positions are the layout's first attribute and are never optional, so they are at offset
+           zero of every stride this can be handed. */
+        buffers: [
+          {
+            arrayStride: stride,
+            attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+          },
+        ],
+      },
+      fragment: { module, entryPoint: 'motionFrag', targets: [{ format: MOTION_TARGET_FORMAT }] },
+      /*
+       * **The scene's own winding**, because this draws the scene's geometry through the scene's
+       * clip transform — the product the renderer hands over already carries the negation that
+       * `naga` writes into every generated vertex stage, so the faces come out the way they did
+       * and a `cw` front face here would draw the inside of every mesh. §3 row 57.
+       */
+      primitive: { topology: 'triangle-list', cullMode: 'back' },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        /*
+         * **Tested and not written.** The frame's depth is finished; this pass only wants the
+         * pixels the scene actually kept, and `DEPTH_COMPARE_EQUAL` is the comparison that admits
+         * exactly them — the same transform on the same positions gives the same depth, which is
+         * why the rasterisation matrix is handed over whole rather than rebuilt here.
+         *
+         * **And the equality is not fragile here**, which was worth measuring rather than
+         * assuming: this driver contracts multiply-adds (§3 row 107) and two shader modules can
+         * contract a matrix product differently, so an equality across them could have admitted
+         * only some of a surface. Run with `greater-equal` instead, the ghost measured the same
+         * to the pixel — 5,942 either way — so nothing is being dropped.
+         */
+        depthWriteEnabled: false,
+        depthCompare: DEPTH_COMPARE_EQUAL,
+      },
+    });
+    this.motionPipelines.set(stride, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * Where every mover was last frame, into the motion target.
+   *
+   * **After everything that draws and before the resolve reads it.** The frame's depth has to be
+   * finished for the equality test to mean anything, and the resolve is what consumes the result.
+   */
+  private runMotion(encoder: GPUCommandEncoder): void {
+    const target = this.reconMotionView;
+    const depth = this.depthView;
+    if (!this.reconstructing || target === null || depth === null) return;
+    const { device } = this.surface;
+    this.buildMotionPipeline();
+    const layout = this.motionLayout;
+    if (layout === null) return;
+
+    /*
+     * **Cleared every frame, even when nothing moved.** A texel left from last frame is a flag
+     * saying "a draw wrote this", and the resolve would take a motion belonging to a surface that
+     * is no longer there. The clear is the pass's own load operation, so an empty queue still runs
+     * it — which is why this is not returned from before the pass is opened.
+     */
+    const pass = encoder.beginRenderPass({
+      label: 'recon.motion',
+      timestampWrites: this.gpuTimer.writesFor(),
+      colorAttachments: [
+        { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+      ],
+      depthStencilAttachment: {
+        view: depth,
+        depthLoadOp: 'load',
+        depthStoreOp: 'store',
+        depthReadOnly: false,
+      },
+    });
+
+    const count = this.motionCount;
+    if (count > 0) {
+      const bytes = count * MOTION_DRAW_STRIDE;
+      if (this.motionDrawCapacity < count) {
+        this.motionDrawBuffer?.destroy();
+        this.motionDrawCapacity = Math.max(count, this.motionDrawCapacity * 2, 16);
+        this.motionDrawBuffer = device.createBuffer({
+          label: 'recon.motion.draws',
+          size: this.motionDrawCapacity * MOTION_DRAW_STRIDE,
+          usage: 0x40 | 0x8, // UNIFORM | COPY_DST
+        });
+        this.motionDrawStaging = new Uint8Array(this.motionDrawCapacity * MOTION_DRAW_STRIDE);
+        this.motionGroup = null;
+      }
+      this.motionFrameBuffer ??= device.createBuffer({
+        label: 'recon.motion.frame',
+        size: MOTION_FRAME_FLOATS * 4,
+        usage: 0x40 | 0x8,
+      });
+      this.motionGroup ??= device.createBindGroup({
+        label: 'recon.motion.group',
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: this.motionFrameBuffer } },
+          {
+            binding: 1,
+            resource: { buffer: this.motionDrawBuffer as GPUBuffer, size: MOTION_DRAW_STRIDE },
+          },
+        ],
+      });
+
+      /* The scene's clip transform, with the generated stages' y negation folded in. */
+      mat4.multiply(this.motionRaster, MOTION_CLIP_FLIP, this.viewProj ?? this.correctedViewProj);
+      this.motionFrameStaging.set(this.motionRaster as Float32Array, 0);
+      this.motionFrameStaging.set(this.frameRawViewProj as Float32Array, 16);
+      this.motionFrameStaging.set(this.reconPreviousRawViewProj as Float32Array, 32);
+      device.queue.writeBuffer(this.motionFrameBuffer, 0, this.motionFrameStaging);
+
+      const draws = new Float32Array(this.motionDrawStaging.buffer);
+      for (let i = 0; i < count; i += 1) {
+        draws.set(
+          this.motionMatrices.subarray(i * MOTION_DRAW_FLOATS, (i + 1) * MOTION_DRAW_FLOATS),
+          (i * MOTION_DRAW_STRIDE) / 4,
+        );
+      }
+      device.queue.writeBuffer(
+        this.motionDrawBuffer as GPUBuffer,
+        0,
+        this.motionDrawStaging,
+        0,
+        bytes,
+      );
+
+      let bound: GPURenderPipeline | null = null;
+      for (let i = 0; i < count; i += 1) {
+        const mesh = this.motionMeshes[i];
+        if (mesh === undefined) continue;
+        const pipeline = this.motionPipelineFor(mesh.vertexStride);
+        if (pipeline === null) continue;
+        if (pipeline !== bound) {
+          pass.setPipeline(pipeline);
+          bound = pipeline;
+        }
+        pass.setBindGroup(0, this.motionGroup, [i * MOTION_DRAW_STRIDE]);
+        pass.setVertexBuffer(0, mesh.vertexBuffers[0] as GPUBuffer);
+        pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
+        pass.drawIndexed(mesh.indexCount);
+      }
+    }
+    pass.end();
+  }
+
+  /**
+   * DriftTR tier 0: the jittered render at the render size into the picture at the output size.
+   *
+   * `recon/resolve.ts` is the reference this is held to and `scripts/recon-parity.mjs` compares the
+   * two; nothing here decides anything the reference does not.
+   */
+  private runReconstruction(encoder: GPUCommandEncoder): void {
+    if (!this.reconstructing) return;
+    const resolve = this.reconResolvePipeline;
+    const sharpen = this.reconSharpenPipeline;
+    const params = this.reconParams;
+    const write = this.reconWrite;
+    const group = this.reconGroups[write];
+    const sharpenGroup = this.reconSharpenGroups[write];
+    if (resolve === null || sharpen === null || params === null) return;
+    if (group === null || sharpenGroup === null) return;
+    const { device } = this.surface;
+    const outputWidth = Math.max(1, this.surface.canvas.width);
+    const outputHeight = Math.max(1, this.surface.canvas.height);
+
+    /*
+     * **The unjittered matrices**, which is what the reference's own header insists on: the
+     * history stands for the scene as it would have been drawn with no jitter, and the motion the
+     * resolve derives carries none. `frameRawViewProj` is the camera's own view-projection, in
+     * OpenGL's depth convention — which is the convention the shader's accessor converts the
+     * renderer's reversed buffer into.
+     */
+    mat4.invert(this.reconInverseViewProj, this.frameRawViewProj);
+    const f = this.reconFloats;
+    const u = this.reconInts;
+    u[0] = this.renderWidth;
+    u[1] = this.renderHeight;
+    u[2] = outputWidth;
+    u[3] = outputHeight;
+    f[4] = this.reconJitter[0] as number;
+    f[5] = this.reconJitter[1] as number;
+    f[6] = this.reconPreviousJitter[0] as number;
+    f[7] = this.reconPreviousJitter[1] as number;
+    f.set(this.reconInverseViewProj as Float32Array, 8);
+    f.set(this.reconPreviousRawViewProj as Float32Array, 24);
+    f.set(this.reconPreviousInverseViewProj as Float32Array, 40);
+    f.set(this.reconEye, 56);
+    f.set(this.reconPreviousEye, 60);
+    f[64] = DEFAULT_RECON_QUALITY.alpha;
+    f[65] = DEFAULT_RECON_QUALITY.sharpen;
+    f[66] = DEFAULT_RECON_QUALITY.clampGamma;
+    u[67] = this.reconHasHistory ? 1 : 0;
+    f[68] = DEFAULT_DISOCCLUSION.depthTolerance;
+    f[69] = DEFAULT_DISOCCLUSION.motionScale;
+    f[70] = DEFAULT_DISOCCLUSION.normalFloor;
+    f[71] = DEFAULT_DISOCCLUSION.normalCeiling;
+    device.queue.writeBuffer(params, 0, this.reconStaging);
+
+    const groupsX = Math.ceil(outputWidth / RECON_WORKGROUP);
+    const groupsY = Math.ceil(outputHeight / RECON_WORKGROUP);
+    const pass = encoder.beginComputePass({
+      label: 'recon.resolve',
+      timestampWrites: this.gpuTimer.writesFor(),
+    });
+    pass.setPipeline(resolve);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(groupsX, groupsY, 1);
+    /*
+     * **The sharpen in the same pass, and that is legal because it reads a different texture.**
+     * The resolve wrote history `write`; the sharpen reads it and writes the shown picture. Two
+     * dispatches in one compute pass see each other's writes in recording order, and the rule
+     * §3 row 52 is about — one buffer writable and readable in a single synchronisation scope —
+     * does not bite, because no resource here is both.
+     */
+    pass.setPipeline(sharpen);
+    pass.setBindGroup(0, sharpenGroup);
+    pass.dispatchWorkgroups(groupsX, groupsY, 1);
+    pass.end();
+
+    /* Last frame's depth, for the disocclusion test and the normals derived from it. */
+    const depth = this.resolvedDepth;
+    const previous = this.reconPreviousDepth;
+    if (depth !== null && previous !== null) {
+      encoder.copyTextureToTexture({ texture: depth }, { texture: previous }, [
+        previous.width,
+        previous.height,
+        1,
+      ]);
+    }
+
+    this.reconWrite = 1 - write;
+    this.reconHasHistory = true;
+    mat4.copy(this.reconPreviousRawViewProj, this.frameRawViewProj);
+    mat4.copy(this.reconPreviousInverseViewProj, this.reconInverseViewProj);
+    this.reconPreviousEye.set(this.reconEye);
+  }
+
   private resolveDepth(encoder: GPUCommandEncoder): void {
     const target = this.resolvedDepthView;
     const source = this.depthView;
@@ -9204,6 +10161,12 @@ export class WebGPURenderer implements RendererApi {
    * must still write, or the history it leaves for the next frame is whatever was in the texture.
    */
   private temporalResolve(encoder: GPUCommandEncoder): void {
+    /*
+     * **One guard, not two.** A second test on `reconstructing` here read as belt and braces and
+     * was worse than nothing: it and the `!reconstructing` in `temporalJittering`'s own condition
+     * each covered the other, so breaking either one changed no behaviour and no test could see
+     * it. `temporalJittering` is where the choice is made, and it is made once.
+     */
     if (!this.temporalJittering) return;
     const write = this.taaWrite;
     const target = this.taaViews[write];
@@ -9214,8 +10177,8 @@ export class WebGPURenderer implements RendererApi {
     const f = this.taaFloats;
     const at = (name: string): number => this.postField(TAA_FRAG_FIELDS, name);
     f.set(this.reprojection, at('uReprojection'));
-    f[at('uTexel')] = 1 / Math.max(1, this.surface.canvas.width);
-    f[at('uTexel') + 1] = 1 / Math.max(1, this.surface.canvas.height);
+    f[at('uTexel')] = 1 / this.renderWidth;
+    f[at('uTexel') + 1] = 1 / this.renderHeight;
     f[at('uHistoryBlend')] = this.temporalHistoryUsable ? TEMPORAL_HISTORY_BLEND : 0;
     device.queue.writeBuffer(this.taaUniforms, 0, this.taaStaging);
 
@@ -9296,8 +10259,9 @@ export class WebGPURenderer implements RendererApi {
     }
     if (!this.frameCameraSeen) return;
     const { device } = this.surface;
-    const width = Math.max(1, this.surface.canvas.width);
-    const height = Math.max(1, this.surface.canvas.height);
+    /* The scene's size: this marches through the picture's own texels, not the viewer's. */
+    const width = this.renderWidth;
+    const height = this.renderHeight;
     const view = this.frameRawViewProj as Float32Array;
 
     mat4.invert(this.ssrDepthToWorld, view);
@@ -9406,8 +10370,9 @@ export class WebGPURenderer implements RendererApi {
     }
     if (!this.frameCameraSeen) return;
     const { device } = this.surface;
-    const width = Math.max(1, this.surface.canvas.width);
-    const height = Math.max(1, this.surface.canvas.height);
+    /* The scene's size: a mark is projected onto the depth this frame drew, at that depth's size. */
+    const width = this.renderWidth;
+    const height = this.renderHeight;
     const view = this.frameRawViewProj as Float32Array;
 
     mat4.invert(this.decalDepthToWorld, view);
@@ -9493,6 +10458,23 @@ export class WebGPURenderer implements RendererApi {
     }
     const { device } = this.surface;
     const options = this.oitReplayOptions;
+    /*
+     * **A refracting pane reads the frame behind it, and here that frame is finished.** So the
+     * copy it reads is taken now, from the resolved scene, once for the whole set — the immediate
+     * path takes it by ending the scene's pass, and that pass has already ended. Only when
+     * something in the set refracts, because a copy of the frame is not free.
+     */
+    if (this.translucentQueue.refracts && !this.refractSnapshotTaken) {
+      const snapshot = this.refractSnapshot;
+      const source = this.sceneColor;
+      if (snapshot !== null && source !== null) {
+        encoder.copyTextureToTexture({ texture: source }, { texture: snapshot }, [
+          snapshot.width,
+          snapshot.height,
+        ]);
+        this.refractSnapshotTaken = true;
+      }
+    }
 
     const buffers = [
       { mode: 'accum' as const, view: accum, clear: [0, 0, 0, 0] as const },
@@ -9524,6 +10506,12 @@ export class WebGPURenderer implements RendererApi {
         options.depthWrite = false;
         options.depthLayer = draw.depthLayer;
         options.tint = draw.tint as unknown as Vec3 | null;
+        /* Replayed too, as the other backend replays it: a pane that refracts under sorted
+           blending and stands clear under this effect reads as a bug in the effect. It did stand
+           clear here until 2026-09-19. */
+        options.refraction = draw.refraction;
+        options.refractTint = draw.refractTint as unknown as Vec3 | undefined;
+        options.thicknessM = draw.thicknessM;
         this.drawTranslucentMesh(draw.mesh as GpuMesh, draw.model, draw.opacity, options);
       });
       this.oitReplaying = false;
@@ -9980,6 +10968,9 @@ export class WebGPURenderer implements RendererApi {
   private takeRefractSnapshot(): boolean {
     if (this.reflectionPassActive || this.probePassActive) return false;
     if (this.refractSnapshotTaken) return true;
+    /* The replay of an order-independent set runs after the scene's pass has ended, and `runOit`
+       took the copy for it before it began; there is no pass here to end and reopen. */
+    if (this.oitReplaying) return false;
     const snapshot = this.refractSnapshot;
     const source = this.sceneColor;
     const encoder = this.encoder;
@@ -10139,7 +11130,22 @@ export class WebGPURenderer implements RendererApi {
        * recorded so far writes the scene target, so this must come out as exactly one pass;
        * anything else means a node declared a write it does not perform.
        */
-      const passes = schedule(this.arena, this.pendingClearMask, liveOut, this.scheduledPasses);
+      /*
+       * **Either scheduler, into the same records**, so nothing below knows which ran. The identifier
+       * graph is the one that can also express the second pipeline's frame; running it here is what
+       * shows it is a generalisation of this one rather than a different renderer — see
+       * `quality.identifierGraph` for the captures that say so.
+       */
+      const passes =
+        this.flushSchedule === null
+          ? schedule(this.arena, this.pendingClearMask, liveOut, this.scheduledPasses)
+          : scheduleFlush(
+              this.arena,
+              this.pendingClearMask,
+              liveOut,
+              this.flushSchedule,
+              this.scheduledPasses,
+            );
       this.passesLastFlush = passes;
       let discards = 0;
       let clears = 0;
@@ -10261,6 +11267,14 @@ export class WebGPURenderer implements RendererApi {
          once and ran against a discarded attachment that read zero everywhere — which is why
          there is one of these and why this line is in it. */
       (this.quality.temporalAa && this.quality.screenEffects) ||
+      /*
+       * **And so does a reconstruction, for the same reason, and it was missing for the same
+       * reason.** Without it the resolve read a discarded attachment as zero — the far plane
+       * reversed — so every surface stood at infinity: a turning camera reprojected correctly,
+       * since a turn moves every depth alike, and a sliding one moved nothing, and the history
+       * trailed every slide by the parallax it never saw.
+       */
+      this.reconstructing ||
       /*
        * **The order-independent passes attach the depth and test against it**, so a frame running
        * them needs it to survive the main pass. Without this it is discarded, those passes test
@@ -10614,6 +11628,15 @@ export class WebGPURenderer implements RendererApi {
     this.flushRings();
     framePass.end();
     this.pass = null;
+    /*
+     * **The one window in the frame where every declaration is in and no render pass is open.**
+     * A consumer declares its fields wherever in its own frame the objects live, so the earliest
+     * the set is complete is after the last verb; and a compute pass cannot be recorded inside a
+     * render pass, so the latest it can be recorded is before the composite opens its own. The
+     * probes traced from it are read by the next frame's shading, which is what a probe volume
+     * does anyway — it accumulates.
+     */
+    this.runIndirectLight(this.encoder);
     if (this.hasComposite) this.composite(this.encoder);
     /* And where there is no composite there is no depth to read, so a frame that submitted marks
        is told once rather than losing them quietly. See `refuseDecals`. */
@@ -10674,7 +11697,17 @@ export class WebGPURenderer implements RendererApi {
     const width = Math.max(1, this.budgeted.width);
     const height = Math.max(1, this.budgeted.height);
     this.surface.configure(width, height);
-    this.ensureComposite(width, height);
+    /*
+     * **The same split `beginFrame` makes, and it has to be made twice.** This path resized the
+     * composite to the drawing buffer while the frame resized it to the render size, so the two
+     * fought every time a canvas changed — and the reconstruction's bind groups, built here
+     * against the previous scene depth, held a view of a texture this call had just destroyed.
+     * The device's words for that are "destroyed texture used in a submit", on the next frame,
+     * after a resize, which is as far from the cause as a message gets.
+     */
+    const render = this.sceneSize();
+    this.ensureComposite(render.width, render.height);
+    this.ensureReconstruction(render.width, render.height, width, height);
     this.ensureReflection(width, height);
   }
 
@@ -10750,6 +11783,206 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * Declare a baked distance field that indirect light may be traced against.
+   *
+   * **The seam is `addOccluder`'s, and for `addOccluder`'s reason.** A distance field is the shape
+   * of a thing it is safe to be *traced against*, and only a consumer knows which of its objects
+   * that is true of — the walls and the terrain, not the leaves, not the water, not the thing it
+   * is about to delete. A renderer that derived the field from whatever was drawn would trace
+   * against the foliage and light the room with a hedge.
+   *
+   * **Declared anywhere in the frame and composed at its end**, which is the one window where
+   * every declaration is in and the encoder has no render pass open. Cleared at `beginFrame` with
+   * the decal and reflection queues, so a consumer redeclares every frame and a field it stops
+   * declaring stops lighting.
+   *
+   * The field is in the model matrix's own space and the matrix must carry uniform scale only —
+   * `composeGlobalField` gives the reason: a distance is not preserved by a non-uniform scale, and
+   * the factor to correct by depends on the direction to the nearest surface, which is exactly
+   * what a distance field does not record.
+   *
+   * **`albedo` is what colour this placement's surface is, and it decides what the bounce carries.**
+   * What leaves a surface is the light arriving times its albedo, so a ray that lands on a wall
+   * and does not know its colour returns the same answer for a red wall and a white one — measured
+   * on `demo/dev/bounce.html` before this argument existed. It is a placement's rather than a
+   * field's, because the same baked shape is placed many times and two pillars cut from one mould
+   * may be painted differently. White where it is left out, so every existing caller is unchanged.
+   */
+  addDistanceField(field: FieldSource, model: ReadonlyMat4, albedo?: ArrayLike<number>): void {
+    this.distanceFields.record(field, model, albedo);
+  }
+
+  /** Forget the fields declared this frame, for a consumer that rebuilds its list mid-frame. */
+  clearDistanceFields(): void {
+    this.distanceFields.reset();
+  }
+
+  /**
+   * Compose what the frame declared, or nothing at all.
+   *
+   * **Nothing at all is the ordinary case and must cost nothing.** `quality.indirectLight` is off
+   * by default and a frame that declared no fields has nothing to compose, so both are answered
+   * before the composer exists — which is what keeps the eighteen scenes byte-identical with the
+   * flag off rather than merely close.
+   */
+  private runIndirectLight(encoder: GPUCommandEncoder): void {
+    /*
+     * **The flag is read here and in no other place.** It used to be read again by each of the two
+     * steps, and a perturbation proved neither of those could fail: the bake needs a composed
+     * field, and only the composition makes one. A guard another guard covers is a line no test
+     * can hold — this session has had to remove three of them.
+     */
+    if (!this.quality.indirectLight) return;
+    this.composeDistanceField(encoder);
+    this.bakeIndirectProbes(encoder);
+  }
+
+  private composeDistanceField(encoder: GPUCommandEncoder): void {
+    /*
+     * **An empty frame still reaches the composer, and a test had to find that.** The early return
+     * used to cover the whole method, so a frame that declared nothing left `composed` true from
+     * the frame before — and the bake traced against a field built out of geometry the consumer
+     * had stopped declaring. What the guard is actually for is not *building* a composer for a
+     * profile that never declares anything, so that is all it now guards.
+     */
+    if (this.fieldComposer === null) {
+      if (this.distanceFields.length === 0) return;
+      this.fieldComposer = new FieldComposer(this.surface.device, DEFAULT_FIELD_COMPOSE);
+    }
+    this.fieldComposer.compose(encoder, this.distanceFields, this.frameEye);
+  }
+
+  /** The world field this frame composed, or null where none was. For a pass that marches it. */
+  get distanceField(): ComposedField | null {
+    return this.fieldComposer?.field ?? null;
+  }
+
+  /**
+   * Refresh this frame's share of the probe grid from the world field, or do nothing at all.
+   *
+   * **Doing nothing is the ordinary case and must cost nothing**, which is why every condition is
+   * answered before the baker exists: a frame may have composed no field — including a frame that
+   * declared none after a frame that did, where the composer exists and holds nothing — and a
+   * profile may have asked for no probe array. With either false this returns having allocated
+   * nothing and recorded nothing, which is what keeps the scenes byte-identical.
+   *
+   * **The grid is the declared one, or one fitted to the fields themselves.** A consumer that
+   * placed its probes always wins. One that did not gets a grid around whatever it said its light
+   * may be traced against — which is the right extent rather than a convenient one, because a grid
+   * sized to everything drawn would spend its probes on the inside of the sky.
+   */
+  private bakeIndirectProbes(encoder: GPUCommandEncoder): void {
+    const field = this.fieldComposer?.field;
+    if (field === undefined || field === null) return;
+
+    /*
+     * **The grid is settled before the array is read, and the first version read it first.**
+     * Fitting a grid calls `setProbeGrid`, which reallocates the array for the new layer count —
+     * so a baker built from the array captured a line earlier held the one-layer array the
+     * renderer starts with, and asked it for a view of layer 1. The device refused in those words.
+     * It is the trap `setProbeGrid` already documents for the flat bind groups: a group holds
+     * whatever texture existed when it was built, for ever, with no error anywhere until the
+     * sizes disagree.
+     */
+    const grid = this.indirectGrid();
+    if (grid === null) return;
+    const array = this.probeArray;
+    const view = this.probeView;
+    if (array === null || view === null) return;
+
+    if (this.probeBaker !== null && this.bakerArray !== array) {
+      this.probeBaker.dispose();
+      this.probeBaker = null;
+    }
+    this.probeBaker ??= new ProbeBaker(this.surface.device, {
+      array,
+      view,
+      sampler: this.probeSampler,
+      edge: this.probeEdge,
+      format: this.pipelines.format,
+    });
+    this.bakerArray = array;
+    /*
+     * **Whether the scene rasterised this grid first**, which decides two things: that the
+     * roughness chain is already valid and must not be overwritten by a diffuse map, and that the
+     * probes hold direct light for the trace to bounce. A grid that was never rasterised is traced
+     * anyway and converges on whatever it started with — see `ProbeBaker`'s header.
+     */
+    /*
+     * The frame's own sun, taken from the environment `bindMeshPass` was given rather than from a
+     * capture — which is what makes a bounce follow a light that moved. A frame that drew no mesh
+     * has no environment and traces with the sun off, which is the honest answer for a frame that
+     * never said what was lighting it.
+     */
+    const env = this.frameEnv;
+    this.probeBaker.bake(encoder, field, grid, this.probeBaked, {
+      direction: env?.directionalDir ?? NO_SUN,
+      colour: env?.directionalColor ?? NO_SUN,
+      /* What a ray that left the world finds. The frame's own ambient, not a capture. */
+      sky: env?.ambient ?? NO_SUN,
+    });
+    /*
+     * **The bake is what fills the layers now, so it is what marks them filled.** `probeBaked`
+     * gates the whole array, and a grid nothing rasterised would otherwise never be sampled — the
+     * lit pass would read the hemispheric gradient and the traced light would go nowhere.
+     */
+    if (this.probeBaker.complete) {
+      for (let layer = 0; layer < grid.layers; layer += 1) this.markProbeFilled(layer);
+    }
+  }
+
+  /** The declared grid, or one fitted to this frame's fields, or null where neither is possible. */
+  private indirectGrid(): ProbeGrid | null {
+    if (this.probes !== null) return this.probes;
+    if (!distanceFieldBounds(this.distanceFields, this.fieldBoundsMin, this.fieldBoundsMax)) {
+      return null;
+    }
+    const fitted = fitProbeGrid(
+      { min: this.fieldBoundsMin, max: this.fieldBoundsMax },
+      INDIRECT_PROBE_SPACING,
+      MAX_ENV_PROBES,
+    );
+    if (!this.setProbeGrid(fitted)) {
+      if (!this.indirectGridRefused) {
+        this.indirectGridRefused = true;
+        console.warn(
+          '[driftengine] indirect light needs a probe grid and this profile has no probe array, ' +
+            'so nothing is traced. Ask for a quality profile with the environment probe enabled.',
+        );
+      }
+      return null;
+    }
+    return this.probes;
+  }
+
+  /**
+   * The device milliseconds the last composed field took, or null where nothing measured it.
+   *
+   * One frame behind, because a timestamp is read back and a readback that blocked would be the
+   * measurement changing what it measures. Null also where no field has ever been composed, and
+   * where the device was not asked for `timestamp-query`.
+   */
+  get distanceFieldMs(): number | null {
+    return this.fieldComposer?.composeMs ?? null;
+  }
+
+  /**
+   * The device milliseconds the last traced probe refresh took, or null where nothing measured it.
+   *
+   * **A refresh rather than a grid**, which is `PROBES_PER_FRAME` probes and is what a frame
+   * actually pays. One frame behind, for the reason `distanceFieldMs` gives.
+   */
+  get indirectBakeMs(): number | null {
+    return this.probeBaker?.bakeMs ?? null;
+  }
+
+  /** Ask for the last frame's figures, once the frame that recorded them has been submitted. */
+  readDistanceFieldTimings(): void {
+    this.fieldComposer?.readTimings();
+    this.probeBaker?.readTimings();
+  }
+
+  /**
    * Whether a mesh is entirely behind the occluders declared this frame.
    *
    * **False whenever anything is uncertain**, including when no occluders were declared and when
@@ -10791,11 +12024,13 @@ export class WebGPURenderer implements RendererApi {
     pass: GPURenderPassEncoder | null;
     outputTransform: number;
     outputExposure: number;
+    jitter: Float32Array;
   } = {
     backend: 'webgpu',
     pass: null,
     outputTransform: 0,
     outputExposure: 1,
+    jitter: this.passJitter,
   };
 
   /**
@@ -10823,10 +12058,75 @@ export class WebGPURenderer implements RendererApi {
    */
   private preparingPasses = 0;
   /** Mutated in place, because `beginFrame` is a per-frame path. See `PassDefinition.prepare`. */
-  private readonly prepareContext: { backend: 'webgpu'; encoder: GPUCommandEncoder | null } = {
+  private readonly prepareContext: {
+    backend: 'webgpu';
+    encoder: GPUCommandEncoder | null;
+    environment: PassEnvironment | null;
+    distanceField: ComposedField | null;
+    jitter: Float32Array;
+  } = {
     backend: 'webgpu',
     encoder: null,
+    environment: null,
+    distanceField: null,
+    jitter: this.passJitter,
   };
+  /**
+   * The object handed to a pass as `PrepareContext.environment`, rebuilt only when it changes.
+   *
+   * **Mutated in place for the reason the context above is**: this runs once a frame for every
+   * registered pass, and the house rule about per-frame allocation binds the seam as much as the
+   * verbs. The view is the only field that can change identity, and it changes when the grid's
+   * layer count does.
+   */
+  private readonly passEnvironment: {
+    view: GPUTextureView | null;
+    sampler: GPUSampler | null;
+    edge: number;
+    maxLod: number;
+    irradianceLevel: number;
+    irradiance: boolean;
+    layers: number;
+  } = {
+    view: null,
+    sampler: null,
+    edge: 0,
+    maxLod: 0,
+    irradianceLevel: 0,
+    irradiance: false,
+    layers: 0,
+  };
+
+  /**
+   * The frame's reconstruction jitter: one step of the sequence a frame, taken before any pass
+   * prepares.
+   *
+   * **Here and not in `bindMeshPass`, for two reasons that were both defects.** A registered pass
+   * prepares at `beginFrame`, before any mesh pass is bound, so a jitter chosen there could not
+   * reach it — and the GPU-driven pipeline draws its whole world in `prepare`, unjittered, into a
+   * resolve that un-jitters everything. And a frame that bound its mesh pass twice took two steps
+   * of the sequence and resolved against the second.
+   *
+   * The sizes are the frame's by now: `ensureReconstruction` has run.
+   */
+  private settleReconJitter(): void {
+    if (!this.reconstructionWanted) {
+      this.passJitter[0] = 0;
+      this.passJitter[1] = 0;
+      return;
+    }
+    this.reconFrameIndex += 1;
+    this.reconPreviousJitter.set(this.reconJitter);
+    jitterOffsetFor(
+      this.reconFrameIndex,
+      reconJitterPhases(this.renderWidth, this.surface.canvas.width),
+      this.reconJitter,
+    );
+    /* A render pixel is two over the render's size of the clip square; y upward, as the resolve's
+       rows and the camera's own matrix both run. */
+    this.passJitter[0] = (2 * (this.reconJitter[0] as number)) / this.renderWidth;
+    this.passJitter[1] = (2 * (this.reconJitter[1] as number)) / this.renderHeight;
+  }
 
   /**
    * Give every pass that owns a target its chance to fill it, before the frame's own opens.
@@ -10841,6 +12141,32 @@ export class WebGPURenderer implements RendererApi {
   private runPreparePasses(encoder: GPUCommandEncoder): void {
     if (this.preparingPasses === 0) return;
     this.prepareContext.encoder = encoder;
+    /*
+     * **The same test the lit pass applies to its own binding**: a view exists from the moment the
+     * array is created, and what makes it *readable* is a completed bake that is not the one
+     * currently open. Offering it earlier hands a pass a texture of undefined contents, which is
+     * the failure `probeBaked` was introduced for on the forward path.
+     */
+    const usable = this.probeView !== null && this.probeBaked && !this.probePassActive;
+    if (usable) {
+      const environment = this.passEnvironment;
+      environment.view = this.probeView;
+      environment.sampler = this.probeSampler;
+      environment.edge = this.probeEdge;
+      environment.maxLod = this.probeMaxLod;
+      environment.irradianceLevel = irradianceLevelFor(this.probeEdge);
+      environment.irradiance = this.probeAmbient;
+      environment.layers = this.probes?.layers ?? 1;
+      this.prepareContext.environment = environment as PassEnvironment;
+    } else {
+      this.prepareContext.environment = null;
+    }
+    /*
+     * The field the *previous* frame composed, because this runs at `beginFrame` and the
+     * composition runs at `endFrame`. `PrepareContext.distanceField` says why that is right rather
+     * than merely what happens.
+     */
+    this.prepareContext.distanceField = this.fieldComposer?.field ?? null;
     for (const definition of this.passes.definitions) {
       definition?.prepare?.(this.prepareContext as PrepareContext);
     }
@@ -11060,7 +12386,12 @@ export class WebGPURenderer implements RendererApi {
       depthFormat: DEPTH_FORMAT,
       /* The same four numbers this backend's own verbs are projected through. See `PassDevice`. */
       clipCorrection: CLIP_CORRECTION,
+      /* And the one a pass that wrote its own WGSL wants, which is the same without the Y
+         negation — that negation cancels `naga`'s, and a hand-written shader has none. */
+      depthCorrection: DEPTH_CORRECTION,
       samples: this.samples,
+      /* Whether a pass drawing the world owes the frame its jitter and its depth. See `PassDevice`. */
+      reconstruction: this.reconstructionWanted,
     };
   }
 
@@ -11113,8 +12444,13 @@ export class WebGPURenderer implements RendererApi {
     const cssWidth = Math.max(canvas.clientWidth, 1);
     const cssHeight = Math.max(canvas.clientHeight, 1);
     const origin = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / cssWidth;
-    const scaleY = canvas.height / cssHeight;
+    /*
+     * **CSS pixels to the scene's pixels, not the viewer's.** A viewport is state on the frame's
+     * own pass, which draws into the render-size targets, so a box measured in the drawing buffer
+     * would be scaled by the reconstruction ratio and land off the side of a smaller attachment.
+     */
+    const scaleX = this.renderWidth / cssWidth;
+    const scaleY = this.renderHeight / cssHeight;
     const left = rect.left - origin.left;
     const top = rect.top - origin.top;
     const w = Math.max(1, Math.round(rect.width * scaleX));
@@ -11142,8 +12478,9 @@ export class WebGPURenderer implements RendererApi {
      * edge for the frames it is half-off. That asymmetry is the cost of the clamp, it is
      * recorded in the parity ledger, and the alternative was an exception.
      */
-    const targetWidth = canvas.width;
-    const targetHeight = canvas.height;
+    /* The attachment this pass draws into, which is the scene's size — see `renderWidth`. */
+    const targetWidth = this.renderWidth;
+    const targetHeight = this.renderHeight;
     const clampedX = Math.max(0, Math.min(x, targetWidth));
     const clampedY = Math.max(0, Math.min(y, targetHeight));
     const clampedW = Math.max(0, Math.min(x + w, targetWidth) - clampedX);
@@ -11220,9 +12557,9 @@ export class WebGPURenderer implements RendererApi {
     if (this.quality.frameGraph) this.flushGraph();
     const pass = this.pass;
     if (this.surface.lost || pass === null) return;
-    const canvas = this.surface.context.canvas as HTMLCanvasElement;
-    pass.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
-    pass.setScissorRect(0, 0, canvas.width, canvas.height);
+    /* The whole of what this pass draws into, which is the scene's size and not the viewer's. */
+    pass.setViewport(0, 0, this.renderWidth, this.renderHeight, 0, 1);
+    pass.setScissorRect(0, 0, this.renderWidth, this.renderHeight);
   }
 
   /**
@@ -11742,12 +13079,28 @@ export class WebGPURenderer implements RendererApi {
     return this.probes !== null && this.probeFilledCount === this.probes.layers;
   }
 
-  /** Record that one layer now holds a convolution, without counting a rebake twice. */
+  /**
+   * Record that one layer now holds a convolution, without counting a rebake twice.
+   *
+   * **And rebuild the flat groups on the last one**, which is the third time this backend has paid
+   * for a bind group holding whatever texture existed when it was built. `flatTextures` resolves
+   * `uEnvironment` to a one-texel **white** stand-in while `probeBaked` is false, so a grid filled
+   * by the trace rather than by `bakeProbeGrid` — which runs before any frame and therefore before
+   * any group — leaves every flat group holding that white for the life of the renderer. The
+   * uniform beside it flips to "use the grid" and the grid the shader reads is pure white.
+   *
+   * Measured on `demo/dev/bounce.html?seed=0`: every surface came back at exactly its own albedo
+   * times 255, with the sun switched off and the trace pinned to a constant. It had been recorded
+   * as undefined memory in the probe array; it is a deliberate white texture, read on purpose.
+   * The refraction snapshot's own note two hundred lines below says the same thing about the same
+   * mistake, and `setProbeGrid` says it about the array being replaced.
+   */
   private markProbeFilled(layer: number): void {
     if (layer < 0 || layer >= this.probeFilled.length) return;
     if (this.probeFilled[layer] === 1) return;
     this.probeFilled[layer] = 1;
     this.probeFilledCount++;
+    if (this.probeBaked) this.rebuildFlatGroupsForNewRings();
   }
 
   /**
@@ -11769,6 +13122,47 @@ export class WebGPURenderer implements RendererApi {
     this.probeView = this.probeArray.createView({ dimension: '2d-array' });
     this.probeFilled = new Uint8Array(layers);
     this.probeFilledCount = 0;
+
+    /*
+     * **Cleared here, because a texture no pass has written holds undefined contents** — the same
+     * sentence the directional shadow maps are cleared under, arrived at from the other end.
+     *
+     * A traced probe reads the array's own irradiance level back as the light that has already
+     * bounced, so an unwritten array is not "nothing has bounced yet": it is whatever the
+     * allocator left, amplified by every refresh. Measured on `demo/dev/bounce.html` with
+     * `?seed=0`, a grid nothing had rasterised settled on a uniform **209 of 255** in every
+     * channel, which reads as a working ambient term and is memory.
+     *
+     * **Every level, not only the one the bake writes.** The roughness chain is sampled by
+     * reflective surfaces long before any bake has filled it, and a first fill writes the whole
+     * chain only for a layer the scheduler has reached.
+     */
+    const clear = device.createCommandEncoder({ label: 'probe.clear' });
+    const levels = irradianceLevelFor(this.probeEdge) + 1;
+    for (let layer = 0; layer < layers; layer += 1) {
+      for (let level = 0; level < levels; level += 1) {
+        clear
+          .beginRenderPass({
+            label: 'probe.clear',
+            colorAttachments: [
+              {
+                view: this.probeArray.createView({
+                  dimension: '2d',
+                  baseArrayLayer: layer,
+                  arrayLayerCount: 1,
+                  baseMipLevel: level,
+                  mipLevelCount: 1,
+                }),
+                clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                loadOp: 'clear',
+                storeOp: 'store',
+              },
+            ],
+          })
+          .end();
+      }
+    }
+    device.queue.submit([clear.finish()]);
   }
 
   /**
@@ -11933,7 +13327,7 @@ export class WebGPURenderer implements RendererApi {
     const heldExposure = this.perFrameFloats[this.materialField('uOutputExposure')] ?? 1;
     this.perFrameInts[this.materialField('uOutputTransform')] = 0;
     this.perFrameFloats[this.materialField('uOutputExposure')] = 1;
-    this.materialSlot = -1;
+    this.materials.dirty();
 
     for (let face = 0; face < PROBE_FACES.length; face++) {
       const aim = PROBE_FACES[face];
@@ -12012,7 +13406,7 @@ export class WebGPURenderer implements RendererApi {
     this.markProbeFilled(layer);
     this.perFrameInts[this.materialField('uOutputTransform')] = heldGrade;
     this.perFrameFloats[this.materialField('uOutputExposure')] = heldExposure;
-    this.materialSlot = -1;
+    this.materials.dirty();
     this.probePassActive = false;
     this.rebuildFlatBindGroup();
     return true;
@@ -12514,7 +13908,13 @@ export class WebGPURenderer implements RendererApi {
       label: 'post.resolvedDepth',
       size: [width, height],
       format: RESOLVED_DEPTH_FORMAT,
-      usage: USAGE,
+      /*
+       * **`COPY_SRC` only where a reconstruction is going to keep it**, because a usage is a
+       * promise about the whole life of the texture and every frame that does not reconstruct
+       * would be paying for one it never makes. A reconstruction copies this into its own target
+       * at the end of the frame, which is what its disocclusion tests against next frame.
+       */
+      usage: this.quality.reconstruction > 0 ? USAGE | 0x1 : USAGE,
     });
     this.resolvedDepthView = this.resolvedDepth.createView();
     /*
@@ -12983,6 +14383,8 @@ export class WebGPURenderer implements RendererApi {
    * the 2026-08-13 rule asks for — one decision, bound twice.
    */
   dispose(): void {
+    for (const texture of this.retiredTextures) texture.destroy();
+    this.retiredTextures.length = 0;
     const passDevice = this.passDevice();
     drainRegistry(this.passes, (definition) => definition.dispose?.(passDevice));
     this.passReads.clear();
@@ -12992,6 +14394,9 @@ export class WebGPURenderer implements RendererApi {
     this.preparingPasses = 0;
     const computeDevice = this.computeDevice();
     drainRegistry(this.computes, (definition) => definition.dispose?.(computeDevice));
+
+    this.fieldComposer?.dispose();
+    this.fieldComposer = null;
 
     this.pass = null;
     this.encoder = null;

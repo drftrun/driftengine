@@ -36,9 +36,19 @@ import {
 export async function bootstrap(targets: readonly Target[]): Promise<void> {
   const wantsAndroid = targets.includes('android');
   const wantsIos = targets.includes('ios');
-  const wantsDesktop = targets.some((target) => target !== 'android' && target !== 'ios');
+  const wantsDesktop = targets.some(
+    (target) => target !== 'android' && target !== 'ios' && target !== 'native-linux-x64',
+  );
 
   if (wantsDesktop) await bootstrapElectron();
+  if (targets.includes('native-linux-x64')) {
+    /* A machine is ready for it as it is: the artifact carries the Node running the build, and the
+       host is a dependency of the game, which `npm install` there fetches. */
+    console.log(
+      'ok: native-linux-x64 needs nothing fetched for this machine — it ships the Node running the ' +
+        "build — and the game needs @driftengine/native-host installed, at the packager's version",
+    );
+  }
   if (targets.some((target) => needsRcodesign(target))) await bootstrapRcodesign();
   if (wantsAndroid) await bootstrapAndroid();
   if (wantsIos) await bootstrapIos();

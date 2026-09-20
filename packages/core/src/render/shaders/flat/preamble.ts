@@ -10,6 +10,14 @@ import {
   MAX_LIGHTS_PER_CLUSTER,
   TABLE_WIDTH,
 } from '../../clusteredLights.ts';
+
+/**
+ * How much roughness a relieved or normal-mapped surface gains per unit of relief.
+ *
+ * Exported because the GPU-driven pipeline widens its roughness by a normal map's strength the way
+ * this shader does, and one number read by two shaders is a number that cannot drift between them.
+ */
+export const RELIEF_ROUGHNESS = 0.35;
 import { MAX_SHADOW_FILTER_TAPS } from '../../renderQuality.ts';
 import type { LightBudget } from '../../uniformVectorBudget.ts';
 import { FOG_GLSL } from '../fog.ts';
@@ -48,7 +56,7 @@ in float vRoughness;
  * because the amplitude is known here rather than measured off the screen.
  */
 #define RELIEF_TILT 1.6
-#define RELIEF_ROUGHNESS 0.35
+#define RELIEF_ROUGHNESS ${RELIEF_ROUGHNESS}
 /**
  * The furthest a texture-derived bump may turn the shading normal, as a tangent.
  *
@@ -482,6 +490,22 @@ uniform float uEnvironmentMaxLod;
  * under-sampled and forced to a roughness it does not have.
  */
 uniform float uEnvironmentEdge;
+/**
+ * Whether the probe blend consults what each probe can see, and where those moments are.
+ *
+ * **Zero is off, and off is what every published scene is gated at.** On, each probe's visibility
+ * map is a *layer of this same array*, offset past the radiance layers by the grid's probe count:
+ * two moments a texel, the mean distance to geometry along a direction and the mean of its square.
+ *
+ * **In this array rather than a sampler of its own, and branched at run time rather than compiled
+ * in or out.** A sampler of its own would be a seventeenth on a backend that guarantees sixteen
+ * units — the reason \`environmentProbe\` is a permutation at all — and a permutation flag of its
+ * own would double the generated shader corpus for every consumer, which \`scripts/wgsl.ts\` prices
+ * at 400,728 to 597,638 gzipped bytes. Sharing the array costs neither: no new unit, no new
+ * permutation, and the arithmetic sits behind a branch on this uniform the way the clustered light
+ * table's does.
+ */
+uniform float uProbeVisibilityEnabled;
 /**
  * The level holding the cosine convolution, which is the scene's diffuse ambient.
  *

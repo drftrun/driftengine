@@ -20,12 +20,27 @@
       14px/1.5 ui-monospace,
       monospace;
   }
+  /*
+   * The picker is capped and scrolls, and that is what keeps a capture comparable.
+   *
+   * It wraps, so it grew a row every time a scene was registered — and `#stage` below is a fixed
+   * height measured from the top of the page, so a taller header pushes the canvas down and every
+   * capture of every scene is reframed. Three draft scenes were added on 2026-09-16 and all eight
+   * published scenes moved by hundreds of thousands of pixels with nothing about them changed;
+   * the same three, registered and then not, are pixel-identical. **Any before-and-after that
+   * added or removed a scene, on either side, was comparing two different photographs.**
+   *
+   * Capped at the height five rows already needed, so the layout does not move now and cannot
+   * move again. A sixth row scrolls, which is the right trade for a picker on an instrument page.
+   */
   header {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
     padding: 0.7rem;
     border-bottom: 1px solid #1e242c;
+    max-height: 5.6rem;
+    overflow-y: auto;
   }
   button {
     background: #12161b;

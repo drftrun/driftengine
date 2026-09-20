@@ -143,7 +143,9 @@ test('the package count the root README states is the number of packages', () =>
    * is exactly the claim this repository has been caught by twice before — the version bump said
    * six and five for a month, and sixteen for a day.
    */
-  const match = /\*\*([A-Za-z]+) packages, and a consumer takes only what it uses:\*\*/.exec(
+  /* A hyphen in the word, because every number word past twenty has one and `[A-Za-z]+` could
+     never have matched "twenty-one" — the gate would have failed on the sentence being correct. */
+  const match = /\*\*([A-Za-z-]+) packages, and a consumer takes only what it uses:\*\*/.exec(
     rootReadme,
   );
   assert.ok(match !== null, 'the package table has lost its introducing sentence');
@@ -163,6 +165,12 @@ test('the package count the root README states is the number of packages', () =>
     sixteen: 16,
     seventeen: 17,
     eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+    'twenty-one': 21,
+    'twenty-two': 22,
+    'twenty-three': 23,
+    'twenty-four': 24,
   };
   const stated = WORDS[match[1].toLowerCase()];
   assert.ok(stated !== undefined, `unrecognised number word "${match[1]}"`);
@@ -198,26 +206,54 @@ const QUOTED = {
   editor: { fixture: 'editor-only', over: null },
   /* Standalone, and the one package whose *raw* size is the claim: no renderer in the graph. */
   network: { fixture: 'network-only', over: null },
+  /*
+   * **The five packages of 4.0.0, added 2026-09-20 because this table had gone stale the way a
+   * hand-written list of names always does here.** Each has a measured floor and each quotes it in
+   * a README, and none of them was in this object — so three were quoting a number from the middle
+   * of their own development with nothing to say so. `@driftengine/nav` said 6,336 against a real
+   * 8,401 and `@driftengine/capture` said 38,796 against 66,373, which is not drift but a figure
+   * from a package half built.
+   *
+   * **They also quote bytes rather than kilobytes**, which is the right unit at this size and is
+   * why they slipped past: the assertion below looked for `KB gzipped` only, so a README with no
+   * such string had nothing checked rather than something failing. It takes either now.
+   */
+  texture: { fixture: 'texture-only', over: null },
+  nav: { fixture: 'nav-only', over: null },
+  tools: { fixture: 'tools-only', over: null },
+  capture: { fixture: 'capture-only', over: null },
 };
 
-export function quotedKb(dir) {
+/** The measured bytes a package's README may quote, or `null` where nothing measures it. */
+export function quotedBytes(dir) {
   const entry = QUOTED[dir];
   if (entry === undefined) return null;
-  const bytes =
-    entry.over === null ? FLOORS[entry.fixture] : FLOORS[entry.fixture] - FLOORS[entry.over];
-  return (bytes / 1024).toFixed(1);
+  return entry.over === null ? FLOORS[entry.fixture] : FLOORS[entry.fixture] - FLOORS[entry.over];
+}
+
+export function quotedKb(dir) {
+  const bytes = quotedBytes(dir);
+  return bytes === null ? null : (bytes / 1024).toFixed(1);
+}
+
+/** Both spellings of one measurement, so a README may choose the unit that suits its size. */
+function sizeStrings(dir) {
+  const bytes = quotedBytes(dir);
+  if (bytes === null) return null;
+  return { kb: `${(bytes / 1024).toFixed(1)} KB`, bytes: `${bytes.toLocaleString('en-US')} bytes` };
 }
 
 test('a README that quotes a size quotes the measured one', () => {
   const wrong = [];
   for (const pkg of packages()) {
-    const expected = quotedKb(pkg.dir);
+    const expected = sizeStrings(pkg.dir);
     if (expected === null || !existsSync(pkg.readme)) continue;
     const text = readFileSync(pkg.readme, 'utf8');
-    if (!text.includes(`${expected} KB gzipped`)) {
-      const found = /([0-9.]+) KB gzipped/.exec(text);
-      wrong.push(`${pkg.dir}: says ${found?.[1] ?? 'nothing'}, measures ${expected}`);
+    if (text.includes(`${expected.kb} gzipped`) || text.includes(`${expected.bytes} gzipped`)) {
+      continue;
     }
+    const found = /([0-9.,]+) (?:KB|bytes) gzipped/.exec(text);
+    wrong.push(`${pkg.dir}: says ${found?.[1] ?? 'nothing'}, measures ${expected.bytes}`);
   }
   assert.deepEqual(wrong, [], `stale sizes:\n  ${wrong.join('\n  ')}`);
 });
@@ -231,7 +267,7 @@ test('the sizes in the root README table are the measured ones too', () => {
    */
   const wrong = [];
   for (const pkg of packages()) {
-    const expected = quotedKb(pkg.dir);
+    const expected = sizeStrings(pkg.dir);
     if (expected === null) continue;
     const row = rootReadme
       .split('\n')
@@ -240,13 +276,81 @@ test('the sizes in the root README table are the measured ones too', () => {
       wrong.push(`${pkg.dir}: no row in the root table`);
       continue;
     }
-    if (!row.includes(`${expected} KB`)) {
+    if (!row.includes(expected.kb) && !row.includes(expected.bytes)) {
       wrong.push(
-        `${pkg.dir}: root table says "${/([0-9.]+) KB/.exec(row)?.[1] ?? 'nothing'}", measures ${expected}`,
+        `${pkg.dir}: root table says "${/([0-9.,]+) (?:KB|bytes)/.exec(row)?.[1] ?? 'nothing'}", ` +
+          `measures ${expected.bytes}`,
       );
     }
   }
   assert.deepEqual(wrong, [], `stale sizes in the root table:\n  ${wrong.join('\n  ')}`);
+});
+
+/**
+ * Every package's cost, in the root table's own column.
+ *
+ * **The column exists because the prose did not work.** A size used to be a bolded phrase at the
+ * end of whichever rows happened to have one, so four packages carried a number, nineteen did not,
+ * and a reader could not tell "small" from "nobody measured it". Read as a table it looked like a
+ * column somebody had forgotten to fill in, which is exactly what it was.
+ *
+ * Two packages have no browser payload to state and say so in words instead: `native-host` is a
+ * Node process and `package` is a build tool, and a gzipped bundle size for either would be a
+ * number with no meaning attached. Everything else is measured, which is what this asserts.
+ */
+const COLUMN = {
+  core: { fixture: 'core-only' },
+  drft: { fixture: 'drft-only' },
+  texture: { fixture: 'texture-only' },
+  nav: { fixture: 'nav-only' },
+  tools: { fixture: 'tools-only' },
+  capture: { fixture: 'capture-only' },
+  xr: { fixture: 'xr-only' },
+  physics: { fixture: 'physics-only' },
+  entities: { fixture: 'entities-only' },
+  network: { fixture: 'network-only' },
+  editor: { fixture: 'editor-only' },
+  chemistry: { fixture: 'chemistry-only' },
+  ai: { fixture: 'ai-only' },
+  media: { fixture: 'media-only' },
+  audio: { fixture: 'core-and-audio', over: 'core-only' },
+  animation: { fixture: 'core-and-animation', over: 'core-only' },
+  assets: { fixture: 'core-and-assets', over: 'core-only' },
+  splats: { fixture: 'core-and-splats', over: 'core-only' },
+  terrain: { fixture: 'core-and-terrain', over: 'core-only' },
+  ui2d: { fixture: 'core-and-ui2d', over: 'core-only' },
+  script: { fixture: 'core-and-script', over: 'core-only' },
+  'native-host': { words: 'a Node host' },
+  package: { words: 'a build tool' },
+};
+
+test('the root README states a cost for every package, and it is the measured one', () => {
+  const wrong = [];
+  const names = packages().map((pkg) => pkg.dir);
+  for (const name of names) {
+    const entry = COLUMN[name];
+    if (entry === undefined) {
+      wrong.push(`${name}: no entry in COLUMN, so its cost is unstated`);
+      continue;
+    }
+    const row = rootReadme
+      .split('\n')
+      .find((line) => line.startsWith('| [`') && line.includes(`@driftengine/${name}\`]`));
+    if (row === undefined) {
+      wrong.push(`${name}: no row in the root table`);
+      continue;
+    }
+    const cells = row.split('|').map((cell) => cell.trim());
+    const cost = cells[cells.length - 2];
+    const want =
+      entry.words !== undefined
+        ? `**${entry.words}**`
+        : `**${((FLOORS[entry.fixture] - (entry.over ? FLOORS[entry.over] : 0)) / 1024).toFixed(1)} KB${
+            entry.over ? ' over core' : ''
+          }**`;
+    if (cost !== want) wrong.push(`${name}: column says ${cost || 'nothing'}, measures ${want}`);
+  }
+  assert.deepEqual(wrong, [], `the cost column is wrong:\n  ${wrong.join('\n  ')}`);
 });
 
 test('a README claims the size gate measures it only where a fixture exists', () => {
@@ -344,6 +448,45 @@ test('every public barrel carries the licence line', () => {
  * beside it. Eighteen manifests said `MIT` on the day the tree stopped being MIT, and a scanner
  * would have reported the whole engine permissively licensed under terms it no longer offers.
  */
+/**
+ * **And every package actually carries the licence and notice its manifest promises.**
+ *
+ * `@driftengine/nav` shipped without either, for a day, with `files` naming both and nothing to
+ * say otherwise. Every gate around it looked: the manifest declared `Apache-2.0`, the barrel
+ * carried the banner, and the tracked-files gate above checks that what a package *tracks* reaches
+ * the tarball — which says nothing about a file the package does not have. A `files` entry for a
+ * file that does not exist is silent in npm and silent in git.
+ *
+ * What that would have published is a tarball claiming Apache-2.0 with no licence text in it and
+ * no NOTICE, which section 4(d) requires to travel with the work. So the twenty-one copies are
+ * compared to the root's byte for byte: a licence that has drifted is worse than one that is
+ * missing, because nobody re-reads it.
+ */
+test('every package carries the licence files it promises', () => {
+  const wanted = ['LICENSE', 'NOTICE'];
+  const root = Object.fromEntries(
+    wanted.map((name) => [name, readFileSync(path.join(ROOT, name), 'utf8')]),
+  );
+  const wrong = [];
+  for (const { dir, manifest } of packages()) {
+    for (const name of wanted) {
+      const listed = (manifest.files ?? []).includes(name);
+      const at = path.join(PACKAGES, dir, name);
+      if (!existsSync(at)) {
+        wrong.push(`${dir}/${name} is ${listed ? 'listed in files and ' : ''}not there`);
+        continue;
+      }
+      if (!listed) wrong.push(`${dir}/${name} exists but files does not list it`);
+      else if (readFileSync(at, 'utf8') !== root[name]) wrong.push(`${dir}/${name} differs`);
+    }
+  }
+  assert.deepEqual(
+    wrong,
+    [],
+    `these packages do not carry the licence they claim:\n  ${wrong.join('\n  ')}`,
+  );
+});
+
 test('every package declares the licence the tree carries', () => {
   const root = readFileSync(path.join(ROOT, 'LICENSE'), 'utf8');
   assert.ok(root.includes('Apache License'), 'LICENSE is not the Apache licence');
@@ -400,5 +543,112 @@ test('a package ships every file it tracks', () => {
     missing,
     [],
     `these files are tracked but would not reach a consumer:\n  ${missing.join('\n  ')}`,
+  );
+});
+
+/**
+ * Every workspace declares the licence, and the root does too.
+ *
+ * **The three licence gates above read `packages/` and nothing else**, so the root manifest and the
+ * `editor` workspace were outside all of them: the root carried no `license` field at all, and
+ * `editor` declared `Apache-2.0` while carrying neither `LICENSE` nor `NOTICE`. Neither publishes —
+ * both are `private` — but the root manifest is the first file an automated scanner reads, and a
+ * tree whose front door says nothing about its licence is one a policy check will guess about.
+ *
+ * **This is the same blind spot `AGENTS.md` describes finding in `scripts/version.test.mjs`**, in a
+ * second instrument: a gate that walks `packages/*` is a gate that cannot see a workspace added
+ * anywhere else, and `editor` had been one for as long as it existed. So this walks `workspaces`
+ * from the root manifest, the way the version count does now, and the next workspace is covered
+ * the day it is added rather than the day somebody notices.
+ */
+function workspaceManifests() {
+  const root = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const dirs = ['.'];
+  for (const pattern of root.workspaces ?? []) {
+    if (!pattern.endsWith('/*')) {
+      dirs.push(pattern);
+      continue;
+    }
+    const base = pattern.slice(0, -2);
+    for (const entry of readdirSync(path.join(ROOT, base), { withFileTypes: true })) {
+      if (entry.isDirectory()) dirs.push(`${base}/${entry.name}`);
+    }
+  }
+  return dirs
+    .filter((dir) => existsSync(path.join(ROOT, dir, 'package.json')))
+    .map((dir) => ({
+      dir,
+      manifest: JSON.parse(readFileSync(path.join(ROOT, dir, 'package.json'), 'utf8')),
+    }));
+}
+
+test('EVERY WORKSPACE AND THE ROOT DECLARE THE LICENCE THE TREE CARRIES', () => {
+  const wrong = workspaceManifests()
+    .filter(({ manifest }) => manifest.license !== 'Apache-2.0')
+    .map(({ dir, manifest }) => `${dir} says ${manifest.license ?? 'nothing at all'}`);
+  assert.deepEqual(wrong, [], `these do not declare Apache-2.0:\n  ${wrong.join('\n  ')}`);
+});
+
+test('every workspace carries the licence text, whether or not it publishes', () => {
+  /*
+   * **A private workspace is distributed too** — as part of this repository, which is where anybody
+   * reads it. `packages/*` carry `LICENSE` and `NOTICE` because their tarballs must; `editor`
+   * carries them because a directory declaring a licence and holding no copy of it is a claim with
+   * nothing behind it.
+   */
+  const root = Object.fromEntries(
+    ['LICENSE', 'NOTICE'].map((name) => [name, readFileSync(path.join(ROOT, name), 'utf8')]),
+  );
+  const wrong = [];
+  for (const { dir } of workspaceManifests()) {
+    if (dir === '.') continue;
+    for (const [name, text] of Object.entries(root)) {
+      const at = path.join(ROOT, dir, name);
+      if (!existsSync(at)) wrong.push(`${dir}/${name} is not there`);
+      else if (readFileSync(at, 'utf8') !== text)
+        wrong.push(`${dir}/${name} differs from the root`);
+    }
+  }
+  assert.deepEqual(
+    wrong,
+    [],
+    `these do not carry the licence they declare:\n  ${wrong.join('\n  ')}`,
+  );
+});
+
+/**
+ * The third-party files this repository actually commits carry their licences.
+ *
+ * **`CREDITS.md` states the obligation and the tree did not meet it.** Two SDF font atlases are
+ * force-added past `.gitignore` and are, in that document's own words, "the only third-party-derived
+ * files actually committed to this tree": DejaVu Sans under the Bitstream Vera License, where "the
+ * licence text must travel with it", and Noto Sans Arabic under the SIL Open Font License 1.1,
+ * which "requires the copyright notice and licence to accompany them". Neither text was anywhere in
+ * the repository — `CREDITS.md` named both licences and the tree carried neither.
+ *
+ * A rasterised, distance-transformed atlas is a derivative of the original outlines, so
+ * distributing this repository distributes them. Pointing at `/usr/share/doc/...` is a path on one
+ * Debian machine, and a URL is a promise about somebody else's server.
+ */
+test('A COMMITTED THIRD-PARTY ASSET CARRIES ITS OWN LICENCE TEXT', () => {
+  const fonts = path.join(ROOT, 'demo', 'dev', 'public', 'fonts');
+  if (!existsSync(fonts)) return;
+  const wanted = [
+    ['latin', 'LICENSE-DejaVu.txt', 'Bitstream Vera'],
+    ['arabic-run', 'LICENSE-NotoSansArabic.txt', 'SIL OPEN FONT LICENSE'],
+  ];
+  const wrong = [];
+  for (const [dir, file, marker] of wanted) {
+    if (!existsSync(path.join(fonts, dir, 'atlas.png'))) continue;
+    const at = path.join(fonts, dir, file);
+    if (!existsSync(at)) wrong.push(`${dir}/${file} is not there`);
+    else if (!readFileSync(at, 'utf8').toUpperCase().includes(marker.toUpperCase())) {
+      wrong.push(`${dir}/${file} does not contain "${marker}"`);
+    }
+  }
+  assert.deepEqual(
+    wrong,
+    [],
+    `these committed atlases have no licence beside them:\n  ${wrong.join('\n  ')}`,
   );
 });

@@ -103,8 +103,27 @@ export const VERTEX_LAYOUT: readonly VertexAttribute[] = [
 
 /** Geometry on the device, with the buffers bound in layout order. */
 export interface GpuMesh {
-  /** One buffer per attribute, indexed by position in `VERTEX_LAYOUT`. */
+  /**
+   * The buffers a draw binds, in the order `vertexBufferLayouts` describes them.
+   *
+   * **Two, and the first is interleaved** — every attribute this mesh actually supplied, woven
+   * into one stride — while the second holds one value per *absent* optional attribute at a stride
+   * of zero. It is emphatically not one buffer per attribute, which this comment said until
+   * 2026-09-17 and which cost the motion pass an afternoon: a pipeline built to that description
+   * reads a position out of every twelve bytes of an interleaved vertex, draws geometry that is
+   * not the mesh, and fails no validation at all.
+   */
   readonly vertexBuffers: readonly GPUBuffer[];
+  /**
+   * Bytes a vertex takes in the first of those buffers.
+   *
+   * Kept because it is a function of which *optional* attributes this mesh supplied, so it differs
+   * between two meshes drawn by the same pipeline — and a pass that reads only the position still
+   * has to step by the whole of it. `submitMesh` never needs it, the generated pipelines being
+   * keyed by the same `present` map that decides it; anything drawing a mesh through a shader of
+   * its own does.
+   */
+  readonly vertexStride: number;
   readonly indexBuffer: GPUBuffer;
   readonly indexCount: number;
   /**
@@ -332,53 +351,24 @@ export function createGpuMeshIncremental(
     Math.max(1, Math.ceil(vertexCount / verticesPerStep)) +
     Math.max(1, Math.ceil(data.indices.length / indicesPerStep));
 
-  let uploaded = false;
-
-  function* uploadSteps(): Generator<void, void, void> {
-    let taken = 0;
-    for (let from = 0; from < vertexCount; from += verticesPerStep) {
-      const to = Math.min(from + verticesPerStep, vertexCount);
-      let fieldOffset = 0;
-      for (const attribute of supplied) {
-        const source = data[attribute.name as keyof MeshData] as Float32Array;
-        const width = attribute.components;
-        for (let vertex = from; vertex < to; vertex++) {
-          for (let component = 0; component < width; component++) {
-            interleaved[vertex * step + fieldOffset + component] =
-              source[vertex * width + component] ?? 0;
-          }
-        }
-        fieldOffset += width;
-      }
-      device.queue.writeBuffer(
-        vertices,
-        from * stride,
-        interleaved,
-        from * step,
-        (to - from) * step,
-      );
-      taken += 1;
-      if (taken < totalSteps) yield;
-    }
-
-    for (let from = 0; from < data.indices.length; from += indicesPerStep) {
-      const to = Math.min(from + indicesPerStep, data.indices.length);
-      device.queue.writeBuffer(indexBuffer, from * indexWidth, data.indices, from, to - from);
-      taken += 1;
-      if (taken < totalSteps) yield;
-    }
-
-    uploaded = true;
-  }
-
-  const mesh: GpuMesh = {
-    vertexBuffers: [vertices, constants],
+  /*
+   * **The mesh is assembled out here, by functions of its own, and that is the fix for a copy
+   * nobody named.** It was an object literal in this scope, and its `complete` getter shared this
+   * scope's context with the upload generator and the `filter` above, which both read `data` — V8
+   * gives every closure in a scope one context — so a getter returning a boolean held the whole
+   * `MeshData` and the interleaved rows for as long as the mesh lived. The voxel sandbox's forward
+   * path held 2,058 MB of ArrayBuffers at radius 32 against the second pipeline's 368.
+   * `meshRetention.test.ts` holds it: a mesh keeps its buffers, and a dynamic one its rows.
+   */
+  const progress = { uploaded: false };
+  const mesh = gpuMeshOf({
+    vertices,
+    constants,
     indexBuffer,
+    stride,
     indexCount: data.indices.length,
     bounds,
-    get complete(): boolean {
-      return uploaded;
-    },
+    progress,
     hasTangents: data.tangents !== undefined,
     isSkinned: data.joints !== undefined,
     hasChannel: data.channel !== undefined,
@@ -393,37 +383,160 @@ export function createGpuMeshIncremental(
           ),
     update: !dynamic
       ? null
-      : (target: GPUDevice, positions: Float32Array, normals?: Float32Array): void => {
-          if (positions.length !== vertexCount * 3) {
-            throw new Error(
-              `this mesh has ${vertexCount} vertices and the update has ${positions.length / 3}. ` +
-                "A mesh's vertex count is fixed at creation: the index buffer, the pipeline and " +
-                'every other attribute are sized against it.',
-            );
-          }
-          /* Everything that decides whether this is on screen starts from the bounds, so a cloth
-             that blew sideways out of its original box would be culled while still visible. */
-          boundsOfPositions(positions, bounds);
-          for (let vertex = 0; vertex < vertexCount; vertex++) {
-            const at = vertex * step;
-            interleaved[at + positionField] = positions[vertex * 3] ?? 0;
-            interleaved[at + positionField + 1] = positions[vertex * 3 + 1] ?? 0;
-            interleaved[at + positionField + 2] = positions[vertex * 3 + 2] ?? 0;
-            if (normals === undefined) continue;
-            interleaved[at + normalField] = normals[vertex * 3] ?? 0;
-            interleaved[at + normalField + 1] = normals[vertex * 3 + 1] ?? 0;
-            interleaved[at + normalField + 2] = normals[vertex * 3 + 2] ?? 0;
-          }
-          target.queue.writeBuffer(vertices, 0, interleaved);
-        },
+      : dynamicUpdate(interleaved, vertices, bounds, vertexCount, step, positionField, normalField),
+  });
+
+  const job: UploadJob = {
+    data,
+    interleaved,
+    device,
+    supplied,
+    vertices,
+    indexBuffer,
+    vertexCount,
+    step,
+    stride,
+    verticesPerStep,
+    indicesPerStep,
+    totalSteps,
+    progress,
+  };
+  return { mesh, upload: uploadSteps(job) };
+}
+
+/**
+ * What an upload reads, held by the upload alone and let go when it finishes — so a caller that
+ * keeps its iterator, as a streamer keeps the handle it was given, keeps nothing through it.
+ */
+interface UploadJob {
+  data: MeshData | null;
+  interleaved: Float32Array | null;
+  readonly device: GPUDevice;
+  readonly supplied: readonly VertexAttribute[];
+  readonly vertices: GPUBuffer;
+  readonly indexBuffer: GPUBuffer;
+  readonly vertexCount: number;
+  readonly step: number;
+  readonly stride: number;
+  readonly verticesPerStep: number;
+  readonly indicesPerStep: number;
+  readonly totalSteps: number;
+  readonly progress: { uploaded: boolean };
+}
+
+function* uploadSteps(job: UploadJob): Generator<void, void, void> {
+  const { device, supplied, vertices, indexBuffer, vertexCount, step, stride } = job;
+  let taken = 0;
+  for (let from = 0; from < vertexCount; from += job.verticesPerStep) {
+    const data = job.data as MeshData;
+    const interleaved = job.interleaved as Float32Array;
+    const to = Math.min(from + job.verticesPerStep, vertexCount);
+    let fieldOffset = 0;
+    for (const attribute of supplied) {
+      const source = data[attribute.name as keyof MeshData] as Float32Array;
+      const width = attribute.components;
+      for (let vertex = from; vertex < to; vertex++) {
+        for (let component = 0; component < width; component++) {
+          interleaved[vertex * step + fieldOffset + component] =
+            source[vertex * width + component] ?? 0;
+        }
+      }
+      fieldOffset += width;
+    }
+    device.queue.writeBuffer(vertices, from * stride, interleaved, from * step, (to - from) * step);
+    taken += 1;
+    if (taken < job.totalSteps) yield;
+  }
+
+  const indices = (job.data as MeshData).indices;
+  const indexWidth = indices.BYTES_PER_ELEMENT;
+  for (let from = 0; from < indices.length; from += job.indicesPerStep) {
+    const to = Math.min(from + job.indicesPerStep, indices.length);
+    device.queue.writeBuffer(indexBuffer, from * indexWidth, indices, from, to - from);
+    taken += 1;
+    if (taken < job.totalSteps) yield;
+  }
+
+  job.data = null;
+  job.interleaved = null;
+  job.progress.uploaded = true;
+}
+
+/** The handle, made where it can see only what it hands out. */
+function gpuMeshOf(parts: {
+  readonly vertices: GPUBuffer;
+  readonly constants: GPUBuffer;
+  readonly indexBuffer: GPUBuffer;
+  readonly stride: number;
+  readonly indexCount: number;
+  readonly bounds: Bounds;
+  readonly progress: { readonly uploaded: boolean };
+  readonly hasTangents: boolean;
+  readonly isSkinned: boolean;
+  readonly hasChannel: boolean;
+  readonly morph: MorphTexture | null;
+  readonly update: GpuMesh['update'];
+}): GpuMesh {
+  const { vertices, constants, indexBuffer, progress } = parts;
+  return {
+    vertexBuffers: [vertices, constants],
+    vertexStride: parts.stride,
+    indexBuffer,
+    indexCount: parts.indexCount,
+    bounds: parts.bounds,
+    get complete(): boolean {
+      return progress.uploaded;
+    },
+    hasTangents: parts.hasTangents,
+    isSkinned: parts.isSkinned,
+    hasChannel: parts.hasChannel,
+    morph: parts.morph,
+    update: parts.update,
     dispose(): void {
       vertices.destroy();
       constants.destroy();
       indexBuffer.destroy();
     },
   };
+}
 
-  return { mesh, upload: uploadSteps() };
+/**
+ * A dynamic mesh's `update`, which keeps the interleaved rows and nothing else: it rewrites the
+ * positions and normals in them and uploads the whole buffer, so the other attributes it does not
+ * receive have to still be there.
+ */
+function dynamicUpdate(
+  interleaved: Float32Array,
+  vertices: GPUBuffer,
+  bounds: Bounds,
+  vertexCount: number,
+  step: number,
+  positionField: number,
+  normalField: number,
+): NonNullable<GpuMesh['update']> {
+  return (target: GPUDevice, positions: Float32Array, normals?: Float32Array): void => {
+    if (positions.length !== vertexCount * 3) {
+      throw new Error(
+        `this mesh has ${vertexCount} vertices and the update has ${positions.length / 3}. ` +
+          "A mesh's vertex count is fixed at creation: the index buffer, the pipeline and " +
+          'every other attribute are sized against it.',
+      );
+    }
+    /* Everything that decides whether this is on screen starts from the bounds, so a cloth
+       that blew sideways out of its original box would be culled while still visible. */
+    boundsOfPositions(positions, bounds);
+    for (let vertex = 0; vertex < vertexCount; vertex++) {
+      const at = vertex * step;
+      interleaved[at + positionField] = positions[vertex * 3] ?? 0;
+      interleaved[at + positionField + 1] = positions[vertex * 3 + 1] ?? 0;
+      interleaved[at + positionField + 2] = positions[vertex * 3 + 2] ?? 0;
+      if (normals === undefined) continue;
+      interleaved[at + normalField] = normals[vertex * 3] ?? 0;
+      interleaved[at + normalField + 1] = normals[vertex * 3 + 1] ?? 0;
+      interleaved[at + normalField + 2] = normals[vertex * 3 + 2] ?? 0;
+    }
+    target.queue.writeBuffer(vertices, 0, interleaved);
+  };
 }
 
 /**

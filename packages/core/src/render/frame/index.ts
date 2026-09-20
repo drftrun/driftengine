@@ -27,3 +27,55 @@ export {
 export type { ScheduledPass } from './schedule.ts';
 export { schedule } from './schedule.ts';
 export { keptNodes, scratchFor } from './replay.ts';
+
+/*
+ * The identifier-addressed half, for a frame whose composition is not fixed. See `virtual.ts`
+ * for why there are two representations and why neither converts into the other.
+ */
+export type {
+  VirtualBufferDesc,
+  VirtualDesc,
+  VirtualTable,
+  VirtualTextureDesc,
+} from './virtual.ts';
+export {
+  createVirtualTable,
+  declareVirtual,
+  resetVirtualTable,
+  virtualBytes,
+  virtualCount,
+  virtualKind,
+} from './virtual.ts';
+export type { Deps } from './deps.ts';
+export {
+  createDeps,
+  depsNodeCount,
+  readsOf,
+  recordDeps,
+  recordMaskDeps,
+  resetDeps,
+  writesOf,
+} from './deps.ts';
+export type { Lifetimes } from './lifetime.ts';
+export { computeLifetimes, createLifetimes, firstWrite, lastRead } from './lifetime.ts';
+export type { AliasPlan } from './alias.ts';
+export { createAliasPlan, offsetOf, planAliases } from './alias.ts';
+export type { GraphPass, GraphScratch } from './graphSchedule.ts';
+export { createGraphPasses, createGraphScratch, scheduleGraph } from './graphSchedule.ts';
+export type { FlushSchedule } from './flushGraph.ts';
+export { createFlushSchedule, scheduleFlush } from './flushGraph.ts';
+export { validateGraph } from './validate.ts';
+
+/*
+ * Per-pass timings, which are the one thing here that *is* on the package barrel — see the note
+ * beside its export in `src/index.ts`. A readout is not the graph.
+ */
+export type { PassTimings } from './passTimings.ts';
+export {
+  createPassTimings,
+  passLabel,
+  passMs,
+  recordPassLabel,
+  recordPassSample,
+  resetPassTimings,
+} from './passTimings.ts';

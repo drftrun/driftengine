@@ -23,10 +23,24 @@ import type { BlockAtlas } from './atlas';
 import type { RenderMode } from './blocks';
 import { ChunkDraw } from './chunkDraw';
 import { CHUNK_SX, CHUNK_SZ, chunkKey } from './constants';
-import { meshChunk } from './mesher';
+import { meshChunk, type ChunkMeshData } from './mesher';
 import type { World } from './world';
 
 const MODES = ['opaque', 'cutout', 'blend'] as const;
+
+/**
+ * Somewhere other than `createMesh` for a built chunk's meshes to go.
+ *
+ * **The GPU-driven port is the one there is.** Its terrain lives in a streaming scene the pipeline
+ * culls for itself, so a chunk is handed over whole rather than uploaded and hung on a scene node;
+ * generation, the light flood, the mesher and the budget are this class's either way.
+ */
+export interface ChunkSink {
+  /** Take a chunk's meshes, replacing any it already holds for that chunk. */
+  add(cx: number, cz: number, data: ChunkMeshData): boolean;
+  /** Let a chunk's meshes go. */
+  remove(cx: number, cz: number): void;
+}
 
 export interface ChunkRendererOptions {
   /** Horizontal render radius, in chunks. */
@@ -62,13 +76,18 @@ export interface ChunkRendererOptions {
    * unconditional, and an infinite budget still drains the queue.
    */
   msPerFrame?: number;
+  /** Where built chunks go instead of `createMesh`. See `ChunkSink`. */
+  sink?: ChunkSink;
 }
 
 interface ActiveChunk {
   cx: number;
   cz: number;
-  /** One group node per chunk. Its bounds are the union of its meshes', so it prunes as one. */
-  node: SceneNode;
+  /**
+   * One group node per chunk. Its bounds are the union of its meshes', so it prunes as one. Null
+   * where a sink took the chunk, which culls it for itself.
+   */
+  node: SceneNode | null;
   /** A node per render mode, because a node carries one mesh's bounds. */
   parts: { mode: RenderMode; node: SceneNode; mesh: MeshHandle }[];
 }
@@ -95,6 +114,7 @@ export class ChunkRenderer {
   private readonly pending: { cx: number; cz: number; dist: number }[] = [];
 
   private readonly draws: ChunkDraw;
+  private readonly sink: ChunkSink | null;
 
   constructor(
     renderer: RendererApi,
@@ -110,6 +130,7 @@ export class ChunkRenderer {
     this.computeBudget = options.computeBudgetPerFrame ?? 4;
     this.msBudget = options.msPerFrame ?? 6;
     this.draws = new ChunkDraw(renderer, atlas);
+    this.sink = options.sink ?? null;
   }
 
   /** Chunks with live meshes. */
@@ -245,6 +266,16 @@ export class ChunkRenderer {
 
   private buildChunk(cx: number, cz: number): void {
     const data = meshChunk(this.world, cx, cz, this.atlas, this.world.light);
+    if (this.sink !== null) {
+      /*
+       * **Active whether or not the sink found room.** A refusal is the sink's to count and show;
+       * leaving the chunk pending instead would rebuild it every frame and be refused every frame,
+       * which spends the budget on nothing and never says so.
+       */
+      this.sink.add(cx, cz, data);
+      this.active.set(chunkKey(cx, cz), { cx, cz, node: null, parts: [] });
+      return;
+    }
     const node = new SceneNode();
     node.setPosition(cx * CHUNK_SX, 0, cz * CHUNK_SZ);
     const parts: ActiveChunk['parts'] = [];
@@ -270,6 +301,10 @@ export class ChunkRenderer {
   }
 
   private retire(chunk: ActiveChunk): void {
+    if (chunk.node === null) {
+      this.sink?.remove(chunk.cx, chunk.cz);
+      return;
+    }
     for (const part of chunk.parts) {
       this.draws.forget(part.node);
       chunk.node.detachChild(part.node);

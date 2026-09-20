@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { DEFAULT_SCENES, captureLabel, joinQuery, parseArgs, withBackend } from './shots.mjs';
+import {
+  DEFAULT_SCENES,
+  GPU_DRIVEN_ONLY,
+  captureLabel,
+  capturable,
+  joinQuery,
+  parseArgs,
+  withBackend,
+} from './shots.mjs';
 
 /*
  * The backend has to reach the page and the label, and those are two separate failures.
@@ -59,6 +67,21 @@ test('a query joins a path that has none', () => {
   assert.equal(joinQuery('http://host/', '?backend=webgpu'), 'http://host/?backend=webgpu');
 });
 
+/*
+ * **And the `?` is the caller's habit rather than the format**, which is the half this pair
+ * missed. `--query=samples=1` reads exactly like `--query=?samples=1` to anybody typing it, and
+ * the usage text asks for neither spelling; joined without a separator it produced
+ * `hold=420samples=1`, so `Number('420samples=1')` was `NaN`, the held frame never arrived and
+ * the capture waited two minutes and wrote no file. A sweep of five knobs was run that way and
+ * every one of them came back as a missing PNG.
+ */
+test('a query with no leading question mark still joins with a separator', () => {
+  assert.equal(
+    joinQuery('http://host/?scene=0&hold=420', 'samples=1'),
+    'http://host/?scene=0&hold=420&samples=1',
+  );
+});
+
 test('an empty query leaves the url alone', () => {
   assert.equal(joinQuery('http://host/?scene=0', ''), 'http://host/?scene=0');
 });
@@ -101,4 +124,41 @@ test('the scene list agrees with the order demo/index.ts publishes', async () =>
     names.map(kebab),
     'scripts/shots.mjs names the scenes in a different order from demo/index.ts',
   );
+});
+
+/*
+ * **A published scene one backend cannot draw.** The city is drawn by the GPU-driven pipeline
+ * alone and refuses to mount on WebGL2, as it should; a capture of the published corpus on WebGL2
+ * then waited for draws that never came and threw at the end of the run. So the scenes that need
+ * the second pipeline are named here, said and skipped on WebGL2 rather than waited on.
+ */
+test('ON WEBGL2 A CAPTURE SKIPS THE SCENES THE SECOND PIPELINE ALONE DRAWS, and says so', () => {
+  const targets = DEFAULT_SCENES.map((name, index) => ({ name, path: `/?scene=${index}` }));
+  const onWebgl2 = capturable(targets, 'webgl2');
+  assert.deepEqual(
+    onWebgl2.skipped.map((target) => target.name),
+    GPU_DRIVEN_ONLY,
+  );
+  assert.equal(onWebgl2.kept.length, DEFAULT_SCENES.length - GPU_DRIVEN_ONLY.length);
+  for (const backend of ['webgpu', null]) {
+    const all = capturable(targets, backend);
+    assert.equal(all.kept.length, DEFAULT_SCENES.length);
+    assert.deepEqual(all.skipped, []);
+  }
+});
+
+test('THE SCENES IT SKIPS ARE THE ONES WHOSE MODULES SAY THEY NEED THE SECOND PIPELINE', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const dir = fileURLToPath(new URL('../demo/', import.meta.url));
+  const needing = [];
+  for (const file of readdirSync(dir).filter((name) => /^[a-zA-Z]+\.ts$/.test(name))) {
+    const source = readFileSync(`${dir}${file}`, 'utf8');
+    const declared = /\n {2}pipelines: \[([^\]]*)\]/.exec(source);
+    const id = /\n {2}id: '([a-z][a-z0-9-]*)'/.exec(source);
+    if (declared === null || id === null) continue;
+    if (!declared[1].includes("'forward'")) needing.push(id[1]);
+  }
+  assert.ok(needing.length > 0, 'no scene declares its pipelines; this test has gone stale');
+  assert.deepEqual(needing.sort(), [...GPU_DRIVEN_ONLY].sort());
 });

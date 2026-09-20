@@ -45,6 +45,18 @@ export interface UiNodeOptions {
   readonly contentWidth?: number;
   readonly contentHeight?: number;
   readonly hidden?: boolean;
+  /**
+   * Whether this node cuts its descendants to its own rectangle.
+   *
+   * Off by default, because most nodes do not clip and one that does costs a scissor change in
+   * the pass. A scroll container sets it and a panel sets it; a row of buttons does not.
+   */
+  readonly clip?: boolean;
+  /** How far this node's contents are moved under it. Only meaningful with `clip`. */
+  readonly scrollX?: number;
+  readonly scrollY?: number;
+  /** Draw order beyond tree order. Inherited by descendants that do not set their own. */
+  readonly layer?: number;
   readonly background?: ArrayLike<number> | null;
   /** The sprite slot this node draws from, or `-1` for none. */
   readonly texture?: number;
@@ -86,6 +98,23 @@ export interface UiNode {
   contentWidth: number;
   contentHeight: number;
   hidden: boolean;
+  /** Whether this node cuts its descendants to its own rectangle. See `uiClip.ts`. */
+  clip: boolean;
+  /** How far this node's contents are moved under it. See `uiScroll.ts`. */
+  scrollX: number;
+  scrollY: number;
+  /**
+   * How far the placed children reach past this node's content origin, along each axis.
+   *
+   * Written by `layoutUiTree` and **independent of the current scroll**, because it is measured
+   * relative to the content origin that the scroll already moved — the offset cancels. That
+   * independence is the point: an extent derived from placed positions plus the live scroll value
+   * is wrong the moment the two disagree, which is exactly when a caller is scrolling.
+   */
+  contentSpanX: number;
+  contentSpanY: number;
+  /** Draw order beyond tree order. See `uiLayer.ts`. */
+  layer: number;
 
   /** Where this node ended up. Meaningless until `layoutUiTree` has run over its root. */
   readonly rect: UiRect;
@@ -137,6 +166,12 @@ export function createUiNode(options: UiNodeOptions = {}): UiNode {
     contentWidth: options.contentWidth ?? 0,
     contentHeight: options.contentHeight ?? 0,
     hidden: options.hidden ?? false,
+    clip: options.clip ?? false,
+    scrollX: options.scrollX ?? 0,
+    scrollY: options.scrollY ?? 0,
+    contentSpanX: 0,
+    contentSpanY: 0,
+    layer: options.layer ?? 0,
     rect: { x: 0, y: 0, w: 0, h: 0 },
     measuredWidth: 0,
     measuredHeight: 0,

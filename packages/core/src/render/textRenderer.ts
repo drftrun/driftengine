@@ -69,6 +69,8 @@ export class TextRenderer {
   /**
    * @param originX left edge, in pixels from the left of the viewport.
    * @param originY baseline, in pixels from the top.
+   *
+   * Answers whether it drew, which the renderer counts on its frame budget.
    */
   draw(
     viewportWidth: number,
@@ -77,8 +79,8 @@ export class TextRenderer {
     originY: number,
     style: TextStyle,
     timeSec: number,
-  ): void {
-    if (this.layout.instanceCount === 0 || style.alpha <= 0) return;
+  ): boolean {
+    if (this.layout.instanceCount === 0 || style.alpha <= 0) return false;
     const gl = this.gl;
 
     gl.useProgram(this.program);
@@ -137,6 +139,7 @@ export class TextRenderer {
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, TEXT_CUBE.vertexCount, this.layout.instanceCount);
     gl.bindVertexArray(null);
+    return true;
   }
 
   dispose(): void {

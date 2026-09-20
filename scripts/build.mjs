@@ -30,6 +30,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { emitModules } from './emitModules.mjs';
+
 const ROOT = path.resolve(import.meta.dirname, '..');
 const TSC = path.join(ROOT, 'node_modules', '.bin', 'tsc');
 const SCOPE = '@driftengine/';
@@ -151,6 +153,9 @@ for (const entry of selected) {
   process.stdout.write(`  ${entry.name.padEnd(26)}`);
   try {
     execFileSync(TSC, ['-p', config], { cwd: ROOT, stdio: 'pipe' });
+    /* What `tsc` does not see: the modules a package starts by URL. See `emitModules.mjs`. */
+    const dir = path.join(ROOT, 'packages', entry.dir);
+    emitModules(path.join(dir, 'src'), path.join(dir, 'dist'));
     stampBanner(entry.dir);
     console.log('ok');
   } catch (error) {

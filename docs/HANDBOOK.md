@@ -184,8 +184,10 @@ asset.textures; // { name, codec, width, height, bytes }
 asset.skipped; // optional chunks this reader did not know
 ```
 
-Decode an embedded image with `createImageBitmap(new Blob([bytes.slice()], { type }))`. The
-`.slice()` matters: the view keeps the whole file alive otherwise.
+Decode an embedded image with
+`createImageBitmap(new Blob([bytes.slice()], { type }), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })`.
+The `.slice()` matters: the view keeps the whole file alive otherwise. So do the two options — see
+"At runtime" below.
 
 Address textures by name through `TextureSet`, never by ordinal. An unknown name throws and
 lists what the asset has.
@@ -424,16 +426,22 @@ DDS-textured model in it, rebaking is worth doing on file size alone.
 const asset = readDrft(buffer); // zero-copy views over the fetched bytes
 const bitmap = await createImageBitmap(
   new Blob([asset.textures[0].bytes.slice()], { type: 'image/jpeg' }),
+  { premultiplyAlpha: 'none', colorSpaceConversion: 'none' },
 );
 const tex = createSurfaceTexture(gl, bitmap);
 renderer.setMaterial({ albedo: tex }); // pass state: bind once per group
 renderer.drawMesh(mesh, model);
 ```
 
-Two things about that snippet are load-bearing:
+Three things about that snippet are load-bearing:
 
 - **`.slice()`**, because `bytes` is a view over the whole asset and a `Blob` over the view
   would otherwise keep the entire file alive.
+- **The two options.** Left out, a browser premultiplies the image and colour-manages it. The
+  upload divides the alpha back out, so a transparent texel's colour is gone, and a partly
+  transparent one comes back rounded: measured in Chrome on every colour at every alpha, half the
+  channel values change. A cutout's edge then filters toward black. Colour management rewrites a
+  normal or ORM map, whose values are not colours. `DrftLoader` asks for both.
 - **`setMaterial` is pass state**, so bind it per _material group_, not per mesh. The showroom
   draws 187 meshes in 8 draws that way.
 

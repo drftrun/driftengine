@@ -65,6 +65,7 @@ export class BrowserStore implements KeyValueStore {
   read(key: string): string | null {
     if (!this.available) return this.fallback.read(key);
     try {
+      // platform: browser default — `KeyValueStore` is the seam; see `MemoryStore` beside it
       return localStorage.getItem(key);
     } catch {
       return this.fallback.read(key);
@@ -75,6 +76,7 @@ export class BrowserStore implements KeyValueStore {
     this.fallback.write(key, value);
     if (!this.available) return;
     try {
+      // platform: browser default — as above
       localStorage.setItem(key, value);
     } catch {
       // Quota exceeded or blocked mid-session; the memory copy still stands.
@@ -85,6 +87,7 @@ export class BrowserStore implements KeyValueStore {
     this.fallback.remove(key);
     if (!this.available) return;
     try {
+      // platform: browser default — as above
       localStorage.removeItem(key);
     } catch {
       // As above.
@@ -97,7 +100,9 @@ function probeLocalStorage(): boolean {
     // Reading is not enough of a probe: some browsers allow the read and throw
     // only on write, which would strand a store that reports itself healthy.
     const probe = '__driftengine_probe__';
+    // platform: feature probe — a blocked store must be found by trying it
     localStorage.setItem(probe, '1');
+    // platform: feature probe — as above
     localStorage.removeItem(probe);
     return true;
   } catch {

@@ -40,6 +40,7 @@ export class SoundRegistry {
   /** Slots whose stand-in threw. Empty is the normal state; see `unbuilt`. */
   private readonly failed = new Map<SoundSlot, string>();
 
+  // platform: browser default — `FetchLike` is the seam and this is its default
   constructor(private readonly fetchImpl: FetchLike = (url) => fetch(url)) {}
 
   register(slot: SoundSlot, source: SoundSource): void {

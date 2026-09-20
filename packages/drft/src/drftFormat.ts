@@ -23,7 +23,7 @@ export const DRFT_VERSION_MAJOR = 1;
  * Additive revisions within a generation: new optional chunks, new attribute bits, new
  * enum values with a defined fallback. Never a changed meaning.
  */
-export const DRFT_VERSION_MINOR = 12;
+export const DRFT_VERSION_MINOR = 17;
 
 /** Bytes before the chunk table. */
 export const HEADER_BYTES = 32;
@@ -201,6 +201,64 @@ export const CHUNK_MORP = fourCC('MORP');
  */
 export const CHUNK_SUBS = fourCC('SUBS');
 
+/**
+ * `MSHL`: a mesh's clusters and the level-of-detail graph over them.
+ *
+ * Additive, and additive is what keeps the freeze in `FORMAT.md` intact: a reader that does not
+ * know this code skips it by its length and loses only the GPU-driven path, which is the one thing
+ * it could not have drawn anyway.
+ */
+export const CHUNK_MSHL = fourCC('MSHL');
+
+/**
+ * `DTEX`: a material as a decode program over a latent, rather than as pictures.
+ *
+ * Additive on the same terms as `MSHL`: a reader that does not know this code skips it by its
+ * length and loses only the material, which it had no way to decode. See `dtex.ts` for the layout
+ * and for why the chunk validates containment rather than meaning.
+ */
+export const CHUNK_DTEX = fourCC('DTEX');
+
+/**
+ * `SDFV`: an object's signed distance field, for tracing indirect light through it.
+ *
+ * Additive on the same terms as `MSHL` and `DTEX`: a reader that does not know this code skips it
+ * by its length and loses only indirect light, which it had no way to trace anyway. See `sdfv.ts`
+ * for the layout, and for why it carries no version of its own.
+ */
+export const CHUNK_SDFV = fourCC('SDFV');
+
+/**
+ * `NNET`: the weights of the small networks the engine evaluates, found by role.
+ *
+ * Additive on the same terms as `SDFV`: a reader that does not know this code skips it by its
+ * length and loses only the networks, which it had nothing to evaluate them with. See `nnet.ts`.
+ */
+export const CHUNK_NNET = fourCC('NNET');
+
+/**
+ * `NGRF`: a network as a graph of operators and its tensors, found by role — the form a transformer
+ * takes, which `NNET`'s perceptron table cannot. Additive on the same terms. See `ngrf.ts`.
+ */
+export const CHUNK_NGRF = fourCC('NGRF');
+
+/**
+ * `NAVM`: a polygon mesh a character can walk, with the placement it was built at.
+ *
+ * Additive on the same terms as `DTEX`: a reader that does not know this code skips it by its
+ * length and loses only the navigation, which it had nothing to walk with. See `navm.ts` for the
+ * layout, and for why the placement travels inside the chunk rather than beside it.
+ */
+export const CHUNK_NAVM = fourCC('NAVM');
+
+/**
+ * `ENTS`: the things in a scene, as the entity model wrote them.
+ *
+ * Additive on the same terms. See `ents.ts` for the layout, and for why a chunk in a binary
+ * container holds text.
+ */
+export const CHUNK_ENTS = fourCC('ENTS');
+
 /** Bytes before the records in a `SPLT` payload. See `DrftSplatBlock` for the fields. */
 export const SPLAT_BLOCK_PREFIX = 40;
 
@@ -226,6 +284,13 @@ export const KNOWN_CHUNKS: ReadonlySet<number> = new Set([
   CHUNK_ANIM,
   CHUNK_MORP,
   CHUNK_SUBS,
+  CHUNK_MSHL,
+  CHUNK_DTEX,
+  CHUNK_SDFV,
+  CHUNK_NNET,
+  CHUNK_NGRF,
+  CHUNK_NAVM,
+  CHUNK_ENTS,
 ]);
 
 /** Chunk flags. */

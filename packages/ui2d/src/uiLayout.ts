@@ -76,8 +76,14 @@ function place(node: UiNode, x: number, y: number, w: number, h: number): void {
   node.rect.h = h;
 
   const row = node.direction === 'row';
-  const contentX = x + node.paddingLeft;
-  const contentY = y + node.paddingTop;
+  /*
+   * Scrolling is subtracted here, at placement, rather than applied as a transform at draw.
+   * Applied at draw, hit testing would need the inverse and every consumer would eventually get
+   * it wrong in one direction; applied here, a scrolled child's rectangle simply *is* where it is,
+   * and hit testing, focus and clipping all keep working without knowing scrolling exists.
+   */
+  const contentX = x + node.paddingLeft - node.scrollX;
+  const contentY = y + node.paddingTop - node.scrollY;
   const contentW = Math.max(0, w - node.paddingLeft - node.paddingRight);
   const contentH = Math.max(0, h - node.paddingTop - node.paddingBottom);
   const contentAlong = row ? contentW : contentH;
@@ -135,6 +141,8 @@ function place(node: UiNode, x: number, y: number, w: number, h: number): void {
     }
     cursor += sizeAlong + node.gap + between;
   }
+
+  measureSpan(node, contentX, contentY);
 }
 
 /**
@@ -144,6 +152,26 @@ function place(node: UiNode, x: number, y: number, w: number, h: number): void {
  * where the panel's contents start — which is where a caller reading the padding expects it, and
  * the only reading under which `x: 0` means the same thing for an absolute child as for a flow one.
  */
+/**
+ * How far the placed children reach past the content origin.
+ *
+ * Measured after placement and relative to `contentX`/`contentY`, which the scroll has already
+ * moved — so the offset cancels and the answer is the same whatever the node is scrolled to.
+ * `uiScroll.ts` clamps against this and would be wrong clamping against anything derived from the
+ * live scroll value.
+ */
+function measureSpan(node: UiNode, contentX: number, contentY: number): void {
+  let spanX = 0;
+  let spanY = 0;
+  for (const child of node.children) {
+    if (child.hidden) continue;
+    spanX = Math.max(spanX, child.rect.x + child.rect.w - contentX);
+    spanY = Math.max(spanY, child.rect.y + child.rect.h - contentY);
+  }
+  node.contentSpanX = spanX;
+  node.contentSpanY = spanY;
+}
+
 function placeAbsolute(
   child: UiNode,
   contentX: number,

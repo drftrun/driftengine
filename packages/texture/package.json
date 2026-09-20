@@ -1,0 +1,59 @@
+{
+  "name": "@driftengine/texture",
+  "version": "4.0.0",
+  "description": "DriftTexture: a texture as a compiled, sampled field rather than an image",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "drift-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "!src/**/__snapshots__",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "peerDependencies": {
+    "@driftengine/core": "4.0.0"
+  },
+  "author": "Drift Technologies",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftengine.git",
+    "directory": "packages/texture"
+  },
+  "homepage": "https://github.com/drftrun/driftengine#readme",
+  "bugs": "https://github.com/drftrun/driftengine/issues",
+  "keywords": [
+    "driftengine",
+    "3d",
+    "webgl",
+    "webgpu",
+    "typescript",
+    "texture",
+    "compression",
+    "materials"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/texture"
+  }
+}

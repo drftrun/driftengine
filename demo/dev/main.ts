@@ -13,7 +13,7 @@
 import { DRAFT_SCENES, SCENES } from '../index';
 import type { DemoHandle } from '../types';
 import { bindOrbitControls } from '../controls';
-import { askedHeldFrames, holdFrames, releaseHeldClock } from './heldFrame';
+import { askedHeldFrames, askedHoldStop, holdFrames, releaseHeldClock } from './heldFrame';
 import { askedQuality } from './askedQuality';
 import { demoQualityFor, readDemoDeviceHints } from '../deviceBudget';
 
@@ -32,13 +32,28 @@ import { demoQualityFor, readDemoDeviceHints } from '../deviceBudget';
  * from the real one and every frame after it would be measured against a clock that jumped.
  */
 const held = askedHeldFrames();
-if (held !== undefined) holdFrames(held);
+if (held !== undefined) holdFrames(held, askedHoldStop());
 
 /* Also once, and before anything mounts. A remount from hot reload reuses this rather than
    re-reading the URL, which keeps every mount in a session comparable with every other. */
 const quality = askedQuality();
 /* Read once: it cannot change while the page is open, and a scene remount is expensive. */
 const DEVICE_QUALITY = demoQualityFor(readDemoDeviceHints());
+
+/**
+ * `?bench=N`: how long N frames took, on the CPU and on the device, once the scene is drawing.
+ *
+ * **Counted from the first frame that draws**, because a scene building its world behind a splash
+ * reports no draws, and a measurement of the splash says nothing about the scene. The CPU figure is
+ * `frame` itself, which is everything the scene does on the main thread; the device figure is
+ * whatever the scene reports as `gpuMs`, which is zero unless `?gputiming=1` asked for timestamps.
+ * `scripts/sandbox-bench.mjs` reads `__bench` once it is done.
+ */
+const BENCH_FRAMES = Math.max(
+  0,
+  Math.floor(Number(new URLSearchParams(location.search).get('bench')) || 0),
+);
+const bench = { cpu: [] as number[], gpu: [] as number[], draws: 0, extra: '', done: false };
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const picker = document.getElementById('picker') as HTMLElement;
@@ -145,7 +160,19 @@ async function run(index: number): Promise<void> {
     last = now;
     try {
       updateScrub();
+      const began = performance.now();
       const measured = handle?.frame(dt);
+      const spent = performance.now() - began;
+      if (BENCH_FRAMES > 0 && !bench.done && (measured?.draws ?? 0) > 0) {
+        bench.cpu.push(spent);
+        bench.gpu.push(measured?.gpuMs ?? 0);
+        bench.draws = measured?.draws ?? 0;
+        bench.extra = measured?.extra ?? '';
+        if (bench.cpu.length >= BENCH_FRAMES) {
+          bench.done = true;
+          (globalThis as unknown as { __bench: typeof bench }).__bench = bench;
+        }
+      }
       smoothed += (1 / Math.max(dt, 1e-4) - smoothed) * 0.1;
       /*
        * The backend first, because every other figure on this line is worthless without it.

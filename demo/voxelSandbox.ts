@@ -22,25 +22,33 @@ import {
   BrowserStore,
   Camera,
   DEFAULT_TEXT_STYLE,
-  createEnvironment,
+  DEFAULT_RENDER_QUALITY,
+  GpuDrivenPass,
+  atmosphereFog,
+  createFogTarget,
   textHeightPx,
   createRenderer,
   InputSource,
   TouchControls,
   LoadTracker,
+  type Environment,
+  type FogTarget,
+  type PassHandle,
   type RenderBackend,
   type RenderQualityOptions,
   type RendererApi,
-  type Vec3,
 } from '../packages/core/src/index';
 
 import { DEMO_BACKEND } from './backend';
-import type { DemoBudget, DemoHandle, DemoScene, DemoStats } from './types';
+import type { DemoBudget, DemoHandle, DemoScene, DemoSceneOptions, DemoStats } from './types';
 import { VOXEL_ACTIONS } from './voxelSandbox/actions';
-import { buildBlockAtlas } from './voxelSandbox/atlas';
+import { TILE_PX, buildBlockAtlas } from './voxelSandbox/atlas';
 import type { BlockAtlas } from './voxelSandbox/atlas';
+import { atlasProgram } from './voxelSandbox/atlasProgram';
 import { allReferencedTiles } from './voxelSandbox/blocks';
 import { ChunkRenderer } from './voxelSandbox/chunkRenderer';
+import { FOV_Y_DEG } from './voxelSandbox/constants';
+import { GpuDrivenChunks, capacityFor } from './voxelSandbox/gpuDrivenChunks';
 import { Highlight } from './voxelSandbox/highlight';
 import { Lighting } from './voxelSandbox/lighting';
 import { Mobs } from './voxelSandbox/mobs';
@@ -58,6 +66,12 @@ import {
   saveToFile,
   type SaveData,
 } from './voxelSandbox/saveLoad';
+import {
+  PORT_SHADOW_RADIUS,
+  sandboxEnvironment,
+  sandboxOptions,
+  type SandboxOptions,
+} from './voxelSandbox/sandboxOptions';
 import { Sky } from './voxelSandbox/sky';
 import { WaterSim } from './voxelSandbox/waterSim';
 import { WaterSurface } from './voxelSandbox/waterSurface';
@@ -72,9 +86,27 @@ const SEED = 1337;
 const RENDER_RADIUS = 6;
 /** How long one frame may spend building the spawn region while the badge is up. */
 const WARM_SLICE_MS = 24;
-const FOG_COLOR: Vec3 = [0.7, 0.82, 0.92];
-const FOG_START = (RENDER_RADIUS - 1) * 16 * 0.6;
-const FOG_END = RENDER_RADIUS * 16 * 0.95;
+/** How far above the spawn's ground `?fly=` holds the eye: clear of the trees and most hills. */
+const FLY_ABOVE = 32;
+
+/**
+ * The second pipeline's stages, for the capture line under `?gputiming=1`: a comparison that says
+ * the port is slower has to say where, and the pass times each of these on the device.
+ */
+const PORT_STAGES: readonly Parameters<GpuDrivenPass['stageTime']>[0][] = [
+  'shadow',
+  'instanceCull',
+  'cut',
+  'phaseOneDraw',
+  'pyramid',
+  'phaseTwoCull',
+  'phaseTwoDraw',
+  'blendCull',
+  'blendDraw',
+  'blendResolve',
+  'bin',
+  'shade',
+];
 
 /** Relative, so a host serves the tiles from its own root. See `showroom.ts` for the pattern. */
 const PACK_URL = 'voxelpack';
@@ -92,6 +124,38 @@ const PROFILES: Readonly<Record<DemoBudget, RenderQualityOptions>> = {
 
 /** A handheld meshes a smaller world, because the budget is bandwidth rather than shader cost. */
 const RADIUS_FOR: Readonly<Record<DemoBudget, number>> = { full: RENDER_RADIUS, lean: 4 };
+
+/**
+ * The terrain on the second pipeline: its scene, the pass that draws it, and the pass's handle.
+ *
+ * **Null on the forward path**, which is the default and the published capture.
+ * `?pipeline=gpu-driven` builds one; everything that is not terrain — mobs, particles, falling
+ * blocks, the highlight, the sky, the HUD — draws on the forward path whichever pipeline has the
+ * terrain, behind or in front of it through the depth the pass hands the frame.
+ */
+interface GpuDrivenTerrain {
+  readonly chunks: GpuDrivenChunks;
+  readonly pass: GpuDrivenPass;
+  readonly handle: PassHandle;
+  /** Refilled every frame rather than rebuilt: the frame loop may not allocate. */
+  readonly view: TerrainView;
+}
+
+/** `GpuDrivenView` with the fields a day-night clock and a walking camera change made writable. */
+interface TerrainView {
+  readonly viewProj: Float32Array;
+  readonly eye: [number, number, number];
+  lightDir: readonly [number, number, number];
+  lightColour: readonly [number, number, number];
+  ambient: readonly [number, number, number];
+  ambientGround: readonly [number, number, number];
+  readonly lodThreshold: number;
+  fovY: number;
+  readonly shadowStrength: number;
+  emissiveGain: number;
+  nightFactor: number;
+  readonly fog: FogTarget;
+}
 
 class VoxelSandboxHandle implements DemoHandle {
   readonly backend: RenderBackend;
@@ -124,7 +188,10 @@ class VoxelSandboxHandle implements DemoHandle {
   private smoothedFps = 60;
   private readonly waterSurface: WaterSurface;
   private readonly camera = new Camera();
-  private readonly env: ReturnType<typeof createEnvironment>;
+  private readonly env: Environment;
+  private readonly options: SandboxOptions;
+  private readonly terrain: GpuDrivenTerrain | null;
+  private readonly underwaterMedium: boolean;
 
   /* Reused rather than rebuilt: `frame` runs sixty times a second. */
   private readonly stats: DemoStats = { draws: 0, gpuMs: 0 };
@@ -135,6 +202,9 @@ class VoxelSandboxHandle implements DemoHandle {
   /** Seconds since the first frame, for the badge's own text animation clock. */
   private warmElapsed = 0;
   private lastGpuMs = 0;
+  /** `?fly=`: where the flight began and how far it has gone. See `flyOn`. */
+  private flightStart: [number, number, number] | null = null;
+  private flown = 0;
   private disposed = false;
 
   constructor(
@@ -145,12 +215,18 @@ class VoxelSandboxHandle implements DemoHandle {
     chunks: ChunkRenderer,
     atlas: BlockAtlas,
     spawn: { x: number; y: number; z: number },
+    options: SandboxOptions,
+    terrain: GpuDrivenTerrain | null,
+    underwaterMedium: boolean,
   ) {
     this.renderer = renderer;
     this.backend = backend;
     this.canvas = canvas;
     this.world = world;
     this.chunks = chunks;
+    this.options = options;
+    this.terrain = terrain;
+    this.underwaterMedium = underwaterMedium;
 
     /*
      * The engine's own input, rather than a set of listeners this file would otherwise grow:
@@ -190,6 +266,11 @@ class VoxelSandboxHandle implements DemoHandle {
     canvas.addEventListener('click', this.onClick);
 
     this.player = new Player(world, spawn);
+    /* `?look=`, which a comparison capture uses to face something the spawn's view does not hold. */
+    if (options.look !== null) {
+      this.player.yaw = (options.look.yaw * Math.PI) / 180;
+      this.player.pitch = (options.look.pitch * Math.PI) / 180;
+    }
     /* What the splash divides by. Captured before a single chunk is built, because it is the
        size of the job rather than what is left of it. */
     this.warmTotal = chunks.pendingCount;
@@ -219,7 +300,7 @@ class VoxelSandboxHandle implements DemoHandle {
       this.highlight,
       this.touch,
     );
-    this.camera.fovYDeg = 70;
+    this.camera.fovYDeg = FOV_Y_DEG;
     /*
      * **Both planes, and the pair is the point.**
      *
@@ -238,7 +319,8 @@ class VoxelSandboxHandle implements DemoHandle {
      * ratio ends up better than the engine's own default rather than worse.
      */
     this.camera.near = 0.15;
-    this.camera.far = 220;
+    /* 220 unless `?radius=` pushes the haze past it; `sandboxOptions` says why. */
+    this.camera.far = options.far;
 
     /*
      * Flood connected sub-sea air as each chunk activates, so a cave opening into the seabed is
@@ -258,24 +340,8 @@ class VoxelSandboxHandle implements DemoHandle {
       }
     };
 
-    this.env = createEnvironment({
-      directionalDir: [-0.36, 0.72, 0.59],
-      directionalColor: [1.18, 1.06, 0.86],
-      ambient: [0.34, 0.4, 0.5],
-      ambientGround: [0.24, 0.24, 0.19],
-      emissiveGain: 0,
-      nightFactor: 0,
-      fogColor: FOG_COLOR,
-      /* The reference hand-writes a ramp between two radii, and `linear` is documented as
-         exactly that: nothing before `fogNear`, the fog colour entirely at `fogFar`. Same two
-         numbers, so the two demos are expected to haze alike. */
-      fogMode: 'linear',
-      fogNear: FOG_START,
-      fogFar: FOG_END,
-      fogDensity: 0,
-      fogHeightFalloff: 0,
-      fogBaseY: 0,
-    });
+    /* The reference's ramp on the radii the page asked for, and block light at a gain of one. */
+    this.env = sandboxEnvironment(options);
   }
 
   private readonly onClick = (): void => {
@@ -329,6 +395,7 @@ class VoxelSandboxHandle implements DemoHandle {
 
     this.input.poll();
     this.playerInput.update(dtSec, LOOK_RAD_PER_PX);
+    if (this.options.fly !== null) this.flyOn(this.options.fly, dtSec);
     this.highlight.update(dtSec);
 
     /* The camera is the body's eye, not a thing that moves on its own. */
@@ -368,16 +435,30 @@ class VoxelSandboxHandle implements DemoHandle {
     env.nightFactor = sky.nightFactor;
 
     const renderer = this.renderer;
+    /*
+     * **The medium before anything is drawn.** This ran after the terrain, so every forward draw
+     * but the sky read the medium of the frame before — a lag of one frame at the surface, which no
+     * held capture can see. The second pipeline takes its haze before `beginFrame`, so it would
+     * have lagged too; deciding it here puts both pipelines and every draw on the same frame.
+     */
+    this.waterSurface.update(this.camera, env, this.world);
+    const terrain = this.terrain;
+    if (terrain !== null) this.aimTerrain(terrain);
     renderer.gpuTimer.beginFrame();
     renderer.beginFrame(sky.fogColor);
     renderer.gpuTimer.begin('rest');
     renderer.bindMeshPass(this.camera, this.env);
-    const visit = this.chunks.draw(this.camera);
+    /*
+     * **The terrain first, on whichever pipeline draws it**, so everything after depth-tests
+     * against it. On the second pipeline that is what `presentDepth` is for: the blit hands the
+     * frame the terrain's depth, and a mob behind a hill is behind it.
+     */
+    const visit = terrain === null ? this.chunks.draw(this.camera) : null;
+    if (terrain !== null) renderer.drawPass(terrain.handle);
     this.highlight.draw(this.camera, this.env);
     this.falling.draw(this.camera, env);
     this.mobs.draw(this.camera, env);
     this.particles.draw(this.camera, env);
-    this.waterSurface.update(this.camera, env, this.world);
     /* After the terrain and the water, so the sky only fills what nothing else covered. */
     this.sky.draw(renderer, this.camera, env);
 
@@ -416,16 +497,82 @@ class VoxelSandboxHandle implements DemoHandle {
     const sample = renderer.gpuTimer.poll();
     if (sample !== null) this.lastGpuMs = sample.shadows + sample.reflection + sample.rest;
 
-    /* `visited` is exactly the number of `drawMesh` calls the walk made: a node is only handed
-       to the visitor when it has geometry. */
-    this.stats.draws = visit.visited;
-    this.stats.gpuMs = this.lastGpuMs;
-    /*
-     * The pruned count, because "169 chunks" is a number a reader has no scale for until it
-     * sits next to how many of them the frustum threw away without touching.
-     */
-    this.stats.extra = `${this.chunks.activeCount} chunks, ${visit.pruned} pruned`;
+    if (visit !== null) {
+      /* `visited` is exactly the number of `drawMesh` calls the walk made: a node is only handed
+         to the visitor when it has geometry. */
+      this.stats.draws = visit.visited;
+      this.stats.gpuMs = this.lastGpuMs;
+      /*
+       * The pruned count, because "169 chunks" is a number a reader has no scale for until it
+       * sits next to how many of them the frustum threw away without touching.
+       */
+      this.stats.extra = `${this.chunks.activeCount} chunks, ${visit.pruned} pruned`;
+    } else if (terrain !== null) {
+      /* The pass's two draws, and its own stages beside the rest of the frame's. */
+      this.stats.draws = 2;
+      this.stats.gpuMs = this.lastGpuMs + (terrain.pass.totalMs ?? 0);
+      /*
+       * **The refused count is on the line a capture prints**, because a chunk that did not fit is
+       * a hole in the world and this is the one number that says the capacity is right.
+       */
+      /* Every stage that costs a twentieth of a millisecond or more, when the device timed them. */
+      let stages = '';
+      for (const stage of PORT_STAGES) {
+        const ms = terrain.pass.stageTime(stage);
+        if (ms !== null && ms >= 0.05) stages += ` · ${stage} ${ms.toFixed(2)}`;
+      }
+      this.stats.extra =
+        `${this.chunks.activeCount} chunks on the second pipeline, ` +
+        `${terrain.chunks.refused} refused, ${terrain.chunks.scene.liveClusters} clusters${stages}`;
+    }
     return this.stats;
+  }
+
+  /**
+   * Point the second pipeline at this frame: the camera, the clock's light, and the haze.
+   *
+   * **The haze is the forward path's own medium**, filled by `atmosphereFog` from the same
+   * environment every forward draw in this frame binds, so the terrain and the mobs on it fade
+   * alike and go under water together.
+   */
+  private aimTerrain(terrain: GpuDrivenTerrain): void {
+    const view = terrain.view;
+    const env = this.env;
+    view.viewProj.set(this.camera.viewProjection);
+    view.eye[0] = this.camera.position[0] as number;
+    view.eye[1] = this.camera.position[1] as number;
+    view.eye[2] = this.camera.position[2] as number;
+    view.fovY = (this.camera.fovYDeg * Math.PI) / 180;
+    view.lightDir = env.directionalDir;
+    view.lightColour = env.directionalColor;
+    view.ambient = env.ambient;
+    /* The forward path's own default when the environment names no ground colour. */
+    view.ambientGround = env.ambientGround ?? env.ambient;
+    view.emissiveGain = env.emissiveGain;
+    view.nightFactor = env.nightFactor;
+    atmosphereFog(env, view.eye[1], this.underwaterMedium, view.fog);
+    terrain.pass.resize(this.renderer.sceneWidth, this.renderer.sceneHeight);
+    terrain.pass.setView(view);
+  }
+
+  /**
+   * `?fly=`: along the heading at a fixed speed, a fixed height above where the flight began.
+   *
+   * **Placed rather than steered**, after the player's own step, so neither gravity nor a hill
+   * can move it off the path: a measurement wants the same chunks streamed in the same order on
+   * both pipelines, and a body that met a tree on one run and not the other would not give that.
+   */
+  private flyOn(speed: number, dtSec: number): void {
+    const p = this.player;
+    if (this.flightStart === null) {
+      this.flightStart = [p.position[0], p.position[1] + FLY_ABOVE, p.position[2]];
+    }
+    this.flown += speed * dtSec;
+    const [x, y, z] = this.flightStart;
+    p.position[0] = x + Math.sin(p.yaw) * this.flown;
+    p.position[1] = y;
+    p.position[2] = z - Math.cos(p.yaw) * this.flown;
+    p.vy = 0;
   }
 
   /** Whether the eye is in water. Read by the audio muffle and the underwater medium alike. */
@@ -535,8 +682,9 @@ class VoxelSandboxHandle implements DemoHandle {
     const ccx = Math.floor(x / 16);
     const ccz = Math.floor(z / 16);
     const out: [number, number][] = [];
-    for (let dz = -RENDER_RADIUS; dz <= RENDER_RADIUS; dz++) {
-      for (let dx = -RENDER_RADIUS; dx <= RENDER_RADIUS; dx++) out.push([ccx + dx, ccz + dz]);
+    const radius = this.options.radius;
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) out.push([ccx + dx, ccz + dz]);
     }
     return out;
   }
@@ -550,7 +698,8 @@ class VoxelSandboxHandle implements DemoHandle {
   private readoutAim(): string {
     const aimed = this.playerInput.aimed;
     const at = aimed === null ? 'none' : `${aimed.bx} ${aimed.by} ${aimed.bz}`;
-    return `aim ${at}  chunks ${this.chunks.activeCount}  mobs ${this.mobs.count}  ${this.lighting.clockText()}`;
+    const refused = this.terrain === null ? '' : `  refused ${this.terrain.chunks.refused}`;
+    return `aim ${at}  chunks ${this.chunks.activeCount}${refused}  mobs ${this.mobs.count}  ${this.lighting.clockText()}`;
   }
 
   /** The host asks when its element changes; the drawing buffer is the scene's to set. */
@@ -575,23 +724,94 @@ class VoxelSandboxHandle implements DemoHandle {
     this.highlight.dispose();
     this.input.dispose();
     this.chunks.dispose();
+    if (this.terrain !== null) this.renderer.unregisterPass(this.terrain.handle);
     this.renderer.dispose();
   }
+}
+
+/**
+ * The terrain on the second pipeline: the atlas as a program, a scene sized to the radius, and the
+ * pass registered with the frame.
+ *
+ * **`presentDepth` is on**, because this is the consumer the flag was built for: everything that
+ * is not terrain stays on the forward path and has to stand behind a hill. **And the map follows
+ * the eye**, because a world is larger than any one map should stretch over; it is drawn only when
+ * the page asks, `?portshadow=1`.
+ */
+function gpuDrivenTerrain(
+  renderer: RendererApi,
+  atlas: BlockAtlas,
+  radius: number,
+  shadowed: boolean,
+): GpuDrivenTerrain {
+  const chunks = new GpuDrivenChunks(
+    capacityFor(radius),
+    atlasProgram(atlas.pixels, atlas.width, atlas.height, TILE_PX),
+  );
+  const pass = new GpuDrivenPass(chunks.scene, chunks.materials, {
+    presentDepth: true,
+    followRadius: PORT_SHADOW_RADIUS,
+  });
+  const handle = renderer.registerPass(pass);
+  const view: TerrainView = {
+    viewProj: new Float32Array(16),
+    eye: [0, 0, 0],
+    lightDir: [0, 1, 0],
+    lightColour: [0, 0, 0],
+    ambient: [0, 0, 0],
+    ambientGround: [0, 0, 0],
+    /* A chunk is one level of detail, so the threshold chooses nothing; the rigs' own number. */
+    lodThreshold: 1.5,
+    fovY: (FOV_Y_DEG * Math.PI) / 180,
+    /*
+     * **No sun shadow, because the forward sandbox draws none.** Nothing in this demo calls
+     * `beginShadowPass`; its shade is the sky light and occlusion baked into the vertex colours,
+     * which the port carries unchanged. A shadow here would be the port drawing a map the forward
+     * path does not — which is what the first measurement of the two did, and what made the port
+     * look seven times slower on the device than the forward path at the same radius. The page
+     * can still ask for it, which is how the shadow stage is measured on a world.
+     */
+    shadowStrength: shadowed ? 1 : 0,
+    emissiveGain: 1,
+    nightFactor: 0,
+    fog: createFogTarget(),
+  };
+  return { chunks, pass, handle, view };
 }
 
 export const voxelSandbox: DemoScene = {
   id: 'voxel-sandbox',
   title: 'Voxel sandbox',
-  note: 'A port of the voxel sandbox from Babylon Lite, module for module. Terrain generated from a seed, meshed with culled faces and baked ambient occlusion, textured from one atlas, and streamed as scene nodes the frustum prunes, with no shader written for any of it.',
+  note: 'A port of the voxel sandbox from Babylon Lite, module for module. Terrain generated from a seed, meshed with culled faces and baked ambient occlusion, textured from one atlas, and streamed as scene nodes the frustum prunes, with no shader written for any of it. On WebGPU the same world draws on the GPU-driven pipeline too, every chunk clusters in one streaming scene and the whole terrain two draws.',
+  /*
+   * **Both, the forward path first**, because the same world drawn both ways is what the port is
+   * for (the demos spec's §3.6) — and a host building its page from `SCENES` can offer the choice
+   * only if the list says there is one.
+   */
+  pipelines: ['forward', 'gpu-driven'],
   async mount(
     canvas: HTMLCanvasElement,
     budget: DemoBudget = 'full',
     overrides: RenderQualityOptions = {},
+    sceneOptions: DemoSceneOptions = {},
   ): Promise<DemoHandle> {
+    /*
+     * Read once, at mount: the host's choice or `?pipeline=` decides what is constructed, and
+     * `?radius=` how much.
+     */
+    const options = sandboxOptions(location.search, RADIUS_FOR[budget], sceneOptions.pipeline);
+    const quality: RenderQualityOptions = { ...PROFILES[budget], ...overrides };
+    /*
+     * **Both halves of the request**, as the GPU-driven rigs make it: the option refuses at boot on
+     * a backend that cannot run the second pipeline, which is the message a reader should get
+     * rather than a world with no terrain in it; the pass is what draws.
+     */
     const created = await createRenderer(
       canvas,
-      { ...PROFILES[budget], ...overrides },
-      DEMO_BACKEND,
+      quality,
+      options.pipeline === 'gpu-driven'
+        ? { ...DEMO_BACKEND, pipeline: 'gpu-driven' }
+        : DEMO_BACKEND,
     );
     const { renderer } = created;
     /* Pipelines compiled before the first frame rather than inside it; on WebGPU
@@ -619,7 +839,11 @@ export const voxelSandbox: DemoScene = {
     );
 
     const world = new World(SEED);
-    const radius = RADIUS_FOR[budget];
+    const radius = options.radius;
+    const terrain =
+      options.pipeline === 'gpu-driven'
+        ? gpuDrivenTerrain(renderer, atlas, radius, options.portShadow)
+        : null;
     /*
      * A count *and* a clock. The count is the ceiling on a quiet frame; the clock is what keeps
      * a boundary crossing — which queues the whole new edge of the ring at once — from spending
@@ -629,8 +853,10 @@ export const voxelSandbox: DemoScene = {
       radius,
       budgetPerFrame: 3,
       msPerFrame: 6,
+      /* On the second pipeline a built chunk goes to its streaming scene, not to `createMesh`. */
+      ...(terrain === null ? {} : { sink: terrain.chunks }),
     });
-    const spawn = world.findSpawn(0, 0);
+    const spawn = world.findSpawn(options.at?.x ?? 0, options.at?.z ?? 0);
 
     /*
      * Warm the spawn region before the first frame, as the reference's `warmAround` does, so the
@@ -651,6 +877,17 @@ export const voxelSandbox: DemoScene = {
      * So nothing is drawn before the handle exists. The queue is filled here and `frame` empties
      * it a slice at a time behind the splash, inside the loop the host owns.
      */
-    return new VoxelSandboxHandle(renderer, created.backend, canvas, world, chunks, atlas, spawn);
+    return new VoxelSandboxHandle(
+      renderer,
+      created.backend,
+      canvas,
+      world,
+      chunks,
+      atlas,
+      spawn,
+      options,
+      terrain,
+      quality.underwaterAtmosphere ?? DEFAULT_RENDER_QUALITY.underwaterAtmosphere,
+    );
   },
 };

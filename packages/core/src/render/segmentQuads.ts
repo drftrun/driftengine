@@ -1,4 +1,5 @@
 import type { BoltSegments } from './boltPool.ts';
+import type { LineSegments } from './linePoints.ts';
 
 /**
  * How a list of segments becomes triangles, held once for every renderer that draws one.
@@ -86,6 +87,44 @@ export function expandBoltSegments(
       arc[v * 4 + 1] = fade;
       arc[v * 4 + 2] = seed;
       arc[v * 4 + 3] = gain;
+    }
+  }
+  return count;
+}
+
+/**
+ * Expand this frame's segments to their four vertices each, into arrays the caller owns.
+ *
+ * Returns how many segments were written, which is the list's count clamped to the batch's
+ * capacity — a caller that overruns loses its tail rather than its frame, the same rule
+ * `expandBoltSegments` follows. Reads only `LineSegments.from`/`.to`.
+ *
+ * **Both backends call it**, which is the reason it is here: the WebGL2 batch wrote the same walk
+ * inline until 2026-09-19, so the number of segments a batch draws — and so whether it draws at
+ * all, and is counted — was one decision written twice.
+ */
+export function expandLineSegments(
+  data: LineSegments,
+  capacity: number,
+  from: Float32Array,
+  to: Float32Array,
+): number {
+  const count = Math.min(data.count, capacity);
+  for (let s = 0; s < count; s++) {
+    const fx = data.from[s * 3] as number;
+    const fy = data.from[s * 3 + 1] as number;
+    const fz = data.from[s * 3 + 2] as number;
+    const tx = data.to[s * 3] as number;
+    const ty = data.to[s * 3 + 1] as number;
+    const tz = data.to[s * 3 + 2] as number;
+    for (let c = 0; c < 4; c++) {
+      const v = s * 4 + c;
+      from[v * 3] = fx;
+      from[v * 3 + 1] = fy;
+      from[v * 3 + 2] = fz;
+      to[v * 3] = tx;
+      to[v * 3 + 1] = ty;
+      to[v * 3 + 2] = tz;
     }
   }
   return count;

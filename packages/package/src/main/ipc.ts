@@ -1,11 +1,11 @@
 import { BrowserWindow, app, dialog, ipcMain, screen } from 'electron';
-import { readFileSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { WindowMode } from '@driftengine/core';
 
 import { SteamCloudStore } from '../steam/cloudStore.ts';
+import { readStoreFile, writeStoreFile, writeStoreFileSync } from './storeFile.ts';
 import type { SteamRuntime } from '../steam/main.ts';
 
 /**
@@ -67,19 +67,8 @@ function cloudSnapshot(steam: SteamRuntime): Record<string, string> {
 }
 
 function readLocalSnapshot(): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(storeFile(), 'utf8'));
-    if (typeof parsed !== 'object' || parsed === null) return {};
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === 'string') out[key] = value;
-    }
-    return out;
-  } catch {
-    /* No file yet, or an unreadable one. A fresh store is the right answer to both: a
-       preference is never worth failing a boot for. */
-    return {};
-  }
+  /* No file yet, or an unreadable one, reads as a fresh store: see `storeFile.ts`. */
+  return readStoreFile(storeFile());
 }
 
 /** What the window half needs back from here, so quitting is one decision in one place. */
@@ -114,8 +103,8 @@ export function installIpc(
       for (const [key, value] of entries) cloud.write(key, value);
       return;
     }
-    void writeFile(storeFile(), JSON.stringify(Object.fromEntries(entries)), 'utf8').catch(
-      (cause: unknown) => console.error('[driftengine] could not write the store:', cause),
+    void writeStoreFile(storeFile(), entries).catch((cause: unknown) =>
+      console.error('[driftengine] could not write the store:', cause),
     );
   };
   const schedule = (): void => {
@@ -273,7 +262,7 @@ export function installIpc(
         for (const [key, value] of entries) cloud.write(key, value);
         return;
       }
-      writeFileSync(storeFile(), JSON.stringify(Object.fromEntries(entries)), 'utf8');
+      writeStoreFileSync(storeFile(), entries);
     } catch (cause) {
       console.error('[driftengine] could not write the store on the way out:', cause);
     }

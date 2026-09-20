@@ -1,6 +1,8 @@
 import { mat4 } from 'gl-matrix';
 import type { ReadonlyMat4 } from 'gl-matrix';
 
+import { jitterTable } from './recon/jitter.ts';
+
 /**
  * The sub-pixel sequence a temporal resolve samples along, and the state that says whether there
  * is anything to resolve *against* yet.
@@ -38,45 +40,19 @@ export const JITTER_PERIOD = 8;
 export const TEMPORAL_HISTORY_BLEND = 0.9;
 
 /**
- * The radical inverse of `index` in `base`, which is what makes a Halton sequence fill a gap
- * before it fills a corner.
+ * The period's offsets, centred so they sum to zero — `recon/jitter.ts`'s sequence at eight phases.
  *
- * Consecutive samples land as far from each other as the base allows, so eight of them cover the
- * pixel evenly where eight random ones would leave holes and pairs.
+ * **One sequence for the temporal resolve and for reconstruction**, and these are the numbers the
+ * resolve has always used: Halton in bases two and three, each period centred on its own mean,
+ * because accumulating towards an off-centre mean resolves to a picture displaced from the depth
+ * it was tested against.
  */
-function halton(index: number, base: number): number {
-  let result = 0;
-  let fraction = 1;
-  let i = index;
-  while (i > 0) {
-    fraction /= base;
-    result += fraction * (i % base);
-    i = Math.floor(i / base);
-  }
-  return result;
-}
-
-/**
- * The period's offsets, centred so they sum to zero.
- *
- * **Halton's own mean is not the middle of the pixel** — over eight samples base two averages
- * 0.445 rather than 0.5 — and accumulating towards a mean that is off centre resolves to a picture
- * displaced from the depth buffer it was tested against and from every pass that did not jitter.
- * Subtracting the period's own mean costs nothing and makes the property exact rather than
- * approximate, which is what lets the test assert it.
- */
-const OFFSETS: readonly (readonly [number, number])[] = (() => {
-  const raw: [number, number][] = [];
-  for (let i = 1; i <= JITTER_PERIOD; i++) raw.push([halton(i, 2), halton(i, 3)]);
-  const meanX = raw.reduce((sum, o) => sum + o[0], 0) / JITTER_PERIOD;
-  const meanY = raw.reduce((sum, o) => sum + o[1], 0) / JITTER_PERIOD;
-  return raw.map(([x, y]) => [x - meanX, y - meanY] as const);
-})();
+const OFFSETS = jitterTable(JITTER_PERIOD);
 
 /** Where in its pixel frame `frameIndex` samples, in pixels, centred on zero. */
 export function jitterOffset(frameIndex: number): readonly [number, number] {
   const at = ((frameIndex % JITTER_PERIOD) + JITTER_PERIOD) % JITTER_PERIOD;
-  return OFFSETS[at] as readonly [number, number];
+  return [OFFSETS[at * 2] as number, OFFSETS[at * 2 + 1] as number];
 }
 
 /**

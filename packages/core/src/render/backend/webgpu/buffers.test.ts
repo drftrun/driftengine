@@ -284,13 +284,16 @@ describe('a mesh whose geometry moves', () => {
     const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const before = writes.mock.calls.length;
 
-    mesh.update?.(device, new Float32Array([0, 7, 0, 1, 7, 0, 0, 8, 0]));
+    mesh.update?.(device, new Float32Array([2, 7, 4, 1, 7, 0, 0, 8, 0]));
 
     expect(writes.mock.calls.length - before, 'one upload, not one per vertex').toBe(1);
     const uploaded = writes.mock.calls[writes.mock.calls.length - 1]?.[2] as Float32Array;
     /* Required attributes only, so the stride is position(3) + normal(3) + colour(3) +
        emissive(1) = 10 floats, and position sits at the front of each vertex. */
+    /* All three of the first vertex, distinct, so a component written into its neighbour shows. */
+    expect(uploaded[0], "the first vertex's x").toBeCloseTo(2, 6);
     expect(uploaded[1], "the first vertex's y").toBeCloseTo(7, 6);
+    expect(uploaded[2], "the first vertex's z").toBeCloseTo(4, 6);
     expect(uploaded[11], "the second vertex's y").toBeCloseTo(7, 6);
     expect(uploaded[21], "the third vertex's y").toBeCloseTo(8, 6);
     /* And the colour beside it is untouched: what a surface *is* did not change because it bent. */

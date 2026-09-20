@@ -2,7 +2,7 @@
 
 The 2D layer: quads with a texture on them, batched, in the order you drew them.
 
-**Cost: 8.4 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
+**Cost: 8.7 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
 drifts more than 3% — the number is derived from the same floors that gate asserts, so a README
 quoting a stale one is a red suite rather than a thing somebody notices.
 

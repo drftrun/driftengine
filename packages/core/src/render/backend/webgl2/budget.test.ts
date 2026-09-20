@@ -8,8 +8,9 @@ import { resolveRenderQuality } from '../../renderQuality.ts';
  * This backend's frame budget, whose every ceiling is `null`.
  *
  * **That is the finding rather than an omission.** WebGL2 sets uniforms per draw and has no ring
- * to run out of, so it draws whatever it is handed; WebGPU holds thirteen per-frame ceilings and
- * skips the work past any of them. A scene over one of those renders in full here and loses
+ * to run out of, so it draws whatever it is handed; WebGPU holds fourteen per-frame ceilings and
+ * skips the work past any of them. Both declare the same fifteen lines and count them alike, which
+ * `webgpu/renderer.test.ts` asserts by running one scene through each. A scene over one of those renders in full here and loses
  * geometry there, with nothing failing on either side — and most development happens here,
  * because this is the fallback that runs everywhere.
  *
@@ -61,4 +62,22 @@ test('declares the other backend’s bind-group line and never asks it', () => {
   expect(groups, 'the same line name the other backend reports').toBeDefined();
   expect(groups?.ceiling, 'nothing rationed, so nothing to publish').toBeNull();
   expect(groups?.used, 'and this backend builds none at all').toBe(0);
+});
+
+/**
+ * **Panels are counted here too, against no ceiling**, so a consumer building an interface out of
+ * them on this backend can see the number the other one refuses past. That backend dropped panels
+ * past its sixty-fourth without a word or a count until 2026-09-19.
+ */
+test('counts the panels a frame asks for, and draws every one of them', () => {
+  const { canvas } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  renderer.beginFrame([0, 0, 0]);
+  for (let i = 0; i < 80; i++) {
+    renderer.fillPanel({ left: i, top: 0, width: 1, height: 1 }, [1, 1, 1], 1);
+  }
+  const panels = renderer.frameBudget.lines.find((line) => line.name === 'panels');
+  expect(panels?.ceiling).toBeNull();
+  expect(panels?.used).toBe(80);
+  expect(panels?.dropped).toBe(0);
 });

@@ -1,4 +1,5 @@
 import { FrameBudget } from '../budget.ts';
+import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
 import { mat4 } from 'gl-matrix';
 import {
   DEPTH_CLEAR,
@@ -40,6 +41,8 @@ import { DecalQueue } from '../../decalQueue.ts';
 import type { DecalProjector } from '../../decalProjector.ts';
 import { OitPass } from '../../oitPass.ts';
 import { OIT_MULTISAMPLE_REFUSAL } from '../../orderIndependent.ts';
+import { INDIRECT_LIGHT_WEBGL2_REFUSAL } from '../../gi/probeTrace.ts';
+import type { FieldSource } from '../../gi/globalField.ts';
 import { TranslucentQueue } from '../../translucentQueue.ts';
 import { createFrustum, frustumFromViewProjection } from '../../../math/frustum.ts';
 import type { Frustum } from '../../../math/frustum.ts';
@@ -110,7 +113,7 @@ import { SkinPaletteTexture } from './skinPaletteTexture.ts';
 /* The codes the shader reads, stated once in `vertexDefaults.ts` for both backends. */
 import { LIGHT_VOLUME_VERT, lightVolumeFrag } from '../../shaders/lightVolume.ts';
 import { PANEL_FRAG, PANEL_VERT } from '../../shaders/panel.ts';
-import { ReflectionProbe } from '../../reflectionProbe.ts';
+import { ReflectionProbe, cubeFaceProjection } from '../../reflectionProbe.ts';
 import type { ProbeBakeOptions } from '../../reflectionProbe.ts';
 import { EnvProbeArray } from '../../envProbeArray.ts';
 import { ProbeGrid, SINGLE_PROBE, UNIT_STEP, WORLD_ORIGIN, sameGrid } from '../../probeGrid.ts';
@@ -1370,6 +1373,13 @@ export class WebGL2Renderer implements RendererApi {
   /** `GL_DEPTH_REMAP * camera.viewProjection`, rebuilt once a frame. */
   private readonly sceneViewProj = new Float32Array(16);
   /**
+   * The same matrix with clip y negated, for the six faces of a probe.
+   *
+   * Its own buffer rather than `sceneViewProj`, because `cubeFaceProjection` reads what
+   * `sceneMatrix` just wrote and the two would be the same array.
+   */
+  private readonly cubeFaceViewProj = new Float32Array(16);
+  /**
    * One buffer per shadow matrix that outlives a call, and that is not fussiness.
    *
    * A single scratch was enough while only the directional pass used it; two passes share the
@@ -1401,7 +1411,12 @@ export class WebGL2Renderer implements RendererApi {
    * the camera's matrix unchanged and multiplies nothing.
    */
   private viewProjFor(camera: { readonly viewProjection: ReadonlyMat4 }): ReadonlyMat4 {
-    const scene = this.sceneMatrix(camera.viewProjection);
+    const scene = this.probePassActive
+      ? (cubeFaceProjection(
+          this.cubeFaceViewProj,
+          this.sceneMatrix(camera.viewProjection) as unknown as ArrayLike<number>,
+        ) as unknown as ReadonlyMat4)
+      : this.sceneMatrix(camera.viewProjection);
     /*
      * **The jitter goes on here and nowhere else.** This is the one funnel every geometry upload
      * passes through, so one line covers the mesh passes, the sky, the water and the effects
@@ -1504,6 +1519,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   private readonly casterSink: ShadowCasterSink = {
     mesh: (mesh, model) => {
+      this.shadowDrawBudget.ask();
       const { gl } = this;
       gl.uniformMatrix4fv(this.depthUniforms['uModel'] ?? null, false, model);
       /*
@@ -1524,6 +1540,7 @@ export class WebGL2Renderer implements RendererApi {
       const gpuBatch = batch as InstancedBatch;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
+      this.shadowDrawBudget.ask();
       const u = this.depthInstancedUniforms;
       gl.useProgram(this.depthInstancedProgram);
       gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
@@ -1533,6 +1550,7 @@ export class WebGL2Renderer implements RendererApi {
       gl.useProgram(this.depthProgram);
     },
     skinnedMesh: (mesh, model, palette) => {
+      this.shadowDrawBudget.ask();
       const { gl } = this;
       const u = this.depthSkinnedUniforms;
       gl.useProgram(this.depthSkinnedProgram);
@@ -1555,6 +1573,7 @@ export class WebGL2Renderer implements RendererApi {
     },
     scatter: (scatter, data, windX, windZ, windGust, timeSeconds, trample = null) => {
       if (data.count === 0) return;
+      this.scatterDepthBudget.ask();
       const { gl } = this;
       const u = this.scatterDepthUniforms;
       gl.useProgram(this.scatterDepthProgram);
@@ -1681,6 +1700,44 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Declare a baked distance field that indirect light may be traced against.
+   *
+   * **Recorded by nothing on this backend, and that is the refusal rather than an oversight.**
+   * Composing the world's field and marching probes through it is compute, and WebGL2 has no
+   * compute stage — `INDIRECT_LIGHT_WEBGL2_REFUSAL` says so once a frame-loop when
+   * `quality.indirectLight` is on. The method exists here because `RendererApi` is this class's
+   * shape, and a consumer that declares its fields unconditionally must not have to ask which
+   * backend it got: this is a no-op for the same reason `addOccluder` is one when the profile
+   * asked for no occlusion buffer.
+   *
+   * The field is in the model matrix's own space and the matrix must carry uniform scale only.
+   * `composeGlobalField` gives the reason: a distance is not preserved by a non-uniform scale.
+   */
+  addDistanceField(_field: FieldSource, _model: ReadonlyMat4, _albedo?: ArrayLike<number>): void {
+    /* Deliberately nothing. See the comment above. */
+  }
+
+  /** Forget the fields declared this frame. A no-op here, as `addDistanceField` is. */
+  clearDistanceFields(): void {
+    /* Deliberately nothing. See `addDistanceField`. */
+  }
+
+  /** Never measured here, because nothing is composed. See `addDistanceField`. */
+  get distanceFieldMs(): number | null {
+    return null;
+  }
+
+  /** Never traced here either, so there is no refresh to time. See `addDistanceField`. */
+  get indirectBakeMs(): number | null {
+    return null;
+  }
+
+  /** Nothing to read, for the same reason. A consumer may call it unconditionally. */
+  readDistanceFieldTimings(): void {
+    /* Deliberately nothing. See `addDistanceField`. */
+  }
+
+  /**
    * Whether a mesh is entirely behind the occluders declared this frame.
    *
    * **False whenever anything is uncertain**, including when no occluders were declared and when
@@ -1719,7 +1776,14 @@ export class WebGL2Renderer implements RendererApi {
   registerPass(definition: PassDefinition): PassHandle {
     const handle = registerIn(this.passes, definition);
     /* Identity: this backend's clip space is the one the projections are built for. */
-    this.passDevice ??= { backend: 'webgl2', gl: this.gl, clipCorrection: IDENTITY_CLIP };
+    /* Both are identity here: this backend runs the GLSL natively, so there is nothing to
+       correct and nothing a generator has flipped. */
+    this.passDevice ??= {
+      backend: 'webgl2',
+      gl: this.gl,
+      clipCorrection: IDENTITY_CLIP,
+      depthCorrection: IDENTITY_CLIP,
+    };
     if (definition.prepare !== undefined) this.preparingPasses++;
     definition.init?.(this.passDevice);
     return handle;
@@ -2900,6 +2964,7 @@ export class WebGL2Renderer implements RendererApi {
 
   setMaterial(material: SurfaceMaterial | null): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.currentSurfaceTexture = material?.albedo ?? null;
     /*
      * Written to every flat program, because material state persists across draws and a skinned
@@ -3072,6 +3137,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     this.gl.uniform1f(this.flatUniforms['uReflectivity'] ?? null, Math.min(1, Math.max(0, amount)));
   }
@@ -3090,6 +3156,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   setEnvironmentGain(gain: number): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     this.gl.uniform1f(this.flatUniforms['uEnvironmentGain'] ?? null, Math.max(0, gain));
   }
@@ -3119,6 +3186,7 @@ export class WebGL2Renderer implements RendererApi {
 
   setSurfaceGrain(amount: number): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     this.gl.uniform1f(this.flatUniforms['uGrain'] ?? null, Math.min(1, Math.max(0, amount)));
   }
@@ -3148,6 +3216,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   setSurfaceRelief(amount: number, cyclesPerMetre = 60): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     const u = this.flatUniforms;
     this.gl.uniform1f(u['uRelief'] ?? null, Math.min(1, Math.max(0, amount)));
@@ -3181,6 +3250,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   setSurfaceTextureRelief(scale: number): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     this.gl.uniform1f(
       this.flatUniforms['uTextureRelief'] ?? null,
@@ -3211,6 +3281,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   setEmissiveGain(gain: number): void {
     if (this.contextLost) return;
+    this.materials.dirty();
     this.useFlatProgram();
     this.gl.uniform1f(this.flatUniforms['uEmissiveGain'] ?? null, gain);
   }
@@ -3338,6 +3409,10 @@ export class WebGL2Renderer implements RendererApi {
     const lit = options.lit ?? true;
     const fog = options.fog ?? true;
     const toneMapped = options.toneMapped ?? true;
+    /* An instanced draw does not refract. See `materialChanges.ts`. */
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting: false });
+    if (own) this.materials.dirty();
+    this.takeMaterial();
     const depthWrite = options.depthWrite ?? true;
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
 
@@ -3409,6 +3484,7 @@ export class WebGL2Renderer implements RendererApi {
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
     if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 1);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
+    if (own) this.materials.dirty();
     this.useFlatProgram();
   }
 
@@ -3517,7 +3593,9 @@ export class WebGL2Renderer implements RendererApi {
     // raining dust into the sea.
     const surface = env.underwater?.surfaceY;
     const submerged = surface !== undefined && (camera.position[1] ?? 0) < surface;
-    streaks.draw(this.gl, this.frameViewFor(camera), wind, timeSeconds, tint, submerged);
+    if (streaks.draw(this.gl, this.frameViewFor(camera), wind, timeSeconds, tint, submerged)) {
+      this.windStreakBudget.ask();
+    }
   }
 
   /**
@@ -3554,7 +3632,9 @@ export class WebGL2Renderer implements RendererApi {
     style: TextStyle,
     timeSec: number,
   ): void {
-    text.draw(viewportWidth, viewportHeight, originX, originY, style, timeSec);
+    if (text.draw(viewportWidth, viewportHeight, originX, originY, style, timeSec)) {
+      this.textBudget.ask();
+    }
   }
 
   /** Width of the string this handle currently holds, in pixels at a given cell size. */
@@ -3649,6 +3729,7 @@ export class WebGL2Renderer implements RendererApi {
         this.gradeExposure(),
       )
     ) {
+      this.sdfTextBudget.ask();
       this.restoreSurfaceTextureUnit();
     }
   }
@@ -3671,6 +3752,7 @@ export class WebGL2Renderer implements RendererApi {
     windX = 0,
     windZ = 0,
   ): void {
+    this.flockBudget.ask();
     flock.draw(this.gl, this.frameViewFor(camera), timeSeconds, params, tint, windX, windZ);
   }
 
@@ -3794,8 +3876,10 @@ export class WebGL2Renderer implements RendererApi {
     if (data.count === 0) return;
     const { gl } = this;
     const u = batch.uniforms;
-    gl.useProgram(batch.program);
     const count = batch.upload(gl, data);
+    if (count === 0) return;
+    this.boltBudget.ask();
+    gl.useProgram(batch.program);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, this.viewProjFor(camera));
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     gl.uniform1f(u['uTime'] ?? null, timeSeconds);
@@ -3866,8 +3950,10 @@ export class WebGL2Renderer implements RendererApi {
     if (data.count === 0) return;
     const { gl } = this;
     const u = lines.uniforms;
-    gl.useProgram(lines.program);
     const count = lines.upload(gl, data);
+    if (count === 0) return;
+    this.lineBudget.ask();
+    gl.useProgram(lines.program);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, this.viewProjFor(camera));
     gl.uniformMatrix4fv(u['uModel'] ?? null, false, model);
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
@@ -4124,6 +4210,7 @@ export class WebGL2Renderer implements RendererApi {
     windZ = 0,
   ): void {
     if (!this.quality.water) return;
+    this.waterBudget.ask();
     water.draw(
       this.gl,
       this.frameViewFor(camera),
@@ -4156,7 +4243,7 @@ export class WebGL2Renderer implements RendererApi {
     strength = 1,
   ): void {
     if (caustics === null || !this.quality.water) return;
-    caustics.draw(
+    const drew = caustics.draw(
       this.gl,
       this.frameViewFor(camera),
       timeSeconds,
@@ -4169,6 +4256,7 @@ export class WebGL2Renderer implements RendererApi {
       windZ,
       strength,
     );
+    if (drew) this.causticsBudget.ask();
   }
 
   /**
@@ -4232,6 +4320,23 @@ export class WebGL2Renderer implements RendererApi {
 
   get aspect(): number {
     return this.canvas.width / Math.max(this.canvas.height, 1);
+  }
+
+  /**
+   * The size the world is drawn at, which on this backend is always the drawing buffer.
+   *
+   * **Here so that a contributed pass has one question to ask on both backends.** WebGPU can draw
+   * the world smaller than the canvas and let its composite enlarge it — `quality.reconstruction`
+   * — and a pass filling a target of its own has to follow that size or draw a picture the frame
+   * pass clips. This backend has no compute stage and no reconstruction, so the answer never moves;
+   * a pass that reads it is correct on both, and one that reads `canvas.width` is correct on one.
+   */
+  get sceneWidth(): number {
+    return Math.max(1, this.canvas.width);
+  }
+
+  get sceneHeight(): number {
+    return Math.max(1, this.canvas.height);
   }
 
   /**
@@ -5212,6 +5317,9 @@ export class WebGL2Renderer implements RendererApi {
    */
   fillPanel(rect: InsetRect, color: Vec3, alpha: number): void {
     if (alpha <= 0 || rect.width <= 0 || rect.height <= 0) return;
+    /* Counted against no ceiling: the other backend refuses past its own, and a consumer here
+       should be able to see that coming. See `budget.ts`. */
+    this.panelBudget.ask();
     const { gl } = this;
 
     gl.useProgram(this.panelProgram);
@@ -5509,6 +5617,25 @@ export class WebGL2Renderer implements RendererApi {
   private readonly budget = new FrameBudget();
   private readonly drawBudget = this.budget.line('draws', null);
   /**
+   * Every line the other backend declares, in its order and with none of its ceilings.
+   *
+   * **Counted after the same guards**, so one scene reports one number on both: the verbs each
+   * ask once they are past the checks that make them draw nothing on either backend — a panel
+   * with no alpha, a string with no glyphs, a beam with no strength, a calm wind — and a material
+   * change is counted by the rule both share (`materialChanges.ts`). `webgpu/renderer.test.ts`
+   * runs one scene through both and compares every line.
+   */
+  private readonly materialBudget = this.budget.line('materials', null);
+  /** Whether the next mesh draw shares the open material or opens one, by the rule both count. */
+  private readonly materials = new MaterialChanges();
+
+  /** A mesh draw: counted as a material change when something has changed the material since. */
+  private takeMaterial(): void {
+    if (this.materials.open) return;
+    this.materialBudget.ask();
+    this.materials.slot = 0;
+  }
+  /**
    * Declared here and never asked, because this backend builds none.
    *
    * A bind group is a WebGPU object; the equivalent here is loose uniform and sampler calls, which
@@ -5519,6 +5646,19 @@ export class WebGL2Renderer implements RendererApi {
    * being compared against should also be zero once the other backend's cache is warm.
    */
   private readonly bindGroupBudget = this.budget.line('bind groups', null);
+  private readonly shadowDrawBudget = this.budget.line('shadow draws', null);
+  private readonly scatterDepthBudget = this.budget.line('scatter shadow draws', null);
+  private readonly waterBudget = this.budget.line('water bodies', null);
+  private readonly lightVolumeBudget = this.budget.line('light volumes', null);
+  private readonly windStreakBudget = this.budget.line('wind streak fields', null);
+  private readonly flockBudget = this.budget.line('flocks', null);
+  private readonly boltBudget = this.budget.line('bolt batches', null);
+  private readonly causticsBudget = this.budget.line('caustics', null);
+  private readonly textBudget = this.budget.line('text draws', null);
+  private readonly sdfTextBudget = this.budget.line('sdf text draws', null);
+  private readonly lineBudget = this.budget.line('line draws', null);
+  /** The other backend's panel ceiling, reported here as a count with none. */
+  private readonly panelBudget = this.budget.line('panels', null);
 
   /** What the frame just drawn asked for. See `budget.ts`, and the note on `budget` above. */
   get frameBudget(): FrameBudget {
@@ -5617,6 +5757,9 @@ export class WebGL2Renderer implements RendererApi {
    * from one `RenderQuality` — see `OIT_MULTISAMPLE_REFUSAL` for why it is a constant and not two
    * literals kept in step by hand.
    */
+  /** Said once rather than every frame, as the translucent set's own refusal is. */
+  private indirectLightRefused = false;
+
   private refuseOitMultisampled(): void {
     if (this.oitMultisampleRefused) return;
     this.oitMultisampleRefused = true;
@@ -5626,6 +5769,15 @@ export class WebGL2Renderer implements RendererApi {
   beginFrame(clearColor: Vec3): void {
     if (this.contextLost) return;
     this.budget.reset();
+    this.materials.dirty();
+    /*
+     * Said once, for the reason `refuseOitMultisampled` gives: a quality setting that is enabled
+     * and does nothing is the fault the capability clamp exists to prevent.
+     */
+    if (this.quality.indirectLight && !this.indirectLightRefused) {
+      this.indirectLightRefused = true;
+      console.warn(INDIRECT_LIGHT_WEBGL2_REFUSAL);
+    }
 
     const { gl } = this;
     this.reflectionReadyThisFrame = false;
@@ -5908,6 +6060,15 @@ export class WebGL2Renderer implements RendererApi {
     ) {
       const flat = this.flatUniforms;
       const options = this.oitReplayOptions;
+      /*
+       * **The copy a refracting pane reads is taken here, before the buffers are bound.** Taking
+       * it puts the scene's framebuffer back as the one drawn into, so taken inside the replay —
+       * at the first pane that refracts, which is where it was taken until 2026-09-19 — it sent
+       * that pane into the scene instead of the accumulation, and every refracting pane came out
+       * flat paint with the effect on. The opaque frame is finished here, which is what a pane
+       * should show; the latch then serves every pane in the replay. Only when something refracts.
+       */
+      if (this.translucentQueue.refracts) this.sceneTarget?.snapshotColor();
       this.oit.accumulateOit(this.canvas.width, this.canvas.height, oitDepth, (weighted) => {
         this.oitReplaying = true;
         this.useFlatProgram();
@@ -6106,6 +6267,8 @@ export class WebGL2Renderer implements RendererApi {
 
   /** Bind the flat pass once per frame; then issue any number of drawMesh calls. */
   bindMeshPass(camera: Camera, env: Environment): void {
+    /* The pass's own material is reopened, so the next draw opens one. See `materialChanges.ts`. */
+    this.materials.dirty();
     /*
      * Captured here rather than taken as an argument to `endFrame`, because this is the
      * camera the world was drawn with and a caller should not have to hand it over twice.
@@ -6451,6 +6614,8 @@ export class WebGL2Renderer implements RendererApi {
        * are two numbers now.
        */
       gl.uniform1f(u['uEnvironmentEdge'] ?? null, array?.edge ?? 1);
+      /* Never on this backend: what fills a visibility map is a compute dispatch. See `probeGrid.ts`. */
+      gl.uniform1f(u['uProbeVisibilityEnabled'] ?? null, 0);
       gl.uniform1f(u['uEnvironmentIrradianceLevel'] ?? null, array?.irradianceLevel ?? 0);
       /*
        * Where the probes stand: four uniforms whatever the probe count, because this shader is
@@ -6589,6 +6754,14 @@ export class WebGL2Renderer implements RendererApi {
      * passes one cannot leak it into the next draw.
      */
     tint: Vec3 | null = null,
+    /**
+     * Where the mesh was last frame, which this backend takes and ignores.
+     *
+     * Accepted rather than absent so that one scene draws through both renderers unchanged — the
+     * parity rule this repository is built on. Reconstruction is WebGPU's, having no compute stage
+     * here, so there is no motion target for this to be written into.
+     */
+    _previousModel: ReadonlyMat4 | null = null,
   ): void {
     if (this.contextLost) return;
     /* Geometry that has not all arrived is not drawn. See `Mesh.complete`. */
@@ -6613,6 +6786,7 @@ export class WebGL2Renderer implements RendererApi {
      */
     if (this.quality.cullDraws && this.occluded(mesh.bounds, model)) return;
     this.drawBudget.ask();
+    this.takeMaterial();
     const { gl } = this;
     /*
      * A rigged mesh takes the skinned program, an unrigged one the plain program.
@@ -6777,7 +6951,6 @@ export class WebGL2Renderer implements RendererApi {
     if (!mesh.complete) return;
 
     if (opacity <= 0) return;
-    this.drawBudget.ask();
 
     /*
      * **Recorded rather than drawn**, when the effect is on and this is not already the replay.
@@ -6788,6 +6961,9 @@ export class WebGL2Renderer implements RendererApi {
       this.translucentQueue.record(mesh, model, opacity, options);
       return;
     }
+    /* Counted where it is submitted, as the other backend counts it: once per replay pass under
+       order-independent transparency, and not once more when it was recorded. */
+    this.drawBudget.ask();
 
     const { gl } = this;
     const u = this.flatUniforms;
@@ -6845,6 +7021,11 @@ export class WebGL2Renderer implements RendererApi {
      * or a multiplicative blend for the whole set and turned depth writes off for all of it. A
      * replayed draw that reset either would break the pass around it.
      */
+    /* Taken for itself when any option differs from the pass, and put back below: the rule both
+       backends count material changes by. See `materialChanges.ts`. */
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    if (own) this.materials.dirty();
+    this.takeMaterial();
     const ownsState = !this.oitReplaying;
     if (ownsState) {
       gl.enable(gl.BLEND);
@@ -6879,6 +7060,7 @@ export class WebGL2Renderer implements RendererApi {
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
     if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 1);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
+    if (own) this.materials.dirty();
   }
 
   /**
@@ -6991,6 +7173,23 @@ export class WebGL2Renderer implements RendererApi {
     this.useFlatProgram();
     this.gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, 0);
     this.gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, 1);
+    this.materials.dirty();
+    /*
+     * **Clockwise for the duration, because a face is rendered mirrored.** `cubeFaceProjection`
+     * negates clip y so the face is stored the way a cubemap reads it, and negating one axis
+     * reverses every triangle's winding: without this the room is culled inside out and the cube
+     * holds its own back faces.
+     *
+     * **A perturbation survives this line and it is kept anyway**, which is worth the sentence.
+     * Deleting it moves `ibl-check.mjs`'s figures — 12.5 to 13.1 of 255 on the movement check and
+     * 182.0 to 184.9 on the mirror rung — so it is not dead; but no check *fails*, because every
+     * room this repository bakes into a probe is made of closed boxes whose two sides carry the
+     * same colour, and looking at the far one's outside instead of the near one's inside draws
+     * almost the same picture. What it actually decides is a scene with **one-sided** geometry: a
+     * room built from single quads facing inward disappears from its own probe without it, and
+     * there is no such scene here to fail on.
+     */
+    this.gl.frontFace(this.gl.CW);
     let baked = false;
     try {
       baked = probe.bake(this.gl, this.probeOrigin, clearColor, drawFace);
@@ -7011,9 +7210,11 @@ export class WebGL2Renderer implements RendererApi {
         );
       }
     } finally {
+      this.gl.frontFace(this.gl.CCW);
       this.useFlatProgram();
       this.gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.gradeCode());
       this.gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.gradeExposure());
+      this.materials.dirty();
       /*
        * Cleared even if a caller's own draw threw, because leaving this set would keep every
        * later frame reading the placeholder and quietly reflecting nothing.
@@ -7180,6 +7381,7 @@ export class WebGL2Renderer implements RendererApi {
     /* At zero it draws nothing rather than adding black — which now also covers a clear night,
        where the beam has no medium to be seen in and skipping it is the whole saving. */
     if (shown <= 0) return;
+    this.lightVolumeBudget.ask();
     const { gl } = this;
     const u = this.lightVolumeUniforms;
     gl.useProgram(this.lightVolumeProgram);

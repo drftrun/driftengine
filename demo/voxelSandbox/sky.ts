@@ -25,9 +25,18 @@ import type { LightingSnapshot } from './lighting';
 /** How fast the cloud layer drifts, in offset units a second. */
 const CLOUD_DRIFT = 0.9;
 
-/** The sun's apparent size. The real one is about half a degree. */
-const SUN_ANGULAR_RADIUS = 0.0047;
-const MOON_ANGULAR_RADIUS = 0.0045;
+/**
+ * The sun's apparent radius, in radians — about seven times the real one.
+ *
+ * **The real sun was the number here, and it drew a speck.** Half a degree across is five pixels of
+ * a 720-pixel frame at the sandbox's 70 degrees, which reads as a star; a player said so. A block
+ * world's sky is drawn at the size a player reads it: 0.035 is about 45 pixels of bright disc with
+ * the engine's soft edge, and past 0.05 the glow `drawSky` derives from the same number starts to
+ * wash the sky around it.
+ */
+export const SUN_ANGULAR_RADIUS = 0.035;
+/** The moon's, kept the fraction of the sun's it was when both were the real sizes. */
+export const MOON_ANGULAR_RADIUS = 0.034;
 
 const MOON_COLOR: Vec3 = [0.95, 0.95, 0.88];
 

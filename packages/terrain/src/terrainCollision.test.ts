@@ -9,6 +9,12 @@ import {
 
 import { Terrain } from './heightfield.ts';
 import { heightfieldPatch } from './heightfieldPatch.ts';
+import { clipmapFrame, clipmapPatchOptions, selectClipmap } from './clipmap.ts';
+import {
+  encodeTerrainHeights,
+  terrainFromHeightLayer,
+  terrainHeightTolerance,
+} from './terrainTexture.ts';
 
 /**
  * Terrain collides today, and this is the assertion that says so rather than the prose that claims
@@ -209,5 +215,101 @@ describe('the heightfield collider, against the mesh the picture is made of', ()
     expect(shape.triangles?.tree).toBe(null);
     /* Two triangles per cell, over a field one sample wider than its cells each way. */
     expect(shape.triangles?.triangleCount).toBe(64 * 64 * 2);
+  });
+});
+
+describe('the ground a texture describes', () => {
+  /**
+   * **The chain closed one link further, and the link the plan had backwards.**
+   *
+   * Wave 4B stores heights as a `DTEX` layer, which means there is now a fourth surface that can
+   * disagree with the other three. The plan asked that the decoded heights match the source within
+   * the format's tolerance — they do, and it is the wrong requirement: a renderer reading the layer
+   * and a query reading the source differ by exactly that tolerance, everywhere, permanently, and
+   * a character that floats by a fraction of a millimetre on every surface in the world is a defect
+   * with no symptom anybody can attribute.
+   *
+   * So there is one terrain, built from the decoded samples, and everything reads it.
+   */
+  test('is the ground the rebuilt query answers, through the mesh and the collider both', () => {
+    const source = ridges(17);
+    const layer = encodeTerrainHeights(source);
+    const terrain = terrainFromHeightLayer(layer);
+    const patch = heightfieldPatch(terrain, { x: 0, z: 0, cells: 16 });
+
+    const world = new PhysicsWorld();
+    world.addBody({ type: BODY_STATIC, shape: meshShape(patch.positions, patch.indices) });
+    const field = new PhysicsWorld();
+    field.addBody({ type: BODY_STATIC, shape: heightfieldShape(terrain) });
+
+    const a = createRayHit();
+    const b = createRayHit();
+    let checked = 0;
+    for (let i = 0; i < 40; i++) {
+      const x = -7.5 + (i % 8) * 1.9 + 0.37;
+      const z = -7.5 + Math.floor(i / 8) * 1.9 + 0.61;
+      if (!world.raycast(x, 40, z, 0, -1, 0, 100, a)) continue;
+      expect(field.raycast(x, 40, z, 0, -1, 0, 100, b)).toBe(true);
+      expect(a.y).toBeCloseTo(terrain.heightAt(x, z), 4);
+      expect(b.y).toBeCloseTo(terrain.heightAt(x, z), 4);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  test('is not the source field, which is why reading the source would be wrong', () => {
+    /*
+     * The rebuilt terrain really is a different set of numbers — otherwise the test above asserts
+     * nothing and the rule it stands for costs nothing to break. And the difference is bounded by
+     * the stated tolerance, which is the point: it is small, systematic, and never noticed.
+     */
+    const source = ridges(17);
+    const layer = encodeTerrainHeights(source);
+    const terrain = terrainFromHeightLayer(layer);
+    const tolerance = terrainHeightTolerance(layer);
+
+    let differing = 0;
+    let worst = 0;
+    for (let at = 0; at < source.heights.length; at += 1) {
+      const error = Math.abs((terrain.heights[at] as number) - (source.heights[at] as number));
+      if (error > 0) differing += 1;
+      if (error > worst) worst = error;
+    }
+    expect(differing).toBeGreaterThan(200);
+    expect(worst).toBeGreaterThan(0);
+    expect(worst).toBeLessThanOrEqual(tolerance);
+  });
+
+  test('collides with the patches the clipmap selected, at the detail it selected them at', () => {
+    /*
+     * The whole of Wave 4B's terrain in one assertion: the layer decides the heights, the clipmap
+     * decides which squares at which detail, `heightfieldPatch` builds them, and the collider is
+     * made of exactly those triangles — so what a body rests on is what a camera sees, including
+     * where the picture is coarse.
+     */
+    const source = ridges(65);
+    const terrain = terrainFromHeightLayer(encodeTerrainHeights(source));
+    const frame = clipmapFrame(terrain, 0, 0, { levels: 2, patchCells: 4 });
+    const patches = selectClipmap(frame);
+    expect(patches.length).toBeGreaterThan(8);
+
+    const world = new PhysicsWorld();
+    for (const patch of patches) {
+      const mesh = heightfieldPatch(terrain, clipmapPatchOptions(patch));
+      world.addBody({ type: BODY_STATIC, shape: meshShape(mesh.positions, mesh.indices) });
+    }
+
+    const hit = createRayHit();
+    let checked = 0;
+    for (const patch of patches) {
+      if (patch.step !== 1) continue;
+      /* The middle of the patch, off the lattice, where a coarse chord and the field differ. */
+      const x = (terrain.origin[0] ?? 0) + (patch.x + patch.cells / 2 + 0.37) * terrain.spacingM;
+      const z = (terrain.origin[2] ?? 0) + (patch.z + patch.cells / 2 + 0.61) * terrain.spacingM;
+      if (!world.raycast(x, 80, z, 0, -1, 0, 200, hit)) continue;
+      expect(hit.y).toBeCloseTo(terrain.heightAt(x, z), 4);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(4);
   });
 });

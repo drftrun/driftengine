@@ -17,7 +17,12 @@ import { recordingGl } from './rendererHarness.ts';
  * exactly what it made.
  */
 function deviceOf(gl: WebGL2RenderingContext): PassDevice {
-  return { backend: 'webgl2', gl, clipCorrection: new Float32Array(16) };
+  return {
+    backend: 'webgl2',
+    gl,
+    clipCorrection: new Float32Array(16),
+    depthCorrection: new Float32Array(16),
+  };
 }
 
 test('a target is a colour texture, a depth texture and a framebuffer', () => {

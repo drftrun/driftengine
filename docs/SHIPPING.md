@@ -150,16 +150,25 @@ the game does something a tab tolerated and a shell does not.
 An artifact is built on the platform it targets, with one exception, and `build` refuses the ones a
 machine cannot honestly produce rather than making something that will not launch.
 
-| target      | built on                        | result                                                   |
-| ----------- | ------------------------------- | -------------------------------------------------------- |
-| `linux-x64` | Linux                           | an AppImage and a tarball                                |
-| `android`   | anywhere, the toolchain is Java | a signed APK                                             |
-| `mac-arm64` | a Mac, **or Linux**             | a `.dmg` and a `.zip` on a Mac; a `.zip` only from Linux |
-| `win-x64`   | Windows, a VM is fine           | an installer                                             |
-| `ios`       | a Mac with Xcode                | an archive and an unsigned `.ipa`                        |
+| target             | built on                        | result                                                   |
+| ------------------ | ------------------------------- | -------------------------------------------------------- |
+| `native-linux-x64` | Linux on x64                    | a tarball carrying its own Node, and no browser          |
+| `linux-x64`        | Linux                           | an AppImage and a tarball                                |
+| `android`          | anywhere, the toolchain is Java | a signed APK                                             |
+| `mac-arm64`        | a Mac, **or Linux**             | a `.dmg` and a `.zip` on a Mac; a `.zip` only from Linux |
+| `win-x64`          | Windows, a VM is fine           | an installer                                             |
+| `ios`              | a Mac with Xcode                | an archive and an unsigned `.ipa`                        |
 
 An all-targets build makes what this machine can and **names what it skipped**, because a silent
 skip reads as a build that covered everything.
+
+**On Linux, `native-linux-x64` is the one to ship, and the Electron targets are the compatibility
+target.** The native build runs the game on the engine's own host — Node, Dawn and SDL — at half the
+size of the Electron build of the same program; it needs the host installed in the game and a
+module exporting `mount(canvas)`, named by `native.entry`. The Electron targets stay, unchanged: they
+are the desktop build on Windows and macOS, which the native host reaches after 4.0.0, and on Linux
+the build for a game that needs what the host lacks. [`packages/package/README.md`](../packages/package/README.md#the-native-target-and-electron-as-the-compatibility-target)
+has the layout, the measurements and the list.
 
 **macOS from Linux is the exception, and it is worth understanding rather than trusting.** Nothing
 in a Mac build is compiled: the runtime ships a prebuilt darwin binary, so packing one is file
@@ -362,3 +371,36 @@ build is worth remaking after an engine change that touched a hot path, the publ
 
 `packages/package/README.md` is the document that moves when the packager does. If something here
 contradicts it, that one is right and this one needs a commit.
+
+---
+
+## 12. A model the game runs
+
+A game that captures a scene, or runs any network through the engine's one runtime, ships that
+network's weights with itself, as it ships a `.drft`. **The runtime never fetches**: nothing in a
+game reaches out for a model on first run, so a player's first capture works offline, on a machine
+behind any firewall, a year after the model's host moved it.
+
+**Where the weights come from.** `tools/capture-weights/manifest.json` pins every model the engine
+accepts — six today — to a commit and a SHA-256, with its licence, its attribution, and the answer
+to whether its card attaches its training datasets' terms. `node tools/capture-weights/fetch.mjs
+<name>` puts a file under `models/capture/`, which git ignores, and keeps it only if it hashes to the
+pin. `convert` in `tools/capture-weights/convert.ts` then builds the runtime's graph from it:
+refused if the hash differs, if the checkpoint lacks a tensor the model's definition reads, or if it
+holds one the definition never reads — a forgotten bias is a network that runs and answers wrongly.
+`storedGraph` gives that graph to the `NGRF` chunk at half precision, which is half the bytes and the
+precision the device stores weights at anyway — **except a tensor of whole numbers half cannot
+hold**, which stays single, because a rounded token id is another token.
+
+**A model may pin more than a checkpoint.** A manifest entry's `extra` names the files a definition
+reads beside it, each at the same revision and hash — OWLv2's tokenizer is its merges and the
+vocabulary they imply, checked against each other at conversion — and they end up inside the
+converted file, so a game still ships one file a model.
+
+**What has to travel with it.** Every accepted model is Apache 2.0, which lets a game ship its
+weights and asks two things in return: the licence's text, and the model's attribution — the
+`attribution` line of its manifest entry, which `NOTICE` carries too. Put both where the game keeps
+its other third-party notices. **Do not substitute a model the manifest does not list**: the ones it
+refused are refused for their licences — non-commercial, gated, or carrying terms that would pass
+into the game — and a checkpoint from a mirror is not the one that was pinned, whatever it is
+called.

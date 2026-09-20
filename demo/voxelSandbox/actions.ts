@@ -23,6 +23,15 @@ export const VOXEL_ACTIONS: Readonly<Record<string, ActionDefinition>> = {
     left: ['KeyA', 'ArrowLeft'],
     right: ['KeyD', 'ArrowRight'],
   },
+  /*
+   * **The right stick turns the camera, and nothing bound it until 2026-09-20.**
+   *
+   * `move` has carried `stick: 'left'` since it was written and the engine has taken
+   * `'left' | 'right'` for as long; this demo simply never asked for the second one, so a pad could
+   * walk and could not look — in the browser as much as on the native host. `playerInput.ts` reads
+   * it as a *rate* rather than as a delta, which is the difference between a stick and a mouse.
+   */
+  look: { stick: 'right' },
   jump: { keys: ['Space'], buttons: ['faceDown'] },
   sprint: { keys: ['ShiftLeft', 'ShiftRight'], buttons: ['l1'] },
   toggleFly: { keys: ['KeyF'], buttons: ['faceUp'] },

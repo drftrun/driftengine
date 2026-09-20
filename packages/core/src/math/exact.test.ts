@@ -18,7 +18,7 @@
  * `scripts/exactness-cross.mjs` prints the same table for pasting from another machine.
  */
 import { describe, expect, it } from 'vitest';
-import { exactAcos, exactCos, exactExp, exactSin } from './exact.ts';
+import { exactAcos, exactCos, exactExp, exactLog, exactSin } from './exact.ts';
 
 const view = new DataView(new ArrayBuffer(8));
 
@@ -40,6 +40,7 @@ const FUNCTIONS: Record<string, (x: number) => number> = {
   cos: exactCos,
   exp: exactExp,
   acos: exactAcos,
+  log: exactLog,
 };
 
 /**
@@ -100,6 +101,20 @@ const GOLDEN: readonly (readonly [string, number, string])[] = [
   ['acos', -0.9999999, '40092110dc45ea89'],
   ['acos', 0.25, '3ff51700e0c14b25'],
   ['acos', -0.75, '400359d26f93b6c3'],
+  ['log', 5e-324, 'c0874385446d71c3'],
+  ['log', 1e-310, 'c0864e69394d9508'],
+  ['log', 0.00001, 'c027069e2aa2aa5b'],
+  ['log', 0.1, 'c0026bb1bbb55515'],
+  ['log', 0.5, 'bfe62e42fefa39ef'],
+  ['log', 0.7071067811865476, 'bfd62e42fefa39ee'],
+  ['log', 1.0000004768371582, '3e9fffff800002ab'],
+  ['log', 1.0001, '3f1a368d0657fcd4'],
+  ['log', 1.5, '3fd9f323ecbf984c'],
+  ['log', 2.718281828459045, '3ff0000000000000'],
+  ['log', 3, '3ff193ea7aad030a'],
+  ['log', 100, '40126bb1bbb55516'],
+  ['log', 10000000000, '4037069e2aa2aa5b'],
+  ['log', 1.7976931348623157e308, '40862e42fefa39ef'],
 ];
 
 describe('reproducible transcendentals', () => {
@@ -136,6 +151,13 @@ describe('reproducible transcendentals', () => {
     for (let i = -1000; i <= 1000; i++) {
       worst = Math.max(worst, ulps(exactAcos(x_(i)), Math.acos(x_(i))));
     }
+    /* From a subnormal to near the largest double, and densely either side of one. */
+    for (let x = 1e-310; x < 1e300; x *= 1.37)
+      worst = Math.max(worst, ulps(exactLog(x), Math.log(x)));
+    for (let i = -1000; i <= 1000; i++) {
+      const x = 1 + i * 1.3e-4;
+      worst = Math.max(worst, ulps(exactLog(x), Math.log(x)));
+    }
     expect(worst).toBeLessThan(2);
   });
 
@@ -153,6 +175,10 @@ describe('reproducible transcendentals', () => {
     expect(exactExp(0)).toBe(1);
     expect(exactAcos(1)).toBe(0);
     expect(exactAcos(-1)).toBe(Math.PI);
+    expect(exactLog(1)).toBe(0);
+    /* ECMAScript fixes these two as the doubles nearest ln 2 and ln 10. */
+    expect(exactLog(2)).toBe(Math.LN2);
+    expect(exactLog(10)).toBe(Math.LN10);
   });
 
   it('refuses a domain it has no answer for, the way Math does', () => {
@@ -161,6 +187,11 @@ describe('reproducible transcendentals', () => {
     expect(exactAcos(Number.NaN)).toBeNaN();
     expect(exactSin(Number.POSITIVE_INFINITY)).toBeNaN();
     expect(exactCos(Number.NEGATIVE_INFINITY)).toBeNaN();
+    expect(exactLog(-1)).toBeNaN();
+    expect(exactLog(Number.NaN)).toBeNaN();
+    expect(exactLog(0)).toBe(Number.NEGATIVE_INFINITY);
+    expect(exactLog(-0)).toBe(Number.NEGATIVE_INFINITY);
+    expect(exactLog(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('saturates exp rather than producing a wrong finite number', () => {

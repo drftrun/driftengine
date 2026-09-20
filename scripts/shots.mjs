@@ -23,6 +23,8 @@
  *     --out=shots                    where the PNGs go
  *     --region=0,92,1280,678         the part of the frame `diff` looks at
  *     --delta=16                     how far a pixel must move before `diff` counts it
+ *     --islands                      sort the changed pixels into connected regions, so a defect
+ *                                    can be told from the noise floor — see `frames.mjs`
  *
  * **A consumer with its own page passes `--base` and `--scenes=0` and gets the same gate**, since
  * nothing here knows what a scene is beyond a number in a query string. The pieces underneath are
@@ -34,7 +36,7 @@ import { pathToFileURL } from 'node:url';
 import { launch, requireHardwareGpu } from '../packages/core/scripts/browser.mjs';
 import { connect } from '../packages/core/scripts/cdp.mjs';
 import { readPng } from '../packages/core/scripts/png.mjs';
-import { compare, formatComparison, speckle } from '../packages/core/scripts/frames.mjs';
+import { compare, formatComparison, islands, speckle } from '../packages/core/scripts/frames.mjs';
 import { heldClockScript } from '../packages/core/scripts/heldClock.mjs';
 
 /**
@@ -59,7 +61,26 @@ export const DEFAULT_SCENES = [
   'storm-sea',
   'collapse',
   'day-clock',
+  'city',
 ];
+
+/**
+ * **The published scenes the GPU-driven pipeline alone draws**, which refuse to mount on WebGL2 —
+ * as they should, since that backend has no compute stage and no indirect draw. A capture on
+ * WebGL2 says each and skips it rather than waiting for draws that never come; the scene modules
+ * say which they are (`pipelines` without `'forward'`), and `shots.test.mjs` holds this list to
+ * what they say.
+ */
+export const GPU_DRIVEN_ONLY = ['city'];
+
+/** The targets a capture on `backend` photographs, and the ones it skips because it cannot. */
+export function capturable(targets, backend) {
+  const cannot = backend === 'webgl2' ? GPU_DRIVEN_ONLY : [];
+  return {
+    kept: targets.filter((target) => !cannot.includes(target.name)),
+    skipped: targets.filter((target) => cannot.includes(target.name)),
+  };
+}
 
 /**
  * The capture's name on disk, with the backend in it when there is one.
@@ -88,11 +109,17 @@ export function withBackend(query, backend) {
  * with `?` produces two of them and a page that loads without its parameters. That failed
  * silently as a timeout waiting for a frame that never held, which reads exactly like a
  * broken renderer.
+ *
+ * **The leading `?` is optional and used to be load-bearing**, which is the same failure one
+ * spelling along. Without it this concatenated, so `--query=samples=1` on a scene path produced
+ * `hold=420samples=1`: `Number` read that as `NaN`, the hold never completed, and the capture
+ * waited out its timeout and wrote nothing. The separator is decided here rather than asked of
+ * whoever types the flag, because the usage text has never said which spelling it wants.
  */
 export function joinQuery(url, query) {
-  if (query === '') return url;
-  if (!url.includes('?')) return `${url}${query.startsWith('?') ? query : `?${query}`}`;
-  return `${url}${query.startsWith('?') ? `&${query.slice(1)}` : query}`;
+  const body = query.startsWith('?') ? query.slice(1) : query;
+  if (body === '') return url;
+  return `${url}${url.includes('?') ? '&' : '?'}${body}`;
 }
 
 export function parseArgs(argv) {
@@ -162,6 +189,7 @@ export function parseArgs(argv) {
       region === undefined
         ? undefined
         : { x0: region[0], y0: region[1], x1: region[2], y1: region[3] },
+    islands: flags.get('islands') !== undefined,
     speckle: flags.get('speckle') !== undefined,
     /*
      * The luminance delta a pixel has to exceed before `diff` counts it as changed.
@@ -217,12 +245,14 @@ async function capture(options) {
   const beforeLoad = options.inject
     ? heldClockScript(options.hold, { startWhen: options.start ?? 'true' })
     : undefined;
-  const targets =
+  const { kept: targets, skipped } = capturable(
     options.urls ??
-    options.scenes.map((scene) => ({
-      name: scene.name,
-      path: `/?scene=${scene.index}&hold=${options.hold}`,
-    }));
+      options.scenes.map((scene) => ({
+        name: scene.name,
+        path: `/?scene=${scene.index}&hold=${options.hold}`,
+      })),
+    options.backend,
+  );
   /*
    * Both conditions, and they answer different questions: the first is that the clock has
    * finished counting, the second is anything else the page has to be true for the picture to be
@@ -237,11 +267,22 @@ async function capture(options) {
   try {
     const asked = options.backend === null ? 'page default' : `?backend=${options.backend}`;
     console.log(`renderer: ${await requireHardwareGpu(client)} · ${asked} · label ${label}`);
+    for (const target of skipped) {
+      console.log(`${target.name.padEnd(16)} not captured: the GPU-driven pipeline alone draws it`);
+    }
     for (const target of targets) {
       const url = joinQuery(`${options.base}${target.path}`, query);
       const page = await client.page(url, options.width, options.height, { beforeLoad });
       try {
-        await page.settled(ready, { settleMs: 2500 });
+        /*
+         * **A scene that refused to mount fails the run at once, by its own message**, rather than
+         * after the two minutes a page that never draws takes to time out — which is how the city
+         * on WebGL2 first reported itself, as "page never satisfied".
+         */
+        const refused = `(document.getElementById('error')?.textContent ?? '').includes('failed to mount')`;
+        await page.settled(`(${ready}) || ${refused}`, { settleMs: 2500 });
+        const error = await page.eval(`document.getElementById('error')?.textContent ?? ''`);
+        if (error.includes('failed to mount')) throw new Error(`${target.name}: ${error}`);
         const file = path.join(options.out, `${label}-${target.name}.png`);
         await page.screenshot(file);
         const stats = await page.eval(`document.getElementById('stats')?.textContent ?? ''`);
@@ -284,6 +325,27 @@ function diff(options) {
     worstChange = Math.max(worstChange, result.changed);
     console.log(`\n${name}`);
     console.log(formatComparison(result));
+    if (options.islands) {
+      /*
+       * **What the count above cannot say: whether this is a defect or the noise floor.** A
+       * defect arrives as a region and two shader compilers disagreeing in the last bits arrive as
+       * dust along every silhouette. Three of the four backend defects this repository has found
+       * were named by reading this line first and reaching for a query knob second.
+       */
+      const map = islands(first, second, {
+        region: options.region,
+        ...(options.delta === undefined ? {} : { tolerance: options.delta }),
+      });
+      const share = map.changed === 0 ? 0 : (map.dust / map.changed) * 100;
+      const biggest = map.islands
+        .slice(0, 3)
+        .map((one) => `${one.size}@${one.box.x0},${one.box.y0}-${one.box.x1},${one.box.y1}`)
+        .join(' ');
+      console.log(
+        `  islands: ${map.islands.length}, ${share.toFixed(0)}% of the change in islands of 4 or ` +
+          `fewer${biggest === '' ? '' : `, largest ${biggest}`}`,
+      );
+    }
     if (options.speckle) {
       for (const threshold of [12, 25]) {
         const before = speckle(first, { threshold, region: options.region });
@@ -323,7 +385,7 @@ else {
       '  node scripts/shots.mjs capture <label> [--base= --scenes= --hold= --size= --query= --out= --backend=]\n' +
       '    --backend=webgl2|webgpu forces one path and puts it in the label, so a parity\n' +
       '    diff cannot silently compare a backend with itself.\n' +
-      '  node scripts/shots.mjs diff <label> <label> [--scenes= --out= --region= --delta= --speckle]\n' +
+      '  node scripts/shots.mjs diff <label> <label> [--scenes= --out= --region= --delta= --islands --speckle]\n' +
       '    --delta=16 is the threshold every parity figure in the ledger is read at; the\n' +
       '    default of 1 counts differences nobody can see.\n\n' +
       'Against a page that is not this harness, name the URLs and how to freeze it:\n' +

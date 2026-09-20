@@ -87,3 +87,44 @@ test('the mip chain is still blended between levels under nearest', () => {
   new GpuSurfaceTexture(device, PIPELINES, SOURCE, { mipmap: true, filter: 'nearest' });
   expect(samplers[0]?.mipmapFilter).toBe('linear');
 });
+
+/**
+ * **An image of another size is a texture of another size.**
+ *
+ * `update` copied `[width, height]` of the texture it was created with, whatever it was handed. A
+ * model loader creates each texture from a small preview and then updates it with the real image,
+ * so wherever the preview's decode won the race, the real image was copied into the preview's
+ * size: its top-left corner, stretched over the surface. It was a race, so it showed up as the
+ * showroom not repeating itself at the car's roundel, its licence plate and its wheels. WebGL2
+ * never had it, because `texImage2D` takes the size of what it is given.
+ */
+test('AN IMAGE OF ANOTHER SIZE IS COPIED WHOLE into a texture of its size, and the old one is handed back', () => {
+  const { device } = fakeDevice();
+  const texture = new GpuSurfaceTexture(device, PIPELINES, SOURCE, {});
+  const create = device.createTexture as unknown as ReturnType<typeof vi.fn>;
+  const first = create.mock.results[0]?.value as GPUTexture;
+  const firstView = texture.view;
+
+  const replaced = texture.update({ width: 8, height: 2 } as unknown as TexImageSource);
+
+  const descriptor = create.mock.calls.at(-1)?.[0] as GPUTextureDescriptor;
+  expect(descriptor.size).toEqual([8, 2]);
+  /* ⌊log2 8⌋ + 1: 8, 4, 2 and 1 texels across. */
+  expect(descriptor.mipLevelCount).toBe(4);
+  const copy = device.queue.copyExternalImageToTexture as unknown as ReturnType<typeof vi.fn>;
+  expect(copy.mock.calls.at(-1)?.[2]).toEqual([8, 2]);
+  expect(replaced, 'the texture it replaced, for the renderer to retire').toBe(first);
+  expect(texture.view, 'a new view, which every binding of the old one must drop').not.toBe(
+    firstView,
+  );
+  expect(first.destroy, 'not here: a recorded draw may still read it').not.toHaveBeenCalled();
+});
+
+test('AN IMAGE OF THE SAME SIZE GOES INTO THE TEXTURE IT HAS', () => {
+  const { device } = fakeDevice();
+  const texture = new GpuSurfaceTexture(device, PIPELINES, SOURCE, {});
+  const view = texture.view;
+  expect(texture.update({ width: 4, height: 4 } as unknown as TexImageSource)).toBeNull();
+  expect(device.createTexture).toHaveBeenCalledTimes(1);
+  expect(texture.view).toBe(view);
+});

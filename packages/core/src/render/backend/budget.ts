@@ -1,12 +1,13 @@
 /**
  * What a frame asked of a backend, against what that backend allows.
  *
- * **This exists because a ceiling firing was unobservable.** The WebGPU backend holds ten per-frame
- * ceilings — draws, material changes, overlays, water bodies, light volumes, plumes, three kinds of
- * effect batch and the scatter shadow round — and past any of them it skips the work and writes one
- * `console.warn` for the lifetime of the renderer. WebGL2 holds none of them and draws everything.
- * So a scene over a ceiling renders differently on the two backends, silently, and a consumer
- * developing against WebGL2 has no way to see it coming.
+ * **This exists because a ceiling firing was unobservable.** The WebGPU backend holds fourteen
+ * per-frame ceilings — draws, material changes, two kinds of shadow draw, water bodies, light
+ * volumes, four kinds of effect batch and four kinds of overlay — and past any of them it skips the
+ * work and writes one `console.warn` for the lifetime of the renderer. WebGL2 holds none of them and
+ * draws everything. So a scene over a ceiling renders differently on the two backends, silently,
+ * and a consumer developing against WebGL2 had no way to see it coming — which is why WebGL2 counts
+ * the same fifteen lines by the same rules, and reports the number the other backend rations.
  *
  * **The cost of that was measured from outside.** A consumer spent weeks on ground that
  * vanished and reappeared as the camera moved; its own report still lists, as the decisive

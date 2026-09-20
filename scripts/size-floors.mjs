@@ -77,6 +77,36 @@
  * Recorded exactly rather than left inside the tolerance, because a floor that is only approximately
  * right is the instrument this file exists to keep honest.
  */
+/**
+ * **Every floor re-measured 2026-09-18, and every one of them was stale again.**
+ *
+ * The occasion was the renderer gaining a distance field of its own, which tripped the 3% gate on
+ * every core entry. The gate was right to fire and mostly not about this change:
+ *
+ * | | `core-only` |
+ * | --- | --- |
+ * | Floor as recorded | 690,637 |
+ * | `main` at `9851372a`, measured | **709,771** — 19,134 bytes of accumulated drift, 2.77% |
+ * | This branch | **715,117** — 5,346 bytes of it this change, 0.75% |
+ *
+ * **2.77% had accumulated without one commit tripping the gate**, which is the failure mode this
+ * file's header describes and the third time it has been recorded here: *a tolerance gate passes
+ * at the true number and at every stale one below it.* Every core entry had drifted by 19.1 to
+ * 19.3 KB, and the small packages by 79 to 123 bytes.
+ *
+ * **What this change costs is 5.3 KB on every core entry and nothing anywhere else**, and the
+ * uniformity is the evidence for what it is: `createRenderer` now reaches `FieldComposer`, so
+ * `COMPOSE_FIELD_WGSL` and `SAMPLE_FIELD_WGSL` are in every bundle that builds a renderer rather
+ * than only in one that imported `GiFieldPass`. `physics-only`, `editor-only`, `chemistry-*` and
+ * the rest moved by nothing at all, which is what says the cost is the renderer's and not a
+ * change in how anything is bundled.
+ *
+ * **It is paid whether or not `quality.indirectLight` is on**, and that is a real cost rather than
+ * a rounding: a shader's source is a string constant, and a bundler keeps it because the module is
+ * reachable. Making it conditional means a dynamic import, which is a frame of latency and a
+ * code-splitting requirement placed on every consumer's bundler — a worse trade than 5.3 KB for a
+ * renderer that can light a scene with no baked lighting.
+ */
 export const FLOORS = {
   /*
    * Raised 2026-08-22 by MATL's four texture indices: three more `setInt32`, three more guarded
@@ -179,7 +209,59 @@ export const FLOORS = {
    * `const` is enough to defeat tree shaking across a module boundary**, which is the kind of thing
    * only an A/B finds.
    */
-  'drft-only': 5146,
+  /*
+   * **Raised 2026-09-16 to 5,528 by `SDFV`**, and the step is worth splitting because only two
+   * thirds of it is the chunk.
+   *
+   * - **84 bytes of it predate this branch.** Clean `main` measures 5,230 against a floor of
+   *   5,146, which is 1.6% and never tripped the 3% gate — the failure this file's header
+   *   describes, arriving for the fourth time: *a tolerance gate passes at the true number and at
+   *   every stale one below it.* Nobody is to blame for the 84 and it is recorded rather than
+   *   folded into the chunk's figure.
+   * - **268 bytes is the `SDFV` reader**, measured by deleting the one line in `drftRead.ts` that
+   *   dispatches to it and re-bundling: 5,251 against 5,519.
+   * - **Of that 268, 87 is the four error messages.** Unique English prose is what gzip can do
+   *   least with, and this reader refuses four distinct shapes — a count larger than its table, a
+   *   field larger than its chunk, a dimension of zero, and a sample count past the cap. Shortening
+   *   them buys back a sixth of the chunk's cost and spends the thing every other refusal in this
+   *   package pays for: a message that names the arithmetic. Not taken.
+   * - **The remaining 21** is the FourCC, its `KNOWN_CHUNKS` entry and the `fields` field on the
+   *   asset, which is what `CHUNK_SPLT`'s design note predicted a new chunk should cost when the
+   *   record is opaque.
+   *
+   * **What would make it wrong** is a consumer that reads `.drft` and never traces indirect light
+   * paying for this. It does, because the package is one entry point — the same answer `SPLT` gave,
+   * and the same fix if anybody minds: a separate export path, not worth doing before somebody asks.
+   */
+  /*
+   * **`NNET`, 2026-09-17: +528 bytes**, from 5,528 to 6,056 — the reader wired into `readDrft`, its
+   * seven refusals and the role check. Same answer as `SDFV` above about who pays for it.
+   */
+  /*
+   * **`NGRF`, 2026-09-19: +854 bytes**, from 6,056 to 6,910 — the graph chunk's writer and reader,
+   * wired into `writeDrft` and `readDrft`. Larger than `NNET`'s because a graph's structure is
+   * checked field by field on the way in — every input, node, attribute and tensor entry is JSON a
+   * file could have made anything of — and each refusal names what it refused. Same answer again
+   * about who pays: one entry point, and a separate export path is the fix when somebody minds.
+   */
+  /*
+   * **`DTEX`, 2026-09-20: +745 bytes**, from 6,910 to 7,655 — the chunk wired into `writeDrft` and
+   * `readDrft`, and with it the payload's own writer and reader, which had existed unreferenced
+   * since the chunk was defined. The reader is most of it: a tile table, a result register and a
+   * latent grid are three things a file could have made anything of, and each is refused by name.
+   * Same answer as `SDFV`, `NNET` and `NGRF` about who pays — one entry point, and a separate
+   * export path is the fix when somebody minds.
+   */
+  /*
+   * **`NAVM` and `ENTS`, 2026-09-20: +684 bytes**, from 7,655 to 8,339 — both chunks wired into
+   * `writeDrft` and `readDrft`. `NAVM` is the larger half and the reason is its index tables: a
+   * polygon naming a vertex that is not there is the one defect in this pair that costs the
+   * consumer rather than the file, so both tables are walked on the way out *and* on the way in.
+   * `ENTS` is mostly a refusal per thing a file could have made anything of. Same answer as every
+   * chunk before it about who pays: one entry point, and a separate export path is the fix when
+   * somebody minds.
+   */
+  'drft-only': 8339,
   /*
    * Raised 2026-08-22 by the normal map, and again the same day by the ORM map. Both splits are
    * measured rather than assumed.
@@ -548,7 +630,26 @@ export const FLOORS = {
    * do, and the honest alternative is the permutation flag `ARCHITECTURE.md` §1 prices at 196,910
    * for the fragment corpus, nine times this.
    */
-  'core-only': 686043,
+  /**
+   * **Every core entry re-measured 2026-09-17, when the forward flush learned a second scheduler.**
+   *
+   * `quality.identifierGraph` schedules a flush through `frame/flushGraph.ts`, and the renderer
+   * reaches it whether or not the flag is on, so `scheduleGraph`, `lifetime.ts` and the mask
+   * recorder now ship with core: **`core-only` +1,456 bytes gzipped**, 689,174 on `main` to
+   * 690,630, and every `core-and-*` entry +1,402 to +1,520 the same way.
+   *
+   * **The floors were already 3,131 behind `main`**, inside the tolerance. Measured the same way,
+   * the commit that set 686,043 reads 688,156 — so about 2,100 of it was never there — then the
+   * ascendancy waves added 987 before the texture plan and the texture plan 31. Recorded exactly
+   * here, on the same reasoning as the 2026-09-09 sweep above: a floor left inside the tolerance
+   * fails on whatever lands next and names it as the culprit.
+   *
+   * **And again the same day, by six to eight bytes an entry**, when the second pipeline's instance
+   * cull became a stage of its frame: the stage list core keeps gained one name. The cull itself is
+   * in the opt-in pass and costs a consumer who does not construct one nothing. Recorded exactly,
+   * for the reason above.
+   */
+  'core-only': 715117,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -561,7 +662,7 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 690820,
+  'core-and-gizmo': 719918,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -574,7 +675,7 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 692198,
+  'core-and-audio': 721320,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -596,7 +697,7 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 692322,
+  'core-and-animation': 721332,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -631,8 +732,142 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 723674,
-  'core-and-splats': 702901,
+  'core-and-script': 752784,
+  /*
+   * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
+   * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
+   * a consumer pays for declared channel semantics, variance-preserving normal mips, content
+   * addressing, the shared network evaluator, the decode graph and its reference interpreter, the
+   * material array and the progressive ordering.
+   *
+   * **The decode graph is data rather than shader permutations, and that choice is what this
+   * number is small because of.** ARCHITECTURE.md prices the alternative: one extra permutation
+   * flag cost 196,910 gzipped bytes across the WGSL corpus, on every consumer, enabled or not.
+   * Per material rather than per feature, that arithmetic does not survive contact with a project.
+   *
+   * **1,966 of this is code and 79 is the licence banner.** A `/*!` comment is preserved by
+   * minifiers on purpose, so every package here carries the same 79 bytes and the gate measures
+   * them. Worth knowing before somebody reads a 4% jump as a regression: adding the banner *was*
+   * the jump, on the commit that added it.
+   *
+   * **Raised 2026-09-17 to 2,186 by texel-centre addressing** — 141 bytes for two address modes,
+   * the constant table that names all four, and the validator's refusal of a fifth. The GPU-driven
+   * pipeline samples surface textures the way every GPU sampler does, and the reference had to
+   * learn that convention before the device could be compared against it.
+   *
+   * **And again the same day to 2,305 by mip levels** — 119 bytes for trilinear sampling across a
+   * latent's chain, so the device's `textureSampleLevel` has a reference at every level, not only
+   * level 0.
+   */
+  /*
+   * **Added 2026-09-20 so the root README's cost column can be filled for every package that has
+   * a browser payload at all.** Two packages had shipped with no fixture and therefore no measured
+   * size, which is the one thing `AGENTS.md` says a new package owes and the one nothing checked.
+   */
+  'ai-only': 1778,
+  'media-only': 11524,
+  'texture-only': 2305,
+  /*
+   * **Raised 2026-09-16 to 7,101 by hole support in `buildContours`**, and the step splits three
+   * ways.
+   *
+   * - **12 bytes of it predate this branch.** Clean `main` measures 6,348 against a floor of 6,336,
+   *   which is 0.2% and nowhere near the 3% gate — the drift this file's header describes, small
+   *   this time and recorded anyway.
+   * - **The rest is the bridge**: a signed-area test to find the outer loop, a closest-pair search
+   *   with a crossing check, the splice itself, and an anchored Douglas–Peucker so simplification
+   *   cannot pull a bridge apart. About 700 gzipped bytes of arithmetic that gzip has nothing to
+   *   dedupe it against, which is `SPLT`'s Morton sort arriving in a different package.
+   * - **What it buys is a mesh that stops claiming ground it does not have.** The old behaviour
+   *   took a region's longest boundary loop and dropped the rest, so a room with a pillar came out
+   *   as a rectangle *over* the pillar — measured at area 40 where the region is 32, on a
+   *   ten-by-four map. An agent walked through the column, and through whatever else the watershed
+   *   had carved out of the middle.
+   *
+   * **What would make it wrong** is a consumer that builds navigation meshes and never has a hole
+   * in one paying for this. They do, and the fix if anybody minds is the same one `SPLT` names: a
+   * separate export path, not worth doing before somebody asks.
+   *
+   * **Raised to 8,401 on 2026-09-20, by the portal graph: +1,298 bytes.** The search is over
+   * portals now rather than polygon centres, which is what makes a path the shortest way round
+   * instead of about a tenth longer — and most of the cost is not the graph, it is *finding* the
+   * portals: two polygon edges are a way through where they overlap, not where they share two
+   * vertices, so the builder buckets every edge by the exact line it lies on and intersects the
+   * pairs inside each bucket. A kilobyte and a quarter for a tenth off every path an agent walks,
+   * and the same answer as above about who pays: a separate export path when somebody minds.
+   */
+  'nav-only': 8401,
+  /*
+   * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
+   * profiler and the network panel, plus the command stack that makes their edits undoable — the
+   * panels a game can carry into a shipping build. It has a floor because it is a package: a game
+   * that never imports it pays nothing, which is not a claim about tree-shaking but a fact about
+   * a module nobody imports, and every other floor here staying put is the evidence.
+   *
+   * **3,394 bytes, of which 79 is the licence banner.** Four panels, a selection, an undo stack and
+   * the panel contract, measured 2026-09-15 on the commit that published the package.
+   */
+  'tools-only': 3395,
+  /*
+   * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
+   * backbone, head and camera decoder as functions of their weights, the rotary and positional
+   * tables they compute from shapes, and the seeded miniature its tests share with the upstream's
+   * code. It pulls in `@driftengine/texture`'s graph builder, validation and operator shape rules,
+   * and `mulberry32`. **5,451 bytes**, measured 2026-09-19 on the commit that created the package —
+   * 873 of them core's reproducible `sin`, `cos` and `exp`, which the tables and the decoding use
+   * because `packages/capture` is inside the determinism gate: a capture reproduces, and `Math.sin`
+   * is not the same bits on every engine. **6,520 with Depth Anything V2 Small beside it**, the
+   * lighter fallback: 1,069 bytes for a second backbone and neck, written from Transformers' layout.
+   * **11,072 with MobileSAM**, measured 2026-09-19 by taking exports out of the fixture: 1,778
+   * bytes for TinyViT, its window attention and the folded batch norm; 1,972 for the two-way
+   * decoder, the prompt's Fourier tokens on the host and the masks brought to the image; and 802 for
+   * the miniature that names every tensor of the three. **23,789 with SAM 2.1**, measured the same
+   * day the same way: 11,774 for Hiera, SAM 2's decoder, the memory encoder and attention, their
+   * position tables and the tracker that runs a video through them, and 943 for its miniature.
+   * **26,821 with OWLv2**, measured the same day the same way: 2,047 for its two graphs, the box
+   * prior and the host's join into logits and boxes, 591 for CLIP's tokenizer, and 415 for its
+   * miniature. **29,141 with the frames a capture runs on**, measured 2026-09-20 the same way:
+   * 354 for the seam and the choosing of frames by motion, 1,816 for the four preparations and the
+   * two resizes under them, and 323 for the depth estimate over a clip. **30,870 with the
+   * decompositions**, measured the same day: 1,729 for Jacobi's singular values and eigenvectors,
+   * Cholesky, Levenberg–Marquardt and the Schur complement over points, which is what a bundle
+   * adjuster is built from. **35,240 with two views**, measured 2026-09-20 the same way: 963 for
+   * the analytic scenes a fixture is rendered from, 1,043 for corners, their turned descriptions
+   * and the matching, and 2,408 for the pose between two views and the points behind it.
+   * **38,796 with the camera path**, measured the same day: 3,556 for the tracks, the two starts,
+   * the frames placed by what they see and the bundle adjustment over the Schur complement.
+   * **44,132 with the Gaussians**, measured 2026-09-20 the same way: 5,336 for the reference
+   * rasteriser and its analytic gradients, the degree-1 band evaluated as the splat shader
+   * evaluates it, the structural similarity a fit is judged by, and the fit itself — Adam over six
+   * families, the densification and the pruning. It is the largest single step this package has
+   * taken and it is the one that produces what a player sees.
+   * **48,189 with the surface**, measured 2026-09-20 the same way: 4,057 for a cloud's depth, the
+   * truncated signed distance many views of it fuse into, the marching of that volume into a mesh
+   * facing outwards, and the quadric-error decimation that brings the mesh to a budget — which is
+   * what a game stands on, where the cloud only draws.
+   * **55,331 with the handover to physics and navigation**, measured 2026-09-20 the same way:
+   * 7,142, and **almost none of it is this package's own code** — cleaning a mesh for collision is
+   * a hundred lines. What it is, is `@driftengine/physics`' convex decomposition arriving as a
+   * peer, which a game fitting a prop pays for and one fitting only a room does not. It is the
+   * first entry in this list where the number is mostly somebody else's.
+   * **57,113 with the delighting**, measured 2026-09-20 the same way: 1,782 for the multi-view
+   * gather, the Retinex separation over the mesh's own edges, the confidence, and the lit fixture
+   * the whole thing is measured against. Small for what it does, because what it does is a few
+   * hundred lines of classical method — the size of the *problem* is in the header, not in the code.
+   * **58,690 with the regions**, measured 2026-09-20 the same way: 1,577 for the segmentation the
+   * geometry answers with when no model is loaded, the prompt lattice, the lifting of masks onto
+   * the mesh by vote, the join between a detector's boxes and a segmenter's masks, and the
+   * proposals. A *proposal* is cheap on purpose — what it costs a consumer is a list of component
+   * names, not a scene.
+   * **66,373 with the assembly**, measured 2026-09-20 the same way: **7,683 bytes, and almost none
+   * of it is this module** — `captureFile` is forty lines over `writeDrft`, and what arrives with
+   * it is `@driftengine/drft`'s whole writer, which a consumer that only *reads* captures never
+   * pays for. It is the second entry in this list where the number is mostly somebody else's, and
+   * the same answer applies: one entry point, and a separate export path is the fix when somebody
+   * minds.
+   */
+  'capture-only': 66373,
+  'core-and-splats': 731992,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -649,7 +884,7 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 687435,
+  'core-and-terrain': 716533,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -675,8 +910,8 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 694602,
-  'core-and-assets': 698823,
+  'core-and-ui2d': 724032,
+  'core-and-assets': 727906,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -687,7 +922,7 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 694327,
+  'core-audio-spatial': 723420,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *
@@ -896,8 +1131,8 @@ export const FLOORS = {
    * What a game that never enters a session pays is nothing at all: `@driftengine/xr` is a package
    * and `physics-only` and `core-only` are unmoved by it existing.
    */
-  'xr-only': 10769,
-  'physics-only': 46084,
+  'xr-only': 10849,
+  'physics-only': 46168,
   /**
    * **821 bytes, 2026-09-03, up from 633 when the rewind snapshot landed.**
    *
@@ -953,7 +1188,7 @@ export const FLOORS = {
    * and a `UiNode` builder. Nothing here touches a shader, so it adds no permutation to the sixteen
    * `flatFrag` already carries at 283.4 KB.
    */
-  'editor-only': 10530,
+  'editor-only': 10653,
   /*
    * **Measured 2026-08-26 on the commit that created the package**, Track P's CH-0: fifteen
    * elements and their atomic weights, the species registry, the species-by-element matrix,
@@ -1094,7 +1329,7 @@ export const FLOORS = {
    * every one of the seven measured identical across this change, which is those fixtures saying
    * what they are for.
    */
-  'chemistry-only': 18427,
+  'chemistry-only': 18517,
 
   /*
    * **`present/`, added 2026-08-26 by CH-9, at 19,163 — 2,354 over the model alone.**
@@ -1172,12 +1407,12 @@ export const FLOORS = {
    * the model surface it needs, not the whole engine — and comparing them to each other is what they
    * are for.
    */
-  'chemistry-library-none': 11651,
-  'chemistry-library-organic': 12936,
-  'chemistry-library-food': 12717,
-  'chemistry-library-fuel': 12581,
-  'chemistry-library-polymer': 12390,
-  'chemistry-library-mineral': 12359,
-  'chemistry-library-metal': 12279,
-  'chemistry-library-biological': 12502,
+  'chemistry-library-none': 11733,
+  'chemistry-library-organic': 13018,
+  'chemistry-library-food': 12798,
+  'chemistry-library-fuel': 12663,
+  'chemistry-library-polymer': 12471,
+  'chemistry-library-mineral': 12440,
+  'chemistry-library-metal': 12361,
+  'chemistry-library-biological': 12581,
 };

@@ -13,6 +13,13 @@
  * consumer writes the words, because what to call a stage is a decision about an audience.
  */
 export { DrftLoader } from './drftLoader.ts';
+/*
+ * **A `DTEX` chunk's tile table as the grid residency asks about.** The other constructor of a
+ * `MaterialTileGrid` — `latentTileGrid` cuts one from a latent a baker holds, and this reads one a
+ * consumer downloaded. The hashes are the file's, over the bytes a fetch returns, which is what
+ * makes a tile that arrived for one material already resident for another.
+ */
+export { dtexTileBytes, tileGridFromDtex } from './dtexTiles.ts';
 export type { DrftFit, DrftLoaderOptions } from './drftLoader.ts';
 /*
  * The loader's own draw-call grouping, exported because a consumer counting draws needs it and was
@@ -41,6 +48,15 @@ export { parseStl } from './stl.ts';
  * keeps the zero-texture-files rule met on its own terms rather than waived.
  */
 export { readRadianceHdr } from './radianceHdr.ts';
+/**
+ * The material bake, exported for the GPU-driven pipeline's rig: it encodes a material to the
+ * decode programs that pipeline samples on the device.
+ */
+export { encodeMaterial, latentImageOf } from './bake/latent.ts';
+/* An encoded material as the chunk a file carries it in: the one place that knows both packages. */
+export { dtexFromEncoded } from './bake/dtexChunk.ts';
+export type { DtexTiles } from './bake/dtexChunk.ts';
+export type { ChannelInput, EncodeMaterialOptions, EncodedMaterial } from './bake/latent.ts';
 /* IESNA LM-63, on the same opt-in terms: a consumer that loads no profile ships no parser. */
 export { readIesProfile } from './iesPhotometry.ts';
 export type { IesProfile } from './iesPhotometry.ts';
@@ -160,3 +176,27 @@ export { colliderBeside, levelsBeside } from './readModel.ts';
  */
 export { ddsToRgba, isDds } from './dds.ts';
 export type { DdsImage } from './dds.ts';
+/*
+ * **The offline half of the GPU-driven pipeline, which nothing outside this package could reach.**
+ *
+ * `bake/cluster.ts` and `bake/clusterLod.ts` produce exactly what `@driftengine/core`'s
+ * `buildGpuDrivenScene` consumes, and until this line neither was exported — so a consumer could
+ * hold the pipeline and had no way to make its input. Every other gate was green about it: the
+ * modules are tested, the package is sized, the licence is in place. Nothing asks whether a thing
+ * with no route out of the package is reachable, and the first scene that tried to use one found
+ * it by failing the demo boundary test.
+ *
+ * Baker work rather than frame work, and the split is the same one `ddsToRgba` above makes: a
+ * million triangles cluster in 648 ms, which is a build step and not a mount.
+ */
+export { buildClusters } from './bake/cluster.ts';
+export type { ClusterOptions, ClusterSet } from './bake/cluster.ts';
+export { buildClusterDag } from './bake/clusterLod.ts';
+export type { ClusterDag, ClusterLevel } from './bake/clusterLod.ts';
+/*
+ * The offline half of global illumination, exported for the same reason and against the same
+ * mistake: `bake/sdf.ts` produces what `globalField.ts` composes and what the `SDFV` chunk
+ * carries, and a field a consumer cannot bake is a pipeline with no input.
+ */
+export { bakeObjectSdf } from './bake/sdf.ts';
+export type { ObjectSdf } from './bake/sdf.ts';

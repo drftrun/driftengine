@@ -163,7 +163,10 @@ export async function startApp(
        the single most common way a packaged web application looks unfinished. */
     window.once('ready-to-show', () => window?.show());
   } else {
-    const startedAt = Date.now();
+    /* Monotonic. Every reading here is subtracted from another and compared against a minimum,
+       and a wall clock that steps backwards holds the badge forever while one that steps forwards
+       flashes it and shows a white window. */
+    const startedAt = performance.now();
     let painted = false;
     let badgeShownAt: number | null = null;
     window.once('ready-to-show', () => {
@@ -175,7 +178,7 @@ export async function startApp(
      * the time it is meant to be readable for — so it is counted from here.
      */
     splash.once('show', () => {
-      badgeShownAt ??= Date.now();
+      badgeShownAt ??= performance.now();
     });
     /*
      * And a badge that cannot load is not worth holding a game for: counting its minimum from
@@ -186,7 +189,7 @@ export async function startApp(
       badgeShownAt ??= startedAt;
     });
     const poll = setInterval(() => {
-      const now = Date.now();
+      const now = performance.now();
       const sinceBadge = badgeShownAt === null ? null : now - badgeShownAt;
       if (splashDecision(now - startedAt, sinceBadge, manifest.splash.minMs, painted) === 'hold')
         return;

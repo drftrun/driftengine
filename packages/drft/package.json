@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/drft",
-  "version": "3.63.0",
+  "version": "4.0.0",
   "description": "The .drft container: a streaming format for baked 3D scenes",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,9 @@
   ],
   "sideEffects": false,
   "devDependencies": {
-    "@driftengine/core": "3.63.0"
+    "@driftengine/core": "4.0.0",
+    "@driftengine/entities": "4.0.0",
+    "@driftengine/texture": "4.0.0"
   },
   "author": "Drift Technologies",
   "repository": {

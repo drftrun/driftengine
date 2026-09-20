@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DriftEngine — editor</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #0b0d10;
+    color: #d7dde5;
+    font:
+      13px/1.4 ui-monospace,
+      monospace;
+    overflow: hidden;
+  }
+  /*
+    The interface is drawn into this canvas by the engine, not laid out beside it in elements —
+    which is the decision `editor/src/app.ts` opens by arguing, and the reason the same product
+    can run under a host that has no DOM at all.
+  */
+  #surface {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    position: relative;
+  }
+  /*
+    The engine draws the viewport into this one, and the interface is drawn over it. Two canvases
+    rather than one, because a canvas has one context: a 2D context and a GPU device cannot share
+    it, and the alternative is drawing the whole interface with the engine — which is a bigger
+    decision than this one and not the one a capture needs taken.
+  */
+  #stage {
+    position: fixed;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+  }
+  #readout {
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    padding: 2px 6px;
+    background: #11161ccc;
+    border: 1px solid #1e242c;
+    pointer-events: none;
+    white-space: pre;
+  }
+</style>
+<canvas id="stage"></canvas>
+<canvas id="surface"></canvas>
+<div id="readout">starting</div>
+<script type="module" src="./src/main.ts"></script>

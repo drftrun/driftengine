@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,6 +13,7 @@ import { init } from './init.ts';
 import { outFor } from './outDir.ts';
 import { parseManifest } from './manifest.ts';
 import type { PackageManifest, Target } from './manifest.ts';
+import { executableName, nativeHost, nativeNotes, packagerVersion } from './native.ts';
 import { planSigning } from './signing.ts';
 import { electronMajor } from './runtimeVersion.ts';
 import { depotScripts } from './steam/depot.ts';
@@ -40,7 +41,7 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 /**
  * `drift-package` — the command a consumer runs to get an installable application.
  *
- * Four subcommands, and `verify` is the one that is not obvious. An artifact that was never
+ * Seven subcommands, and `verify` is the one that is not obvious. An artifact that was never
  * rebuilt is byte-identical in every respect a build log can see, so the only honest check is to
  * look inside the shipped thing for a string from the change. This repository already learned that
  * about deploys: an asset hash proves nothing.
@@ -132,6 +133,20 @@ async function doctor(cwd: string, options: ResourceOptions = {}): Promise<Packa
    * arrive twenty minutes later from Gradle.
    */
   for (const target of manifest.targets) {
+    /*
+     * **The native target asks nothing of the machine and one thing of the game**: it ships the
+     * Node running this, and it needs the host installed beside the game, which `bootstrap` cannot
+     * do because it prepares a machine rather than a project.
+     */
+    if (target === 'native-linux-x64') {
+      for (const note of nativeNotes(manifest)) console.log(`  ${target}: ${note}`);
+      try {
+        nativeHost(cwd, packagerVersion());
+      } catch (cause) {
+        console.log(`  ${target}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+      continue;
+    }
     const ready = await toolchainReady(target);
     if (ready) continue;
     console.log(
@@ -142,10 +157,34 @@ async function doctor(cwd: string, options: ResourceOptions = {}): Promise<Packa
   return manifest;
 }
 
-function verify(cwd: string, needle: string): void {
+/**
+ * **The native target is looked at in its own bundle**, because the build makes that from the game's
+ * source rather than copying the web build: the web build inside it, `public/`, and the copied
+ * modules are left out, so a fresh web build cannot vouch for a stale native one.
+ */
+function verify(
+  cwd: string,
+  needle: string,
+  target: Target | null,
+  options: ResourceOptions,
+): void {
   const manifest = loadManifest(cwd);
-  const root = join(cwd, dirname(manifest.entry));
-  const found = walk(root).some((file) => readFileSync(file, 'utf8').includes(needle));
+  let root = join(cwd, dirname(manifest.entry));
+  let files: string[];
+  if (target === 'native-linux-x64') {
+    root = join(outFor(cwd, target, options), executableName(manifest), 'app');
+    if (!existsSync(root)) {
+      throw new Error(
+        `verify: there is no native build at ${root}; \`drift-package build ` +
+          '--target=native-linux-x64` makes one.',
+      );
+    }
+    const skip = new Set([join(root, 'public'), join(root, 'node_modules')]);
+    files = walk(root).filter((file) => ![...skip].some((dir) => file.startsWith(`${dir}/`)));
+  } else {
+    files = walk(root);
+  }
+  const found = files.some((file) => readFileSync(file, 'utf8').includes(needle));
   if (!found) {
     throw new Error(
       `verify: "${needle}" is in no file under ${root}. That is what a build that did not rerun ` +
@@ -250,7 +289,13 @@ async function writeSteamScripts(
 
   const outDir = outFor(cwd, target, options);
   const content =
-    target === 'linux-x64' ? 'linux-unpacked' : target === 'win-x64' ? 'win-unpacked' : 'mac';
+    target === 'native-linux-x64'
+      ? executableName(manifest)
+      : target === 'linux-x64'
+        ? 'linux-unpacked'
+        : target === 'win-x64'
+          ? 'win-unpacked'
+          : 'mac';
   const scripts = depotScripts({
     appId: manifest.steam.appId,
     depotId,
@@ -340,7 +385,9 @@ try {
   } else if (command === 'verify') {
     const arg = rest.find((entry) => entry.startsWith('--contains='));
     if (arg === undefined) throw new Error('verify needs --contains=<string>');
-    verify(cwd, arg.slice('--contains='.length));
+    const asked = rest.find((entry) => entry.startsWith('--target='));
+    const target = asked === undefined ? null : (asked.slice('--target='.length) as Target);
+    verify(cwd, arg.slice('--contains='.length), target, resources);
   } else if (command === 'run') {
     process.exitCode = await run(cwd, resources);
   } else if (command === 'bootstrap') {

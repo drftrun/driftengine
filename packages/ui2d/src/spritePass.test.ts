@@ -124,7 +124,7 @@ function registered(): {
 } {
   const pass = createSpritePass({ capacity: 16, slots: 4, label: 'test' });
   const { gl, calls } = recordingGl();
-  pass.init?.({ backend: 'webgl2', gl, clipCorrection: IDENTITY });
+  pass.init?.({ backend: 'webgl2', gl, clipCorrection: IDENTITY, depthCorrection: IDENTITY });
   return { pass, gl, calls };
 }
 
@@ -307,7 +307,7 @@ describe('texture slots', () => {
     const pass = createSpritePass({ capacity: 4, slots: 2 });
     pass.setTexture(0, IMAGE);
     const { gl, calls } = recordingGl();
-    pass.init?.({ backend: 'webgl2', gl, clipCorrection: IDENTITY });
+    pass.init?.({ backend: 'webgl2', gl, clipCorrection: IDENTITY, depthCorrection: IDENTITY });
     /* Two uploads: the pass's own white texel, and the one that was waiting. */
     const uploads = named(calls, 'texImage2D');
     expect(uploads).toHaveLength(2);

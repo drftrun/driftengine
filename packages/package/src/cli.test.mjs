@@ -93,3 +93,41 @@ test('--project points the whole command at another directory', () => {
   assert.match(run(['doctor', `--project=${dir}`], elsewhere), /ok: Title/);
   assert.match(run(['verify', '--contains=BUILD_MARKER_42', `--project=${dir}`], elsewhere), /ok/);
 });
+
+/*
+ * **The native target needs nothing of the machine and one thing of the game.** It ships the Node
+ * that runs the build, so no runtime is fetched for it; it needs the host installed in the game, and
+ * the desktop shell's badge is not drawn there. All three are printed where the other targets' needs
+ * are, before a build.
+ */
+const native = { ...base, targets: ['native-linux-x64'], native: { entry: 'src/native.mjs' } };
+
+test('doctor names the host a native build needs, and what it will not do, and no Electron', () => {
+  const out = run(['doctor'], project(native));
+  assert.match(out, /native-linux-x64: signing none/);
+  assert.match(out, /native-linux-x64: .*npm install @driftengine\/native-host@\d+\.\d+\.\d+/);
+  assert.match(out, /native-linux-x64: no engine badge/);
+  assert.doesNotMatch(out, /Electron runtime/);
+});
+
+test('doctor refuses a native build that turns WebGPU off', () => {
+  const off = { ...native, backend: { webgpu: 'off', allowSoftwareRenderer: false } };
+  assert.throws(() => run(['doctor'], project(off)), /WebGPU alone/);
+});
+
+/*
+ * **The native bundle is made from the game's source by the build, not copied from its web build**,
+ * so a fresh web build says nothing about it: the web build is under `public/` and is not looked at.
+ */
+test('verify looks inside the native bundle when that target is named, not at the web build in it', () => {
+  const dir = project(native);
+  const args = ['verify', '--contains=BUILD_MARKER_42', '--target=native-linux-x64'];
+  assert.throws(() => run(args, dir), /no native build/);
+  const app = join(dir, 'out', 'native-linux-x64', 'title', 'app');
+  mkdirSync(join(app, 'public'), { recursive: true });
+  writeFileSync(join(app, 'public', 'index.html'), 'BUILD_MARKER_42');
+  writeFileSync(join(app, 'game.mjs'), 'a build from before the change');
+  assert.throws(() => run(args, dir), /BUILD_MARKER_42/);
+  writeFileSync(join(app, 'game.mjs'), 'BUILD_MARKER_42');
+  assert.match(run(args, dir), /ok/);
+});

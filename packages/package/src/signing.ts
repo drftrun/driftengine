@@ -63,14 +63,14 @@ export function planSigning(
   env: Readonly<Record<string, string | undefined>>,
   platform: BuildHost,
 ): SigningPlan {
-  if (target === 'linux-x64') {
+  if (target === 'linux-x64' || target === 'native-linux-x64') {
     return {
       ...HOST_SIGNED,
       mode: 'none',
       notarise: false,
       /* No signature is expected of a Linux artifact by anything that runs one. An AppImage can
          carry a detached GPG signature and nothing checks it by default, so producing one would be
-         ceremony rather than protection. */
+         ceremony rather than protection. The native host's archive is the same case. */
       reason: 'Linux artifacts are not signed; nothing on the platform checks one',
     };
   }

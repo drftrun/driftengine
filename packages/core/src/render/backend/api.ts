@@ -761,7 +761,25 @@ export type RendererApi = Omit<
   updateMesh(mesh: MeshHandle, positions: Float32Array, normals?: Float32Array): void;
 
   /** Draw a handle this renderer made. Passing one from the other backend is a caller error. */
-  drawMesh(mesh: MeshHandle, model: ReadonlyMat4, depthLayer?: number, tint?: Vec3 | null): void;
+  drawMesh(
+    mesh: MeshHandle,
+    model: ReadonlyMat4,
+    depthLayer?: number,
+    tint?: Vec3 | null,
+    /**
+     * Where this mesh's surface was last frame, for a reconstruction's motion target.
+     *
+     * **Only a reconstruction reads it**, and only on WebGPU: it is what turns a moving object's
+     * stale history from a smear into a reprojection. A draw that says nothing gets the camera's
+     * motion, derived from the depth, which is exactly right for anything that did not move and
+     * wrong in proportion to how far a mover moved. Null and omitted mean the same thing.
+     *
+     * It is the *model* matrix this mesh was drawn with last frame, not a velocity: the pass
+     * transforms each vertex twice and lets the perspective divide do the rest, so a rotation and a
+     * scale are as correct as a translation.
+     */
+    previousModel?: ReadonlyMat4 | null,
+  ): void;
 
   /** Release the geometry behind a handle. */
   disposeMesh(mesh: MeshHandle): void;
@@ -800,3 +818,26 @@ export type RendererApi = Omit<
 
 /** Which backend is actually drawing. Reported, never inferred. */
 export type RenderBackend = 'webgl2' | 'webgpu';
+
+/**
+ * Whether this backend can be driven from buffers the GPU itself wrote.
+ *
+ * **A fact about the backend, not a method on this surface, and that is the finding rather than
+ * the shortcut.** Indirect execution needs a render or compute pass encoder, and both are already
+ * in the hands of the code that would use them: `PassContext` hands a contributed pass the
+ * `GPURenderPassEncoder`, and `ComputeDefinition.dispatch` hands a definition the
+ * `GPUComputePassEncoder` while saying in as many words that the workgroup count is the
+ * definition's and does not cross this surface. A `drawIndexedIndirect` here would be a second
+ * way to reach an encoder a caller already holds.
+ *
+ * So what is missing is not a verb. It is an answer to *may I*, which a GPU-driven pipeline has
+ * to ask before it builds an argument buffer nothing can consume.
+ *
+ * **WebGL2 is a refusal rather than an omission.** It has no compute stage to write an argument
+ * buffer and no indirect draw to read one. Emulating it means reading the buffer back to the
+ * processor and issuing the draws from there, which is slower than the ordinary path it would be
+ * pretending to replace — so this reports false and the GPU-driven pipeline is WebGPU-only.
+ */
+export function indirectSupport(backend: 'webgl2' | 'webgpu'): boolean {
+  return backend === 'webgpu';
+}

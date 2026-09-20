@@ -52,9 +52,16 @@ entry matters more than the two above it. `demo/dev/public/fonts/latin/atlas.png
 of the original outlines, so each carries its original's licence.
 
 - **DejaVu Sans** — `latin/`. **Bitstream Vera License**, with the DejaVu changes themselves in the
-  public domain. Free to use, copy, modify and distribute; the licence text must travel with it.
+  public domain. Free to use, copy, modify and distribute; the licence text must travel with it,
+  and it does: `latin/LICENSE-DejaVu.txt`, beside the atlas.
 - **Noto Sans Arabic** — `arabic-run/`. **SIL Open Font License 1.1**, which permits derivatives and
-  requires the copyright notice and licence to accompany them.
+  requires the copyright notice and licence to accompany them; both are in
+  `arabic-run/LICENSE-NotoSansArabic.txt`, beside the atlas.
+
+**Both texts were missing until 2026-09-20**, and this document named the obligation for months
+while the tree did not meet it — the atlases were committed and their licences were not. Pointing
+at `/usr/share/doc/...` is a path on one Debian machine and a URL is a promise about somebody
+else's server; neither travels with a clone. `scripts/packages.test.mjs` asserts the pair now.
 
 Only the glyphs the demo draws are baked, which is why each atlas is tens of kilobytes rather than
 megabytes. `demo/dev/public/fonts/README.md` names the exact source file, the Debian package it came
@@ -89,6 +96,43 @@ _Assetto Corsa_ and _Kunos Simulazioni_ are trademarks of Kunos Simulazioni S.r.
 _Autodesk_ are trademarks of Autodesk, Inc. This engine is not affiliated with, endorsed by, or
 connected to either. The formats are named descriptively, because naming what a reader reads is the
 only way to say what it does.
+
+## The city at dusk
+
+`demo/city/` owes nothing to anybody, and says so because a picture of a real city invites the
+question. Every block, building, window, sign and street light is generated from one seed by code
+written for this repository; no model, texture, photograph, map data or code came from anywhere.
+What it follows is public history rather than anybody's expression: the block and street widths of
+the Commissioners' Plan of 1811, the setback rule of the 1916 Zoning Resolution, and the look of the
+city's buildings at blue hour. No street, building or place in it is a real one.
+
+## The models DriftCapture runs
+
+A capture turns video into a scene with six published models, each chosen because its code **and**
+its weights are licensed so that a game can ship them: the Apache 2.0 licence throughout.
+`tools/capture-weights/manifest.json` pins each to a commit and a SHA-256, and records the answer to
+whether its card attaches its training datasets' terms to the weights — none does.
+
+| Model                       | Upstream                                                         | Weights, code    | Copyright                                                                                                       |
+| --------------------------- | ---------------------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Depth Anything 3 Small**  | https://huggingface.co/depth-anything/DA3-SMALL                  | Apache 2.0, both | ByteDance Ltd. and its affiliates                                                                               |
+| **Depth Anything 3 Base**   | https://huggingface.co/depth-anything/DA3-BASE                   | Apache 2.0, both | ByteDance Ltd. and its affiliates                                                                               |
+| **Depth Anything V2 Small** | https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf | Apache 2.0, both | The University of Hong Kong and TikTok; the Transformers layout by The HuggingFace Team                         |
+| **MobileSAM**               | https://github.com/ChaoningZhang/MobileSAM                       | Apache 2.0, both | TinyViT, its image encoder, Microsoft (MIT upstream); its prompt encoder and mask decoder, Meta Platforms, Inc. |
+| **SAM 2.1 tiny**            | https://huggingface.co/facebook/sam2.1-hiera-tiny                | Apache 2.0, both | Meta Platforms, Inc. and affiliates                                                                             |
+| **OWLv2 base patch16**      | https://huggingface.co/google/owlv2-base-patch16-ensemble        | Apache 2.0, both | Google AI and The HuggingFace Team                                                                              |
+
+**What was taken.** Each model's architecture, which DriftCapture's definitions follow layer for
+layer so that the published weights load into them by name; the code each is written from is pinned
+in the manifest beside the weights. **What is not distributed.** Any weight. The manifest records
+where each file is and what it hashes to; `tools/capture-weights/fetch.mjs` puts it under `models/`,
+which `.gitignore` covers, and a game that ships a converted model ships it with that model's
+licence and this attribution.
+
+**What was refused, and why.** The larger Depth Anything models, VGGT, DUSt3R and MASt3R, SAM 3 and
+the Marigold intrinsics models are non-commercial, gated, or carry use-based terms that would travel
+into a game that shipped one. A model is admitted here on its licence before it is judged on its
+output, because a better reconstruction under terms a consumer cannot accept is not an improvement.
 
 ## What is deliberately not listed here
 

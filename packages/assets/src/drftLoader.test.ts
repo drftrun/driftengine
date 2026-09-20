@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { DEFAULT_UPLOAD_MS_PER_FRAME, isDocumentResponse, mayBeginMore } from './uploadBudget.ts';
 import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP } from '@driftengine/drft';
 import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
@@ -444,4 +444,102 @@ test('a fit still fits when it is asked for one', async () => {
 
   /* Two metres across and two tall, into a one metre box: a half scale either way. */
   expect(loader.placement?.scale).toBeCloseTo(0.5, 6);
+});
+
+/**
+ * **The engine's own container format was the one loader with no way in.**
+ *
+ * `@driftengine/audio` has taken a `FetchLike` since it was written — `AudioRegistry` and
+ * `readManifest` both default one to `fetch` — while the loader for `.drft`, the format this
+ * engine defines, reached for the global. A consumer serving models from a service worker, a
+ * packed archive, a memory map or a test fixture had no seam and had to shadow a global to get
+ * one. Found by the Wave 5A platform audit; `AGENTS.md` has required the seam all along.
+ */
+test('a model is fetched through the capability rather than the global', async () => {
+  const asked: string[] = [];
+  const global = vi.fn(() => Promise.reject(new Error('the global must not be reached')));
+  vi.stubGlobal('fetch', global);
+
+  try {
+    const loader = new DrftLoader(fakeRenderer(), {
+      fetchImpl: (url) => {
+        asked.push(url);
+        /* 404 rather than a container: this is about the route, and `consume` has its own tests. */
+        return Promise.resolve(new Response(null, { status: 404 }));
+      },
+    });
+    await loader.load('archive://car.drft', { fit: 'none' });
+
+    expect(asked, 'the supplied implementation carried the request').toEqual([
+      'archive://car.drft',
+    ]);
+    expect(global, 'and the global was never touched').not.toHaveBeenCalled();
+    expect(loader.progress.phase, 'a 404 is an absent model, not a failed one').toBe('absent');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+/**
+ * **A model's images reach the GPU as their author wrote them.**
+ *
+ * `createImageBitmap` premultiplies unless it is told not to, and colour-manages unless it is told
+ * not to. Premultiplied, a texel with no alpha has no colour left, and the upload into a
+ * straight-alpha texture divides back out to a rounded value. So every cutout, decal and emblem
+ * lost the colour its author padded past its edge, and filtering then pulled black into the edge.
+ * Measured in Chrome on a PNG holding every colour at every alpha, decoded and copied into a
+ * texture: 98,463 of 196,608 channel values came back different from what was written, and none
+ * did with `premultiplyAlpha: 'none'`. Colour management rewrites the values of a normal
+ * or ORM map, which are not colours. glTF, which these assets are baked from, says colour
+ * metadata in an image is to be ignored. `imageTexels.ts` already asked for both; the loader did
+ * not.
+ */
+test('every image decodes with straight alpha and no colour conversion, preview and raw included', async () => {
+  const asked: (ImageBitmapOptions | undefined)[] = [];
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn((_source: unknown, options?: ImageBitmapOptions) => {
+      asked.push(options);
+      return Promise.resolve({ width: 4, height: 4, close: () => {} });
+    }),
+  );
+  /* A raw texture is built into an `ImageData`, which Node does not have. */
+  vi.stubGlobal(
+    'ImageData',
+    class {
+      constructor(
+        readonly data: Uint8ClampedArray,
+        readonly width: number,
+        readonly height: number,
+      ) {}
+    },
+  );
+  try {
+    const loader = new DrftLoader(fakeRenderer(), { texturePreview: 2 });
+    const drft = writeDrft({
+      head: { name: 'images' },
+      meshes: [triangle()],
+      materials: [material({ name: 'painted', albedo: 0, normalMap: 1 })],
+      textures: [
+        { name: 'albedo.png', codec: CODEC_PNG, width: 4, height: 4, bytes: new Uint8Array(8) },
+        /* Already no larger than the preview asks, so its preview is a full decode. */
+        { name: 'normal.jpg', codec: CODEC_JPEG, width: 2, height: 2, bytes: new Uint8Array(8) },
+        { name: 'blank', codec: CODEC_RAW, width: 1, height: 1, bytes: new Uint8Array(4) },
+      ],
+    });
+    await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    /* Three sharp decodes and two previews: a raw texture is at its full size already. */
+    /* Each image twice, a preview and the sharp one; a raw texture's preview is the image itself. */
+    expect(asked.length).toBe(6);
+    for (const options of asked) {
+      expect(options?.premultiplyAlpha).toBe('none');
+      expect(options?.colorSpaceConversion).toBe('none');
+    }
+    /* And the one preview that has to shrink still asks to be small. */
+    expect(asked.filter((options) => options?.resizeWidth === 2).length).toBe(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

@@ -76,6 +76,7 @@ export class WindStreakRenderer {
   /** Refilled per call rather than allocated; this is a per-frame path. */
   private readonly resolved = createResolvedWindStreaks();
 
+  /** Answers whether it drew, which the renderer counts on its frame budget. */
   draw(
     gl: WebGL2RenderingContext,
     camera: FrameView,
@@ -84,7 +85,7 @@ export class WindStreakRenderer {
     tint: Vec3,
     /** True when the camera is below the waterline. */
     submerged = false,
-  ): void {
+  ): boolean {
     /* Chosen in `windStreakDraw.ts` so both backends show the same weather. */
     const settled = resolveWindStreaks(
       wind.speed,
@@ -95,7 +96,7 @@ export class WindStreakRenderer {
       submerged,
       this.resolved,
     );
-    if (!settled.visible) return;
+    if (!settled.visible) return false;
 
     const u = this.uniforms;
     gl.useProgram(this.program);
@@ -120,6 +121,7 @@ export class WindStreakRenderer {
     gl.enable(gl.CULL_FACE);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+    return true;
   }
 
   dispose(gl: WebGL2RenderingContext): void {

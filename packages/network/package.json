@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/network",
-  "version": "3.63.0",
+  "version": "4.0.0",
   "description": "A transport seam, rewind and replay, lockstep and an authoritative host, on the fixed-step loop",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,10 +27,10 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/entities": "3.63.0"
+    "@driftengine/entities": "4.0.0"
   },
   "devDependencies": {
-    "@driftengine/core": "3.63.0"
+    "@driftengine/core": "4.0.0"
   },
   "author": "Drift Technologies",
   "repository": {

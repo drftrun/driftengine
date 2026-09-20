@@ -102,7 +102,12 @@ async function loadSdfFont(renderer: RendererApi, dir: string): Promise<LoadedFo
   if (!atlasResponse.ok) {
     throw new Error(`sdf-text: ${dir}/atlas.png responded ${String(atlasResponse.status)}`);
   }
-  const bitmap = await createImageBitmap(await atlasResponse.blob());
+  /* Decoded as written: a distance is data, so neither a premultiply nor a colour conversion
+     may touch it. */
+  const bitmap = await createImageBitmap(await atlasResponse.blob(), {
+    premultiplyAlpha: 'none',
+    colorSpaceConversion: 'none',
+  });
   /*
    * `linear`, because a distance field is data rather than a picture — sRGB decode would
    * warp the very distances `median()` compares against 0.5. `mipmap: false` because

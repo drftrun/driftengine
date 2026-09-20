@@ -15,6 +15,13 @@ import type { ReadonlyVec3 } from 'gl-matrix';
  * So `heightAt` reads the *triangle*, and `heightfieldPatch` builds those same triangles, and a
  * test asserts each vertex against the query.
  *
+ * **And there is now a fourth surface, so the rule extends rather than changes.** Wave 4B stores
+ * heights as a `DTEX` layer, which quantises them — so a renderer reading the layer while a query
+ * reads the samples this class was built from differ by the format's tolerance, everywhere,
+ * permanently. `terrainTexture.ts` answers it the only way that holds: `terrainFromHeightLayer`
+ * builds a `Terrain` from the *decoded* samples, and everything reads that one object. The rule is
+ * unchanged — there is one surface — and what changed is where the numbers come from.
+ *
  * **The normal is the other way round on purpose.** A face normal is constant over a triangle and
  * jumps at every edge, so a field built from them is faceted, and — worse — two patches meeting at
  * a boundary shade differently along it, which reads as a crack that is not there. `normalAt` is a

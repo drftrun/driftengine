@@ -24,6 +24,7 @@ describe('staging on a filesystem that misreports identity', () => {
     backend: { webgpu: 'prefer', allowSoftwareRenderer: false },
     features: { clipExport: false, gamepad: true },
     targets: ['linux-x64'],
+    native: null,
     steam: { appId: null },
     android: { permissions: [], cleartextTraffic: false },
     splash: { show: true, minMs: 1400 },
