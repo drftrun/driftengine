@@ -343,6 +343,27 @@ test('ksAlphaRef is an alpha test, so it never becomes an opacity', () => {
   );
 
   const tested = kn5ToMeshes(painted('ksPerPixel', [['ksAlphaRef', 0.35]], [], { alphaTested: 1 }));
+
+  /*
+   * **A tested material stating zero means the shader's own threshold, not "discard nothing".**
+   *
+   * Reported from a car whose interior and grille came out as hard black and white shards: eleven
+   * materials, every one `alphaTested` with `ksAlphaRef` present and set to 0 — `int_net`,
+   * `int_stitching`, `grille_a`, `hood_labels`. Read as a threshold of zero, every masked texel is
+   * drawn, which is exactly what a grille's holes and a seat's stitching look like when they are
+   * filled in. The comment above this line said the path was carried on the format's word rather
+   * than on evidence, and this is the evidence arriving.
+   */
+  const zeroRef = kn5ToMeshes(painted('ksPerPixelAT', [['ksAlphaRef', 0]], [], { alphaTested: 1 }));
+  expect(
+    zeroRef.materials[0]!.cutout,
+    'a tested material with a zero reference takes the default rather than discarding nothing',
+  ).toBeGreaterThan(0);
+
+  const absentRef = kn5ToMeshes(painted('ksPerPixelAT', [], [], { alphaTested: 1 }));
+  expect(absentRef.materials[0]!.cutout, 'and so does one that states none at all').toBeGreaterThan(
+    0,
+  );
   expect(tested.materials[0]!.cutout).toBeCloseTo(0.35, 6);
   expect(tested.materials[0]!.opacity, 'an alpha test is not a blend').toBe(1);
 });

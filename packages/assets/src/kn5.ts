@@ -430,6 +430,27 @@ export function readKn5Nodes(header: Kn5Header): { nodes: Kn5Node[]; meshes: Kn5
  * this stays only for the warning, which is the thing a name genuinely can answer: a shader
  * nobody here has seen is still geometry somebody wants.
  */
+/**
+ * What a tested material's alpha reference actually is, where it states zero or states none.
+ *
+ * **Zero means the shader's own threshold, not "discard nothing".** A material that says it is
+ * alpha tested has already said that something is meant to be discarded, so a reference of zero
+ * cannot be read literally without contradicting the flag beside it. Assetto Corsa's `*AT*` shaders
+ * carry a built-in reference and a material overrides it by stating one; stating zero is how a
+ * material says it is not overriding anything.
+ *
+ * **A half, because that is the convention those shaders were authored against**, and because the
+ * masks in question are two-valued: a grille's hole and a seat's stitching are cut out of a texture
+ * whose alpha is 0 or 255, so any threshold strictly inside the range separates them identically.
+ * What would make this wrong is a material whose mask is a soft gradient, which wants blending
+ * rather than a test and says so with `alphaBlendMode`.
+ */
+const DEFAULT_ALPHA_REFERENCE = 0.5;
+
+function alphaReference(stated: number): number {
+  return stated > 0 ? stated : DEFAULT_ALPHA_REFERENCE;
+}
+
 const KNOWN_SHADERS = new Set([
   'ksPerPixelAlpha',
   'ksWindscreen',
@@ -591,7 +612,7 @@ export function kn5ToMeshes(buffer: ArrayBuffer): Kn5Import {
        * rather than on evidence — stated plainly for the same reason the bone block is read past
        * rather than interpreted. What the change fixes is not this line but the one above it.
        */
-      cutout: material.alphaTested ? property('ksAlphaRef', 0) : 0,
+      cutout: material.alphaTested ? alphaReference(property('ksAlphaRef', 0)) : 0,
       albedo: bind(material, 'txDiffuse'),
       normalMap: bind(material, 'txNormal'),
       /*

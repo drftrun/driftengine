@@ -138,14 +138,6 @@ function recordingDevice() {
     }),
     createComputePipeline: pipeline,
     createRenderPipeline: pipeline,
-    /*
-     * **The scopes the blend pipeline is built in.** A real device reports a refused pipeline
-     * asynchronously rather than throwing, so the pass opens a scope round it and disowns the
-     * handle where one comes back. `refuse` is what a test sets to be that device.
-     */
-    refuse: null as { message: string } | null,
-    pushErrorScope: () => undefined,
-    popErrorScope: (): Promise<{ message: string } | null> => Promise.resolve(device.refuse),
     createBindGroup: (descriptor: GPUBindGroupDescriptor): StubGroup => ({
       label: descriptor.label ?? '',
       entries: [...descriptor.entries],
@@ -1909,8 +1901,14 @@ test('AND THE GLASS IS CULLED WITHOUT THE PYRAMID TOO, which reads phase two\u20
  */
 async function framesWithBlend(refuse: { message: string } | null) {
   const { device, encoder, commands } = recordingDevice();
-  /* The stub's own field, which `PassDevice` knows nothing about. See `recordingDevice`. */
-  (device as unknown as { refuse: { message: string } | null }).refuse = refuse;
+  /*
+   * **The scopes, attached here rather than on the stub.** A real device reports a refused
+   * pipeline asynchronously rather than throwing, and a device that offers no scopes at all is
+   * taken at its word — which is what the other tests exercise, and why they stay synchronous.
+   */
+  Object.assign(device, {
+    popErrorScope: (): Promise<{ message: string } | null> => Promise.resolve(refuse),
+  });
   const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), [
     { tint: [1, 1, 1], emissive: 0 },
   ]);

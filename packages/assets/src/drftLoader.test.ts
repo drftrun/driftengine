@@ -481,20 +481,28 @@ test('a model is fetched through the capability rather than the global', async (
 });
 
 /**
- * **A model's images reach the GPU as their author wrote them.**
+ * **A model's images reach the GPU premultiplied, and that is a reversal.**
  *
- * `createImageBitmap` premultiplies unless it is told not to, and colour-manages unless it is told
- * not to. Premultiplied, a texel with no alpha has no colour left, and the upload into a
- * straight-alpha texture divides back out to a rounded value. So every cutout, decal and emblem
- * lost the colour its author padded past its edge, and filtering then pulled black into the edge.
- * Measured in Chrome on a PNG holding every colour at every alpha, decoded and copied into a
- * texture: 98,463 of 196,608 channel values came back different from what was written, and none
- * did with `premultiplyAlpha: 'none'`. Colour management rewrites the values of a normal
- * or ORM map, which are not colours. glTF, which these assets are baked from, says colour
- * metadata in an image is to be ignored. `imageTexels.ts` already asked for both; the loader did
- * not.
+ * This test asserted the opposite, on a real measurement: `createImageBitmap` premultiplies unless
+ * told not to, the upload into a straight-alpha texture divides back out, and in Chrome, on a PNG
+ * holding every colour at every alpha, **98,463 of 196,608 channel values came back changed** and
+ * none did with `premultiplyAlpha: 'none'`. Every one of those numbers is still true.
+ *
+ * **What they did not measure is content.** An imported material's albedo routinely carries
+ * arbitrary bytes under its fully transparent texels, and premultiplying is what kept them out of
+ * the frame. Straight alpha let them through, and on an opaque draw nothing discards, so the
+ * shader takes `texel.rgb` whatever the alpha beside it says. A reported car came through with its
+ * interior, grille, mirrors and lamps as black and white shards; held frames in the showroom
+ * reproduced it on both backends, with the old container and the new, and restoring this one
+ * option drew it correctly.
+ *
+ * So the faithful choice per texel was the wrong choice per model, which is the shape worth
+ * keeping: a measurement over a synthetic image is not a measurement over the assets that exist.
+ *
+ * `colorSpaceConversion` is unchanged and stays off — a normal or ORM map holds values that are
+ * not colours, and glTF says an image's own colour metadata is ignored.
  */
-test('every image decodes with straight alpha and no colour conversion, preview and raw included', async () => {
+test('every image decodes premultiplied and with no colour conversion, preview and raw included', async () => {
   const asked: (ImageBitmapOptions | undefined)[] = [];
   vi.stubGlobal(
     'createImageBitmap',
@@ -534,7 +542,7 @@ test('every image decodes with straight alpha and no colour conversion, preview 
     /* Each image twice, a preview and the sharp one; a raw texture's preview is the image itself. */
     expect(asked.length).toBe(6);
     for (const options of asked) {
-      expect(options?.premultiplyAlpha).toBe('none');
+      expect(options?.premultiplyAlpha).toBe('premultiply');
       expect(options?.colorSpaceConversion).toBe('none');
     }
     /* And the one preview that has to shrink still asks to be small. */

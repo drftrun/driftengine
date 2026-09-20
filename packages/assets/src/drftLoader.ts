@@ -1162,20 +1162,37 @@ export function isRawCodec(codec: number): boolean {
  * the view would keep the whole file alive for as long as the image does.
  */
 /**
- * How every image a model carries is decoded: **straight alpha, and no colour conversion.**
+ * How every image a model carries is decoded: **premultiplied, and no colour conversion.**
  *
- * `createImageBitmap` premultiplies unless told not to, and the upload into a straight-alpha
- * texture then divides back out. A texel with no alpha comes back with no colour, so a cutout or an
- * emblem loses the colour its author padded past its edge, and filtering pulls black into the edge;
- * a partly transparent one comes back rounded to a coarser step. Colour management rewrites a normal
- * or ORM map, whose values are not colours at all, and glTF — which these assets are baked from —
- * says an image's own colour metadata is ignored. `render/imageTexels.ts` asks for the same two.
+ * **Straight alpha was tried in 4.0.0 and it is what this reverts.** The argument for it was that
+ * `createImageBitmap` premultiplies by default, so a texel with no alpha comes back with no colour
+ * and a cutout or an emblem loses the colour its author padded past its edge. That reasoning is
+ * sound about the pixels and wrong about the content: an imported material's albedo routinely
+ * carries arbitrary bytes under its fully transparent texels, and premultiplying was what kept
+ * them out of the frame.
  *
- * What it gives up: an albedo authored in a wide-gamut space with a profile saying so is read as
- * sRGB. The baker is where that conversion belongs, and it has no colour management either.
+ * **What it cost, reported and then reproduced.** A car came through with its interior, grille,
+ * mirrors and lamps as hard black and white shards. Held frames of one scene in the showroom, on
+ * one machine, at one frame: a model with 41 images drew clean and two with 64 and 65 drew shards,
+ * on **both** backends, with the old container and the new one alike — the count only decides how
+ * likely a model is to carry a masked texture at all. Restoring this one option drew the car
+ * correctly again.
+ *
+ * **Why an opaque material sees it.** Nothing discards on an opaque draw, so the shader takes
+ * `texel.rgb` whatever the alpha beside it says. Premultiplied, the bytes under a mask arrive as
+ * black and disappear into a dark surface; straight, they arrive as whatever the exporter left
+ * there. A material that genuinely means to cut out says so with its own alpha reference, which is
+ * what `kn5.ts`'s `alphaReference` now reads correctly.
+ *
+ * **What would make this wrong:** content authored *for* straight alpha, whose colour under a mask
+ * is meaningful and wanted — a decal atlas relying on the padding. Nothing measured here is that,
+ * and the day one arrives it wants the option per material rather than per engine.
+ *
+ * `colorSpaceConversion` stays off: a normal or ORM map holds values that are not colours, and
+ * glTF says an image's own colour metadata is ignored.
  */
 const AS_AUTHORED = {
-  premultiplyAlpha: 'none',
+  premultiplyAlpha: 'premultiply',
   colorSpaceConversion: 'none',
 } as const satisfies ImageBitmapOptions;
 

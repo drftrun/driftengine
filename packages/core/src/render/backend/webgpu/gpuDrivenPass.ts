@@ -723,6 +723,22 @@ export class GpuDrivenPass implements PassDefinition {
   private oitAccumView: GPUTextureView | null = null;
   private oitRevealView: GPUTextureView | null = null;
   private blendPipeline: GPURenderPipeline | null = null;
+  /**
+   * Whether the device has actually accepted the blend pipeline.
+   *
+   * **False until it says so, and 4.1.2 had this the wrong way round.** That version built the
+   * pipeline, bound a group against its layout, encoded the pass, and disowned the handle when the
+   * error scope came back — but a scope comes back on a microtask, after all three. The reporter's
+   * next run carried the new warning *and* every error it was meant to prevent: `GetBindGroupLayout`
+   * on an invalid pipeline, a bind group against an invalid layout, a `SetPipeline` with it, and a
+   * refused submit.
+   *
+   * Nothing touches the handle until this is true. The cost is no transparency for the frames
+   * before the device answers, which nobody sees; the alternative is a frame that draws nothing.
+   */
+  private blendUsable = false;
+  /** Builds the transparent raster's bindings, held until there is a pipeline worth binding to. */
+  private makeBlendGroup: (() => GPUBindGroup) | null = null;
   private blendResolvePipeline: GPURenderPipeline | null = null;
   private blendLodGroup: GPUBindGroup | null = null;
   private blendCompactGroup: GPUBindGroup | null = null;
@@ -1311,17 +1327,36 @@ export class GpuDrivenPass implements PassDefinition {
    * this came from was five errors that were all the same one.
    */
   private watchBlendPipeline(device: GPUDevice): void {
-    const refused = (error: GPUError | null, scope: string): void => {
-      if (error === null || this.blendPipeline === null) return;
-      this.blendPipeline = null;
-      this.blendRasterGroup = null;
-      console.warn(
-        `[driftengine] this device refused the gpu-driven blend pipeline (${scope}), so the ` +
-          `transparent pass is off and everything opaque still draws: ${error.message}`,
-      );
+    /*
+     * **A device with no error scopes is taken at its word.** Nothing can be asked of it, and
+     * refusing transparency forever on a device that never said no would be a worse failure than
+     * the one this guards: a frame that quietly loses its glass on hardware that could draw it.
+     */
+    if (typeof device.popErrorScope !== 'function') {
+      this.blendUsable = true;
+      if (this.makeBlendGroup !== null) this.blendRasterGroup = this.makeBlendGroup();
+      return;
+    }
+
+    let outstanding = 2;
+    const settle = (error: GPUError | null, scope: string): void => {
+      outstanding -= 1;
+      if (error !== null && this.blendPipeline !== null) {
+        this.blendPipeline = null;
+        this.blendRasterGroup = null;
+        this.makeBlendGroup = null;
+        console.warn(
+          `[driftengine] this device refused the gpu-driven blend pipeline (${scope}), so the ` +
+            `transparent pass is off and everything opaque still draws: ${error.message}`,
+        );
+      }
+      /* Usable only once both scopes have come back clean, and only then is anything bound. */
+      if (outstanding > 0 || this.blendPipeline === null) return;
+      this.blendUsable = true;
+      if (this.makeBlendGroup !== null) this.blendRasterGroup = this.makeBlendGroup();
     };
-    void device.popErrorScope().then((error) => refused(error, 'internal'));
-    void device.popErrorScope().then((error) => refused(error, 'validation'));
+    void device.popErrorScope().then((error) => settle(error, 'internal'));
+    void device.popErrorScope().then((error) => settle(error, 'validation'));
   }
 
   private buildPipelines(device: GPUDevice, format: GPUTextureFormat, samples: number): void {
@@ -1449,8 +1484,11 @@ export class GpuDrivenPass implements PassDefinition {
      * backends and as validation on others, and this is exactly the case where guessing which
      * costs the whole frame.
      */
-    device.pushErrorScope('validation');
-    device.pushErrorScope('internal');
+    /* Only where the device offers them: see `watchBlendPipeline` for the case where it does not. */
+    if (typeof device.pushErrorScope === 'function') {
+      device.pushErrorScope('validation');
+      device.pushErrorScope('internal');
+    }
     this.blendPipeline = device.createRenderPipeline({
       label: 'gpu-driven blend',
       layout: 'auto',
@@ -2059,41 +2097,45 @@ export class GpuDrivenPass implements PassDefinition {
 
     /* Everything the transparent raster reads: the same scene, the same frame, its own list. */
     /*
-     * Nothing to bind against where the device refused the pipeline, and the resolve below still
-     * wants building — it is a different pipeline and this one's absence is not its problem. An
-     * early return here would have taken it with us, which is the same shape of mistake as the
-     * cascade this guard exists to stop.
+     * Held rather than built, because whether the pipeline is usable is not known yet: the error
+     * scopes settle on a microtask and this runs synchronously. `watchBlendPipeline` runs it once
+     * the device has answered, and never if the answer was no.
      */
-    this.blendRasterGroup =
-      this.blendPipeline === null
-        ? null
-        : device.createBindGroup({
-            layout: this.blendPipeline.getBindGroupLayout(0),
-            entries: [
-              { binding: 0, resource: { buffer: this.viewProjBuffer as GPUBuffer } },
-              { binding: 1, resource: { buffer: this.blendList as GPUBuffer } },
-              { binding: 2, resource: { buffer: this.clusterMeta as GPUBuffer } },
-              { binding: 3, resource: { buffer: this.indices as GPUBuffer } },
-              { binding: 4, resource: { buffer: this.vertices as GPUBuffer } },
-              { binding: 5, resource: { buffer: this.transformBuffer as GPUBuffer } },
-              { binding: 6, resource: { buffer: this.materialOf as GPUBuffer } },
-              { binding: 7, resource: { buffer: this.materialTable as GPUBuffer } },
-              { binding: 8, resource: { buffer: this.frameBuffer as GPUBuffer } },
-              {
-                binding: 9,
-                resource: this.environmentView ?? (this.emptyEnvironmentView as GPUTextureView),
-              },
-              {
-                binding: 10,
-                resource: this.environmentSampler ?? (this.emptySampler as GPUSampler),
-              },
-              { binding: 11, resource: this.latentsView as GPUTextureView },
-              { binding: 12, resource: this.latentClamp as GPUSampler },
-              { binding: 13, resource: this.latentRepeat as GPUSampler },
-              { binding: 14, resource: { buffer: this.decodeNodes as GPUBuffer } },
-              { binding: 15, resource: { buffer: this.decodeWeights as GPUBuffer } },
-            ],
-          });
+    this.makeBlendGroup = (): GPUBindGroup =>
+      device.createBindGroup({
+        layout: (this.blendPipeline as GPURenderPipeline).getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.viewProjBuffer as GPUBuffer } },
+          { binding: 1, resource: { buffer: this.blendList as GPUBuffer } },
+          { binding: 2, resource: { buffer: this.clusterMeta as GPUBuffer } },
+          { binding: 3, resource: { buffer: this.indices as GPUBuffer } },
+          { binding: 4, resource: { buffer: this.vertices as GPUBuffer } },
+          { binding: 5, resource: { buffer: this.transformBuffer as GPUBuffer } },
+          { binding: 6, resource: { buffer: this.materialOf as GPUBuffer } },
+          { binding: 7, resource: { buffer: this.materialTable as GPUBuffer } },
+          { binding: 8, resource: { buffer: this.frameBuffer as GPUBuffer } },
+          {
+            binding: 9,
+            resource: this.environmentView ?? (this.emptyEnvironmentView as GPUTextureView),
+          },
+          {
+            binding: 10,
+            resource: this.environmentSampler ?? (this.emptySampler as GPUSampler),
+          },
+          { binding: 11, resource: this.latentsView as GPUTextureView },
+          { binding: 12, resource: this.latentClamp as GPUSampler },
+          { binding: 13, resource: this.latentRepeat as GPUSampler },
+          { binding: 14, resource: { buffer: this.decodeNodes as GPUBuffer } },
+          { binding: 15, resource: { buffer: this.decodeWeights as GPUBuffer } },
+        ],
+      });
+
+    /*
+     * And build it now where the device has already answered, which is the ordinary case: the
+     * verdict lands before this runs on a device with no error scopes, and after it on one that
+     * has them. Whichever order, exactly one of the two places builds the group.
+     */
+    if (this.blendUsable) this.blendRasterGroup = this.makeBlendGroup();
     this.blendResolveGroup = device.createBindGroup({
       layout: (this.blendResolvePipeline as GPURenderPipeline).getBindGroupLayout(0),
       entries: [
@@ -2579,7 +2621,8 @@ export class GpuDrivenPass implements PassDefinition {
          * Everything opaque has already been drawn by the time this runs, so what is lost is the
          * glass and not the city. See `watchBlendPipeline`.
          */
-        if (this.blendPipeline === null || this.blendRasterGroup === null) return;
+        if (!this.blendUsable || this.blendPipeline === null || this.blendRasterGroup === null)
+          return;
         const pass = encoder.beginRenderPass({
           label: 'gpu-driven blend draw',
           colorAttachments: [
