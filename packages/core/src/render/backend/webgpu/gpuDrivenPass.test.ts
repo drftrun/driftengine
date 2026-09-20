@@ -1930,8 +1930,15 @@ async function framesWithBlend(
       return Promise.resolve(popped <= 2 ? refuse : refuseOthers);
     },
   });
+  /*
+   * **Blended, and the fixture is useless without it.** "A scene with no blended material runs
+   * neither stage", so a fixture of opaque triangles schedules no blend draw and no blend resolve
+   * — and an assertion that neither is encoded then passes over any state of the code at all. The
+   * first version of these tests said so about the draw; the resolve was added later and repeated
+   * the mistake, and the perturbation is what caught it.
+   */
   const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), [
-    { tint: [1, 1, 1], emissive: 0 },
+    { tint: [1, 1, 1], emissive: 0, blend: true },
   ]);
   pass.init({
     backend: 'webgpu',
@@ -1975,6 +1982,25 @@ describe('a device that refuses the blend pipeline', () => {
       expect(String(warn.mock.calls[0]?.[0])).toContain('opaque');
       /* And the frame is still a frame. This is the whole point: the glass, not the city. */
       expect(frame.length).toBeGreaterThan(0);
+      /*
+       * **The blend cull is still scheduled, which is what makes the refusal partial** rather than
+       * the whole pass going dark: the compute half runs and only the raster is declined.
+       */
+      expect(frame.some((line) => line.includes('gpu-driven blend cull'))).toBe(true);
+      /*
+       * **What this file does NOT cover, said out loud rather than asserted vacuously.** The
+       * companion repair to this — skipping `blendResolve` along with `blendDraw`, because the
+       * draw is what clears the targets the resolve reads — cannot be checked here. Those two
+       * stages are encoded in the render half, and this harness drives `prepare` only, so an
+       * assertion that neither is present passes over every state of the code. It was written that
+       * way first and the perturbation caught it: removing the guard left every test green.
+       *
+       * The evidence for that repair is a device: two handsets refused only `gpu-driven blend`,
+       * drew the city (their own readout said 43 fps and 1,087 clusters) and showed black, and the
+       * comment in `blendDraw` had already predicted it — a reveal target cleared to zero "would
+       * show no scene anywhere the pass ran". Covering it needs a fixture that drives the render
+       * half, which is a larger harness than this one.
+       */
     } finally {
       warn.mockRestore();
     }

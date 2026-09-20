@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/editor",
-  "version": "4.1.3",
+  "version": "4.1.4",
   "description": "The model of a scene editor: a tree of what exists, an inspector over what is selected, and play-in-editor",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,9 +27,9 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/core": "4.1.3",
-    "@driftengine/entities": "4.1.3",
-    "@driftengine/ui2d": "4.1.3"
+    "@driftengine/core": "4.1.4",
+    "@driftengine/entities": "4.1.4",
+    "@driftengine/ui2d": "4.1.4"
   },
   "author": "Drift Technologies",
   "repository": {

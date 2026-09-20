@@ -2742,6 +2742,25 @@ export class GpuDrivenPass implements PassDefinition {
         return;
       }
       case 'blendResolve': {
+        /*
+         * **Skipped on the same verdict as the draw, because the draw is what clears what this
+         * reads.** This is the whole of the reported black frame, and the line above it predicted
+         * it: the blend pass clears reveal to one, meaning nothing has covered this pixel yet, and
+         * says in as many words that cleared to zero "the resolve would show no scene anywhere the
+         * pass ran, which is a black frame that looks like the blend working".
+         *
+         * 4.1.2 skipped the draw and took its clear with it, and left this running against textures
+         * nothing had written — a reveal of zero over every pixel, which is exactly "fully covered".
+         * Reported from a Galaxy S23 Ultra and then an Adreno 740, both of which refuse only
+         * `gpu-driven blend` and both of which drew the city into a buffer this then wiped: the
+         * page's own readout said 43 fps and 1,087 clusters drawn while the screen was black.
+         *
+         * There is nothing to composite when nothing was rasterised, so the honest answer is not to
+         * composite. **What would make it wrong** is a caller that expects this pass to have run for
+         * some other reason; nothing does, and the opaque image is already in `colourView` before
+         * this would load it.
+         */
+        if (!this.blendUsable) return;
         const pass = encoder.beginRenderPass({
           label: 'gpu-driven blend resolve',
           colorAttachments: [
