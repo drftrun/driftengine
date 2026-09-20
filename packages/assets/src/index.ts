@@ -199,4 +199,31 @@ export type { ClusterDag, ClusterLevel } from './bake/clusterLod.ts';
  * carries, and a field a consumer cannot bake is a pipeline with no input.
  */
 export { bakeObjectSdf } from './bake/sdf.ts';
+/*
+ * **The third time, and the one that got furthest before anybody noticed.** `bake/hlod.ts` builds
+ * the proxies and impostors `docs/CAPABILITIES.md` lists as shipping, it is tested, it is sized and
+ * it carries the licence — and until this line its only importer in the whole repository was its
+ * own test. A consumer following "the barrel is the contract" could read the row, believe the
+ * capability, and find no way to call it.
+ *
+ * The paragraph above says a demo boundary test caught the cluster case. Nothing caught this one,
+ * because no scene tried to bake an impostor — which is what the two paragraphs above are worth
+ * together: **a module reached only by its own test is not shipped, and no gate here asks.** Found
+ * by censusing what three consumers could adopt and what they could not.
+ */
+export {
+  IMPOSTOR_GUTTER,
+  IMPOSTOR_TILE,
+  PROXY_BASE_CELLS,
+  PROXY_MIN_CELLS,
+  buildImpostor,
+  buildProxy,
+  frameOf,
+  octahedralCoord,
+  octahedralDirection,
+  proxyResolution,
+  rasteriseView,
+  sampleImpostor,
+} from './bake/hlod.ts';
+export type { Impostor, ProxyCell, ViewFrame } from './bake/hlod.ts';
 export type { ObjectSdf } from './bake/sdf.ts';

@@ -231,8 +231,18 @@ export type {
  * A consumer who names neither pays nothing: `core-only` is measured with these exported and does
  * not move, because nothing in the forward path reaches them.
  *
- * It draws vertex colour, one directional term, a hemispheric ambient and an emissive add — not
- * the standard material. `DRAFT_SCENES`, never `SCENES`, until it draws the six published ones.
+ * **It draws vertex colour, one directional term, a hemispheric ambient and an emissive add — not
+ * the standard material**, and that is the sentence to read before reaching for it. There is no
+ * flag that routes `drawMesh` through this: a consumer packs a scene and contributes the pass, and
+ * `setMaterial`, `setSurfaceGrain`, `setSurfaceRelief` and a skin palette reach none of it. What
+ * would change that is a second copy of the standard material, which `gpuDrivenPass.ts` refuses in
+ * its own header.
+ *
+ * **The line that used to be here said `DRAFT_SCENES`, never `SCENES`, and it went stale the day
+ * the city was published.** `city` is in `SCENES` and says `pipelines: ['gpu-driven']`, so a host
+ * that cannot run the second pipeline reads that from the list rather than from a mount that
+ * refuses. The rule it was standing in for is the one above: what gates a scene is whether this
+ * pass can draw it, not which array it is in.
  */
 export {
   GPU_DRIVEN_LISTS,
