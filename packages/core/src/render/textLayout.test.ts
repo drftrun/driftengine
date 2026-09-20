@@ -1,7 +1,13 @@
 import { describe, expect, it, test } from 'vitest';
 
 import { GLYPH_HEIGHT } from '../geometry/pixelFont.ts';
-import { TEXT_CUBE, TextLayout, textHeightPx, textWidthPx } from './textLayout.ts';
+import {
+  TEXT_CUBE,
+  TextLayout,
+  deviceSnappedCellSize,
+  textHeightPx,
+  textWidthPx,
+} from './textLayout.ts';
 
 describe('the text layout', () => {
   /* The cells are what a backend uploads; the count is what it instances over. */
@@ -112,4 +118,55 @@ test('EVERY FACE OF THE TEXT CUBE IS WOUND SO ITS GEOMETRIC NORMAL IS THE ONE IT
       0,
     );
   }
+});
+
+/**
+ * A BITMAP GLYPH'S CELLS LAND ON WHOLE DEVICE PIXELS.
+ *
+ * **Reported from two consumers and this repository's own voxel sandbox**, as glyphs "eaten
+ * away" in a regular checkerboard while larger text in the same frame stayed solid. Nothing was
+ * being dropped: a 5x7 face draws every stroke one cell wide, so when a cell is a fractional
+ * number of device pixels the rasteriser gives some strokes four pixels and the next three, and
+ * a face whose whole legibility is uniform strokes comes apart. Measured on
+ * `demo/dev/overlay.html`: at a cell of 4.00 every stroke is four pixels, and at 3.75 the same
+ * string draws strokes of three and four with 18% more lit pixels than the larger cell.
+ *
+ * Two doors reach the same state, which is why it was reported as two unrelated faults. A
+ * caller may ask for a fractional cell outright — a consumer sizing a second line at 0.52 of
+ * its headline asks for 4.68 — or ask for a whole one that a device ratio makes fractional, a
+ * 3-pixel cell at a 1.25 ratio being 3.75 device pixels.
+ */
+test('A CELL IS A WHOLE NUMBER OF DEVICE PIXELS WHATEVER THE CALLER ASKS FOR', () => {
+  /* The size a consumer asks for when it sizes one line off another, at a ratio of 1. */
+  expect(deviceSnappedCellSize(4.68, 1280, 1280)).toBe(4);
+  /* Three CSS pixels on a 1.25 device ratio: whole to the caller, 3.75 on the grid. */
+  expect(deviceSnappedCellSize(3, 1280, 1600) * (1600 / 1280)).toBe(3);
+
+  /* The property itself, rather than the two cases above: whatever is asked, the cell the
+     shader is handed covers a whole number of device pixels. */
+  for (const ratio of [1, 1.25, 1.5, 2, 2.5, 3]) {
+    for (const asked of [3, 3.5, 4.68, 5, 6.25, 9, 11.4]) {
+      const snapped = deviceSnappedCellSize(asked, 1280, 1280 * ratio);
+      const device = snapped * ratio;
+      expect(
+        Math.abs(device - Math.round(device)),
+        `asked ${asked} at ratio ${ratio} draws a cell of ${device} device pixels`,
+      ).toBeLessThan(1e-6);
+      /* Never larger than asked, so a line a caller fitted to a box cannot overflow it. */
+      expect(snapped).toBeLessThanOrEqual(asked);
+    }
+  }
+});
+
+/**
+ * **A cell below one device pixel has no whole size to snap to**, and flooring it would be a
+ * line of text that vanishes rather than one that is slightly ragged. It passes through.
+ * A degenerate viewport or buffer does the same: this runs in the frame loop, where the honest
+ * answer to a number that makes no sense is the caller's own.
+ */
+test('A SUB-PIXEL CELL AND A DEGENERATE RATIO PASS THROUGH UNCHANGED', () => {
+  expect(deviceSnappedCellSize(0.6, 1280, 1280)).toBe(0.6);
+  expect(deviceSnappedCellSize(4, 0, 1280)).toBe(4);
+  expect(deviceSnappedCellSize(4, 1280, 0)).toBe(4);
+  expect(deviceSnappedCellSize(4, 1280, Number.NaN)).toBe(4);
 });

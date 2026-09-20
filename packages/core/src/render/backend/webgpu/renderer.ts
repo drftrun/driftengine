@@ -150,6 +150,7 @@ import {
   type GpuTextCube,
 } from './textPass.ts';
 import type { TextStyle } from '../../textLayout.ts';
+import { deviceSnappedCellSize } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
 import {
   createSdfTextBindGroup,
@@ -3179,7 +3180,13 @@ export class WebGPURenderer implements RendererApi {
     const v = this.textVerts;
     v.writeFloats(vertexSlot, at('uViewport'), [viewportWidth, viewportHeight]);
     v.writeFloats(vertexSlot, at('uOrigin'), [originX, originY]);
-    v.writeFloat(vertexSlot, at('uCellSize'), style.cellSize);
+    /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
+       decision is shared with WebGL2; only this binding is per-backend. See `textLayout.ts`. */
+    v.writeFloat(
+      vertexSlot,
+      at('uCellSize'),
+      deviceSnappedCellSize(style.cellSize, viewportWidth, this.surface.canvas.width),
+    );
     /* Far enough that a whole line barely converges, near enough that a turn reads as a turn. */
     v.writeFloat(vertexSlot, at('uDepth'), Math.max(viewportWidth, 600) * 1.4);
     v.writeFloat(vertexSlot, at('uReveal'), style.reveal);

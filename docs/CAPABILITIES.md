@@ -1148,7 +1148,7 @@ for the arithmetic on both backends. The gate is a WebGL2 debt.
 **The frame-graph deferral has come due.** §2.5 quoted `renderer.ts` at 3,574 lines and deferred
 the decision about a pass graph to whatever the WebGPU work concluded about that file. What it
 concluded was a second hand-ordered renderer. `renderer.ts` is now **7686 lines** and
-`webgpu/renderer.ts` is **14,409**, for 22,095 lines of pass order held by hand across two files.
+`webgpu/renderer.ts` is **14,416**, for 22,102 lines of pass order held by hand across two files.
 The WebGPU figure is rising rather than falling because every verb now carries both paths: the
 recording the graph replays and the direct calls `?graph=0` still uses. Both exist until the
 switch stops being reversible, which is an open decision in the design rather than an oversight.

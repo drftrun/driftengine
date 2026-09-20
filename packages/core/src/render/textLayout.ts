@@ -70,6 +70,60 @@ export function textHeightPx(cellSize: number): number {
   return GLYPH_HEIGHT * cellSize;
 }
 
+/**
+ * The cell size to draw at, so every cell of a bitmap glyph covers whole device pixels.
+ *
+ * **A 5x7 face draws every stroke exactly one cell wide, so a fractional cell is not a slightly
+ * softer glyph — it is a glyph whose strokes are different widths.** The rasteriser gives one
+ * column of cells four pixels and the next three, and a face carrying its legibility entirely in
+ * uniform strokes comes apart. Reported three times as text "eaten away" in a checkerboard while
+ * larger text in the same frame stayed solid, which is the size dependence this explains: a whole
+ * cell is uniform and a fractional one is not, and nothing about it is a dropped pixel.
+ *
+ * Two doors reach a fractional cell, which is why it was reported as unrelated faults. A caller
+ * asks for one outright, sizing a second line at a fraction of its headline; or asks for a whole
+ * one that the device ratio makes fractional, a 3-pixel cell at a 1.25 ratio being 3.75 on the
+ * grid. `viewportWidth` is whatever units the caller lays out in — CSS pixels for an overlay
+ * sized from `cssWidth`, device pixels for one sized from the canvas — and `bufferWidth` is the
+ * drawing buffer, so the ratio between them is exactly what turns one into the other.
+ *
+ * **What it gives up is the asked size.** The cell drawn is the largest whole number of device
+ * pixels that is not larger than the one asked for, so a string is drawn up to one device pixel
+ * per cell narrower than `textWidthPx` measures it. Down rather than to nearest, because a caller
+ * that fitted a line to a box measured it first: rounding up would draw a line wider than the box
+ * it was fitted to, and rounding down can only leave a gap.
+ *
+ * **`textWidthPx` and `RendererApi.textWidth` are deliberately left unsnapped**, and that is the
+ * cost rather than an oversight. Neither is handed a viewport, so neither can know whether the
+ * caller lays out in CSS pixels or device ones — and this ratio is exactly that question. A width
+ * is therefore an upper bound on what is drawn: a centred line sits up to half the shortfall off
+ * centre, at most half a device pixel per cell. Handing the measurement a viewport would fix it
+ * and is a change to the public surface rather than to a patch.
+ *
+ * **What would make it wrong** is a face whose strokes are not cell-aligned — an SDF atlas, where
+ * the glyph is a distance field and a fractional size is exactly what it is built to serve.
+ * `sdfTextLayout.ts` is that path and does not come through here.
+ */
+export function deviceSnappedCellSize(
+  cellSize: number,
+  viewportWidth: number,
+  bufferWidth: number,
+): number {
+  const ratio = bufferWidth / viewportWidth;
+  if (!Number.isFinite(ratio) || ratio <= 0) return cellSize;
+  const device = cellSize * ratio;
+  if (!Number.isFinite(device)) return cellSize;
+  /*
+   * The tolerance is against float error rather than a fudge: a ratio of 1 turns an asked 4 into
+   * 3.9999999999999996 often enough, and flooring that would shrink every whole cell on every
+   * ordinary display by a pixel — the change doing most harm where there was nothing to fix.
+   */
+  const whole = Math.floor(device + 1e-6);
+  /* Below one device pixel there is no whole size to snap to, and flooring would draw nothing. */
+  if (whole < 1) return cellSize;
+  return whole / ratio;
+}
+
 export class TextLayout {
   /** Reused every upload; text changes far too often to allocate per change. */
   readonly cells = new Float32Array(MAX_CELLS * 2);

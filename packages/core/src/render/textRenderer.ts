@@ -1,5 +1,5 @@
 import type { TextStyle } from './textLayout.ts';
-import { MAX_CELLS, TEXT_CUBE, TextLayout } from './textLayout.ts';
+import { MAX_CELLS, TEXT_CUBE, TextLayout, deviceSnappedCellSize } from './textLayout.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { TEXT_FRAG, TEXT_VERT } from './shaders/text.ts';
 
@@ -116,7 +116,13 @@ export class TextRenderer {
 
     setVec2(gl, this.uniforms['uViewport'], viewportWidth, viewportHeight);
     setVec2(gl, this.uniforms['uOrigin'], originX, originY);
-    setFloat(gl, this.uniforms['uCellSize'], style.cellSize);
+    /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
+       decision is shared with WebGPU; only this binding is per-backend. See `textLayout.ts`. */
+    setFloat(
+      gl,
+      this.uniforms['uCellSize'],
+      deviceSnappedCellSize(style.cellSize, viewportWidth, gl.drawingBufferWidth),
+    );
     // Far enough that a whole line barely converges, near enough that a rotating character
     // reads as turning rather than shearing.
     setFloat(gl, this.uniforms['uDepth'], Math.max(viewportWidth, 600) * 1.4);
