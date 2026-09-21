@@ -95,6 +95,49 @@ function build<T>(count: number, make: (data: MeshData) => T, refs: WeakRef<obje
 const alive = (refs: readonly WeakRef<object>[]): number =>
   refs.filter((ref) => ref.deref() !== undefined).length;
 
+/**
+ * Collect until nothing in `refs` survives, or give up and let the assertion report what did.
+ *
+ * **`settle` collects a fixed four rounds, and four is a guess.** These tests ask whether a
+ * reference is *collectable*, which is a fact about the code, by observing whether it has *been
+ * collected*, which is a fact about V8's timing — and the two agree only once the collector has
+ * got round to it. Four rounds is enough almost always, and when it is not the suite goes red
+ * with "expected 5 to be 0" against code nobody touched. Measured at roughly one run in two on
+ * this machine, and it was read as an unrelated flake four times in one day before it was named.
+ *
+ * Waiting on the condition instead of on a count of rounds costs nothing when the answer is
+ * already zero, which is the ordinary case, and removes the timing from the claim. **It does not
+ * weaken the assertion**: a reference that is genuinely retained is never collected however long
+ * this waits, so a real leak still fails — it simply takes the bound to say so. The control below,
+ * which asserts an unfinished upload *does* hold its source, is deliberately not routed through
+ * here for the same reason: it is the case that must not be waited into passing.
+ */
+async function collected(refs: readonly WeakRef<object>[], rounds = 40): Promise<number> {
+  for (let round = 0; round < rounds; round += 1) {
+    /*
+     * **Collect in a turn that has not dereferenced anything, and read in a later one.**
+     *
+     * `deref` keeps its target alive for the rest of the turn it is called in — that is the
+     * specified behaviour, so that a reference read once cannot vanish mid-expression. `alive`
+     * is a `deref` over every reference, so a loop that reads and then collects is asking the
+     * collector to free what it has just pinned, and whether it manages depends on where the
+     * turn boundary fell. That is why this failed about one run in three at two hundred rounds
+     * while the code under test was releasing everything correctly: the bound was never the
+     * problem, the order was.
+     *
+     * Two collections because the first clears the reference and the second reclaims what it
+     * pointed at, and the read is a turn later again so nothing this function does is holding
+     * anything when the answer is taken.
+     */
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    collect();
+    collect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (alive(refs) === 0) return 0;
+  }
+  return alive(refs);
+}
+
 /** A device that keeps nothing it is handed, so whatever survives is the mesh's doing. */
 const DEVICE = {
   limits: { maxBufferSize: 2 ** 32 },
@@ -107,8 +150,9 @@ describe('a WebGPU mesh', () => {
     const refs: WeakRef<object>[] = [];
     const before = await heldBytes();
     const meshes = build(MESHES, (data) => createGpuMesh(DEVICE, data), refs);
+    const remaining = await collected(refs);
     const after = await heldBytes();
-    expect(alive(refs), 'source arrays held by live meshes').toBe(0);
+    expect(remaining, 'source arrays held by live meshes').toBe(0);
     /* Nor the interleaved rows, which are the upload's scratch and not the mesh's. */
     expect(after - before).toBeLessThan(MB);
     expect(meshes.length).toBe(MESHES);
@@ -118,8 +162,9 @@ describe('a WebGPU mesh', () => {
     const refs: WeakRef<object>[] = [];
     const before = await heldBytes();
     const meshes = build(MESHES, (data) => createGpuMesh(DEVICE, data, true), refs);
+    const remaining = await collected(refs);
     const after = await heldBytes();
-    expect(alive(refs), 'source arrays held by live meshes').toBe(0);
+    expect(remaining, 'source arrays held by live meshes').toBe(0);
     const rows = MESHES * VERTICES * ROW_BYTES;
     expect(after - before).toBeGreaterThan(rows - MB);
     expect(after - before).toBeLessThan(rows + MB);
@@ -139,8 +184,9 @@ describe('a WebGPU mesh', () => {
       },
       refs,
     );
+    const remaining = await collected(refs);
     const after = await heldBytes();
-    expect(alive(refs), 'source arrays held by finished uploads').toBe(0);
+    expect(remaining, 'source arrays held by finished uploads').toBe(0);
     expect(after - before).toBeLessThan(MB);
     expect(handles.every((handle) => handle.mesh.complete)).toBe(true);
   });

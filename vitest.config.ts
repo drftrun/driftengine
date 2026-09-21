@@ -102,6 +102,29 @@ export default defineConfig({
       'editor/src/**/*.test.ts',
       'tools/**/*.test.ts',
     ],
+    /*
+     * **Thirty seconds, because the default five is mis-set for this suite.**
+     *
+     * Vitest defaults a test to 5,000 ms. Measured on an idle twenty-four core machine, the
+     * slowest test here without a budget of its own takes **2,448 ms**, and under the load of one
+     * other suite running beside it the same test took **4,965 ms** and its neighbour timed out.
+     * Under two times headroom on the fastest machine anyone runs this on is not headroom: a build
+     * character has fewer cores, a colder cache and something else on it, and the failure is a red
+     * suite on a test nobody touched.
+     *
+     * Caught by running the suite six times rather than once. It failed twice, each time on a
+     * different test and neither of them the change under review, which is what an intermittent
+     * red looks like from the outside: unrelated, unreproducible, and easy to re-run past. The
+     * engine's own `docs:counts` refuses to write a count through a run like that, which is the
+     * house position on shipping over one.
+     *
+     * **What it costs** is that a genuinely hung test takes thirty seconds to say so instead of
+     * five, against a suite that runs in about seventy-five. **What would make it wrong** is using
+     * it to cover a test that has become slow: the files that legitimately run for a minute set
+     * their own budget at the call, which is the right place for a number that big, and this is a
+     * floor beneath the ones that never needed one.
+     */
+    testTimeout: 30_000,
     reporters: ['default', ['json', { outputFile: SUMMARY_FILE }]],
   },
 });

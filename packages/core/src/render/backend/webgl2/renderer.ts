@@ -218,6 +218,7 @@ import type { SdfTextStyle } from '../../sdfTextLayout.ts';
 import { MOTION_BLUR_MAX_UV, RUSH_REACH_UV } from '../../vertexDefaults.ts';
 import { OUTPUT_TRANSFORM_CODE } from '../../vertexDefaults.ts';
 import type { RenderBackend } from '../api.ts';
+import { deviceSnappedCellSize } from '../../textLayout.ts';
 import type { TextStyle } from '../../textLayout.ts';
 import { WindStreakRenderer } from '../../windStreakRenderer.ts';
 import type { WindStreakOptions } from '../../windStreakRenderer.ts';
@@ -3655,6 +3656,28 @@ export class WebGL2Renderer implements RendererApi {
     if (text.draw(viewportWidth, viewportHeight, originX, originY, style, timeSec)) {
       this.textBudget.ask();
     }
+  }
+
+  /**
+   * The cell size to draw a bitmap glyph at so every cell covers whole device pixels.
+   *
+   * **The caller snaps, and then measures and draws with the one number.** 4.1.4 applied this
+   * inside `drawText` instead, where `textWidthPx` could not see it — it takes no viewport and so
+   * cannot know the ratio — and every consumer went on laying out against the cell it asked for
+   * while the engine drew a smaller one. A centred line, a right-aligned column and a line fitted
+   * to a box broke together. Snapped here, the arithmetic and the picture cannot disagree.
+   *
+   * **It is on the renderer because only the renderer knows the second number.** `viewportWidth`
+   * is the caller's, and it already passes it to `drawText`; the drawing buffer is not on the
+   * shared surface and a game's text layout is a pure function over CSS pixels, so reaching it
+   * meant threading a canvas through an interface layer to a value the renderer was holding.
+   *
+   * The decision itself stays in `textLayout.ts` and only this binding is per backend, which is
+   * the 2026-08-13 rule: a cell already whole comes back untouched, and the snap is downward so a
+   * line fitted to a box can only leave a gap rather than overflow it.
+   */
+  snapTextCellSize(cellSize: number, viewportWidth: number): number {
+    return deviceSnappedCellSize(cellSize, viewportWidth, this.gl.drawingBufferWidth);
   }
 
   /** Width of the string this handle currently holds, in pixels at a given cell size. */

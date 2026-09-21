@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/tools",
-  "version": "4.2.1",
+  "version": "4.3.0",
   "description": "The editor panels a shipped game can carry, and the command stack that makes their edits undoable",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,11 +27,11 @@
   ],
   "sideEffects": false,
   "peerDependencies": {
-    "@driftengine/core": "4.2.1",
-    "@driftengine/editor": "4.2.1",
-    "@driftengine/network": "4.2.1",
-    "@driftengine/texture": "4.2.1",
-    "@driftengine/ui2d": "4.2.1"
+    "@driftengine/core": "4.3.0",
+    "@driftengine/editor": "4.3.0",
+    "@driftengine/network": "4.3.0",
+    "@driftengine/texture": "4.3.0",
+    "@driftengine/ui2d": "4.3.0"
   },
   "author": "Drift Technologies",
   "repository": {

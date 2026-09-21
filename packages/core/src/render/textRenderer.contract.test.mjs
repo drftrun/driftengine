@@ -36,14 +36,19 @@ test('THE CELL DRAWN IS THE CELL ASKED FOR, because a measured width is the only
 });
 
 test('AND THE SAME ON WEBGPU, because a size is a decision and not a binding', () => {
-  assert.match(
-    WEBGPU,
-    /at\('uCellSize'\), style\.cellSize\)/,
-    'the second backend draws the caller\u2019s cell too',
-  );
+  /*
+   * **Scoped to the cell upload rather than to the file, and it was the file until 4.3.0.**
+   * That version put `deviceSnappedCellSize` back into this module on purpose, in
+   * `snapTextCellSize` — the helper a *caller* uses to ask for whole-pixel strokes, which is the
+   * opposite of the thing guarded here. A ban on the identifier anywhere could not tell the two
+   * apart, so it failed on the change that completed the repair it was written for.
+   */
+  const upload = /at\('uCellSize'\),\s*([^,)]+)\)/.exec(WEBGPU);
+  assert.ok(upload, 'the WebGPU path uploads a cell size');
+  assert.match(upload[1], /style\.cellSize/, 'the second backend draws the caller\u2019s cell too');
   assert.doesNotMatch(
-    WEBGPU,
-    /deviceSnappedCellSize/,
+    upload[1],
+    /deviceSnapped/,
     'and does not snap what the first one stopped snapping',
   );
 });

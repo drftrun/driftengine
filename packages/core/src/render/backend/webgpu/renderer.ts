@@ -150,7 +150,7 @@ import {
   type GpuTextCube,
 } from './textPass.ts';
 import type { TextStyle } from '../../textLayout.ts';
-import { deviceSnappedOrigin } from '../../textLayout.ts';
+import { deviceSnappedCellSize, deviceSnappedOrigin } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
 import {
   createSdfTextBindGroup,
@@ -2998,6 +2998,11 @@ export class WebGPURenderer implements RendererApi {
 
   setPlate(text: GpuText, widthCells: number, heightCells: number, bottomCell: number): void {
     text.setPlate(widthCells, heightCells, bottomCell);
+  }
+
+  /** See `Renderer.snapTextCellSize`; only the drawing buffer differs. */
+  snapTextCellSize(cellSize: number, viewportWidth: number): number {
+    return deviceSnappedCellSize(cellSize, viewportWidth, this.surface.canvas.width);
   }
 
   textWidth(text: GpuText, cellSize: number): number {

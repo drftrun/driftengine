@@ -111,3 +111,38 @@ describe('the renderer surface', () => {
     }
   });
 });
+
+/**
+ * The snap a caller needs to draw a bitmap glyph on whole device pixels, pinned to the surface.
+ *
+ * **A consumer cannot compute this itself, which is why it is here rather than left to arithmetic.**
+ * `deviceSnappedCellSize` is exported and takes the ratio as two widths, but the second of them is
+ * the renderer's own drawing buffer, and `RendererApi` carries `cssWidth` and `cssHeight` and
+ * nothing about device pixels. So a consumer laying out text — which is a pure function over CSS
+ * pixels in every game on this engine — had to thread a canvas down through its interface layer to
+ * reach a number the renderer was already holding.
+ *
+ * It matters that the caller does the snapping rather than the draw: 4.1.4 imposed it, the
+ * measurement could not see it, and every centred line in every consumer went off centre at once.
+ * Snapped here and used for measuring, laying out and drawing, the picture and the arithmetic
+ * cannot disagree.
+ *
+ * Pinned as a value for the reason `governorDrives` above gives: derived with `Omit`, a public
+ * member is on the surface by accident of not being in the omit list, and a promise wants an
+ * assertion that names the member when it moves.
+ */
+const snapsTextCells: {
+  snapTextCellSize(cellSize: number, viewportWidth: number): number;
+} = {} as RendererApi;
+
+describe('the shared surface', () => {
+  it('lets a caller snap a text cell to whole device pixels', () => {
+    /*
+     * The compile-time half is `snapsTextCells` above. This half is what a reader can act on, and
+     * it asserts the prototype for the reason the governor's does: the derivation forces the
+     * second backend to declare the member, and only this says the first one answers it.
+     */
+    expect(Renderer.prototype).toHaveProperty('snapTextCellSize');
+    expect(snapsTextCells).toBeDefined();
+  });
+});

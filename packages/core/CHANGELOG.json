@@ -1,5 +1,16 @@
 [
  {
+  "version": "4.3.0",
+  "date": "2026-09-21",
+  "entries": [
+   {
+    "kind": "added",
+    "short": "RendererApi.snapTextCellSize, so a caller can draw a bitmap glyph on whole device pixels and measure the size it will actually get.",
+    "text": "**The snap 4.1.4 imposed and 4.2.0 made opt-in, now reachable from where text is actually laid out.**\n\n`deviceSnappedCellSize` has been exported since 4.2.0, but it takes the ratio as two widths and the second of them is the renderer's own drawing buffer. `RendererApi` carries `cssWidth` and `cssHeight` and nothing about device pixels, and a game's text layout is a pure function over CSS pixels — so a consumer that wanted whole-pixel strokes had to thread a canvas down through its whole interface layer to reach a number the renderer was already holding. Every consumer on this engine sizes text that way, so the export alone was not adoptable.\n\n```js\nconst cell = renderer.snapTextCellSize(available / cells, viewportWidth);\nconst width = textWidthPx(label, cell);\nconst x = (boxWidth - width) / 2;\nrenderer.drawText(text, viewportWidth, viewportHeight, x, y, { ...style, cellSize: cell }, now);\n```\n\n`viewportWidth` is the caller's own and it already passes it to `drawText`. Snap once on the line the cell is computed, and the width, the centring, the right edge and the row pitch all follow from the one number — the measurement and the picture cannot disagree, which is the property the imposed version could never have.\n\nThe decision stays in `textLayout.ts` with only the binding per backend: the cell drawn is the largest whole number of device pixels not larger than the one asked for, downward so a line fitted to a box can only leave a gap rather than overflow it, and a cell already whole comes back untouched. **What it gives up** is that a caller who does not ask still gets strokes of two widths on a fractional cell, which is the trade 4.2.0 chose deliberately.\n\nPinned on the shared surface by a test rather than left to the `Omit` derivation, for the reason `api.test.ts` records about the resolution governor: a public member is otherwise on the surface by accident of not being in the omit list, which is a poor way to make a promise."
+   }
+  ]
+ },
+ {
   "version": "4.2.1",
   "date": "2026-09-21",
   "entries": [
