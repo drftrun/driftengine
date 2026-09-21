@@ -73,6 +73,19 @@ export class PointShadowMap {
     return this.image.sourceRadius;
   }
 
+  /** Where the image was rendered from, not where the light is now. See the image. */
+  get originX(): number {
+    return this.image.originX;
+  }
+
+  get originY(): number {
+    return this.image.originY;
+  }
+
+  get originZ(): number {
+    return this.image.originZ;
+  }
+
   /** Whether this map holds an image worth sampling. False until a bake completes. */
   get hasBaked(): boolean {
     return this.image.hasBaked;

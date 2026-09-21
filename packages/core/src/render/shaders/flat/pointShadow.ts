@@ -15,7 +15,40 @@
 import { MAX_SHADOW_FILTER_TAPS } from '../../renderQuality.ts';
 import { OUTPUT_TRANSFORM_GLSL } from '../outputTransform.ts';
 
-export const POINTSHADOW_GLSL = `float pointShadow(
+export const POINTSHADOW_GLSL = `/**
+ * How much of one tap's occlusion survives its own penumbra.
+ *
+ * **How much of a shadow survives, as well as how soft it is.** A penumbra does not merely blur
+ * with distance from its caster, it *takes over*: far enough from the occluder, relative to how
+ * big the source is, every point on the receiver can see part of the flame and there is no umbra
+ * left at all. The shadow is gone, not blurry. Without it, two columns lit by a brazier threw
+ * full-strength edges fifteen metres across the terrace, and the gap between them read as a
+ * spotlight cone with straight sides rather than as a fire.
+ *
+ * **Per tap, and it was once for the whole filter, taken from the centre tap alone.** That is a
+ * blocker search of one sample standing in for twelve, and it is right wherever the taps agree —
+ * inside an umbra they all find the same occluder, so this returns exactly what the shared value
+ * did, and the umbra is unchanged to the bit. It is wrong exactly where they disagree, which is
+ * the silhouette: there the centre ray *misses*, so the search reports no occluder, the spread is
+ * zero and the fade is switched off — while the taps that do land on the caster then draw at full
+ * strength. What that paints is a hard one-texel line around a shadow whose interior has
+ * correctly faded to nothing.
+ *
+ * Reported as shadows "faded out but NOT shadow outlines, generating long lines around the
+ * world", and on a brazier as a bare square outline lying on the ground with no shadow inside it.
+ *
+ * **What it costs** is two multiplies and a divide per occluded tap, against a tap that has
+ * already paid for a texture fetch. **What would make it wrong** is a filter wide enough that one
+ * tap's occluder is not the occluder a neighbouring tap is estimating for, which is the same
+ * limit the shared value had and is what \`MAX_FILTER_RADIUS\` bounds.
+ */
+float tapStrength(float receiverDistance, float occluderDistance, float sourceRadius) {
+  float spread = max(receiverDistance - occluderDistance, 0.0) / max(occluderDistance, 0.05);
+  float penumbra = clamp(sourceRadius * spread * PENUMBRA_FADE, 0.0, 1.0);
+  return 1.0 - penumbra * penumbra;
+}
+
+float pointShadow(
   highp sampler2DArray maps,
   float layer,
   vec3 toFrag,
@@ -98,24 +131,6 @@ export const POINTSHADOW_GLSL = `float pointShadow(
   float radius = clamp(sourceRadius * spread, 0.01, MAX_FILTER_RADIUS) + 0.012;
 
   /*
-   * How much of a shadow survives, as well as how soft it is.
-   *
-   * This is the half that was missing, and it is why widening the filter never
-   * fixed anything. A penumbra does not merely blur with distance from its
-   * caster — it *takes over*. Far enough from the occluder, relative to how big
-   * the source is, every point on the receiver can see part of the flame and
-   * there is no umbra left at all: the shadow is gone, not blurry.
-   *
-   * Without it, two columns lit by a brazier threw full-strength edges fifteen
-   * metres across the terrace, and the gap between them read as a spotlight cone
-   * with straight sides rather than as a fire. Three attempts in, the note that
-   * unlocked it was that the pool should still fade naturally at its rim — a
-   * description of the falloff, not of the blur.
-   */
-  float penumbra = clamp(sourceRadius * spread * PENUMBRA_FADE, 0.0, 1.0);
-  float strength = 1.0 - penumbra * penumbra;
-
-  /*
    * Taps are placed on a disk *perpendicular to the light ray*, turned by half a golden
    * angle on every other column of pixels.
    *
@@ -191,14 +206,13 @@ export const POINTSHADOW_GLSL = `float pointShadow(
     if (dist - bias > storedDistance) {
       // A point shadow cannot outlive the finite light that casts it, so its
       // occlusion fades smoothly before the light's far plane.
-      lit += 1.0 - shadowReach(max(dist - storedDistance, 0.0), far);
+      float reach = shadowReach(max(dist - storedDistance, 0.0), far);
+      lit += 1.0 - reach * tapStrength(dist, storedDistance, sourceRadius);
     } else {
       lit += 1.0;
     }
   }
-  float shaded = lit / float(max(uShadowFilterTaps, 1));
-  // Fade the whole shadow toward lit as the penumbra swallows it.
-  return mix(1.0, shaded, strength);
+  return lit / float(max(uShadowFilterTaps, 1));
 }
 
 /**
@@ -289,10 +303,6 @@ float areaShadow(
   float widthX = min(halfX * spread, MAX_FILTER_RADIUS) + 0.012;
   float widthY = min(halfY * spread, MAX_FILTER_RADIUS) + 0.012;
 
-  /* The narrower half extent, for the reason in the header: it is what keeps a strip's umbra. */
-  float penumbra = clamp(min(halfX, halfY) * spread * PENUMBRA_FADE, 0.0, 1.0);
-  float strength = 1.0 - penumbra * penumbra;
-
   /*
    * Turned inside the unit disk *before* the ellipse maps it, so the half-turn that separates
    * the two halves of a pixel pair survives the anisotropy. The same two-pixel tile the round
@@ -318,13 +328,15 @@ float areaShadow(
     float storedDistance = stored * far;
     if (dist - bias > storedDistance) {
       /* An area light's occlusion cannot outlive the map that carries it either. */
-      lit += 1.0 - shadowReach(max(dist - storedDistance, 0.0), far);
+      float reach = shadowReach(max(dist - storedDistance, 0.0), far);
+      /* The narrower half extent, for the reason in the header: it is what keeps a strip's
+         umbra. Per tap, for the reason \`tapStrength\` gives. */
+      lit += 1.0 - reach * tapStrength(dist, storedDistance, min(halfX, halfY));
     } else {
       lit += 1.0;
     }
   }
-  float shaded = lit / float(max(uShadowFilterTaps, 1));
-  return mix(1.0, shaded, strength);
+  return lit / float(max(uShadowFilterTaps, 1));
 }
 #endif
 

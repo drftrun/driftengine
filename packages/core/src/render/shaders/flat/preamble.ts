@@ -803,7 +803,30 @@ uniform float uAreaLightTwoSided[MAX_AREA_LIGHTS];
 #if POINT_SHADOWS
 /** Which array layer holds this light's shadow, or -1 for none. */
 uniform int uPointShadowLayer[MAX_LIGHTS];
-uniform float uPointShadowFar[MAX_LIGHTS];
+/*
+ * **The projection each map was rendered under: \`xyz\` where from, \`w\` how far.**
+ *
+ * The origin is the half that is new and it is **not** the light's position. A light may drift
+ * \`pointShadowRebakeDistance\` from its image before the image is re-rendered, because
+ * re-baking six faces of the static world on every frame of a flicker is what made a brazier
+ * the most expensive object in a scene. The ray below is built from this point rather than from
+ * \`uLightPos\`, so it is the ray the picture was drawn along and the drift costs nothing.
+ *
+ * **It rides with the far plane because a row is a row.** A default-block \`float[N]\` spends a
+ * whole uniform vector per element and uses one of its four components, so the far plane was
+ * already paying for three floats it threw away — see \`uniformVectorBudget.ts\`. Declared as a
+ * separate \`vec3\` array this would have cost sixteen more rows on each of the two sets, and
+ * the ladder answers a 256-vector phone by halving \`MAX_LIGHTS\`: the measured price of a
+ * separate array was **eight lights becoming four**. Folded in, the whole fix is free.
+ *
+ * **What it gives up** is that the shadow stops tracking the flame *within* the tolerance — a
+ * flicker no longer nudges the shadow it casts, because the image it is read from did not move
+ * either. That is the trade the tolerance was always making, now made honestly instead of by
+ * reading a picture from the wrong place. **What would make it wrong** is a tolerance large
+ * enough that a shadow visibly lags its light, which is a reason to lower
+ * \`pointShadowRebakeDistance\` rather than to sample from a point the image cannot answer for.
+ */
+uniform vec4 uPointShadowProjection[MAX_LIGHTS];
 uniform float uPointShadowNear[MAX_LIGHTS];
 /** Emitter radius per light — drives how soft its shadows are. */
 uniform float uPointShadowSize[MAX_LIGHTS];
@@ -834,7 +857,8 @@ uniform highp sampler2DArray uPointShadows;  // wgsl:share shadow
  * light owns at most one of the two at a time.
  */
 uniform int uLivePointShadowLayer[MAX_LIGHTS];
-uniform float uLivePointShadowFar[MAX_LIGHTS];
+/** The live pair's own projection, by the same rule. See \`uPointShadowProjection\`. */
+uniform vec4 uLivePointShadowProjection[MAX_LIGHTS];
 uniform float uLivePointShadowNear[MAX_LIGHTS];
 uniform float uLivePointShadowSize[MAX_LIGHTS];
 uniform float uLivePointShadowWeight[MAX_LIGHTS];

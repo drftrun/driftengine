@@ -9,6 +9,7 @@ import {
   DEPTH_OFFSET_SIGN,
   REVERSED_DEPTH,
   conventionalDepth,
+  depthClearFor,
   glslFarDepth,
   glslSceneDepthToNdc,
 } from './depthConvention.ts';
@@ -77,5 +78,57 @@ describe('a consumer can reach the convention', () => {
     expect(engine.DEPTH_FORMAT).toBe(DEPTH_FORMAT);
     expect(engine.DEPTH_OFFSET_SIGN).toBe(DEPTH_OFFSET_SIGN);
     expect(engine.conventionalDepth(0.25)).toBe(conventionalDepth(0.25));
+  });
+});
+
+/**
+ * **THE PAIR THAT HAS TO AGREE, AND THE ONE TIME IT DID NOT.**
+ *
+ * Reversed depth on WebGL2 needs `EXT_clip_control`. A context that is not granted it runs
+ * conventional depth, and the renderer keeps a `reversedDepth` field saying which it got — but the
+ * clear value was taken from `DEPTH_CLEAR`, which is compile-time and says what the engine *wants*.
+ *
+ * So on such a context the buffer was cleared to 0 while `depthFunc` was correctly `LEQUAL`, and
+ * nothing in the scene could ever pass: every fragment sits at depth >= 0 and only depth <= 0 is
+ * accepted. Firefox on Linux exposes no `EXT_clip_control`, and every consumer drew one flat colour
+ * with its interface still on top, at a healthy sixty frames a second.
+ *
+ * **The compare was already runtime and the clear was not, which is what made it total.** Half a
+ * convention is worse than either whole one: two wrongs here would still have drawn a picture.
+ *
+ * This asserts the relationship rather than the constants, so it fails on a clear that stops
+ * matching its compare rather than on somebody choosing a different convention.
+ */
+describe('the clear value and the compare describe the same convention', () => {
+  /** What the WebGL2 renderer does, as arithmetic: the two decisions it makes per context. */
+  const clearFor = depthClearFor;
+  const passesFor = (reversed: boolean) => (fragment: number, cleared: number) =>
+    reversed ? fragment >= cleared : fragment <= cleared;
+
+  for (const reversed of [true, false]) {
+    it(`admits a fragment against a buffer cleared for ${reversed ? 'reversed' : 'conventional'} depth`, () => {
+      const cleared = clearFor(reversed);
+      const passes = passesFor(reversed);
+      /* The far plane is what the clear is, so an ordinary fragment in front of it must pass. */
+      const inFront = reversed ? 0.5 : 0.5;
+      expect(passes(inFront, cleared), 'a fragment in front of the far plane draws').toBe(true);
+    });
+  }
+
+  /**
+   * The defect itself: the compile-time clear against the runtime compare, on a context that was
+   * not granted reversed depth. Every fragment is rejected, which is the flat frame.
+   */
+  it('rejects everything when a reversed clear meets a conventional compare', () => {
+    const cleared = clearFor(true);
+    const passes = passesFor(false);
+    for (const fragment of [0.01, 0.25, 0.5, 0.75, 1]) {
+      expect(passes(fragment, cleared), `fragment at ${fragment} against a clear of 0`).toBe(false);
+    }
+  });
+
+  /** And `DEPTH_CLEAR` is still the right answer for the convention the engine compiles for. */
+  it('is the constant the engine ships, for the convention the engine wants', () => {
+    expect(DEPTH_CLEAR).toBe(clearFor(REVERSED_DEPTH));
   });
 });

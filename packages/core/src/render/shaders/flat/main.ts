@@ -990,7 +990,7 @@ export const MAIN_GLSL = `void main() {
 #if POINT_SHADOWS
       float grazing = 1.0 - ndl;
       float normalOffset = (0.06 + dist * 0.05) * grazing * grazing + 0.02;
-      vec3 shadowFrom = (vWorldPos + n * normalOffset) - lightPos;
+      vec3 receiverPoint = vWorldPos + n * normalOffset;
 
       /*
        * uPointShadowWeight is how present the cubemap is, and it is the difference
@@ -1031,8 +1031,15 @@ export const MAIN_GLSL = `void main() {
           pointShadow(
             uPointShadows,
             float(layer),
-            shadowFrom,
-            uPointShadowFar[shadowRead],
+            /*
+             * **From where the map was baked, not from where the light is.** The two are apart
+             * by up to \`pointShadowRebakeDistance\` for anything that wanders, and both things
+             * this asks the picture move with that gap: the distance it compares against the
+             * stored one, and which texel the single-tap blocker search lands in. See
+             * \`uPointShadowOrigin\`.
+             */
+            receiverPoint - uPointShadowProjection[shadowRead].xyz,
+            uPointShadowProjection[shadowRead].w,
             uPointShadowNear[shadowRead],
             uPointShadowSize[shadowRead]
           ),
@@ -1051,8 +1058,9 @@ export const MAIN_GLSL = `void main() {
         liveOccl = pointShadow(
           uPointShadows,
           float(liveLayer),
-          shadowFrom,
-          uLivePointShadowFar[shadowRead],
+          /* Its own bake origin, for the reason the static layer above gives. */
+          receiverPoint - uLivePointShadowProjection[shadowRead].xyz,
+          uLivePointShadowProjection[shadowRead].w,
           uLivePointShadowNear[shadowRead],
           uLivePointShadowSize[shadowRead]
         );

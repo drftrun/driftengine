@@ -7,7 +7,24 @@ import { glslFarDepth } from '../depthConvention.ts';
  * interpolated rather than written. A sky that says 1.0 in a reversed engine is drawn at the
  * *near* plane and covers the world; measured, that was 743,669 changed pixels of 921,600.
  */
-export const SKY_VERT = `#version 300 es
+/**
+ * The source, as a function of which way depth actually runs.
+ *
+ * **Because on WebGL2 that is a runtime fact and this file is imported once.** Reversed depth there
+ * needs `EXT_clip_control`; a context that is not granted it runs conventional depth, and the
+ * renderer has a `reversedDepth` field saying so precisely because the two can disagree. This
+ * template used to bake `glslFarDepth()` at import, which reads the compile-time `REVERSED_DEPTH` —
+ * so on such a context the sky was written at `0.0` while the depth test ran conventionally, where
+ * `0.0` is the middle of the range rather than the far plane. The sky then beat everything in the
+ * far half of the scene.
+ *
+ * **Reported from Firefox on Linux, which exposes no `EXT_clip_control`**: the voxel sandbox drew
+ * only sky, the gilded chamber a single orange frame, and a consumer's world one flat colour with
+ * its interface still on top. Three symptoms, one cause, and the docstring above already named the
+ * mechanism in the other direction.
+ */
+function skySource(farDepth: string): string {
+  return `#version 300 es
 const vec2 POS[3] = vec2[3](vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.));
 
 out vec2 vNdc;
@@ -15,9 +32,27 @@ out vec2 vNdc;
 void main() {
   vNdc = POS[gl_VertexID];
   /* The far plane, whichever way depth runs: see glslFarDepth. */
-  gl_Position = vec4(vNdc, ${glslFarDepth()}, 1.0);
+  gl_Position = vec4(vNdc, ${farDepth}, 1.0);
 }
 `;
+}
+
+/**
+ * The engine's own convention, which is what WebGPU always gets and what the WGSL is generated
+ * from. `scripts/wgsl.ts` reads this constant, so it stays a constant.
+ */
+export const SKY_VERT = skySource(glslFarDepth());
+
+/**
+ * The same shader for a context that may not have been granted reversed depth.
+ *
+ * WebGL2 compiles GLSL directly and is the only backend that can run either way, so it asks for
+ * the one matching what it got. WebGPU never calls this: it uses the generated WGSL, where the far
+ * plane is reversed by construction.
+ */
+export function skyVertFor(reversed: boolean): string {
+  return reversed ? SKY_VERT : skySource('1.0');
+}
 
 export const SKY_FRAG = `#version 300 es
 precision highp float;

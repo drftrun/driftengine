@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { LIVE_POINT_SHADOW_MAPS, MAX_POINT_LIGHTS, POINT_SHADOW_POOL } from './lightBudget.ts';
 import type { PointShadowTarget } from './pointShadowArray.ts';
 import { PointShadowMap } from './pointShadowMap.ts';
+import { createResolvedPointShadows } from './pointShadowImage.ts';
 import { PointShadowSystem } from './pointShadowSystem.ts';
 import type { ShadowLight } from './pointShadowSystem.ts';
 
@@ -248,7 +249,7 @@ test('a light that comes back gets a map again', () => {
   expect(system.mapForLight(0), 'holding a map again on return').toBeDefined();
 });
 
-test('a flame’s wander does not invalidate its baked shadow', () => {
+test('a tolerance forgives a drift, and the caller chooses how much', () => {
   const { gl } = fakeGl();
   const map = new PointShadowMap(() => recordingTarget().target, 0, 512);
   const light: ShadowLight = {
@@ -271,9 +272,16 @@ test('a flame’s wander does not invalidate its baked shadow', () => {
     light.sourceRadius,
   );
 
-  // A consumer wanders a flame by 0.12 in x and z and half that in y, so the
-  // furthest two points on that path are about 0.36 apart. The default
-  // tolerance is 0.4, which clears it from either extreme.
+  /*
+   * A consumer wanders a flame by 0.12 in x and z and half that in y, so the furthest two points
+   * on that path are about 0.36 apart, and 0.4 clears it from either extreme.
+   *
+   * **That was the engine's default until 4.1.5 and is not any more**, so what this pins is the
+   * mechanism rather than the shipped number. A tolerance wide enough to swallow a flame's whole
+   * wander means a flame never re-bakes, and its shadow of the static world stands still while
+   * the live map under the same light swings with it. The mechanism is still exactly right for a
+   * lamp that drifts once and then holds. See `pointShadowRebakeDistance`.
+   */
   const wandered = map.matchesSource(
     light.x + 0.12,
     light.y + 0.06,
@@ -424,4 +432,52 @@ test('a light being shaded is not also warmed', () => {
     system.mapForLight(21),
     'which is holding a map, ready for when it is wanted',
   ).toBeDefined();
+});
+
+/**
+ * A map is sampled from where it was baked, not from where the flame has wandered to.
+ *
+ * **The other half of the drift tolerance above, and it was missing for as long as the tolerance
+ * existed.** `matchesSource` deliberately lets a flame wander up to `pointShadowRebakeDistance`
+ * from the point its image was rendered at, because re-baking six faces of the static world on
+ * every frame of a flicker is what made a brazier the most expensive object in a scene. The
+ * shader then sampled that image from the light's **live** position — so the ray and the picture
+ * disagreed by up to the whole tolerance, every frame, in a pattern driven by the flicker.
+ *
+ * The argument recorded for the tolerance was that "the shadow of static geometry metres away
+ * barely moves when the emitter shifts by centimetres". That is true of where the shadow *lands*
+ * and false of the two things this shader actually asks. `dist` is compared against the stored
+ * distance, and it moves one for one with the drift against a bias of a few centimetres; and the
+ * blocker search reads one texel, so a fraction of the drift is enough to move it across an
+ * occluder's silhouette and swap `occluderDistance` between the caster and nothing at all. With
+ * a fire's `sourceRadius` that swings `strength` between a two-thirds shadow and none, so the
+ * whole shape switches rather than its edge shifting.
+ *
+ * Reported on a brazier at night: a hard square under the fire, flashing in time with the flame
+ * while the camera stood still, present on one page load and absent on the next — which is the
+ * flame's phase against wherever the map happened to be baked.
+ *
+ * Publishing the bake origin makes the tolerance free, which is what it was always claimed to be.
+ */
+test('a map publishes the origin it was baked at, not the light that drifted away from it', () => {
+  const { gl } = fakeGl();
+  const system = makeSystem(gl);
+  system.prepareStaticMaps(1);
+  chooseLights(system, [0]);
+
+  const map = system.mapForLight(0);
+  expect(map, 'the light holds a map').toBeDefined();
+  if (map === undefined) return;
+
+  /* A brazier's light: 2.1 m above its pit, which is what throws the square. */
+  map.bake(gl, 10, 2.5, 10, 18, () => {}, 0.2, 0.45);
+
+  const out = createResolvedPointShadows(MAX_POINT_LIGHTS);
+  system.resolve(out);
+
+  expect(out.projections[0], 'x').toBe(10);
+  expect(out.projections[1], 'y').toBe(2.5);
+  expect(out.projections[2], 'z').toBe(10);
+  /* The far plane rides in the same row; see `uPointShadowProjection`. */
+  expect(out.projections[3], 'far').toBe(18);
 });

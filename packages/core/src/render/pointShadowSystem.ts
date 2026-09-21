@@ -343,6 +343,9 @@ export class PointShadowSystem<M extends PointShadowSource> {
     out.far.fill(1);
     out.near.fill(0.01);
     out.sourceRadius.fill(0);
+    /* Origin zero, far plane one: the same neutral the separate `far` array is filled with. */
+    out.projections.fill(0);
+    for (let k = 0; k < MAX_POINT_LIGHTS; k++) out.projections[k * 4 + 3] = 1;
     out.presence.fill(0);
 
     for (let k = 0; k < MAX_POINT_LIGHTS; k++) {
@@ -369,6 +372,11 @@ export class PointShadowSystem<M extends PointShadowSource> {
       out.far[light] = map.far;
       out.near[light] = map.near;
       out.sourceRadius[light] = map.sourceRadius;
+      /* Where the image was rendered from, not where the light is now. See `projections`. */
+      out.projections[light * 4] = map.originX;
+      out.projections[light * 4 + 1] = map.originY;
+      out.projections[light * 4 + 2] = map.originZ;
+      out.projections[light * 4 + 3] = map.far;
       out.presence[light] = map.presence;
       out.layers[light] = map.layer;
     }

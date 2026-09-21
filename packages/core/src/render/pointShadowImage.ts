@@ -202,6 +202,27 @@ export class PointShadowImage {
   private pendingNear = 0;
   private pendingSourceRadius = 0;
 
+  /**
+   * Where this image was rendered from, which is what a sampler has to shoot its ray from.
+   *
+   * **Not the light's position**, and the difference is the whole point: `matchesSource` lets a
+   * light drift up to the caller's rebake tolerance from here before the image is re-rendered,
+   * so for any light that wanders these two are apart on nearly every frame. A shader that
+   * builds its direction and its distance from the live light asks this picture a question the
+   * picture cannot answer. See `ResolvedPointShadows.origins`.
+   */
+  get originX(): number {
+    return this.x;
+  }
+
+  get originY(): number {
+    return this.y;
+  }
+
+  get originZ(): number {
+    return this.z;
+  }
+
   /** Whether this map holds an image worth sampling. False until a bake completes. */
   get hasBaked(): boolean {
     return this.baked;
@@ -401,6 +422,10 @@ export interface PointShadowSource {
   readonly far: number;
   readonly near: number;
   readonly sourceRadius: number;
+  /** Where the image was rendered from. See `PointShadowImage.originX`. */
+  readonly originX: number;
+  readonly originY: number;
+  readonly originZ: number;
   /** Whether this map holds an image worth sampling. */
   readonly hasBaked: boolean;
   /** How present the image is, 0 to 1. */
@@ -433,6 +458,28 @@ export interface ResolvedPointShadows {
   readonly far: Float32Array;
   readonly near: Float32Array;
   readonly sourceRadius: Float32Array;
+  /**
+   * The projection each bound map was rendered under: origin in `xyz`, far plane in `w`, four
+   * floats a light. The origin is **not** the light's position.
+   *
+   * A light is allowed to drift `pointShadowRebakeDistance` from its image before the image is
+   * re-rendered — that tolerance is what stops a flame re-baking six faces of the static world
+   * every frame — so for anything that flickers these two are apart on nearly every frame. The
+   * shader builds both its sample direction and the distance it compares from this point, so the
+   * ray it shoots is the ray the picture was drawn along and the drift costs nothing.
+   *
+   * **It used to build them from the live light**, and the drift went straight into the
+   * comparison: `dist` moved one for one with it against a bias of a few centimetres, and the
+   * single-tap blocker search moved across the occluder's silhouette, swapping `occluderDistance`
+   * between the caster and nothing. Reported on a brazier at night as a hard square under the
+   * fire, flashing in time with the flame while the camera stood still.
+   *
+   * **The far plane rides in `w` rather than in an array of its own**, because a default-block
+   * `float[N]` spends a whole uniform vector per element: declared separately the origin cost
+   * sixteen rows on each of the two sets, which the budget ladder answers on a 256-vector
+   * device by halving `MAX_LIGHTS`. See `uPointShadowProjection` in the preamble.
+   */
+  readonly projections: Float32Array;
   /** How present each bound map is, so a re-baked one arrives rather than appears. */
   readonly presence: Float32Array;
   /** The live pair, by the same light index: a light owns at most one of the two. */
@@ -440,6 +487,8 @@ export interface ResolvedPointShadows {
   readonly liveFar: Float32Array;
   readonly liveNear: Float32Array;
   readonly liveSourceRadius: Float32Array;
+  /** The live pair's own, by the same rule and for the same reason. */
+  readonly liveProjections: Float32Array;
   readonly liveWeights: Float32Array;
 }
 
@@ -460,11 +509,13 @@ export function createResolvedPointShadows(lights: number): ResolvedPointShadows
     far: new Float32Array(lights),
     near: new Float32Array(lights),
     sourceRadius: new Float32Array(lights),
+    projections: new Float32Array(lights * 4),
     presence: new Float32Array(lights),
     liveLayers: new Int32Array(lights).fill(-1),
     liveFar: new Float32Array(lights),
     liveNear: new Float32Array(lights),
     liveSourceRadius: new Float32Array(lights),
+    liveProjections: new Float32Array(lights * 4),
     liveWeights: new Float32Array(lights),
   };
 }

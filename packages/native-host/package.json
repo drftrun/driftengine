@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/native-host",
-  "version": "4.1.4",
+  "version": "4.1.5",
   "description": "The engine on a native window and a native WebGPU device, with no browser between them",
   "license": "Apache-2.0",
   "type": "module",
@@ -37,13 +37,13 @@
     "node-web-audio-api": "2.2.0"
   },
   "devDependencies": {
-    "@driftengine/audio": "4.1.4"
+    "@driftengine/audio": "4.1.5"
   },
   "peerDependencies": {
-    "@driftengine/core": "4.1.4",
-    "@driftengine/package": "4.1.4",
-    "@driftengine/texture": "4.1.4",
-    "@driftengine/ui2d": "4.1.4"
+    "@driftengine/core": "4.1.5",
+    "@driftengine/package": "4.1.5",
+    "@driftengine/texture": "4.1.5",
+    "@driftengine/ui2d": "4.1.5"
   },
   "peerDependenciesMeta": {
     "@driftengine/texture": {

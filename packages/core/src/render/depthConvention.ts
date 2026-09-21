@@ -104,6 +104,28 @@ export const REVERSED_DEPTH = true;
 /** What a scene depth attachment is cleared to: the far plane. */
 export const DEPTH_CLEAR = REVERSED_DEPTH ? 0 : 1;
 
+/**
+ * The same value for a backend that learned its convention at runtime rather than at compile time.
+ *
+ * **`DEPTH_CLEAR` above says what the engine wants; this says what a context got.** Reversed depth
+ * on WebGL2 needs `EXT_clip_control`, and a context not granted it runs conventional depth while
+ * the constant still reads 0. Clearing to 0 with a `LEQUAL` compare rejects every fragment in the
+ * scene — every one sits at depth >= 0 and only depth <= 0 is admitted — so the frame that reaches
+ * the screen is the colour clear and nothing else.
+ *
+ * Reported from Firefox on Linux, which exposes no `EXT_clip_control`: every consumer drew one flat
+ * colour with its interface still on top, at a healthy sixty frames a second. The depth *compare*
+ * beside it was already chosen at runtime, and that asymmetry is what made this total rather than
+ * subtle — two halves of one convention would still have drawn a picture.
+ *
+ * **Here rather than in the backend** for the 2026-08-13 rule's first clause: the decision is
+ * backend-neutral and only the binding is per-backend. It is also what lets a test hold the clear
+ * and the compare to each other, which a private field on a renderer could not.
+ */
+export function depthClearFor(reversed: boolean): number {
+  return reversed ? 0 : 1;
+}
+
 /** The WebGPU compare for "nearer than what is there". */
 export const DEPTH_COMPARE: GPUCompareFunction = REVERSED_DEPTH ? 'greater' : 'less';
 

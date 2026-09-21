@@ -182,6 +182,8 @@ export class LivePointShadowSet<M extends PointShadowSource> {
     out.liveFar.fill(1);
     out.liveNear.fill(0.01);
     out.liveSourceRadius.fill(0);
+    out.liveProjections.fill(0);
+    for (let k = 0; k < out.liveLayers.length; k++) out.liveProjections[k * 4 + 3] = 1;
     /*
      * Zero, then written under the owning light below. The weights used to be a straight copy of
      * this set's own two, because the arrays were addressed by live slot; they are addressed by
@@ -214,6 +216,11 @@ export class LivePointShadowSet<M extends PointShadowSource> {
       out.liveFar[shaderSlot] = map.far;
       out.liveNear[shaderSlot] = map.near;
       out.liveSourceRadius[shaderSlot] = map.sourceRadius;
+      /* Where the image was rendered from, not where the light is now. See `projections`. */
+      out.liveProjections[shaderSlot * 4] = map.originX;
+      out.liveProjections[shaderSlot * 4 + 1] = map.originY;
+      out.liveProjections[shaderSlot * 4 + 2] = map.originZ;
+      out.liveProjections[shaderSlot * 4 + 3] = map.far;
       /*
        * The handover weight *and* the image's own arrival, multiplied.
        *

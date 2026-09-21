@@ -162,10 +162,33 @@ export interface RenderQuality {
    * sampled lights flickering at once accounted for 174 of the frame's 296 draw
    * calls, and for the game being unplayable exactly where lamps cluster.
    *
-   * The default clears a flame's own wander with room to spare, because drift is
-   * measured from the baked origin and a wander can be caught at either extreme
-   * of its travel. A light that really moves still re-bakes; it just does so once
-   * per this much movement instead of once per frame.
+   * **It was 0.4 until 4.1.5, chosen to clear a flame's whole wander with room to spare** — so
+   * a flame never re-baked at all, and its shadow of the static world stood still while the live
+   * map under the same light, which is re-rendered every frame because it holds the movers, swung
+   * with the flame. One light, two shadows, visibly disagreeing about where it was. Reported as
+   * the runner's shadow following the fire and the brazier's not.
+   *
+   * **A millimetre instead, which is as near to "whenever it moved" as makes sense**, so a shadow
+   * travels with its light rather than freezing between re-bakes. A centimetre was tried first and
+   * left a visible vibration: a light wandering on a curve moves less than that in a frame near
+   * the turning points of its travel, so the shadow ran smoothly through the fast part and stepped
+   * through the slow part. What the tolerance is still for is not re-baking on arithmetic noise.
+   *
+   * A light that does not move never goes stale at any positive value, so the whole cost falls on
+   * the lights that need it, and it is bounded rather than proportional: one such light takes a
+   * whole cube in a frame and the rest dribble under the ordinary face budget.
+   *
+   * **What makes that affordable is not this number.** The 174-of-296 draw calls this paragraph
+   * used to cite was measured before `pointShadowFacesPerFrame` capped the whole static bake, and
+   * before `planPointShadowBakes` learned to put a chronically stale map behind every cold and
+   * settling one. A flame now spends leftover budget and can never hold another light's first
+   * image hostage. One such light also finishes its cube inside a single frame rather than
+   * dribbling it over three, which is what makes the motion smooth instead of stepped; see
+   * `pointShadowBudget.ts`.
+   *
+   * **What would make it wrong** is a caster set heavy enough that six passes over it does not
+   * fit the frame, where a stepped shadow is the better trade and this should go back up.
+   * `gpuTiming` is how to tell which, and it is a number rather than an opinion.
    */
   readonly pointShadowRebakeDistance: number;
   /**
@@ -815,7 +838,7 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   directionalShadowDepthLayers: 2,
   directionalShadowMaxDistance: 6,
   directionalShadowMaxSlope: 3,
-  pointShadowRebakeDistance: 0.4,
+  pointShadowRebakeDistance: 0.001,
   pointShadowFacesPerFrame: 2,
   /*
    * Twelve, which is `LIVE_POINT_SHADOW_MAPS` cubemaps of six faces: exactly what the live

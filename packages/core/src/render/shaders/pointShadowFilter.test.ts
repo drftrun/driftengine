@@ -186,3 +186,78 @@ test('AND NO DERIVATIVE SITS INSIDE THE LIGHT LOOP, where none is defined', () =
   const filters = source.slice(start, end);
   expect(filters, 'no derivative is taken inside either shadow filter').not.toMatch(/dFdx|dFdy/);
 });
+
+/**
+ * The penumbra fade is a property of each tap's own occluder, not of one tap standing for all.
+ *
+ * **The arithmetic below is a transcription of the shader's, which is worth exactly what a
+ * transcription is worth** — it proves the two agree and nothing else, per AGENTS.md's
+ * 2026-09-20 rule. What makes it worth having is the pair of claims it settles, both of which
+ * are about the *shape* of the change rather than about the constants: that the umbra is
+ * untouched, and that the silhouette is not.
+ *
+ * The filter used to compute how far the penumbra had swallowed a shadow once, from a single
+ * centre tap, and multiply the whole filtered result by it. Where the taps agree that is exactly
+ * right and this still returns the same number. Where they disagree it is wrong, and the place
+ * they disagree is the silhouette: the centre ray misses the caster, so the search reports no
+ * occluder at all, the spread is zero, the fade switches off, and the taps that *do* land on the
+ * caster draw at full strength. What that paints is a hard one-texel line around a shadow whose
+ * interior has correctly faded to nothing.
+ *
+ * Reported as shadows "faded out but NOT shadow outlines, generating long lines around the
+ * world", and on a brazier as a bare square outline lying on the ground with no shadow in it.
+ */
+const PENUMBRA_FADE = (() => {
+  const match = /const float PENUMBRA_FADE = ([\d.]+);/.exec(source);
+  expect(match, 'the penumbra fade is a named constant in the shipped shader').not.toBeNull();
+  return Number(match?.[1]);
+})();
+
+/** `tapStrength`, transcribed. See the note above on what a transcription proves. */
+function strength(receiver: number, occluder: number, sourceRadius: number): number {
+  const spread = Math.max(receiver - occluder, 0) / Math.max(occluder, 0.05);
+  const penumbra = Math.min(Math.max(sourceRadius * spread * PENUMBRA_FADE, 0), 1);
+  return 1 - penumbra * penumbra;
+}
+
+test('A TAP IS FADED BY ITS OWN OCCLUDER, so a silhouette cannot outlive the shadow inside it', () => {
+  /* A brazier's numbers: a 0.45 m flame, its pit 2.1 m below it, ground 4.7 m from the light. */
+  const sourceRadius = 0.45;
+  const receiver = 4.7;
+  const pit = 2.1;
+
+  /*
+   * Inside the umbra every tap finds the same occluder, so the per-tap fade and the one shared
+   * value are the same number and the picture cannot have moved. This is the half that makes the
+   * change safe to land, and it is an identity rather than a tolerance.
+   */
+  const shared = strength(receiver, pit, sourceRadius);
+  for (const tap of [pit, pit, pit]) {
+    expect(strength(receiver, tap, sourceRadius), 'the umbra is untouched').toBe(shared);
+  }
+  expect(shared, 'and the pit has largely swallowed its own shadow').toBeLessThan(0.45);
+
+  /*
+   * On the silhouette the centre ray misses. The old code read that as "no occluder", which is
+   * a spread of zero and therefore no fade at all — a full-strength shadow, drawn by whichever
+   * taps did land on the pit, in a band one texel wide.
+   */
+  const centreMissed = strength(receiver, receiver, sourceRadius);
+  expect(centreMissed, 'a centre tap that misses reports no penumbra whatsoever').toBe(1);
+  expect(
+    centreMissed - shared,
+    'which is the whole outline: full strength beside a shadow faded to nothing',
+  ).toBeGreaterThan(0.55);
+});
+
+test('AND THE SHIPPED FILTER ASKS PER TAP, rather than once above the loop', () => {
+  const start = source.indexOf('float pointShadow(');
+  const body = source.slice(start, source.indexOf('\n}', start));
+  expect(body, 'the occluded branch fades by the distance that tap itself read').toContain(
+    'tapStrength(dist, storedDistance, sourceRadius)',
+  );
+  expect(
+    body,
+    'and nothing multiplies the finished filter by one shared strength any more',
+  ).not.toContain('mix(1.0, shaded, strength)');
+});

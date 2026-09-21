@@ -2,10 +2,10 @@ import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
 import { mat4 } from 'gl-matrix';
 import {
-  DEPTH_CLEAR,
   DEPTH_OFFSET_SIGN,
   GL_DEPTH_REMAP,
   MAX_DEPTH_LAYER,
+  depthClearFor,
   depthOffsetForLayer,
   GL_SHADOW_REMAP,
   REVERSED_DEPTH,
@@ -133,7 +133,7 @@ import {
 import type { PhotometricProfile } from '../../iesProfile.ts';
 import { equirectToCubeFaces } from '../../equirectToCube.ts';
 
-import { SKY_FRAG, SKY_VERT } from '../../shaders/sky.ts';
+import { SKY_FRAG, skyVertFor } from '../../shaders/sky.ts';
 import {
   DEPTH_FRAG,
   DEPTH_INSTANCED_VERT,
@@ -1370,6 +1370,23 @@ export class WebGL2Renderer implements RendererApi {
    * near plane needs the granted answer and not the wished-for one.
    */
   reversedDepth = false;
+  /**
+   * What to clear depth to, for the convention this context was actually granted.
+   *
+   * **`DEPTH_CLEAR` is compile-time and this must not be.** That constant is `REVERSED_DEPTH ? 0 :
+   * 1`, and `REVERSED_DEPTH` is what the engine wants rather than what a context gave — so on a
+   * context without `EXT_clip_control` the buffer was cleared to 0 while `depthFunc` was correctly
+   * set to `LEQUAL`, and **nothing in the scene could ever pass**: every fragment is at depth >= 0,
+   * and only depth <= 0 passes. The frame that reaches the screen is the colour clear.
+   *
+   * **Reported from Firefox on Linux, which exposes no `EXT_clip_control`**, as every consumer
+   * drawing one flat colour with its interface still on top, at a healthy 60 fps. The compare
+   * beside it was already runtime; this was the half that was not, and the asymmetry is what made
+   * it total rather than subtle.
+   */
+  private get depthClear(): number {
+    return depthClearFor(this.reversedDepth);
+  }
   /** `GL_DEPTH_REMAP * camera.viewProjection`, rebuilt once a frame. */
   private readonly sceneViewProj = new Float32Array(16);
   /**
@@ -2520,7 +2537,10 @@ export class WebGL2Renderer implements RendererApi {
       }
     }
     this.filmUniforms = uniformLocations(gl, this.filmProgram, 'film');
-    this.skyProgram = compileProgram(gl, SKY_VERT, SKY_FRAG, 'sky');
+    /* The variant matching what this context was granted, not what the engine wants. See
+       `skyVertFor`: a sky written at the reversed far plane on a conventional context sits in the
+       middle of the depth range and paints over everything behind it. */
+    this.skyProgram = compileProgram(gl, skyVertFor(this.reversedDepth), SKY_FRAG, 'sky');
     this.skyUniforms = uniformLocations(gl, this.skyProgram, 'sky');
     this.scatterProgram = compileProgram(gl, SCATTER_VERT, SCATTER_FRAG, 'scatter');
     this.scatterUniforms = uniformLocations(gl, this.scatterProgram, 'scatter');
@@ -4134,12 +4154,13 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(uniforms[POINT_SHADOW_SAMPLER] ?? null, firstUnit);
 
     gl.uniform1iv(uniforms['uPointShadowLayer[0]'] ?? null, resolved.layers);
-    gl.uniform1fv(uniforms['uPointShadowFar[0]'] ?? null, resolved.far);
+    /* Origin and far plane in one row; see `uPointShadowProjection` in the preamble. */
+    gl.uniform4fv(uniforms['uPointShadowProjection[0]'] ?? null, resolved.projections);
     gl.uniform1fv(uniforms['uPointShadowNear[0]'] ?? null, resolved.near);
     gl.uniform1fv(uniforms['uPointShadowSize[0]'] ?? null, resolved.sourceRadius);
     gl.uniform1fv(uniforms['uPointShadowWeight[0]'] ?? null, resolved.presence);
     gl.uniform1iv(uniforms['uLivePointShadowLayer[0]'] ?? null, resolved.liveLayers);
-    gl.uniform1fv(uniforms['uLivePointShadowFar[0]'] ?? null, resolved.liveFar);
+    gl.uniform4fv(uniforms['uLivePointShadowProjection[0]'] ?? null, resolved.liveProjections);
     gl.uniform1fv(uniforms['uLivePointShadowNear[0]'] ?? null, resolved.liveNear);
     gl.uniform1fv(uniforms['uLivePointShadowSize[0]'] ?? null, resolved.liveSourceRadius);
     gl.uniform1fv(uniforms['uLivePointShadowWeight[0]'] ?? null, resolved.liveWeights);
@@ -4669,7 +4690,7 @@ export class WebGL2Renderer implements RendererApi {
     shadowMap.end(this.gl);
     /* Back to the frame's sense; see `beginShadowPass` for why it left it. */
     this.gl.depthFunc(glDepthFuncEqual(this.gl));
-    this.gl.clearDepth(DEPTH_CLEAR);
+    this.gl.clearDepth(this.depthClear);
     this.gpuTimer.end();
     this.shadowPassActive = false;
     this.activeShadowMap = null;
@@ -5117,7 +5138,7 @@ export class WebGL2Renderer implements RendererApi {
     } finally {
       /* Back to the frame's sense, which `beginShadowPass` leaves the same way. */
       gl.depthFunc(glDepthFuncEqual(gl));
-      gl.clearDepth(DEPTH_CLEAR);
+      gl.clearDepth(this.depthClear);
       this.pointShadowCasters = null;
       this.depthPassCullsFaces = true;
     }

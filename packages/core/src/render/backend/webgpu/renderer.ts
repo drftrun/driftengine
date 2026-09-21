@@ -7720,7 +7720,12 @@ export class WebGPURenderer implements RendererApi {
         this.clearShadowSelection(f, i, 'uLivePointShadowLayer', 'uLivePointShadowWeight');
       } else {
         this.writeShadowSelection(f, i, 'uPointShadow', resolved.layers, resolved.presence);
-        this.writeShadowParams(f, 'uPointShadowFar', resolved.far);
+        /*
+         * A `vec4` row carrying the bake origin and the far plane, so `scatterInto` rather than
+         * `writeShadowParams` — it reads the stride out of the generated layout instead of
+         * counting rows, which is what AGENTS.md's 2026-09-20 alignment rule asks for.
+         */
+        scatterInto(f, this.fragment.fields['uPointShadowProjection'], resolved.projections, 4);
         this.writeShadowParams(f, 'uPointShadowNear', resolved.near);
         this.writeShadowParams(f, 'uPointShadowSize', resolved.sourceRadius);
         this.writeShadowSelection(
@@ -7730,7 +7735,12 @@ export class WebGPURenderer implements RendererApi {
           resolved.liveLayers,
           resolved.liveWeights,
         );
-        this.writeShadowParams(f, 'uLivePointShadowFar', resolved.liveFar);
+        scatterInto(
+          f,
+          this.fragment.fields['uLivePointShadowProjection'],
+          resolved.liveProjections,
+          4,
+        );
         this.writeShadowParams(f, 'uLivePointShadowNear', resolved.liveNear);
         this.writeShadowParams(f, 'uLivePointShadowSize', resolved.liveSourceRadius);
       }

@@ -22,6 +22,10 @@ function stubMap(layer: number): PointShadowSource & { bake(): void } {
     far: 20,
     near: 0.25,
     sourceRadius: 0.18,
+    /* Distinct per layer, so a published origin cannot be confused with another map's. */
+    originX: 100 + layer,
+    originY: 200 + layer,
+    originZ: 300 + layer,
     get hasBaked() {
       return baked;
     },

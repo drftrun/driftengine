@@ -226,3 +226,149 @@ test('the default budget still gives both live maps their whole cubemap', () => 
    */
   expect(liveBakes(2, DEFAULT_RENDER_QUALITY.liveShadowFacesPerFrame)).toEqual([6, 6]);
 });
+
+/**
+ * A light that wanders finishes its cube in one frame, so its shadow travels instead of stepping.
+ *
+ * **`planBake` pins the origin for the whole of a resumed bake**, which is what stops half a
+ * cubemap around one point and half around another. The consequence is that six faces dribbled
+ * out at two a frame publish a *new origin only once every third frame* — and since 4.1.5 the
+ * shader shoots from that origin, so the shadow steps with it. Reported on a brazier as motion
+ * that was "really fast, not smooth, snappy, and unrealistic": a 20 Hz sample of a flame that
+ * wanders about once a second.
+ *
+ * Given the whole cube at once the origin moves every frame and the shadow travels.
+ *
+ * The allowance is one light, because eight braziers taking six passes each is the 48 passes the
+ * face budget exists to prevent, and it is spent after the cold group so a light arriving in
+ * range still gets its first image first.
+ */
+function trackingPool(maps: { hasBaked: boolean; matchesSource: () => boolean }[]) {
+  return {
+    pooledCount: maps.length,
+    sampledCount: maps.length,
+    liveMapCount: 0,
+    pooledLight: (slot: number) => slot,
+    mapForLight: (light: number) => maps[light],
+    liveOwner: () => -1,
+    liveMap: () => undefined,
+  };
+}
+
+/** Run `frames` frames over one scratch, returning what the last frame asked each map for. */
+function staticBakes(
+  maps: { hasBaked: boolean; matchesSource: () => boolean }[],
+  frames: number,
+): { light: number; faces: number }[] {
+  const scratch = createBakeScratch(16);
+  const lights = maps.map((_, i) => ({
+    x: i,
+    y: 0,
+    z: 0,
+    radius: 10,
+    shadowNear: 0.1,
+    sourceRadius: 0,
+  }));
+  let asked: { light: number; faces: number }[] = [];
+  for (let frame = 0; frame < frames; frame++) {
+    asked = [];
+    runPointShadowBakes(
+      trackingPool(maps),
+      lights,
+      /* facesPerFrame */ 2,
+      /* liveFacesPerFrame */ 0,
+      /* rebakeDistance */ 0.01,
+      /* faceCount */ 6,
+      scratch,
+      {},
+      {},
+      (map, _light, _casters, maxFaces) => {
+        asked.push({ light: maps.indexOf(map), faces: maxFaces });
+        return maxFaces;
+      },
+    );
+  }
+  return asked;
+}
+
+test('A WANDERING LIGHT GETS ITS WHOLE CUBE IN ONE FRAME, so its origin moves every frame', () => {
+  /* One light, baked, and stale again on every frame however it is served: a flame. */
+  const flame = { hasBaked: true, matchesSource: () => false };
+
+  /* Two faces while the run is short, which is the ordinary drifted-once budget. */
+  expect(staticBakes([flame], 1), 'the first stale frame is not yet chronic').toEqual([
+    { light: 0, faces: 2 },
+  ]);
+
+  /* CHRONIC_STALE_FRAMES is 3, and past it the whole cube lands inside the frame. */
+  expect(staticBakes([flame], 4), 'a light stale every frame stops being dribbled').toEqual([
+    { light: 0, faces: 6 },
+  ]);
+});
+
+test('AND ONLY ONE OF THEM DOES, because eight braziers at six passes is the bill the cap exists for', () => {
+  const flames = [
+    { hasBaked: true, matchesSource: () => false },
+    { hasBaked: true, matchesSource: () => false },
+    { hasBaked: true, matchesSource: () => false },
+  ];
+  const asked = staticBakes(flames, 4);
+  expect(asked, 'one light takes the cube and spends the frame doing it').toEqual([
+    { light: 0, faces: 6 },
+  ]);
+});
+
+test('AND A LIGHT WITH NO IMAGE AT ALL IS STILL SERVED FIRST, ahead of a flame refining one', () => {
+  /* Cold: holds no image, so it cannot be sampled until its six faces are in. */
+  const arriving = { hasBaked: false, matchesSource: () => false };
+  const flame = { hasBaked: true, matchesSource: () => false };
+  const asked = staticBakes([flame, arriving], 4);
+  expect(asked, 'the cold light takes the cube and the flame waits a frame').toEqual([
+    { light: 1, faces: 6 },
+  ]);
+});
+
+test('A QUIET FRAME DOES NOT COST A WANDERER ITS ALLOWANCE, which is what stopped the vibration', () => {
+  /*
+   * A light wandering on a curve moves less than the rebake tolerance in a frame near the turning
+   * points of its travel, so it is not stale on *every* frame. With a run that reset to zero it
+   * lost the tracking allowance there and dropped back to two faces, and the shadow then ran
+   * smoothly through the fast part of the wander and stepped through the slow part. Reported as
+   * the motion still vibrating once the allowance itself was in.
+   */
+  let stale = true;
+  const flame = { hasBaked: true, matchesSource: () => !stale };
+  const scratch = createBakeScratch(16);
+  const lights = [{ x: 0, y: 0, z: 0, radius: 10, shadowNear: 0.1, sourceRadius: 0 }];
+  const run = (): number => {
+    let faces = 0;
+    runPointShadowBakes(
+      trackingPool([flame]),
+      lights,
+      2,
+      0,
+      0.001,
+      6,
+      scratch,
+      {},
+      {},
+      (_map, _light, _casters, maxFaces) => {
+        faces = maxFaces;
+        return maxFaces;
+      },
+    );
+    return faces;
+  };
+
+  /* Four stale frames earns the allowance. */
+  for (let frame = 0; frame < 3; frame++) run();
+  expect(run(), 'a light stale every frame takes the whole cube').toBe(6);
+
+  /* One quiet frame: it moved less than a millimetre, so nothing is asked for. */
+  stale = false;
+  expect(run(), 'a light that matches its image is not baked at all').toBe(0);
+
+  /* And it is still tracking on the next frame it moves, rather than starting over. */
+  stale = true;
+  expect(run(), 'the allowance survives a quiet frame').toBe(6);
+});

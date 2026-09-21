@@ -244,7 +244,24 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
       scratch.staleOwner[slot] = lightIndex;
       scratch.staleRun[slot] = 0;
     }
-    const run = stale ? Math.min((scratch.staleRun[slot] ?? 0) + 1, CHRONIC_STALE_FRAMES) : 0;
+    /*
+     * **The run decays rather than resetting, and it climbs past the threshold before it stops.**
+     *
+     * A light that wanders on a curve is not stale on *every* frame — near the turning points of
+     * its travel it moves less in a frame than the rebake tolerance, so a run that reset to zero
+     * lost the tracking allowance there and the map dropped back to two faces a frame. The shadow
+     * then travelled smoothly through the fast part of the wander and stepped through the slow
+     * part, which is not motion and not stillness: it reads as a vibration. Reported that way,
+     * against a brazier, once the tracking allowance was in.
+     *
+     * So the run is hysteresis. It climbs to twice the threshold, which buys a light that has
+     * earned the allowance three quiet frames before it loses it, and decays one frame at a time
+     * so a light that genuinely settles stops re-baking rather than holding a budget for ever.
+     */
+    const previous = scratch.staleRun[slot] ?? 0;
+    const run = stale
+      ? Math.min(previous + 1, CHRONIC_STALE_FRAMES * 2)
+      : Math.max(previous - 1, 0);
     scratch.staleRun[slot] = run;
     scratch.chronic[slot] = run >= CHRONIC_STALE_FRAMES ? 1 : 0;
   }
@@ -259,6 +276,38 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
 
   let faces = facesPerFrame;
   let urgentSpent = false;
+  /*
+   * **One wandering light finishes its cube in the frame it started it**, the same allowance a
+   * light with no image at all gets, and for a reason that turns out to be the same one: a map
+   * dribbled out at two faces a frame is a map nobody can sample correctly until it lands.
+   *
+   * A cold light cannot be sampled *at all* until its six faces are in, so it takes the whole
+   * cube at once. A chronically stale one can be sampled throughout and is wrong in a quieter
+   * way: `planBake` pins the origin for the whole of a resumed bake, so six faces spread over
+   * three frames means the published origin steps once every third frame. The shader shoots from
+   * that origin, so the shadow it draws steps with it — reported on a brazier as motion that was
+   * "really fast, not smooth, snappy, and unrealistic", which is a 20 Hz sample of a flame that
+   * wanders about once a second.
+   *
+   * Given the cube in one frame the origin moves every frame and the shadow travels instead.
+   *
+   * **Bounded to one light, and it has to be.** Eight braziers each taking six passes is the 48
+   * passes and 89 ms `pointShadowFacesPerFrame` exists to prevent. One is the light being shaded
+   * that most recently went stale, which is the one somebody is standing next to; the rest keep
+   * dribbling under the ordinary budget, and their shadows step rather than travel. That is the
+   * right way round: a shadow you are looking at moves, and a shadow across the square does not
+   * cost the frame.
+   *
+   * It is spent *after* the cold and settling groups, because `planPointShadowBakes` orders the
+   * chronic ones last — so a light arriving in range still gets its first image ahead of a flame
+   * refining one it already has.
+   *
+   * **What would make it wrong** is a caster set heavy enough that six passes over it does not
+   * fit the frame. Measured against a game whose whole static world is about 8,500 triangles in
+   * a handful of draws; a world an order of magnitude heavier wants `pointShadowFacesPerFrame`
+   * raised or this given up, and `gpuTiming` is how to tell which.
+   */
+  let trackingSpent = false;
   for (let i = 0; i < planned && faces > 0; i++) {
     const slot = scratch.order[i] ?? -1;
     /*
@@ -270,10 +319,14 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
     const map = lightIndex >= 0 ? pool.mapForLight(lightIndex) : undefined;
     if (light === undefined || map === undefined) continue;
 
-    const cold = slot < pool.sampledCount && scratch.ready[slot] === 0;
-    const budget = cold && !urgentSpent ? faceCount : faces;
-    if (cold && !urgentSpent) urgentSpent = true;
-    faces -= bake(map, light, staticCasters, budget);
+    const sampled = slot < pool.sampledCount;
+    const cold = sampled && scratch.ready[slot] === 0;
+    const urgent = cold && !urgentSpent;
+    /* A light being shaded whose map will be stale again next frame however it is served. */
+    const tracking = !cold && sampled && scratch.chronic[slot] === 1 && !trackingSpent;
+    if (urgent) urgentSpent = true;
+    if (tracking) trackingSpent = true;
+    faces -= bake(map, light, staticCasters, urgent || tracking ? faceCount : faces);
   }
 
   /*
