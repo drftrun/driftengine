@@ -933,7 +933,17 @@ export { FlockRenderer } from './render/flockRenderer.ts';
  * the same shape scatter, plumes, particles, flocks and bolts already have. The measuring
  * helpers were statics on the class and are free functions now, because neither needs a device.
  */
-export { DEFAULT_TEXT_STYLE, textHeightPx, textWidthPx } from './render/textLayout.ts';
+export {
+  DEFAULT_TEXT_STYLE,
+  /*
+   * Exported so a caller can ask for whole-pixel strokes, which the engine used to impose. See
+   * the note at the cell upload in `render/textRenderer.ts`: snap once, then measure, lay out
+   * and draw with that one number.
+   */
+  deviceSnappedCellSize,
+  textHeightPx,
+  textWidthPx,
+} from './render/textLayout.ts';
 export type { TextStyle } from './render/textLayout.ts';
 export {
   GLYPH_HEIGHT,

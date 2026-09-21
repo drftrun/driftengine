@@ -150,7 +150,7 @@ import {
   type GpuTextCube,
 } from './textPass.ts';
 import type { TextStyle } from '../../textLayout.ts';
-import { deviceSnappedCellSize, deviceSnappedOrigin } from '../../textLayout.ts';
+import { deviceSnappedOrigin } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
 import {
   createSdfTextBindGroup,
@@ -3185,13 +3185,9 @@ export class WebGPURenderer implements RendererApi {
       deviceSnappedOrigin(originX, viewportWidth, this.surface.canvas.width),
       deviceSnappedOrigin(originY, viewportHeight, this.surface.canvas.height),
     ]);
-    /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
-       decision is shared with WebGL2; only this binding is per-backend. See `textLayout.ts`. */
-    v.writeFloat(
-      vertexSlot,
-      at('uCellSize'),
-      deviceSnappedCellSize(style.cellSize, viewportWidth, this.surface.canvas.width),
-    );
+    /* The cell the caller asked for, drawn faithfully. See `textRenderer.ts` for why the snap
+       this used to impose is the caller's to ask for. */
+    v.writeFloat(vertexSlot, at('uCellSize'), style.cellSize);
     /* Far enough that a whole line barely converges, near enough that a turn reads as a turn. */
     v.writeFloat(vertexSlot, at('uDepth'), Math.max(viewportWidth, 600) * 1.4);
     v.writeFloat(vertexSlot, at('uReveal'), style.reveal);

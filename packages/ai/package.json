@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/ai",
-  "version": "4.1.5",
+  "version": "4.2.0",
   "description": "Provider-neutral intelligence sessions, typed tools and context, and an agent loop that does not wait",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,8 +27,8 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/core": "4.1.5",
-    "@driftengine/entities": "4.1.5"
+    "@driftengine/core": "4.2.0",
+    "@driftengine/entities": "4.2.0"
   },
   "author": "Drift Technologies",
   "repository": {

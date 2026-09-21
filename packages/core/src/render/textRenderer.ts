@@ -1,11 +1,5 @@
 import type { TextStyle } from './textLayout.ts';
-import {
-  MAX_CELLS,
-  TEXT_CUBE,
-  TextLayout,
-  deviceSnappedCellSize,
-  deviceSnappedOrigin,
-} from './textLayout.ts';
+import { MAX_CELLS, TEXT_CUBE, TextLayout, deviceSnappedOrigin } from './textLayout.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { TEXT_FRAG, TEXT_VERT } from './shaders/text.ts';
 
@@ -129,13 +123,28 @@ export class TextRenderer {
       deviceSnappedOrigin(originX, viewportWidth, gl.drawingBufferWidth),
       deviceSnappedOrigin(originY, viewportHeight, gl.drawingBufferHeight),
     );
-    /* Whole device pixels per cell, or a 5x7 face draws strokes of two different widths. The
-       decision is shared with WebGPU; only this binding is per-backend. See `textLayout.ts`. */
-    setFloat(
-      gl,
-      this.uniforms['uCellSize'],
-      deviceSnappedCellSize(style.cellSize, viewportWidth, gl.drawingBufferWidth),
-    );
+    /*
+     * **The cell the caller asked for, drawn faithfully.**
+     *
+     * 4.1.4 snapped this down to whole device pixels here, so a 5x7 face could not draw strokes
+     * of two different widths. That defect is real and the snap is the right cure for it, but
+     * imposing it was wrong: `textWidthPx` is the only measurement a consumer has, it takes no
+     * viewport and so cannot know the device ratio, and every consumer went on laying out against
+     * the cell it asked for while this drew a smaller one. A centred line, a right-aligned column
+     * and a line fitted to a box all broke at once, silently, and only where the snap was not a
+     * no-op: a whole cell at a whole ratio is untouched, which is why it looked right in a
+     * full-size landscape browser and wrong in mobile portrait, where a consumer divides an
+     * available width by a cell count and gets a fraction.
+     *
+     * So the snap is the caller's to ask for. `deviceSnappedCellSize` is exported; a caller that
+     * wants whole-pixel strokes snaps once and uses that one number to measure, to lay out and to
+     * draw, where the measurement and the picture agree by construction.
+     *
+     * **What this gives up** is that a fractional cell draws strokes of two widths again for a
+     * caller that does not opt in. **What would make it wrong** is a measurement that could snap
+     * on the caller's behalf, which would need the viewport `textWidthPx` is not handed.
+     */
+    setFloat(gl, this.uniforms['uCellSize'], style.cellSize);
     // Far enough that a whole line barely converges, near enough that a rotating character
     // reads as turning rather than shearing.
     setFloat(gl, this.uniforms['uDepth'], Math.max(viewportWidth, 600) * 1.4);

@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/assets",
-  "version": "4.1.5",
+  "version": "4.2.0",
   "description": "Model readers and the streaming loader for the .drft container",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,11 +27,11 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/drft": "4.1.5",
-    "@driftengine/texture": "4.1.5"
+    "@driftengine/drft": "4.2.0",
+    "@driftengine/texture": "4.2.0"
   },
   "peerDependencies": {
-    "@driftengine/core": "4.1.5"
+    "@driftengine/core": "4.2.0"
   },
   "author": "Drift Technologies",
   "repository": {

@@ -1,5 +1,21 @@
 [
  {
+  "version": "4.2.0",
+  "date": "2026-09-21",
+  "entries": [
+   {
+    "kind": "fixed",
+    "short": "Text is drawn at the cell size it was asked for, so a centred line is centred again. 4.1.4 snapped the cell down without telling the caller that measured it.",
+    "text": "**Reported as text that \"is not centered anymore and maybe tinier\", in every consumer at once**, correct in a full-size landscape browser and wrong in mobile portrait.\n\n4.1.4 made the draw path snap the cell down to whole device pixels, so a 5x7 face could not draw strokes of two different widths. That defect is real and the snap is the right cure for it, but imposing it was wrong. `textWidthPx` is the only measurement a consumer has, it takes no viewport and therefore cannot know the device ratio, so every consumer went on laying out against the cell it asked for while the engine drew a smaller one.\n\n**Everything done with a measured width broke together**: a centred line, a right-aligned column, a line fitted to a box. Measured on a 23-character string, a cell of 4.68 at ratio 1 draws 46.6 px narrower than measured; a whole cell of 3 on a 1.25 display draws 41.1 px narrower and 20% smaller than asked. The release note that shipped it called this \"at most half a device pixel per cell off centre\", which was wrong by two orders of magnitude.\n\n**It looked fine on a desktop because the snap is a no-op there.** A whole cell at a whole device ratio is returned untouched, which is exactly the case a full-size landscape browser produces. A consumer that divides an available width by a cell count, which is what a responsive layout does, gets a fraction and pays the whole gap. That is why it was reported as a mobile-portrait fault rather than a text fault.\n\nBoth backends now draw the cell they are handed. The origin snap stays: it rounds to the nearest device pixel, shifts a line by at most half of one and breaks no layout.\n\n**What this gives up** is that a fractional cell draws strokes of two widths again for a caller that does not opt in, which is the defect 4.1.4 was written to fix. It is available rather than imposed now, and the entry below is how."
+   },
+   {
+    "kind": "added",
+    "short": "deviceSnappedCellSize is exported, so a caller can ask for whole-pixel glyph strokes and measure the size it will actually get.",
+    "text": "The cell size to draw at so that every cell of a bitmap glyph covers whole device pixels, which the engine used to apply on the caller's behalf and no longer does.\n\n**It was not exported at all before**, which is why no consumer could have compensated for the snap being imposed: the decision was reachable only from inside the renderer. Snap once, at the point the cell is computed, then use that one number to measure, to lay out and to draw. The measurement and the picture then agree by construction, which is the property the imposed version could not have.\n\n```js\nconst cell = deviceSnappedCellSize(available / cells, viewportWidth, canvas.width);\nconst width = textWidthPx(label, cell);\nrenderer.drawText(text, viewportWidth, viewportHeight, (boxWidth - width) / 2, y, { ...style, cellSize: cell }, now);\n```\n\nThe cell drawn is the largest whole number of device pixels not larger than the one asked for. Down rather than to nearest, because a caller that fitted a line to a box measured it first and rounding up would draw a line wider than the box; rounding down can only leave a gap. A cell already whole is returned untouched, so nothing moves where there was nothing to fix."
+   }
+  ]
+ },
+ {
   "version": "4.1.5",
   "date": "2026-09-21",
   "entries": [
