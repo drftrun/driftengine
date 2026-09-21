@@ -43,6 +43,18 @@ const WORKERS = 4;
  * pool honestly reports that its workers never took the shared buffer, and two cases went red for a
  * new reason. Forcing a machine to run more workers than it has is not measuring the pool either.
  *
+ * **And the third, which is the actual cause and was not about cores at all.** Both of the above
+ * read a startup cost as a scheduling one. `createIslandPool` spawns and returns with no readiness
+ * handshake, so the *first* reload of a pool is also paying for the worker entry to load, once per
+ * worker; the 250 ms it was measured against was sized for a running worker that has stopped
+ * answering. Measured on an idle twenty-four core machine with a warm cache, that first adoption
+ * takes **45 to 77 ms** against **0.3 to 0.8 ms** for every later one — already a third of the
+ * budget in the best conditions there are, and over it on a cold build character. `reload` gives
+ * the first adoption `START_DEADLINE_MS` now and parks on the acknowledgement rather than spinning
+ * for it. Two core pinning experiments are recorded above because neither reproduced anything: a
+ * hot spin does not starve a worker on a preemptive scheduler, which is what made this look like
+ * contention for two attempts running.
+ *
  * So nothing is pinned for the working cases: they ask for `WORKERS`, take whatever the machine
  * grants, and assert against *that*. Only the two clamp cases pin, because the clamp is the thing
  * they are about, and neither of them steps a world with more workers than the machine has.

@@ -48,6 +48,27 @@ export const CTL_SOLVED = 7;
 /** How long a join waits before it gives up on a worker and solves the tick itself. */
 const JOIN_DEADLINE_MS = 250;
 
+/**
+ * How long the *first* adoption may take, which is a different question from every later one.
+ *
+ * **A worker cannot acknowledge before it exists.** `createIslandPool` spawns and returns without
+ * a readiness handshake, so the first `reload` is also paying for the worker entry to load: a
+ * module graph, resolved and type-stripped, once per worker. Every later reload hands a buffer to
+ * a thread that is already parked, which is a different order of magnitude.
+ *
+ * Measured on an idle twenty-four core machine with a warm module cache: the first adoption of
+ * each pool took **45 to 77 ms** and every subsequent one **0.3 to 0.8 ms**. So the 250 ms that is
+ * generous for a running worker was already spending up to a third of itself on startup in the
+ * best conditions available, and a cold two-core build character went over it. Reported as the
+ * pool announcing that its workers never took the shared buffer, intermittently, on a machine
+ * nobody could reproduce it on.
+ *
+ * Five seconds, because a boot that slow is still a working pool and the alternative is serial
+ * physics for the life of the world. It is not a licence for a *running* worker to go quiet:
+ * `JOIN_DEADLINE_MS` still governs that, and it is the one that means "stopped answering".
+ */
+const START_DEADLINE_MS = 5_000;
+
 /** What a consumer asked for. */
 export interface PoolRequest {
   workers: number;
@@ -272,13 +293,59 @@ export class WorkerPoolExecutor extends StagedExecutor implements Executor {
       });
     }
 
-    const deadline = performance.now() + JOIN_DEADLINE_MS;
-    while (Atomics.load(ctl, CTL_ACK) < this.workers.length) {
+    /*
+     * **Park on the acknowledgement rather than spinning for it, because the thing being waited
+     * for needs a core to happen.**
+     *
+     * A worker can only acknowledge from its *message handler*, which needs its event loop, which
+     * needs CPU. A caller that spins hot holds a core against exactly the worker it is waiting
+     * for, so on a machine with fewer cores than workers the acknowledgement cannot arrive and
+     * this deadline expires every time. The pool then reports, correctly, that its workers never
+     * took the buffer, and falls back to a serial solve — so the failure is a lost capability
+     * rather than a wrong world, which is why it survived: everything stays right, just slower.
+     *
+     * `islandWorker.ts` has always answered with `Atomics.notify` on this slot, and its comment
+     * says "the caller is spinning on `CTL_ACK`" — a notify with nobody waiting on it. `join`
+     * three methods up already parks this way, and for the same reason. This is that asymmetry
+     * closed.
+     *
+     * Found on a build character rather than here: four workers on a twenty-four core machine
+     * acknowledge in microseconds and this spin never bit, while the same four on a two core
+     * runner missed the 250 ms deadline. `workerPool.test.mjs` records two earlier attempts to
+     * tune the core count around it, which is treating the symptom.
+     *
+     * **What would make it wrong** is a caller that may not block, which is a browser's main
+     * thread: `blocking` is false there, JavaScript offers no synchronous yield, and the spin is
+     * all that is left. Such a host on a machine this contended still takes the serial fallback,
+     * and the honest cure there is to stop re-planning inside a tick rather than to wait harder.
+     */
+    /*
+     * **The first adoption is allowed to be slow, and it parks rather than spins.**
+     *
+     * The two go together. A first reload waits for the worker entry to load, which is tens of
+     * milliseconds at best and can be seconds on a cold, contended machine, so it is measured
+     * against `START_DEADLINE_MS` rather than the deadline that means "a running worker stopped
+     * answering". And a wait that long must not be a hot spin: `islandWorker.ts` has always
+     * answered with `Atomics.notify` on this slot, so the caller can sleep on it and be woken the
+     * instant it lands, which is what `join` already does. Burning a core for five seconds would
+     * slow the very startup being waited for.
+     *
+     * **What would make it wrong** is a caller that may not block, which is a browser's main
+     * thread: `blocking` is false there, JavaScript offers no synchronous yield, and the spin is
+     * all that is left. That host still takes the serial fallback rather than a wrong world, and
+     * the honest cure for it is a readiness handshake at construction rather than a longer wait
+     * inside a tick.
+     */
+    const deadline = performance.now() + (this.started ? JOIN_DEADLINE_MS : START_DEADLINE_MS);
+    for (;;) {
+      const acked = Atomics.load(ctl, CTL_ACK);
+      if (acked >= this.workers.length) break;
       if (performance.now() > deadline) {
         this.failure =
           'the workers did not take the shared buffer, so island solving stayed on this thread.';
         return false;
       }
+      if (this.blocking) Atomics.wait(ctl, CTL_ACK, acked, 50);
     }
     Atomics.store(ctl, CTL_RELOAD, 0);
     this.posted = stage.generation;

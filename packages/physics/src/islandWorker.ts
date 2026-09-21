@@ -58,7 +58,7 @@ function accept(message: StageMessage): void {
   state = SolveStage.adopt(message.buffer, message.plan).state;
   /*
    * **The epoch is read before the acknowledgement, and that order is the whole correctness of a
-   * re-plan.** The caller is spinning on `CTL_ACK` and bumps the epoch the moment it completes. Read
+   * re-plan.** The caller parks on `CTL_ACK` and bumps the epoch the moment it completes. Read
    * after acknowledging and this worker can capture the epoch it was meant to wake for, then wait
    * for the one after it — sleeping through the tick, so the join never completes and the pool
    * declares itself dead. Reading first bounds `seen` below the next bump by construction.
