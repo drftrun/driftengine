@@ -1,5 +1,16 @@
 [
  {
+  "version": "4.2.1",
+  "date": "2026-09-21",
+  "entries": [
+   {
+    "kind": "fixed",
+    "short": "A physics worker pool survives a slow start. Its first adoption was racing the time its own workers take to load, and losing on small or cold machines.",
+    "text": "**Reported from continuous integration, intermittently, as \"the workers did not take the shared buffer, so island solving stayed on this thread.\"** The world stays correct when that happens, because the pool falls back to a serial solve, so what it costs is the capability rather than the picture. That is why it survived: nothing looked wrong, physics was just quietly single-threaded.\n\n`createIslandPool` spawns its workers and returns with no readiness handshake, so the *first* `reload` of a pool is also paying for the worker entry to load: a module graph, resolved and type-stripped, once per worker. It was measured against the deadline meant for a running worker that has stopped answering, and those are different questions.\n\n**Measured** on an idle twenty-four core machine with a warm module cache: the first adoption of each pool takes **45 to 77 ms** and every later one **0.3 to 0.8 ms**. So the 250 ms was already spending up to a third of itself on startup under the best conditions available, and a cold two-core machine goes over it.\n\nThe first adoption now has its own five second budget, because a boot that slow is still a working pool while the alternative is serial physics for the life of the world. The deadline that means \"a running worker stopped answering\" is untouched. The wait also parks on the acknowledgement rather than spinning for it, which a budget that long makes load-bearing rather than tidy: burning a core for five seconds would slow the very startup being waited for, and the worker has always answered with `Atomics.notify` on that slot.\n\n**Two earlier attempts blamed core contention and are recorded in the test file beside this one**, because neither reproduced anything: a hot spin does not starve a worker on a preemptive scheduler, which is what made a startup cost look like a scheduling one twice running. This one is proven by reproduction: forcing the start deadline below the measured boot reproduces both failing cases and the identical message, and restoring it turns them green.\n\nA consumer on a phone or a modest laptop is the one this was costing, which is where a worker pool is worth the most."
+   }
+  ]
+ },
+ {
   "version": "4.2.0",
   "date": "2026-09-21",
   "entries": [

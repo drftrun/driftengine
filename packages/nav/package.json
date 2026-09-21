@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/nav",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "A navigation mesh: geometry to walkable convex polygons, and a straight line across them",
   "license": "Apache-2.0",
   "type": "module",
@@ -53,6 +53,6 @@
     "prepack": "node ../../scripts/build.mjs @driftengine/nav"
   },
   "dependencies": {
-    "@driftengine/core": "4.2.0"
+    "@driftengine/core": "4.2.1"
   }
 }
