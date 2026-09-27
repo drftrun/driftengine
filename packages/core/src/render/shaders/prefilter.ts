@@ -39,6 +39,12 @@ import { OCTAHEDRAL_GLSL } from './octahedral.ts';
  */
 export const PREFILTER_FRAG = `#version 300 es
 precision highp float;
+/*
+ * highp int as well, because the radical inverse below is a 32-bit bit reversal and the fragment
+ * default for int and uint is mediump. A driver that computes mediump in sixteen bits returns 0
+ * for every sample, and every cosine sample of the diffuse level lands on its own normal.
+ */
+precision highp int;
 
 ${OCTAHEDRAL_GLSL}
 

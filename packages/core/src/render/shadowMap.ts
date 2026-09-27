@@ -9,6 +9,7 @@
  * "zero textures" rule is about the art direction (no image assets in the
  * payload), and nothing here adds a byte to it.
  */
+import { SHADOW_DEPTH_CLEAR } from './depthConvention.ts';
 import { DEFAULT_RENDER_QUALITY } from './renderQuality.ts';
 
 export class ShadowMap {
@@ -53,6 +54,19 @@ export class ShadowMap {
       if (gl.isContextLost()) return;
       throw new Error(`ShadowMap: framebuffer incomplete (0x${status.toString(16)})`);
     }
+
+    /*
+     * **Cleared once, here, to the far plane, because nothing else says what the texture holds.**
+     * WebGL zeroes it, and a zero compared with `LEQUAL` is an occluder at the light itself, so
+     * a layer no pass has drawn put the whole world in shade. ANGLE on Vulkan hands the same
+     * texture back reading 1, which is lit, and that is what every capture here ran on: a scene
+     * with a second depth layer it never peeled lost its sun only under ANGLE's GL backend, the
+     * one Chrome on Linux runs by default. The frame's clear value is borrowed and put back.
+     */
+    const frameClear = gl.getParameter(gl.DEPTH_CLEAR_VALUE) as number;
+    gl.clearDepth(SHADOW_DEPTH_CLEAR);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.clearDepth(frameClear);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindTexture(gl.TEXTURE_2D, null);

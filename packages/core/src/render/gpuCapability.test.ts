@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import {
   adapterRendererName,
@@ -270,4 +270,28 @@ test('describeGpu answers "none" when the context exists and names nothing', asy
   const { canvas } = fakeCanvas(null);
   const gpu = await describeGpu({ gpu: null, createCanvas: () => canvas });
   expect(gpu.source).toBe('none');
+});
+
+test('DESCRIBEGPU NEVER THROWS ON A PAGE WITH NO DOM, and asks the adapter instead', async () => {
+  /*
+   * **A host can have a `document` and still refuse a canvas.** The native host installs one so a
+   * game finds the page it expects, and its `createElement` throws for every tag it cannot make,
+   * which is all of them: there is no DOM. The default path asked it for a canvas unguarded, so
+   * the one function whose header promises it never throws took a scene's mount down with it on
+   * the second host — a courtyard that chooses its lighting tier from the part never got as far
+   * as its first frame. What it should do is what it does when WebGL2 will not name the part.
+   */
+  vi.stubGlobal('document', {
+    createElement: (tag: string) => {
+      throw new Error(`no DOM to make a <${tag}> in`);
+    },
+  });
+  try {
+    const gpu = await describeGpu({
+      gpu: adapterGiving({ vendor: 'amd', architecture: 'rdna-4' }),
+    });
+    expect(gpu).toEqual({ rendererName: 'amd rdna-4', weak: false, source: 'webgpu' });
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

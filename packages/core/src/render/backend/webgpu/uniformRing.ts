@@ -58,6 +58,11 @@ export class UniformRing {
   private ints: Int32Array;
   private capacity: number;
   private used = 0;
+  /**
+   * The byte below which the device already holds what the staging does: the end of the last
+   * flush, lowered by any write under it since. See `flush`.
+   */
+  private clean = 0;
 
   /**
    * `label` names the buffer on the device, and it is not decoration.
@@ -124,6 +129,7 @@ export class UniformRing {
 
     this.buffer.destroy();
     this.capacity = slots;
+    this.clean = 0;
     this.staging = new ArrayBuffer(bytes);
     this.floats = new Float32Array(this.staging);
     this.ints = new Int32Array(this.staging);
@@ -143,6 +149,28 @@ export class UniformRing {
   /** Start a frame. Slots are reused; nothing is freed. */
   reset(): void {
     this.used = 0;
+    this.clean = 0;
+  }
+
+  /** Where the ring stands, to hand back to `rewind`. */
+  mark(): number {
+    return this.used;
+  }
+
+  /**
+   * Give back every slot taken since `mark`, for a caller that has already submitted the commands
+   * reading them.
+   *
+   * **Safe because the queue is ordered, and only then.** A `writeBuffer` issued after a submit
+   * cannot reach the commands in it, so slots a submitted encoder read may be rewritten by the next
+   * one. A slot taken by an encoder not yet submitted may not be: every draw pointing at it would
+   * read whatever overwrote it, which is the defect this class exists to prevent. What uses it is
+   * work that submits encoders of its own mid-frame — a probe bake — so the frame's rings are not
+   * spent by something the frame never draws.
+   */
+  rewind(mark: number): void {
+    if (mark < this.used) this.used = mark;
+    if (this.used * this.slotSize < this.clean) this.clean = this.used * this.slotSize;
   }
 
   /**
@@ -180,6 +208,7 @@ export class UniformRing {
 
   /** Write floats into a slot, at a byte offset within it. */
   writeFloats(slot: number, byteOffset: number, values: ArrayLike<number>): void {
+    if (slot < this.clean) this.clean = slot;
     this.floats.set(values, (slot + byteOffset) / 4);
   }
 
@@ -192,11 +221,13 @@ export class UniformRing {
    * buffer being reused.
    */
   writeFloat(slot: number, byteOffset: number, value: number): void {
+    if (slot < this.clean) this.clean = slot;
     this.floats[(slot + byteOffset) / 4] = value;
   }
 
   /** Write one integer into a slot. Separate because a `Float32Array` cannot hold an `i32`. */
   writeInt(slot: number, byteOffset: number, value: number): void {
+    if (slot < this.clean) this.clean = slot;
     this.ints[(slot + byteOffset) / 4] = value;
   }
 
@@ -213,13 +244,28 @@ export class UniformRing {
    * `Int32Array.set` from an `Int32Array` is an exact copy of every bit, whatever the bits mean.
    */
   writeBlock(slot: number, block: Int32Array): void {
+    if (slot < this.clean) this.clean = slot;
     this.ints.set(block, slot / 4);
   }
 
-  /** Upload every slot taken this frame, in one write. */
+  /**
+   * Upload every slot taken this frame that the device does not already hold, in one write.
+   *
+   * **From the watermark, not from zero, because a frame flushes more than once.** Every submit in
+   * the middle of a frame flushes first, and a probe bake submits per face: sending the whole used
+   * range each time sent a courtyard's first slots two hundred times over, 2.3 GB in a two-second
+   * grid bake, measured. Queue writes are ordered, so bytes already sent and not written since are
+   * on the device for every command after them, and resending them changed nothing.
+   *
+   * What it gives up is one compare per write. What would make it wrong is a write that reached the
+   * staging without passing a method that lowers `clean` — which is why the staging stays private.
+   */
   flush(): void {
-    if (this.used === 0) return;
-    this.device.queue.writeBuffer(this.buffer, 0, this.staging, 0, this.used * this.slotSize);
+    const end = this.used * this.slotSize;
+    if (end <= this.clean) return;
+    const from = this.clean;
+    this.device.queue.writeBuffer(this.buffer, from, this.staging, from, end - from);
+    this.clean = end;
   }
 
   dispose(): void {

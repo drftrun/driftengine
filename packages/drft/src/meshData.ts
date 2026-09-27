@@ -288,9 +288,16 @@ export function validateMeshData(data: MeshData): void {
    * An index past the end is the same hazard from the other side, and the same latitude
    * applies: a driver may clamp it or refuse the draw. Scanned once at construction, which
    * is a cost paid when a mesh is built rather than when it is drawn.
+   *
+   * **The array is read once, outside the loop.** A mesh arrives in as many object shapes as there
+   * are combinations of optional fields, so `data.indices` is a megamorphic load, and one inside the
+   * loop is a lookup per index the compiler cannot hoist: 0.8 s of a five-pack load, five times what
+   * the same scan costs over a local.
    */
-  for (let at = 0; at < data.indices.length; at++) {
-    const index = data.indices[at] as number;
+  const indices = data.indices;
+  const count = indices.length;
+  for (let at = 0; at < count; at++) {
+    const index = indices[at] as number;
     if (index >= vertices) {
       throw new Error(
         `Mesh: index ${at} refers to vertex ${index}, but the mesh has ${vertices}. ` +

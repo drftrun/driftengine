@@ -49,9 +49,21 @@ export function recordingGl(
      * `Infinity` by default, so a link only ever fails where a test asked for it.
      */
     readonly refuseLinkAbove?: number;
+    /**
+     * Uniforms every program reports as active, each located by a handle carrying its name.
+     *
+     * **None by default**, which ends every reflection loop at once and leaves every upload aimed
+     * at `null`. A test about what a frame *uploads* names the uniform here and then finds the
+     * calls whose location says that name, rather than guessing at an upload's position in the
+     * recording.
+     */
+    readonly uniforms?: readonly string[];
   } = {},
 ) {
   const extensions = new Set(options.extensions ?? []);
+  const uniforms = options.uniforms ?? [];
+  /* What `clearDepth` last set, so a module that borrows the value can be seen to put it back. */
+  let depthClear = 1;
   const reportedVectors = options.fragmentUniformVectors ?? 1024;
   const enforcedVectors = options.refuseLinkAbove ?? Number.POSITIVE_INFINITY;
   /** Fragment sources by shader handle, so a refusal can be decided from what was compiled. */
@@ -71,6 +83,7 @@ export function recordingGl(
     MAX_TEXTURE_IMAGE_UNITS: 0x8872,
     MAX_VERTEX_UNIFORM_VECTORS: 0x8dfb,
     MAX_FRAGMENT_UNIFORM_VECTORS: 0x8dfd,
+    DEPTH_CLEAR_VALUE: 0x0b73,
     /*
      * Enums a test needs to compare against, rather than merely to pass through.
      *
@@ -126,6 +139,7 @@ export function recordingGl(
       if (pname === constants.MAX_SAMPLES) return 4;
       if (pname === constants.MAX_FRAGMENT_UNIFORM_VECTORS) return reportedVectors;
       if (pname === constants.MAX_VERTEX_UNIFORM_VECTORS) return 1024;
+      if (pname === constants.DEPTH_CLEAR_VALUE) return depthClear;
       /* Generous by default: every remaining limit is a ceiling something is checked against,
          and a small answer is read as a device that cannot do the thing. */
       return 4096;
@@ -156,16 +170,24 @@ export function recordingGl(
     /* Linked yes; zero active uniforms and attributes, which ends every reflection loop at once
        and is why this harness does not have to know a single uniform name. */
     getProgramParameter: (program: unknown, pname: unknown) => {
-      if (pname === constants.ACTIVE_UNIFORMS || pname === constants.ACTIVE_ATTRIBUTES) return 0;
+      if (pname === constants.ACTIVE_UNIFORMS) return uniforms.length;
+      if (pname === constants.ACTIVE_ATTRIBUTES) return 0;
       if (pname !== constants.LINK_STATUS) return true;
       if (!Number.isFinite(enforcedVectors)) return true;
       if (typeof program !== 'object' || program === null) return true;
       const source = programFragments.get(program);
       return source === undefined || countUniformVectors(source) <= enforcedVectors;
     },
-    getActiveUniform: () => ({ name: '', size: 1, type: 0 }),
+    getActiveUniform: (_program: unknown, index: unknown) => ({
+      name: uniforms[Number(index)] ?? '',
+      size: 1,
+      type: 0,
+    }),
     getActiveAttrib: () => ({ name: '', size: 1, type: 0 }),
-    getUniformLocation: () => ({}),
+    getUniformLocation: (_program: unknown, name: unknown) => ({ name }),
+    clearDepth: (value: unknown) => {
+      depthClear = Number(value);
+    },
     getAttribLocation: () => -1,
     checkFramebufferStatus: () => constants.FRAMEBUFFER_COMPLETE,
     getError: () => constants.NO_ERROR,

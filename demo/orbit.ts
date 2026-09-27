@@ -41,6 +41,11 @@ export class OrbitView {
   private yaw = 0;
   private pitch = 0;
   private distance = 10;
+
+  /** How far the eye stands from what it orbits, in metres: where a lens would focus. */
+  get targetDistance(): number {
+    return this.distance;
+  }
   /**
    * The room the eye is kept inside, or zero for a world with no walls.
    *
@@ -53,6 +58,11 @@ export class OrbitView {
   private targetX = 0;
   private targetY = 0;
   private targetZ = 0;
+  /** Where `place` last stood the eye, and the lens it found, for `describe`. */
+  private eyeX = 0;
+  private eyeY = 0;
+  private eyeZ = 0;
+  private fovYDeg = 0;
 
   /** How close and how far a viewer may get, in metres. Scenes differ; both are set. */
   private readonly minDistance: number;
@@ -139,7 +149,22 @@ export class OrbitView {
     this.taken = false;
   }
 
-  /** Place a camera on the current orbit. The scene still owns roll and projection. */
+  /**
+   * The viewer's view as the `?eye=&at=&fov=` a scene stands a camera by, or null while the scene's
+   * own camera runs. So a view somebody dragged to can be sent and stood in again, which a
+   * screenshot cannot do: a defect seen from one place is often not there from the next.
+   */
+  describe(): { eye: string; at: string; fov: string } | null {
+    if (!this.taken) return null;
+    const cm = (x: number, y: number, z: number): string =>
+      `${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}`;
+    return {
+      eye: cm(this.eyeX, this.eyeY, this.eyeZ),
+      at: cm(this.targetX, this.targetY, this.targetZ),
+      fov: this.fovYDeg.toFixed(1),
+    };
+  }
+
   /**
    * Keep the eye inside a room, on every side, until somebody deliberately leaves it.
    *
@@ -164,6 +189,7 @@ export class OrbitView {
     this.boundsY = ceilingY;
   }
 
+  /** Place a camera on the current orbit. The scene still owns roll and projection. */
   place(camera: Camera): void {
     // The shallowest pitch that still leaves the eye above the floor, at this distance.
     const lowest = Math.asin(clamp((this.minHeight - this.targetY) / (this.distance || 1), -1, 1));
@@ -197,5 +223,9 @@ export class OrbitView {
     camera.position[1] = y;
     camera.position[2] = z;
     camera.lookAt(this.targetX, this.targetY, this.targetZ);
+    this.eyeX = x;
+    this.eyeY = y;
+    this.eyeZ = z;
+    this.fovYDeg = camera.fovYDeg;
   }
 }

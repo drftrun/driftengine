@@ -75,7 +75,7 @@ const ENV = createEnvironment({
 });
 
 class HierarchyHandle implements DemoHandle {
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly canvas: HTMLCanvasElement;
   private readonly camera = new Camera();
   /*

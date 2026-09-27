@@ -25,13 +25,14 @@ import { type AudioDefaults, installAudio } from './audio.ts';
 import type { NativeBridge } from './bridge.ts';
 import type { NativeCanvas } from './canvas.ts';
 import { errorsOf } from './device.ts';
+import { type FrameCall, runFrames } from './frameLoop.ts';
 import { hostFetch } from './files.ts';
 import { HostGamepads, type JoystickModule, type PadModule } from './gamepads.ts';
 import { installGpu, installLocation } from './globals.ts';
 import { installImages } from './images.ts';
 import { HostPage } from './page.ts';
 import { installThreads } from './threads.ts';
-import { HostWindow } from './window.ts';
+import { HostWindow, type PresentMode } from './window.ts';
 import type { WindowMode } from './windowMode.ts';
 
 export interface HostOptions {
@@ -52,19 +53,17 @@ export interface HostOptions {
   /** `location.search`, for a game that reads its address. */
   readonly query?: string;
   readonly audio?: AudioDefaults;
+  /** How frames reach the screen; `fifo` by default. See `HostWindowOptions.presentMode`. */
+  readonly presentMode?: PresentMode;
 }
 
-export interface FrameCall {
-  /** The page's clock for this frame, in milliseconds. */
-  readonly now: number;
-  /** Frames drawn before this one. */
-  readonly drawn: number;
-}
+export type { FrameCall } from './frameLoop.ts';
 
 export interface RunOptions {
   readonly frames?: number;
   readonly before?: (drawn: number) => void;
-  readonly frame?: (call: FrameCall) => void;
+  /** Draw, or answer with a promise to be waited for when there is nothing to draw: see `runFrames`. */
+  readonly frame?: (call: FrameCall) => void | Promise<void>;
   readonly after?: (call: FrameCall) => void;
 }
 
@@ -76,7 +75,8 @@ export interface NativeHost {
   /**
    * Draw until the window closes, the game asks to quit, or `frames` have been drawn. Each frame
    * calls `before` (where a held clock moves), runs the page's animation frames, calls `frame`,
-   * puts the canvas on the screen and calls `after`. Answers how many were drawn.
+   * lets the microtasks it queued run, puts the canvas on the screen and calls `after`. Answers how
+   * many were drawn.
    */
   run(options?: RunOptions): Promise<number>;
   /** Flush the store and close the window. */
@@ -102,6 +102,7 @@ export function startHost(options: HostOptions): NativeHost {
     hidden: options.hidden === true,
     mode: options.mode,
     resizable: options.resizable,
+    presentMode: options.presentMode,
   });
   installGpu(window.gpu);
   installLocation(options.query ?? '');
@@ -132,27 +133,20 @@ export function startHost(options: HostOptions): NativeHost {
     page,
     canvas: window.canvas,
     bridge,
-    async run(run = {}) {
-      const frames = run.frames ?? Number.POSITIVE_INFINITY;
-      let drawn = 0;
-      while (!window.isClosed && !quitting && drawn < frames) {
-        run.before?.(drawn);
-        const now = performance.now();
-        /* The page's animation frames first, as a browser runs them before it paints. */
-        page.runFrame(now);
-        const context = window.canvas.getContext('webgpu') as GPUCanvasContext;
-        const configuration = context.getConfiguration();
-        const errors = configuration === null ? null : errorsOf(configuration.device);
-        errors?.open();
-        run.frame?.({ now, drawn });
-        window.present();
-        errors?.close();
-        run.after?.({ now, drawn });
-        drawn += 1;
-        /* A task between frames, so SDL's events and the device's callbacks get their turn. */
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      return drawn;
+    /* In a browser's order, the microtask checkpoint before the present included: see `frameLoop.ts`. */
+    run(run = {}) {
+      return runFrames({
+        ...run,
+        open: () => !window.isClosed && !quitting,
+        clock: () => performance.now(),
+        animationFrames: (now) => page.runFrame(now),
+        errors: () => {
+          const context = window.canvas.getContext('webgpu') as GPUCanvasContext;
+          const configuration = context.getConfiguration();
+          return configuration === null ? null : errorsOf(configuration.device);
+        },
+        present: () => window.present(),
+      });
     },
     async close() {
       bridge.flushSync();

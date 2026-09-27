@@ -11,10 +11,11 @@
  * facing away from it, reads the far wall's mean channels, and reports the frame it settles on.
  * This runs it twice — the flag off and on — and compares.
  *
- * **The colour is the claim and the brightness is not.** Anything that raised the ambient would
- * make the far wall brighter, and would make it brighter *grey*. What only a bounce can do is carry
- * the red wall's hue onto a white wall the sun never reaches, so the assertion is on the red-over-
- * blue ratio rising, with the brightness reported beside it rather than asserted on.
+ * **The colour is one claim and the brightness is the other.** Anything that raised the ambient
+ * would make the far wall brighter, and would make it brighter *grey*. What only a bounce can do is
+ * carry the red wall's hue onto a white wall the sun never reaches, so one assertion is on the red
+ * the wall takes. How much red is the other, against a path tracer of the same room
+ * (`bounce-reference.mjs`), which is what found the bake a factor of pi dark.
  *
  * It is not a `*.test.mjs` and `npm run test:scripts` does not pick it up, deliberately: it needs a
  * dev server and a real GPU, which is the same reason `ghost-check.mjs` is run by hand.
@@ -24,6 +25,7 @@
  */
 import { launch } from '../packages/core/scripts/browser.mjs';
 import { connect } from '../packages/core/scripts/cdp.mjs';
+import { farWallRange } from './bounce-reference.mjs';
 
 function argOf(name, fallback) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -127,19 +129,34 @@ check(
 );
 
 /*
- * **The energy gap is reported and not asserted on, and what it reports has changed.**
+ * **The energy is asserted, against a path-traced reference of this room rather than against the
+ * rasterised grid.** Compared only with each other the two grids could not say which was wrong;
+ * `bounce-reference.mjs` shares nothing with the engine but its lighting convention, and it said
+ * both were. The traced wall read 66 of 255 against a reference of 195 to 218, because the bake
+ * divided the sun by pi where the frame does not, and the rasterised one reads about half of it,
+ * because this page keeps no range, so its capture is eight bits and clips a sunlit wall at one.
  *
- * It was a thirty-fifth of the rasterised grid's light. It is now **0.666** of it, because Task 9
- * of the indirect-light plan counted rather than argued: `scripts/bake-census.mjs` found 98.9% of
- * every probe's rays leaving a *closed* room, which said the composed field was empty rather than
- * the trace dim. The page's slabs were sampled `n` cubed over boxes that are not cubes, so each was
- * read at its own corner; `assertCubicVoxels` refuses that shape now.
- *
- * **The remaining third is not attributed and is not claimed as correct**, but it is the size a
- * disagreement can honestly be: the rasterised bake lights a room the sun does not reach, because
- * this profile has directional shadows off and it draws the sun on every face whose normal points
- * at it. A threshold picked to pass would hide whichever of the two is wrong.
+ * **Red is held to the reference, and green and blue are reported beside it.** The wall is a blend
+ * of the four probes at x = 1.6, so it lies between the least and the most of their reference
+ * values; the tenth either side is the trace's own error, a march through a field of 0.17 m cells.
+ * Green and blue read about an eighth high, and the field says why: a traced hit takes the albedo
+ * of the nearest cell's winning surface, so half a cell along each of the red wall's three joins,
+ * 8.6% of its area, comes back white, and white sends fourteen times the green that red does.
  */
+const reference = farWallRange();
+const within = (value, k, margin) =>
+  value >= reference.low[k] * (1 - margin) && value <= reference.high[k] * (1 + margin);
+check(
+  'the traced far wall carries the red a path tracer says it should',
+  within(on.wall.r, 0, 0.1),
+  `red ${on.wall.r.toFixed(1)} against ${reference.low[0].toFixed(1)} to ${reference.high[0].toFixed(1)}`,
+);
+console.log(
+  `reference: green ${reference.low[1].toFixed(1)} to ${reference.high[1].toFixed(1)}, ` +
+    `blue ${reference.low[2].toFixed(1)} to ${reference.high[2].toFixed(1)}; traced ` +
+    `${on.wall.g.toFixed(1)} and ${on.wall.b.toFixed(1)}, rasterised ${off.wall.r.toFixed(1)}/` +
+    `${off.wall.g.toFixed(1)}/${off.wall.b.toFixed(1)}`,
+);
 console.log(
   `energy: traced ${on.wall.r.toFixed(1)} against rasterised ${off.wall.r.toFixed(1)} ` +
     `(${(on.wall.r / Math.max(1e-6, off.wall.r)).toFixed(3)} of it)`,

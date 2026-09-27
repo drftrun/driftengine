@@ -1,4 +1,5 @@
 import { driftScript } from 'driftscript/vite';
+import type { Plugin } from 'vite';
 
 /**
  * The repository root, from this file rather than from the process's working directory.
@@ -27,7 +28,34 @@ const ROOT = new URL('../../', import.meta.url).pathname;
  * demo harness depends on, and `scripts/shots.mjs` drives this server expecting the plain one.
  */
 export default {
-  plugins: [driftScript()],
+  plugins: [
+    driftScript(),
+    /*
+     * **An empty answer for the icon a browser asks every page for**, so the console of a demo
+     * holds what the demo said and nothing else. Sixty-five pages here have no icon and the one
+     * error each printed was a 404 for it, which is the line a reader learns to skip and then
+     * skips when it is the one that matters. A file in `public/` would do it and nothing there is
+     * committed; this is one place for every page.
+     */
+    {
+      name: 'demo-favicon',
+      configureServer(server) {
+        server.middlewares.use('/favicon.ico', (_request, response) => {
+          response.statusCode = 204;
+          response.end();
+        });
+      },
+    } satisfies Plugin,
+  ],
+  /**
+   * **On the local network, so a phone on the same Wi-Fi can open the demos** at the address vite
+   * prints under "Network". Two costs. A phone given a plain `http://` address is not a secure
+   * context, so it has no WebGPU and runs every scene on WebGL2; to test WebGPU there, list the
+   * address under Chrome's `chrome://flags/#unsafely-treat-insecure-origin-as-secure`. And anyone
+   * on that network can open this server, and through it read files in this repository, so it is
+   * for a network you trust.
+   */
+  server: { host: true },
   /**
    * **`drift-source`, so every page here runs the engine in this checkout.**
    *

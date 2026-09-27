@@ -68,10 +68,13 @@ float shadowFactor(float directionalNdl) {
   // Near a surface's own light terminator its direct-light term is already
   // approaching zero, while the orthographic projection of that surface
   // collapses toward a line. No finite contact-safe bias can represent that
-  // slope reliably. Fade only the shadow modulation through this narrow band;
-  // the Lambert term still supplies the physically dominant falloff.
+  // slope reliably, so through this band the fine filter below hands over to the
+  // coarse test after it. \`directionalNdl\` is the surface's own, before any normal
+  // map: the band is about the receiving plane, and a map's tilt says nothing about it.
   float receiverFade = smoothstep(0.08, 0.20, directionalNdl);
-  if (receiverFade <= 0.0) return 1.0;
+  /* A surface turned from the light takes none of it, so there is nothing to shadow; what reads
+     this there is the emissive share, which has always seen such a surface as unshadowed. */
+  if (directionalNdl <= 0.0) return 1.0;
 
   // The receiver stays at its real position, computed above. A normal offset changes
   // direction at a hard mesh edge and tears one continuous shadow where it crosses from
@@ -103,6 +106,34 @@ float shadowFactor(float directionalNdl) {
     shadowSlope
   );
   if (lowElevationFade <= 0.0) return 1.0;
+
+  /*
+   * **The coarse test: is there anything a metre or more between this point and the sun.**
+   *
+   * One tap at the receiver's own texel, with a metre of tolerance where the filter below allows
+   * fourteen centimetres. It cannot see a contact shadow, and it does not need the plane's slope:
+   * a grazing plane's own depth moves about a centimetre times the tangent of its angle to the
+   * light across a texel, which stays under a metre down to a hundredth of n·l on a map with
+   * centimetre texels. What it does see is a roof.
+   *
+   * **This band used to return fully lit**, on the argument that the Lambert term was already
+   * near zero there. Under a high sun that is every vertical wall: at 70° of elevation a wall's
+   * n·l is at most 0.34, and one turned from the sun's bearing sits inside the band. A gallery's
+   * back wall under its vault took the sun through the vault, and so did the faces of its
+   * columns, which read as lit stone in shade; with a normal map carrying that n·l per texel it
+   * was a field of white specks. What would make this wrong is a map whose texels are tens of
+   * centimetres, where a grazing plane's own depth moves more than the tolerance and the band
+   * draws the acne it exists to avoid.
+   */
+  float coarseCompare = p.z - 1.0 / uShadowDepthSpan;
+  float coarse =
+    directionalVisibility(p.z, coarseCompare, textureLod(uStaticShadowMap, p.xy, 0.0).r) *
+    directionalVisibility(p.z, coarseCompare, textureLod(uDynamicShadowMap, p.xy, 0.0).r);
+  if (uPeeledShadowEnabled != 0) {
+    coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uPeeledShadowMap, p.xy, 0.0).r);
+  }
+  float strength = uShadowStrength * edgeFade * lowElevationFade;
+  if (receiverFade <= 0.0) return mix(1.0, coarse, strength);
 
   float texel = 1.35 / uShadowMapSize;
   /*
@@ -182,7 +213,7 @@ float shadowFactor(float directionalNdl) {
   // conventional one-depth map would discard; movers remain independent too.
   float lit = staticLit * peeledLit * dynamicLit;
 
-  return mix(1.0, lit, uShadowStrength * edgeFade * lowElevationFade * receiverFade);
+  return mix(1.0, mix(coarse, lit, receiverFade), strength);
 }
 #endif
 

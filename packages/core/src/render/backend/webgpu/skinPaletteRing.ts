@@ -63,6 +63,16 @@ export class SkinPaletteRing {
     this.used = 0;
   }
 
+  /** Where the ring stands, to hand back to `rewind`. See `UniformRing.rewind` for when it is safe. */
+  mark(): number {
+    return this.used;
+  }
+
+  /** Give back every slot taken since `mark`, once the commands reading them are submitted. */
+  rewind(mark: number): void {
+    if (mark < this.used) this.used = mark;
+  }
+
   /**
    * Upload a palette into a slot of its own and return that slot, or null when the ring is full.
    *

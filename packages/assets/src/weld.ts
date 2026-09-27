@@ -88,6 +88,60 @@ type PerVertexAttribute = Exclude<
 const NAMES = Object.keys(ATTRIBUTES) as readonly PerVertexAttribute[];
 
 /**
+ * Corner `i`'s identity, quantised, into `out`.
+ *
+ * `+ 0` folds a negative zero into zero, which the string key did by printing both as `0`.
+ */
+function quantisedInto(
+  sources: readonly { array: Float32Array; stride: number }[],
+  i: number,
+  out: Float64Array,
+): void {
+  let at = 0;
+  for (const { array, stride } of sources) {
+    for (let c = 0; c < stride; c++) out[at++] = quantise(array[i * stride + c] as number) + 0;
+  }
+}
+
+/** Equal lane for lane, with NaN equal to NaN as the string key had it. */
+function sameLanes(a: Float64Array, b: Float64Array): boolean {
+  for (let k = 0; k < a.length; k++) {
+    const x = a[k] as number;
+    const y = b[k] as number;
+    if (x !== y && !(x !== x && y !== y)) return false;
+  }
+  return true;
+}
+
+const HASH_VIEW = new Float64Array(1);
+const HASH_WORDS = new Int32Array(HASH_VIEW.buffer);
+
+/**
+ * FNV-1a over each lane's two 32-bit words, then murmur3's finaliser. NaN hashes to one value,
+ * since it compares equal.
+ *
+ * **The finaliser is not optional.** FNV folds a word in by XOR and a multiply, and a multiply
+ * carries a difference only upward, so two lanes differing in their top bit — a sign, an exponent —
+ * differed only in the hash's top bit and always shared a slot once masked. That merged correctly,
+ * because the compare decides, but it is also a probe chain for every such family of values.
+ */
+function hashLanes(lanes: Float64Array): number {
+  let h = 0x811c9dc5 | 0;
+  for (let k = 0; k < lanes.length; k++) {
+    const v = lanes[k] as number;
+    HASH_VIEW[0] = v === v ? v : Number.NaN;
+    h = Math.imul(h ^ (HASH_WORDS[0] as number), 0x01000193);
+    h = Math.imul(h ^ (HASH_WORDS[1] as number), 0x01000193);
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+/**
  * Weld one mesh. Returns the same mesh when nothing can be merged.
  *
  * **Every attribute decides identity, and that is a cost as well as a correctness rule.** Two
@@ -116,7 +170,6 @@ export function weldMesh(mesh: MeshData): MeshData {
   const vertices = mesh.positions.length / 3;
   if (vertices === 0) return mesh;
 
-  const map = new Map<string, number>();
   const remap = new Uint32Array(vertices);
   let unique = 0;
 
@@ -125,40 +178,61 @@ export function weldMesh(mesh: MeshData): MeshData {
   /* Three floats per target per vertex, interleaved by vertex: `MeshData.morphTargets`' layout. */
   const morphStride = mesh.morphTargets === undefined ? 0 : (mesh.morphTargetCount ?? 0) * 3;
 
-  for (let i = 0; i < vertices; i++) {
-    /*
-     * The key names every attribute, because two corners differing in any of them are
-     * genuinely different vertices — a shared position with a different normal is a hard
-     * edge, and with a different colour is a material boundary.
-     */
-    let key =
-      `${quantise(mesh.positions[i * 3] as number)},` +
-      `${quantise(mesh.positions[i * 3 + 1] as number)},` +
-      `${quantise(mesh.positions[i * 3 + 2] as number)}|` +
-      `${quantise(mesh.normals[i * 3] as number)},` +
-      `${quantise(mesh.normals[i * 3 + 1] as number)},` +
-      `${quantise(mesh.normals[i * 3 + 2] as number)}|` +
-      `${quantise(mesh.colors[i * 3] as number)},` +
-      `${quantise(mesh.colors[i * 3 + 1] as number)},` +
-      `${quantise(mesh.colors[i * 3 + 2] as number)}|` +
-      `${quantise(mesh.emissive[i] as number)}`;
-    for (const name of present) {
-      const array = mesh[name] as Float32Array;
-      const stride = ATTRIBUTES[name];
-      key += '|';
-      for (let c = 0; c < stride; c++) key += `${quantise(array[i * stride + c] as number)},`;
-    }
-    for (let c = 0; c < morphStride; c++) {
-      key += `${quantise(mesh.morphTargets?.[i * morphStride + c] as number)},`;
-    }
+  /*
+   * Every number that decides identity, in one order, for one corner.
+   *
+   * The key names every attribute, because two corners differing in any of them are genuinely
+   * different vertices — a shared position with a different normal is a hard edge, and with a
+   * different colour is a material boundary.
+   */
+  const sources: { array: Float32Array; stride: number }[] = [
+    { array: mesh.positions, stride: 3 },
+    { array: mesh.normals, stride: 3 },
+    { array: mesh.colors, stride: 3 },
+    { array: mesh.emissive, stride: 1 },
+  ];
+  for (const name of present) {
+    sources.push({ array: mesh[name] as Float32Array, stride: ATTRIBUTES[name] });
+  }
+  if (mesh.morphTargets !== undefined && morphStride > 0) {
+    sources.push({ array: mesh.morphTargets, stride: morphStride });
+  }
+  let lanes = 0;
+  for (const source of sources) lanes += source.stride;
+  const key = new Float64Array(lanes);
+  const other = new Float64Array(lanes);
 
-    const found = map.get(key);
-    if (found === undefined) {
-      map.set(key, unique);
-      remap[i] = unique;
-      unique++;
-    } else {
-      remap[i] = found;
+  /*
+   * **An open-addressed table of vertex indices, not a map of strings.** The key used to be every
+   * quantised number above joined into a string, which cost about 700 bytes of heap a corner and
+   * ran a five-million-triangle mesh out of memory. The table holds the first corner of each
+   * vertex, and a probe compares the candidate's quantised values with this corner's, so the rule
+   * for merging is exactly the string's. The cost is a hash and a compare per corner instead of a
+   * string build; what would make it wrong is a hash so poor that probes run long, which the table
+   * being at most half full bounds.
+   */
+  let capacity = 1;
+  while (capacity < vertices * 2) capacity *= 2;
+  const mask = capacity - 1;
+  const table = new Int32Array(capacity).fill(-1);
+
+  for (let i = 0; i < vertices; i++) {
+    quantisedInto(sources, i, key);
+    let slot = hashLanes(key) & mask;
+    for (;;) {
+      const held = table[slot] as number;
+      if (held === -1) {
+        table[slot] = i;
+        remap[i] = unique;
+        unique++;
+        break;
+      }
+      quantisedInto(sources, held, other);
+      if (sameLanes(key, other)) {
+        remap[i] = remap[held] as number;
+        break;
+      }
+      slot = (slot + 1) & mask;
     }
   }
 
@@ -210,6 +284,62 @@ export function weldMesh(mesh: MeshData): MeshData {
     ...copies,
     /* Both or neither: an array of deltas with no count moves nothing, and a count with no
        array is a promise about a buffer that is not there. */
+    ...(morphTargets === undefined
+      ? {}
+      : { morphTargets, morphTargetCount: mesh.morphTargetCount }),
+  };
+}
+
+/**
+ * `mesh` with only the vertices `keep` names, renumbered, and `indices` already in the new numbers.
+ *
+ * `keep[old]` is the vertex's new index, or -1 where it goes; `count` is how many stay. Every
+ * attribute the mesh carries is carried, through the same table the weld keys on, so a vertex
+ * leaves with everything it arrived with. For a pass that removes vertices without merging them.
+ */
+export function keepVertices(
+  mesh: MeshData,
+  keep: Int32Array,
+  count: number,
+  indices: Uint32Array,
+): MeshData {
+  const present = NAMES.filter((name) => mesh[name] !== undefined);
+  const morphStride = mesh.morphTargets === undefined ? 0 : (mesh.morphTargetCount ?? 0) * 3;
+  const positions = new Float32Array(count * 3);
+  const normals = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const emissive = new Float32Array(count);
+  const copies: Partial<Record<PerVertexAttribute, Float32Array>> = {};
+  for (const name of present) copies[name] = new Float32Array(count * ATTRIBUTES[name]);
+  const morphTargets = morphStride === 0 ? undefined : new Float32Array(count * morphStride);
+  for (let i = 0; i < keep.length; i++) {
+    const to = keep[i] as number;
+    if (to < 0) continue;
+    for (let c = 0; c < 3; c++) {
+      positions[to * 3 + c] = mesh.positions[i * 3 + c] as number;
+      normals[to * 3 + c] = mesh.normals[i * 3 + c] as number;
+      colors[to * 3 + c] = mesh.colors[i * 3 + c] as number;
+    }
+    emissive[to] = mesh.emissive[i] as number;
+    for (const name of present) {
+      const from = mesh[name] as Float32Array;
+      const into = copies[name] as Float32Array;
+      const stride = ATTRIBUTES[name];
+      for (let c = 0; c < stride; c++) into[to * stride + c] = from[i * stride + c] as number;
+    }
+    if (morphTargets !== undefined) {
+      for (let c = 0; c < morphStride; c++) {
+        morphTargets[to * morphStride + c] = mesh.morphTargets?.[i * morphStride + c] as number;
+      }
+    }
+  }
+  return {
+    positions,
+    normals,
+    colors,
+    emissive,
+    indices,
+    ...copies,
     ...(morphTargets === undefined
       ? {}
       : { morphTargets, morphTargetCount: mesh.morphTargetCount }),

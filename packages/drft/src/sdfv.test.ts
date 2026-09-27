@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest';
 import { CHUNK_SDFV, KNOWN_CHUNKS, fourCCName } from './drftFormat.ts';
 import { readDrft } from './drftRead.ts';
 import { writeDrft } from './drftWrite.ts';
-import { SDFV_ENTRY_BYTES, buildSdfv, readSdfv } from './sdfv.ts';
+import { SDFV_ENTRY_BYTES, SDFV_WHOLE_FILE, buildSdfv, readSdfv } from './sdfv.ts';
 
 import type { MeshData } from './meshData.ts';
 import type { DrftSdfvEntry } from './sdfv.ts';
@@ -164,6 +164,26 @@ describe('the chunk has a route into a file and back out of it', () => {
     expect(back.mesh).toBe(0);
     expect(Array.from(back.dims)).toEqual([3, 4, 5]);
     expect(Array.from(back.field)).toEqual(Array.from(source.field));
+  });
+
+  /*
+   * A scene's field is one field over all of its static geometry, and the ordinal says so. The
+   * reader has never compared an ordinal with the mesh count, which is what lets a reader older
+   * than the value read a file carrying it.
+   */
+  test('A FIELD FOR THE WHOLE FILE COMES BACK MARKED AS ONE, beside the meshes it covers', () => {
+    const mesh: MeshData = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      colors: new Float32Array(9),
+      emissive: new Float32Array(3),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const whole = entry(SDFV_WHOLE_FILE, 4, 3, 2);
+    const asset = readDrft(writeDrft({ meshes: [mesh, mesh], fields: [whole] }));
+    expect(asset.fields).toHaveLength(1);
+    expect(asset.fields[0]?.mesh).toBe(SDFV_WHOLE_FILE);
+    expect(Array.from(asset.fields[0]?.field ?? [])).toEqual(Array.from(whole.field));
   });
 
   test('a file that carries no field says so with an empty list rather than an empty chunk', () => {

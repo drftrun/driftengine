@@ -26,7 +26,11 @@ export function createSkyBindGroupLayout(device: GPUDevice): GPUBindGroupLayout 
       {
         binding: SKY_BINDING,
         visibility: VISIBILITY_FRAGMENT,
-        buffer: { type: 'uniform', minBindingSize: SKY_UNIFORM_SIZE },
+        /*
+         * A dynamic offset, because a frame draws more than one sky — a probe's six faces, a mirror
+         * and the view — and one buffer rewritten between them hands every draw the last write.
+         */
+        buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SKY_UNIFORM_SIZE },
       },
     ],
   });

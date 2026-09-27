@@ -20,6 +20,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import decodeJpeg, { init as initJpegDecode } from '@jsquash/jpeg/decode.js';
+import encodeJpeg, { init as initJpegEncode } from '@jsquash/jpeg/encode.js';
+import { decodePng, encodePng, rgbaOf } from '../packages/core/scripts/png.mjs';
 
 const CODEC_PNG = 1;
 const CODEC_RAW = 4;
@@ -281,4 +285,267 @@ test('an image no material samples is left out, and the ordinals that stay are r
     'a map the material never named stays -1 rather than renumbering',
   );
   assert.equal(material.emissiveMap, -1);
+});
+
+/*
+ * **`--max-texture`: a bought model's maps, shrunk to what a web page can carry.**
+ *
+ * The fixtures are generated here with the same encoders the baker uses, which is allowed because
+ * they are inputs: every expected value below is a literal written by hand.
+ */
+
+const CODEC_JPEG = 2;
+
+/** A one-triangle glTF whose base colour is the image `bytes`, carried as a data URI. */
+function gltfWithImage(bytes, mime) {
+  const doc = gltfWithEmbeddedTexture(Buffer.alloc(0));
+  doc.images = [
+    { name: 'body', uri: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}` },
+  ];
+  return doc;
+}
+
+/** The baker over `doc`, with extra arguments; the container and what the baker printed. */
+function bakeWith(doc, extra) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'drft-bake-'));
+  try {
+    const model = path.join(dir, 'model.gltf');
+    const out = path.join(dir, 'model.drft');
+    writeFileSync(model, JSON.stringify(doc));
+    const log = execFileSync(
+      'npx',
+      ['tsx', '--conditions=drift-source', 'scripts/bake.ts', model, '-o', out, ...extra],
+      { stdio: 'pipe' },
+    ).toString();
+    return { container: readFileSync(out), log };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** A PNG of one colour, `width` by `height`. */
+function flatPng(width, height, rgba) {
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let at = 0; at < pixels.length; at += 4) pixels.set(rgba, at);
+  return encodePng(width, height, pixels);
+}
+
+let jpegReady = null;
+function readyJpeg() {
+  if (jpegReady === null) {
+    const require = createRequire(import.meta.url);
+    const compile = (file) =>
+      WebAssembly.compile(readFileSync(require.resolve(`@jsquash/jpeg/codec/${file}`)));
+    jpegReady = Promise.all([
+      compile('dec/mozjpeg_dec.wasm').then((m) => initJpegDecode(m)),
+      compile('enc/mozjpeg_enc.wasm').then((m) => initJpegEncode(m)),
+    ]);
+  }
+  return jpegReady;
+}
+
+test('A TEXTURE OVER --max-texture IS SHRUNK TO FIT, and keeps its codec and its colour', () => {
+  const png = flatPng(64, 32, [10, 120, 250, 255]);
+  const { container } = bakeWith(gltfWithImage(png, 'image/png'), ['--max-texture', '16']);
+  const [texture] = readTextures(container);
+  assert.equal(texture.width, 16);
+  assert.equal(texture.height, 8);
+  assert.equal(texture.codec, CODEC_PNG);
+  assert.deepEqual([...texture.bytes.subarray(0, 8)], PNG_SIGNATURE);
+  const { rgba } = rgbaOf(decodePng(Buffer.from(texture.bytes)));
+  assert.deepEqual([...rgba.subarray(0, 4)], [10, 120, 250, 255]);
+});
+
+test('a capped JPEG stays a JPEG, within a lossy round trip of its colour', async () => {
+  await readyJpeg();
+  const width = 64;
+  const height = 64;
+  const data = new Uint8ClampedArray(width * height * 4).fill(128);
+  const jpeg = new Uint8Array(await encodeJpeg({ data, width, height }, { quality: 90 }));
+  const { container } = bakeWith(gltfWithImage(jpeg, 'image/jpeg'), ['--max-texture', '16']);
+  const [texture] = readTextures(container);
+  assert.equal(texture.codec, CODEC_JPEG);
+  assert.equal(texture.width, 16);
+  assert.equal(texture.height, 16);
+  assert.deepEqual([...texture.bytes.subarray(0, 2)], [0xff, 0xd8]);
+  /* Copied: `texture.bytes` views the whole container, and `Buffer#slice` would still view it. */
+  const decoded = await decodeJpeg(new Uint8Array(texture.bytes).buffer);
+  assert.equal(decoded.width, 16);
+  for (let c = 0; c < 3; c++) {
+    assert.ok(
+      Math.abs(decoded.data[c] - 128) <= 3,
+      `channel ${c} is ${decoded.data[c]}, not 128±3`,
+    );
+  }
+});
+
+test('a texture already inside the cap is carried byte for byte', () => {
+  const png = flatPng(16, 16, [1, 2, 3, 255]);
+  const { container } = bakeWith(gltfWithImage(png, 'image/png'), ['--max-texture', '16']);
+  const [texture] = readTextures(container);
+  assert.deepEqual([...texture.bytes], [...png]);
+});
+
+test('with no --max-texture nothing is resampled', () => {
+  const png = flatPng(64, 64, [1, 2, 3, 255]);
+  const [texture] = readTextures(bakeWith(gltfWithImage(png, 'image/png'), []).container);
+  assert.equal(texture.width, 64);
+  assert.deepEqual([...texture.bytes], [...png]);
+});
+
+/*
+ * **`--texture-codec jpeg`: an opaque colour or data map becomes a JPEG; a map with alpha stays PNG;
+ * a normal map stays PNG unless `jpeg-all`**, because JPEG's chroma subsampling bends the
+ * directions a normal map writes into its colour.
+ */
+function gltfWithRoles(png) {
+  const doc = gltfWithImage(png, 'image/png');
+  /* Image 0 is the base colour; the same bytes again as image 1, the normal map. */
+  doc.images.push({ name: 'normal', uri: doc.images[0].uri });
+  doc.textures.push({ source: 1 });
+  doc.materials[0].normalTexture = { index: 1 };
+  return doc;
+}
+
+test('AN OPAQUE PNG BECOMES A JPEG UNDER --texture-codec jpeg, AND A NORMAL MAP DOES NOT', () => {
+  const png = flatPng(32, 32, [120, 90, 60, 255]);
+  const textures = readTextures(
+    bakeWith(gltfWithRoles(png), ['--texture-codec', 'jpeg']).container,
+  );
+  assert.equal(textures.length, 2);
+  const codecs = textures.map((t) => t.codec).sort();
+  assert.deepEqual(
+    codecs,
+    [CODEC_PNG, CODEC_JPEG].sort(),
+    'one JPEG colour map, one PNG normal map',
+  );
+  const all = readTextures(bakeWith(gltfWithRoles(png), ['--texture-codec', 'jpeg-all']).container);
+  assert.deepEqual(
+    all.map((t) => t.codec),
+    [CODEC_JPEG, CODEC_JPEG],
+  );
+});
+
+/**
+ * Each component's sampling factors, from a JPEG's frame header: `0x22` is a luma sampled twice
+ * each way beside colour sampled once, which is 4:2:0; every component `0x11` is 4:4:4.
+ */
+function samplingFactors(jpeg) {
+  for (let at = 2; at + 4 < jpeg.length;) {
+    if (jpeg[at] !== 0xff) break;
+    const marker = jpeg[at + 1];
+    const length = jpeg.readUInt16BE(at + 2);
+    /* SOF0 to SOF2: baseline, extended, progressive. The component table follows the size. */
+    if (marker >= 0xc0 && marker <= 0xc2) {
+      const count = jpeg[at + 9];
+      const out = [];
+      for (let c = 0; c < count; c++) out.push(jpeg[at + 10 + c * 3 + 1]);
+      return out;
+    }
+    at += 2 + length;
+  }
+  return [];
+}
+
+test('A NORMAL MAP UNDER jpeg-all KEEPS ALL ITS COLOUR SAMPLES', () => {
+  /*
+   * A normal map's red and green are a direction's two tilts, so averaging colour across two by
+   * two pixels, which 4:2:0 does, bends the surface. MozJPEG keeps every sample by itself at the
+   * quality the baker writes, so this holds today either way: it pins the explicit setting, which
+   * is what keeps it true if the quality is ever lowered. The colour map is left to the encoder.
+   */
+  const rgba = new Uint8Array(32 * 32 * 4);
+  for (let i = 0; i < 32 * 32; i++) {
+    rgba.set([128 + ((i * 37) % 90), 128 + ((i * 53) % 90), 250, 255], i * 4);
+  }
+  const png = encodePng(32, 32, rgba);
+  const [colour, normal] = readTextures(
+    bakeWith(gltfWithRoles(png), ['--texture-codec', 'jpeg-all']).container,
+  );
+  assert.equal(samplingFactors(colour.bytes).length, 3, 'the colour map is a three-channel JPEG');
+  assert.deepEqual(samplingFactors(normal.bytes), [0x11, 0x11, 0x11], 'normal: 4:4:4');
+});
+
+test('A NORMAL MAP IS TURNED OVER UNDER --normals-directx, and every other image left alone', () => {
+  /*
+   * A DirectX normal map points green down where glTF points it up, so every groove is lit from the
+   * wrong side. A courtyard's maps were measured that way: at forty horizontal joints across three
+   * of its stone maps, the rows above each joint read green over the middle and the rows below
+   * under it, the opposite of the convention. 200 turned over is 255 - 200 = 55; red, blue and
+   * alpha keep their values, and the colour map, the same bytes, keeps its green.
+   */
+  const png = flatPng(8, 8, [100, 200, 250, 255]);
+  const [colour, normal] = readTextures(
+    bakeWith(gltfWithRoles(png), ['--normals-directx']).container,
+  );
+  const pixelOf = (texture) =>
+    Array.from(rgbaOf(decodePng(Buffer.from(texture.bytes))).rgba.slice(0, 4));
+  assert.deepEqual(pixelOf(normal), [100, 55, 250, 255], 'the normal map, turned over');
+  assert.deepEqual(pixelOf(colour), [100, 200, 250, 255], 'the colour map, as it came');
+});
+
+test('a PNG with alpha stays a PNG, whatever the codec asked', () => {
+  const png = flatPng(32, 32, [120, 90, 60, 128]);
+  const [texture] = readTextures(
+    bakeWith(gltfWithImage(png, 'image/png'), ['--texture-codec', 'jpeg']).container,
+  );
+  assert.equal(texture.codec, CODEC_PNG);
+});
+
+/*
+ * **`--blend-as-cutout`: a blended material bakes as a cutout instead.** Foliage is authored `BLEND`
+ * as often as `MASK`, and a leaf drawn blended is sorted, soft-edged and writes no depth. The flag is
+ * the author of the bake saying which they meant, because nothing in the file says it.
+ */
+function blendedMaterial(container) {
+  const count = container.readUInt32LE(12);
+  for (let i = 0; i < count; i++) {
+    const entry = 32 + i * 16;
+    if (container.toString('ascii', entry, entry + 4) !== 'MATL') continue;
+    const at = container.readUInt32LE(entry + 4);
+    const base = at + 8;
+    return {
+      cutout: container.readFloatLE(base + 72),
+      blend: container.readUInt32LE(base + 76) & 1,
+    };
+  }
+  assert.fail('no MATL chunk');
+}
+
+test('A BLEND MATERIAL BAKES AS A BLEND, AND AS A CUTOUT AT 0.5 UNDER --blend-as-cutout', () => {
+  const doc = gltfWithImage(flatPng(8, 8, [60, 120, 40, 255]), 'image/png');
+  doc.materials[0].alphaMode = 'BLEND';
+  assert.deepEqual(blendedMaterial(bakeWith(doc, []).container), { cutout: 0, blend: 1 });
+  assert.deepEqual(blendedMaterial(bakeWith(doc, ['--blend-as-cutout']).container), {
+    cutout: 0.5,
+    blend: 0,
+  });
+});
+
+/** The `SDFV` chunk's entries, by the layout `sdfv.ts` states: a count, then 40-byte entries. */
+function readFieldOrdinals(container) {
+  const chunkCount = container.readUInt32LE(12);
+  for (let i = 0; i < chunkCount; i++) {
+    const entry = 32 + i * 16;
+    if (container.toString('ascii', entry, entry + 4) !== 'SDFV') continue;
+    const at = container.readUInt32LE(entry + 4);
+    const count = container.readUInt32LE(at);
+    const out = [];
+    for (let e = 0; e < count; e++) out.push(container.readUInt32LE(at + 4 + e * 40));
+    return out;
+  }
+  return null;
+}
+
+/*
+ * **`--sdf` bakes one field over the file's static geometry, and without it the file is what it
+ * was.** The field is what indirect light is traced against; a scene gets one only where somebody
+ * asked, because it is megabytes of a web payload.
+ */
+test('THE --sdf FLAG WRITES ONE FIELD OVER THE WHOLE FILE, and without it there is none', () => {
+  const doc = gltfWithImage(flatPng(4, 4, [200, 200, 200, 255]), 'image/png');
+  const withField = bakeWith(doc, ['--sdf', '0.25']);
+  assert.deepEqual(readFieldOrdinals(withField.container), [0xffffffff]);
+  assert.match(withField.log, /field: \d+x\d+x\d+ at 0\.25 m/);
+  assert.equal(readFieldOrdinals(bakeWith(doc, []).container), null);
 });

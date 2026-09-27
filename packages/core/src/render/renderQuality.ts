@@ -560,7 +560,9 @@ export interface RenderQuality {
    */
   readonly reconstruction: number;
   /**
-   * Light a scene from what bounces, rather than from what was baked. **Off by default.**
+   * Light a scene from what bounces, rather than from what was baked: **DriftRay**, this engine's
+   * ray tracing, rays marched through the declared distance fields in GPU compute rather than on
+   * the dedicated ray-tracing units WebGPU does not expose. **Off by default.**
    *
    * On, the probe grid the shading already samples is filled by tracing `render/gi/`'s three-level
    * chain — the world distance field, and behind it the probes themselves, which is what makes the

@@ -50,6 +50,17 @@ export {
 } from './core/timeCurve.ts';
 export type { TimeCurve, TimeCurveKind, TimeCurveOptions } from './core/timeCurve.ts';
 export { CinematicPlayer } from './cinematic/player.ts';
+export {
+  createCameraPath,
+  createCameraPathSample,
+  sampleCameraPath,
+} from './cinematic/cameraPath.ts';
+export type {
+  CameraPath,
+  CameraPathKey,
+  CameraPathOptions,
+  CameraPathSample,
+} from './cinematic/cameraPath.ts';
 export { defineCinematic, validateCinematic } from './cinematic/script.ts';
 export type {
   CameraKeyframe,
@@ -65,6 +76,13 @@ export {
   moonIllumination,
 } from './environment/celestialClock.ts';
 export type { CelestialSite, CelestialState } from './environment/celestialClock.ts';
+export {
+  createDaylightPalette,
+  createDaylightState,
+  easeExposure,
+  resolveDaylight,
+} from './environment/daylight.ts';
+export type { DaylightKey, DaylightPalette, DaylightState } from './environment/daylight.ts';
 
 export {
   TAU,
@@ -219,6 +237,7 @@ export { createRenderer } from './render/backend/createRenderer.ts';
 export type {
   CreatedRenderer,
   CreateRendererOptions,
+  QualityForBackend,
   RenderPipeline,
 } from './render/backend/createRenderer.ts';
 /*
@@ -361,6 +380,8 @@ export type {
   GlobalFieldCascade,
   GlobalFieldInstance,
 } from './render/gi/globalField.ts';
+export { FIELD_FADE_SEC, LightField } from './render/driftLight/lightField.ts';
+export type { LightFieldOptions, LightFieldSource } from './render/driftLight/lightField.ts';
 export {
   GI_SCREEN_MARCH,
   SCREEN_TRACE_BIAS_M,
@@ -554,6 +575,8 @@ export type {
   WaterReflectionFilterTaps,
 } from './render/renderQuality.ts';
 export { MAX_POINT_LIGHTS, SURFACE_TEXTURE_UNIT } from './render/lightBudget.ts';
+/* The width a light buffer can usefully be with `clusteredLights` on; `createPointLightBuffer`. */
+export { MAX_CLUSTERED_LIGHTS } from './render/clusteredLights.ts';
 export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
 export { DEFAULT_GOVERNOR_LIMITS, ResolutionGovernor } from './render/resolutionGovernor.ts';
@@ -573,6 +596,8 @@ export {
   selectPointLights,
 } from './render/pointLightSelection.ts';
 export type { PointLightBuffer, PointLightSource } from './render/pointLightSelection.ts';
+export { createFlame, flameFrequencyHz, updateFlame } from './render/flameLight.ts';
+export type { Flame, FlameOptions } from './render/flameLight.ts';
 export { computeLightMatrix } from './render/lightMatrix.ts';
 export { PlumeRenderer } from './render/plumeRenderer.ts';
 export { createEnvironment } from './render/backend/webgl2/renderer.ts';
@@ -622,6 +647,7 @@ export { SMOKE_FRAG } from './render/shaders/smoke.ts';
 export { WaterRenderer } from './render/waterRenderer.ts';
 export type { WaterBody, WaterBounds, WaterSettings } from './render/waterRenderer.ts';
 export { MeshBuilder } from './geometry/meshBuilder.ts';
+export { concatMeshes, placeMesh } from './geometry/meshConcat.ts';
 /* A tangent frame, which every map in the material track reads. */
 export { generateTangents } from './geometry/tangents.ts';
 export type { MeshBuildOptions } from './geometry/meshBuilder.ts';
@@ -941,6 +967,12 @@ export {
    * and draw with that one number.
    */
   deviceSnappedCellSize,
+  /*
+   * How many lit cells one text object draws before the rest of its string is cut. Exported so a
+   * caller laying out a runtime string, a readout that grows, can break it before the engine does:
+   * the cut is silent by design, since a clipped message beats a frame that does not render.
+   */
+  MAX_CELLS as MAX_TEXT_CELLS,
   textHeightPx,
   textWidthPx,
 } from './render/textLayout.ts';

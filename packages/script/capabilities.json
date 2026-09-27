@@ -5889,6 +5889,32 @@
     },
     {
       "module": "drift/render",
+      "name": "bloomAbove",
+      "signature": "fn(renderer: Renderer, scale: f32, threshold: f32) -> void",
+      "params": [
+        {
+          "name": "renderer",
+          "type": "Renderer"
+        },
+        {
+          "name": "scale",
+          "type": "f32"
+        },
+        {
+          "name": "threshold",
+          "type": "f32"
+        }
+      ],
+      "returns": "void",
+      "effects": [
+        "scene.write"
+      ],
+      "deterministic": false,
+      "doc": "How much of the bloom ceiling to take, 0 to 1, and how bright a pixel must be before it blooms, in scene units, above 0. Both held until changed. The threshold is compared before exposure, so a script that moves `exposure` through a day moves this with it: pass the brightness wanted on screen over the exposure, or sunlit stone blooms at noon and lamps never do at night.",
+      "implementation": "drift/render.bloomAbove"
+    },
+    {
+      "module": "drift/render",
       "name": "exposure",
       "signature": "fn(renderer: Renderer, stops: f32) -> void",
       "params": [

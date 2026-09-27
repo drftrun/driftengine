@@ -37,8 +37,13 @@ export const MAIN_GLSL = `void main() {
   if (uAlbedoEnabled != 0) {
     vec4 texel = texture(uAlbedo, vUv);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
-    // for the lighting it will never contribute to.
-    if (texel.a < uAlbedoCutout) discard;
+    // for the lighting it will never contribute to. The test credits alpha for the mip level
+    // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
+    // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
+    if (uAlbedoCutout > 0.0) {
+      float tested = cutoutAlpha(texel.a, vUv * vec2(textureSize(uAlbedo, 0)));
+      if (tested < uAlbedoCutout) discard;
+    }
     albedo *= texel.rgb;
     coverage = texel.a;
   }
@@ -81,6 +86,15 @@ export const MAIN_GLSL = `void main() {
 
   if (uLightingEnabled != 0) {
     vec3 n = normalize(vNormal);
+    /*
+     * **Which face of a two-sided surface this is, from the normal and not from the rasteriser.**
+     * The rasteriser's own facing flag would say it exactly, and it is one more input to the stage: the flat
+     * shader already carries sixteen, WebGPU's ceiling, and the seventeenth made every pipeline
+     * invalid and every mesh draw nothing. A face whose own normal points away from the eye is the
+     * back of the sheet; what that gives up is a sliver at a curved silhouette, where a front face's
+     * interpolated normal already leans away and is lit as the back.
+     */
+    bool backFace = uDoubleSided != 0 && dot(n, uCameraPos - vWorldPos) < 0.0;
     /*
      * The authored normal, before either relief perturbs it.
      *
@@ -261,6 +275,15 @@ export const MAIN_GLSL = `void main() {
     }
 
     /*
+     * **The back face of a two-sided surface is lit as its front**, which is glTF's rule for
+     * \`doubleSided\`: the whole shading normal turned toward the viewer, after the map and the
+     * relief have perturbed it, as three.js turns its normal, tangent and bitangent together.
+     * Turning only the interpolated normal would leave a normal map's tilt pointing the wrong way
+     * across the fold of every curtain.
+     */
+    if (backFace) n = -n;
+
+    /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
      * Shared rather than issued twice because it is the same number and one is cheaper, and not
      * because it fixes anything. It was tried as a fix and measured: it does not. See the night
@@ -273,8 +296,23 @@ export const MAIN_GLSL = `void main() {
      * term below needs it too. The sun and the moon are the only sources whose shadow
      * used to stop at a glowing surface.
      */
+    /*
+     * **The surface's own n·l, before any map tilted it: the side of the surface the sun is on.**
+     *
+     * A normal map says which way each texel faces within its surface; it cannot put a texel on the
+     * other side of that surface from the sun. Read from the mapped normal alone, the texels of a
+     * column's face turned from a high sun that leaned into the light were lit as though the column
+     * were not in the way: a field of white specks over stone in shade. So the shadow's band is
+     * chosen by this, and the sun is taken away as it reaches zero, over the last two hundredths of
+     * n·l, where an unmapped surface's own Lambert term is already under 0.02. Over a tenth it moved
+     * every smooth column's terminator in the published scenes. What it gives up is the bump-lit
+     * relief of a surface barely facing the sun, where the light was already grazing.
+     */
+    vec3 surfaceN = normalize(vNormal);
+    if (backFace) surfaceN = -surfaceN;
+    float surfaceNdl = dot(surfaceN, uDirectionalDir);
 #if DIRECTIONAL_SHADOWS
-    float sunShade = shadowFactor(ndl);
+    float sunShade = shadowFactor(max(surfaceNdl, 0.0));
 #else
     float sunShade = 1.0;
 #endif
@@ -298,7 +336,13 @@ export const MAIN_GLSL = `void main() {
      * that shipped before it.
      */
     sunShade *= vSkyDirect;
-    float direct = ndl * sunShade;
+    /*
+     * And the sun gone from a surface turned from it, whatever its map says. See \`surfaceNdl\`.
+     * Its own factor rather than folded into sunShade, which the emissive share reads as the sun's
+     * shadow: a lamp's pane turned from the moon is not in shadow, it is only unlit.
+     */
+    float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);
+    float direct = ndl * sunShade * sunFacing;
 
     /*
      * Hemispheric: sky above, ground below, mixed by which way the surface looks. An
@@ -328,6 +372,7 @@ export const MAIN_GLSL = `void main() {
      * set, which is the guarantee that option was added to give.
      */
     vec3 irradiance = gridIrradiance(n, vWorldPos);
+    irradiance = mix(irradiance, ambient, probeGridOutside(surfaceN, vWorldPos));
     ambient = mix(ambient, irradiance, uProbeGridAmbient * uEnvironmentEnabled);
 #endif
     /*
@@ -406,7 +451,7 @@ export const MAIN_GLSL = `void main() {
      * before: \`sunSpec\` is \`vec3(vSpecular)\` at metal 0 and \`vSpecular\` defaults to 0.
      */
     vec3 sunHighlight =
-      uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade;
+      uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
      * below dims it by exactly the reflectance it always dimmed it by. The metal's share is added
@@ -813,6 +858,7 @@ export const MAIN_GLSL = `void main() {
      */
     vec3 lampOpen = vec3(0.0);
     vec3 lampShadowed = vec3(0.0);
+    float driftShare = driftLightShare(vWorldPos);
 
     /*
      * Which froxel this fragment is in.
@@ -912,7 +958,7 @@ export const MAIN_GLSL = `void main() {
       cookie = uintBitsToFloat(rec4.w);
       } else {
       i = slot;
-      if (i >= uLightCount) break;
+      if (i >= uLightCount || i >= MAX_LIGHTS) break;
       lightPos = uLightPos[i];
       lightRadius = uLightRadius[i];
       lightColor = uLightColor[i];
@@ -925,6 +971,9 @@ export const MAIN_GLSL = `void main() {
       iesAxis = uLightIesAxis[i];
       cookie = uLightCookie[i];
       }
+      /* A DriftLight field's own light carries a negative weight, and is shaded exactly only for the
+         share of this pixel the field does not stand in for. See \`driftLight.ts\`. */
+      if (lightWeight < 0.0) lightWeight = -lightWeight * (1.0 - driftShare);
       /*
        * **The cone, and a point light's is one that admits every direction.**
        *
@@ -987,6 +1036,8 @@ export const MAIN_GLSL = `void main() {
        * grazing the angle is. Without it the cubemap's face seams show as a
        * diagonal cross and the whole plane bands.
        */
+      /* How present this light's shadow is. See \`POINT_SHADOW_MIN_WEIGHT\`. */
+      float shadowWeight = clamp(falloff * 2.0, 0.0, 1.0);
 #if POINT_SHADOWS
       float grazing = 1.0 - ndl;
       float normalOffset = (0.06 + dist * 0.05) * grazing * grazing + 0.02;
@@ -1025,7 +1076,7 @@ export const MAIN_GLSL = `void main() {
        */
       int shadowRead = clamp(shadowSlot, 0, MAX_LIGHTS - 1);
       int layer = shadowSlot >= 0 && shadowSlot < MAX_LIGHTS ? uPointShadowLayer[shadowRead] : -1;
-      if (layer >= 0) {
+      if (layer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {
         occl = mix(
           1.0,
           pointShadow(
@@ -1054,7 +1105,7 @@ export const MAIN_GLSL = `void main() {
       float liveWeight = 0.0;
       int liveLayer =
         shadowSlot >= 0 && shadowSlot < MAX_LIGHTS ? uLivePointShadowLayer[shadowRead] : -1;
-      if (liveLayer >= 0) {
+      if (liveLayer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {
         liveOccl = pointShadow(
           uPointShadows,
           float(liveLayer),
@@ -1074,7 +1125,7 @@ export const MAIN_GLSL = `void main() {
       // Blend occlusion out as the light fades, so a shadow can never be more
       // present than the light casting it — and slot changes at the edge of
       // range become invisible rather than a pop.
-      float shaded = mix(1.0, occl, clamp(falloff * 2.0, 0.0, 1.0));
+      float shaded = mix(1.0, occl, shadowWeight);
       /*
        * The cone multiplies the distance falloff rather than replacing it, which is what makes a
        * spot a point light with a direction rather than a second kind of light. It is exactly 1
@@ -1494,6 +1545,14 @@ export const MAIN_GLSL = `void main() {
     );
 #endif
     lit += lampOpenFloor * lampShade;
+    /*
+     * DriftLight: every fixed light past the frame's choice, summed and occluded, for the share of
+     * this pixel the exact lights above no longer cover. Diffuse only, and so no metal term: see
+     * \`driftLight.ts\`.
+     */
+    if (driftShare > 0.0) {
+      lit += albedo * driftLightIrradiance(vWorldPos, n) * (driftShare * uDriftLight.w) * (1.0 - metal);
+    }
 
     /*
      * Self-illuminated geometry, dimmed where a lamp's shadow crosses it.

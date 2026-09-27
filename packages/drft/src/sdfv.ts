@@ -47,6 +47,22 @@ import { DrftError, align } from './drftFormat.ts';
 export const SDFV_ENTRY_BYTES = 40;
 
 /**
+ * The mesh ordinal that means **the file's static geometry as a whole**, in the file's own space.
+ *
+ * **One field for a scene rather than one per mesh, because a scene is where per-mesh fields
+ * fail.** A bought courtyard exports its walls as a few meshes spanning the whole of it, so a field
+ * of thirty-two samples along each mesh's longest side is 1.2 m voxels on the walls that matter and
+ * 12.6 MB across four hundred meshes; one field over all of them at 25 cm is 3 MB and resolves a
+ * column. A reader places it with the file's own transform and nothing per mesh.
+ *
+ * **Additive, and it had to be checked rather than assumed**: no reader has ever compared an
+ * entry's ordinal with the mesh count, so a reader that predates this value reads the entry and
+ * pairs it with no mesh, which loses only the traced light it could not have used. What would make
+ * it wrong is a file whose static geometry moves, which is a file with more than one field.
+ */
+export const SDFV_WHOLE_FILE = 0xffffffff;
+
+/**
  * The most samples one field may declare.
  *
  * **A bound on the count, not a bound on ambition.** The product of three `u32`s read out of a

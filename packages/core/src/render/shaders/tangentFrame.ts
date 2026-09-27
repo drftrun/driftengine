@@ -56,7 +56,9 @@ export const TANGENT_FRAME_GLSL = `mat3 tangentFrame(vec3 n, vec3 worldPos, vec2
    * generateTangents does the same per vertex and says why: dropping it is a normal map that
    * shears wherever the geometry curves.
    */
-  vec3 attrT = normalize(tangent.xyz - n * dot(n, tangent.xyz));
+  vec3 along = tangent.xyz - n * dot(n, tangent.xyz);
+  float alongSq = dot(along, along);
+  vec3 attrT = along * inversesqrt(max(alongSq, 1e-12));
   /*
    * The bitangent's sign, which is the whole reason w is stored. An artist mapping the left and
    * right of a model onto one patch of texture gives one side a mirrored frame, and a bitangent
@@ -64,7 +66,17 @@ export const TANGENT_FRAME_GLSL = `mat3 tangentFrame(vec3 n, vec3 worldPos, vec2
    */
   vec3 attrB = cross(n, attrT) * tangent.w;
 
-  vec3 t = hasTangents != 0 ? attrT : derivedT;
-  vec3 b = hasTangents != 0 ? attrB : derivedB;
+  /*
+   * **And only where there is a frame to keep.** A tangent parallel to its normal, or two that
+   * nearly cancel across one triangle at a mirrored seam, leaves nothing after the subtraction,
+   * and a normalised nothing is NaN. One such pixel in one probe face was a whole courtyard drawn
+   * black: a probe convolves its faces into every direction, and the bounce carries that into
+   * every other probe. So where nothing is left, the derived frame stands in. What it gives up is a
+   * direction on a pixel that had none; what would make it wrong is a threshold large enough to
+   * catch a frame that is merely short, and a unit tangent interpolated is nowhere near 1e-4.
+   */
+  bool framed = hasTangents != 0 && alongSq > 1e-8;
+  vec3 t = framed ? attrT : derivedT;
+  vec3 b = framed ? attrB : derivedB;
   return mat3(t, b, n);
 }`;

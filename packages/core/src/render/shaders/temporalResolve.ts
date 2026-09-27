@@ -111,6 +111,44 @@ vec3 clipToNeighbourhood(vec3 history, vec3 lo, vec3 hi) {
   return centre + offset / ratio;
 }
 
+/*
+ * **The history read through a Catmull-Rom filter, not a bilinear one.**
+ *
+ * The reprojection lands between texels nearly everywhere, and a bilinear fetch there is a small blur;
+ * applied to a picture that is itself last frame's blend, it compounds every frame, so a still camera
+ * settled on a picture measurably softer than one frame of it. A courtyard's stone read as out of
+ * focus beside the same frame with the resolve off. Catmull-Rom passes a straight ramp through exactly
+ * and keeps the edge between two texels an edge, which is what the history is for.
+ *
+ * Five bilinear fetches rather than sixteen point ones: the middle two weights of each axis share a
+ * fetch placed between them, and the four corners, which carry a few hundredths, are left out and
+ * the rest renormalised. Its negative lobes can ring past what the frame holds, which the
+ * neighbourhood clip after it takes back, and the floor at zero keeps a float target out of the
+ * negatives meanwhile.
+ */
+vec3 historyCatmullRom(vec2 uv) {
+  vec2 size = 1.0 / uTexel;
+  vec2 at = uv * size;
+  vec2 base = floor(at - 0.5) + 0.5;
+  vec2 f = at - base;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 at0 = (base - 1.0) * uTexel;
+  vec2 at3 = (base + 2.0) * uTexel;
+  vec2 at12 = (base + w2 / w12) * uTexel;
+  vec3 sum =
+    textureLod(uHistory, vec2(at12.x, at0.y), 0.0).rgb * (w12.x * w0.y) +
+    textureLod(uHistory, vec2(at0.x, at12.y), 0.0).rgb * (w0.x * w12.y) +
+    textureLod(uHistory, at12, 0.0).rgb * (w12.x * w12.y) +
+    textureLod(uHistory, vec2(at3.x, at12.y), 0.0).rgb * (w3.x * w12.y) +
+    textureLod(uHistory, vec2(at12.x, at3.y), 0.0).rgb * (w12.x * w3.y);
+  float weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+  return max(sum / weight, vec3(0.0));
+}
+
 void main() {
   vec3 current = textureLod(uScene, vUv, 0.0).rgb;
 
@@ -143,7 +181,7 @@ void main() {
   vec3 lo;
   vec3 hi;
   neighbourhood(lo, hi);
-  vec3 history = textureLod(uHistory, wasUv, 0.0).rgb;
+  vec3 history = historyCatmullRom(wasUv);
   vec3 bounded = clipToNeighbourhood(history, lo, hi);
 
   fragColor = vec4(mix(current, bounded, uHistoryBlend), 1.0);

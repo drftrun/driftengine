@@ -1,5 +1,6 @@
 /**
- * The native host's pixel gate: a published scene held in the browser and under the host, compared.
+ * The native host's pixel gate: a scene held in the browser and under the host, compared. Every
+ * published scene by default; `--scenes=` takes any id, drafts included.
  *
  *     (setsid npx vite demo/dev --port 5202 --strictPort > /tmp/vite.log 2>&1 < /dev/null &)
  *     npm run native:gate -- --base=http://localhost:5202 [--scenes=gilded-chamber,night-court]
@@ -68,11 +69,15 @@ console.log(`renderer: ${await requireHardwareGpu(client)}`);
 
 let failed = 0;
 for (const name of wanted) {
+  /*
+   * A published scene by its index, as every capture already names it, and a draft by its id,
+   * which the harness resolves and the host checks: an id neither knows fails there by name.
+   */
   const index = DEFAULT_SCENES.indexOf(name);
-  if (index < 0) throw new Error(`${name} is not a published scene: ${DEFAULT_SCENES.join(', ')}`);
+  const scene = index < 0 ? name : String(index);
 
   const page = await client.page(
-    `${base}/?scene=${index}&hold=${hold}&backend=webgpu${query === '' ? '' : `&${query}`}`,
+    `${base}/?scene=${scene}&hold=${hold}&backend=webgpu${query === '' ? '' : `&${query}`}`,
     1280,
     720,
   );

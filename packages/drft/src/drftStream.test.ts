@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { MeshBuilder } from '@driftengine/core';
-import { DrftStream } from './drftStream.ts';
+import { DrftStream, streamDrft } from './drftStream.ts';
 import { readDrft } from './drftRead.ts';
 import { writeDrft } from './drftWrite.ts';
 import { CODEC_RAW, DrftError, HEADER_BYTES, fourCC } from './drftFormat.ts';
@@ -295,4 +295,80 @@ test('an outline arrives before the paint, and is not counted as a part', () => 
   expect(level, 'the level ordinal, coarsest first').toBe(0);
   expect(manifest.meshCount, 'one part, and the outline is not one of them').toBe(1);
   expect(manifest.lodCount).toBe(1);
+});
+
+/**
+ * **A stream that never waits for the network never lets a frame draw.** Once a body's bytes are
+ * buffered, every `read` resolves as a microtask, so the loop decodes chunk after chunk inside one
+ * task: measured on a local server, a courtyard's five files ran in stretches of 0.6 to 1.1 s with
+ * no frame between them, and the load drew 117 frames in five seconds. So the stream works for a
+ * slice of time and then gives way for a task, and a frame can land in the gap.
+ *
+ * The clock is the test's own and moves only when a mesh lands, seven milliseconds a mesh: two
+ * meshes are fourteen, so a ten-millisecond slice gives way once, after the second.
+ */
+test('A STREAM GIVES WAY ONCE IT HAS WORKED A SLICE, and only then', async () => {
+  const body = (): Response => {
+    const bytes = new Uint8Array(sampleAsset());
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let at = 0; at < bytes.length; at += 64) {
+            controller.enqueue(bytes.slice(at, at + 64));
+          }
+          controller.close();
+        },
+      }),
+    );
+  };
+  const run = async (sliceMs: number): Promise<number[]> => {
+    let clock = 0;
+    const gaveWayAt: number[] = [];
+    await streamDrft(
+      body(),
+      {
+        onMesh: () => {
+          clock += 7;
+        },
+      },
+      {
+        sliceMs,
+        now: () => clock,
+        giveWay: async () => {
+          gaveWayAt.push(clock);
+        },
+      },
+    );
+    return gaveWayAt;
+  };
+
+  expect(await run(10)).toEqual([14]);
+  expect(await run(5), 'a slice shorter than one mesh gives way after each').toEqual([7, 14]);
+  expect(await run(20), 'and one longer than the whole load never does').toEqual([]);
+});
+
+/**
+ * **A field the whole-file reader returns, a stream hands on too.** `SDFV` arrived at 1.13 with
+ * `readDrft` reading it and the stream skipping it, so a scene loading through `DrftLoader` could
+ * never trace light through a file that carried its shape.
+ */
+test('A STREAM HANDS ON THE DISTANCE FIELDS ITS FILE CARRIES', () => {
+  const first = new MeshBuilder();
+  first.addBox([0, 0, 0], [1, 1, 1], [0.5, 0.5, 0.5], 0, 0);
+  const field = new Float32Array(2 * 3 * 4).map((_, i) => i * 0.5 - 3);
+  const drft = writeDrft({
+    meshes: [first.build()],
+    fields: [
+      { mesh: 0xffffffff, dims: [2, 3, 4], bounds: new Float32Array([0, 0, 0, 1, 2, 3]), field },
+    ],
+  });
+  const got: { mesh: number; samples: number[] }[] = [];
+  const stream = new DrftStream({
+    onFields: (entries) => {
+      for (const entry of entries) got.push({ mesh: entry.mesh, samples: Array.from(entry.field) });
+    },
+  });
+  feed(stream, drft, 97);
+  stream.end();
+  expect(got).toEqual([{ mesh: 0xffffffff, samples: Array.from(field) }]);
 });

@@ -1,6 +1,7 @@
 import { boundsOfPositions, createBounds } from '../../../math/bounds.ts';
 import type { Bounds } from '../../../math/bounds.ts';
 import { MorphTexture } from './morphTexture.ts';
+import { validateMeshData } from '../../mesh.ts';
 import type { MeshData } from '../../mesh.ts';
 import { ABSENT_ATTRIBUTE } from '../../vertexDefaults.ts';
 import { UPLOAD_BYTES_PER_STEP } from '../../uploadStep.ts';
@@ -255,6 +256,11 @@ export function createGpuMeshIncremental(
   data: MeshData,
   dynamic = false,
 ): IncrementalGpuMesh {
+  /*
+   * The other backend's refusal, and the premise of the interleave below: every attribute holds
+   * exactly a vertex's worth for every vertex, so nothing reads past the end of its array.
+   */
+  validateMeshData(data);
   const bounds = boundsOfPositions(data.positions, createBounds());
   const vertexCount = data.positions.length / 3;
   const supplied = VERTEX_LAYOUT.filter(
@@ -434,14 +440,8 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
     let fieldOffset = 0;
     for (const attribute of supplied) {
       const source = data[attribute.name as keyof MeshData] as Float32Array;
-      const width = attribute.components;
-      for (let vertex = from; vertex < to; vertex++) {
-        for (let component = 0; component < width; component++) {
-          interleaved[vertex * step + fieldOffset + component] =
-            source[vertex * width + component] ?? 0;
-        }
-      }
-      fieldOffset += width;
+      interleaveField(interleaved, source, attribute.components, step, fieldOffset, from, to);
+      fieldOffset += attribute.components;
     }
     device.queue.writeBuffer(vertices, from * stride, interleaved, from * step, (to - from) * step);
     taken += 1;
@@ -460,6 +460,49 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
   job.data = null;
   job.interleaved = null;
   job.progress.uploaded = true;
+}
+
+/**
+ * One attribute of vertices `from` to `to` into its field of the interleaved rows.
+ *
+ * **Unrolled by width, because the general loop was most of a heavy load's upload.** A loop over
+ * components inside a loop over vertices, with the index recomputed from both, cost 1.5 s of main
+ * thread on a courtyard of five packs; a loop per width walking two cursors does the same writes in
+ * about a third of the time, measured on four million vertices in Node. Every width the layout
+ * carries is one, two, three or four, so the last arm is the one-float case and nothing else.
+ */
+function interleaveField(
+  rows: Float32Array,
+  source: Float32Array,
+  width: number,
+  step: number,
+  fieldOffset: number,
+  from: number,
+  to: number,
+): void {
+  let write = from * step + fieldOffset;
+  const end = to * width;
+  if (width === 3) {
+    for (let read = from * 3; read < end; read += 3, write += step) {
+      rows[write] = source[read] as number;
+      rows[write + 1] = source[read + 1] as number;
+      rows[write + 2] = source[read + 2] as number;
+    }
+  } else if (width === 4) {
+    for (let read = from * 4; read < end; read += 4, write += step) {
+      rows[write] = source[read] as number;
+      rows[write + 1] = source[read + 1] as number;
+      rows[write + 2] = source[read + 2] as number;
+      rows[write + 3] = source[read + 3] as number;
+    }
+  } else if (width === 2) {
+    for (let read = from * 2; read < end; read += 2, write += step) {
+      rows[write] = source[read] as number;
+      rows[write + 1] = source[read + 1] as number;
+    }
+  } else {
+    for (let read = from; read < end; read++, write += step) rows[write] = source[read] as number;
+  }
 }
 
 /** The handle, made where it can see only what it hands out. */

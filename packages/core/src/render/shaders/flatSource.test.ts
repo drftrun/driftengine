@@ -54,12 +54,16 @@ const ALL_ON = (1 << FIELDS.length) - 1;
 test('the fixed light path is unchanged by the clustered arm existing beside it', () => {
   const source = flatFrag(optionsFor(ALL_ON));
 
-  /* The bound is one constant for both arms, and it is the fixed budget's. */
-  expect(source).toContain('#define LIGHT_LOOP_MAX MAX_LIGHTS');
+  /*
+   * The bound is the froxel cap since 2026-09-25, and the fixed arm leaves at its own budget: it
+   * iterates what it always did, and never indexes a uniform array of `MAX_LIGHTS` past its end.
+   */
+  expect(source).toContain('#define LIGHT_LOOP_MAX MAX_LIGHTS_PER_CLUSTER');
+  expect(source).toContain('if (i >= uLightCount || i >= MAX_LIGHTS) break;');
   expect(
     MAX_LIGHTS_PER_CLUSTER,
-    'a larger froxel cap would raise the loop bound for a scene that never asks for froxels',
-  ).toBe(MAX_POINT_LIGHTS);
+    'and the bound never cuts the fixed arm short',
+  ).toBeGreaterThanOrEqual(MAX_POINT_LIGHTS);
 
   /* The fixed arm still reads the uniform slots, unchanged. */
   expect(source).toContain('lightPos = uLightPos[i];');

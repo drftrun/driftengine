@@ -1,5 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import type { ProbeBakeOptions } from '../../reflectionProbe.ts';
+import { probeFaceRange } from '../../reflectionProbe.ts';
 import {
   TEMPORAL_HISTORY_BLEND,
   TemporalHistory,
@@ -55,6 +56,7 @@ import {
   BLOOM_FILTER_RADIUS_UV,
   BLOOM_LEVELS,
   bloomLevelSizes,
+  bloomThresholdOf,
   bloomProfileWarning,
 } from '../../bloomChain.ts';
 import {
@@ -93,6 +95,7 @@ import {
   sameGrid,
 } from '../../probeGrid.ts';
 import type { ProbeGridOptions } from '../../probeGrid.ts';
+import { ProbeSweeps } from '../../probeSweeps.ts';
 import { ggxMaxLevelFor, irradianceLevelFor, octahedralEdgeFor } from '../../prefilterEnvMap.ts';
 import { environmentTexels } from './environmentTexels.ts';
 import { packIesAtlas } from '../../iesProfile.ts';
@@ -105,7 +108,6 @@ import {
   DEFAULT_SOURCE_RADIUS,
   FACE_COUNT,
   createResolvedPointShadows,
-  type ResolvedPointShadows,
 } from '../../pointShadowImage.ts';
 import { MAX_AREA_LIGHTS, type AreaLightSource } from '../../areaLights.ts';
 import {
@@ -178,6 +180,9 @@ import type { RenderBackend } from '../api.ts';
 import { reflectionTargetSize, type ReflectionSize } from '../../planarReflectionDraw.ts';
 import { drawingBufferSize } from '../../drawingBuffer.ts';
 import { MOTION_BLUR_MAX_UV, OUTPUT_TRANSFORM_CODE, RUSH_REACH_UV } from '../../vertexDefaults.ts';
+import { ExposurePass } from './exposurePass.ts';
+import { clampAutoExposure } from '../../shaders/exposure.ts';
+import { clampLocalExposure } from '../../shaders/localExposure.ts';
 import type { UniformFields } from './scatterPass.ts';
 import {
   createDepthResolveLayout,
@@ -254,11 +259,14 @@ import {
   validateGradeLut,
 } from '../../colourGrade.ts';
 import {
+  FILM_LOOK_WITHOUT_COMPOSITE,
+  clampGrain,
+  clampVignette,
+  grainSeed,
+} from '../../shaders/filmLook.ts';
+import {
   createProbeMipBindGroupLayout,
   createProbePrefilterBindGroupLayout,
-  PREFILTER_SAMPLER_BINDING,
-  PREFILTER_TEXTURE_BINDING,
-  PREFILTER_UNIFORM_BINDING,
   PREFILTER_UNIFORM_OFFSETS,
   probeLevels,
   probeMipPipeline,
@@ -339,6 +347,9 @@ import {
   DEPTH_FRAG_SIZE,
   DEPTH_FRAG_WGSL,
   DEPTH_PREVIOUS_BINDING,
+  DEPTH_CUTOUT_VERT_FIELDS,
+  DEPTH_CUTOUT_VERT_SIZE,
+  DEPTH_INSTANCED_CUTOUT_VERT_FIELDS,
   DEPTH_VERT_FIELDS,
   DEPTH_VERT_SIZE,
   SHADOW_FORMAT,
@@ -394,7 +405,6 @@ import {
 } from './plumePass.ts';
 import {
   PARTICLE_VERT_FIELDS,
-  PARTICLE_VERT_SIZE,
   createGpuParticles,
   createParticleBindGroupLayout,
   packInstances,
@@ -461,8 +471,12 @@ import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
 import { DYNAMIC_ALIGNMENT as DYNAMIC_UNIFORM_ALIGNMENT, UniformRing } from './uniformRing.ts';
 import { DecalQueue, MAX_DRAWN_DECALS } from '../../decalQueue.ts';
 import { DistanceFieldScene } from '../../gi/fieldScene.ts';
-import { DEFAULT_FIELD_COMPOSE, FieldComposer } from './fieldCompose.ts';
+import { DEFAULT_FIELD_COMPOSE, FieldComposer, MAX_FIELD_CASCADES } from './fieldCompose.ts';
+import { cascadesForGrid } from '../../gi/fieldReach.ts';
 import { ProbeBaker } from './probeBake.ts';
+import type { ProbeBakeLightField } from './probeBake.ts';
+import { createBounceLights, resolveBounceLights } from '../../gi/bounceLights.ts';
+import { ProbeTargets } from './probeTargets.ts';
 import { distanceFieldBounds } from '../../gi/fieldScene.ts';
 import { fitProbeGrid } from '../../gi/probeGridFit.ts';
 
@@ -535,6 +549,11 @@ import type {
 import type { Arena, FlushSchedule, ScheduledPass } from '../../frame/index.ts';
 import { GpuInstancedBatch } from './instanced.ts';
 import type { MeshInstances } from '../../instances.ts';
+import { cutoutOf } from '../../cutoutCaster.ts';
+import type { CutoutCaster } from '../../cutoutCaster.ts';
+import { LightField } from '../../driftLight/lightField.ts';
+import type { LightFieldOptions, LightFieldSource } from '../../driftLight/lightField.ts';
+import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/uniforms.ts';
 
 /**
  * How many draws one frame may make before the ring is full.
@@ -588,6 +607,12 @@ const MAX_SCATTER_DEPTH_DRAWS = 256;
  * against the world.
  */
 const MAX_OVERLAYS = 64;
+/**
+ * Sky draws a frame can hold. A frame draws one, a mirror adds one, and a probe bake six a probe —
+ * given back after each probe's submit, so a whole grid needs six. Sixty-four is room for insets
+ * and passes nobody has written yet; the cost is sixteen kilobytes.
+ */
+const MAX_SKY_DRAWS = 64;
 
 /**
  * Distinct materials a frame may set.
@@ -1213,8 +1238,6 @@ type ShadowLayer = 'static' | 'static-peel' | 'dynamic';
 
 /** The tint a draw gets when it asks for none, matching the WebGL2 path's reset-to-white. */
 const WHITE = new Float32Array([1, 1, 1]);
-/** No surface-texture scaling, which is what an untextured mesh wants. */
-const UNIT_UV = new Float32Array([1, 1]);
 /** A dust field standing still, for a light volume that asked for dust and not for wind. */
 const NO_DRIFT = new Float32Array([0, 0, 0]);
 /**
@@ -1264,6 +1287,24 @@ const NO_CLIP_PLANE = new Float32Array(4);
  * matrix the scene drew with and hands over the product.
  */
 const MOTION_CLIP_FLIP = mat4.fromValues(1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+
+/* Scratch for the probe blur's and convolution's uniform writes, so a bake writes no array literal. */
+const SCRATCH_ONE = new Float32Array(1);
+const SCRATCH_VEC4 = new Float32Array(4);
+const ZERO4 = new Float32Array(4);
+/** `value` in a one-float scratch, overwritten by the next call. */
+function one(value: number): Float32Array {
+  SCRATCH_ONE[0] = value;
+  return SCRATCH_ONE;
+}
+/** A direction padded to a `vec4`, in a scratch overwritten by the next call. */
+function padded(direction: ArrayLike<number>): Float32Array {
+  SCRATCH_VEC4[0] = direction[0] ?? 0;
+  SCRATCH_VEC4[1] = direction[1] ?? 0;
+  SCRATCH_VEC4[2] = direction[2] ?? 0;
+  SCRATCH_VEC4[3] = 0;
+  return SCRATCH_VEC4;
+}
 
 export class WebGPURenderer implements RendererApi {
   /**
@@ -2081,13 +2122,21 @@ export class WebGPURenderer implements RendererApi {
   private readonly frameEye = new Float32Array(3);
   /** The environment the frame was drawn with. See `bindMeshPass`. */
   private frameEnv: Environment | null = null;
+  /**
+   * The sky this frame drew, or null until it draws one. A traced probe's escaping rays read it,
+   * so a frame that stops drawing a sky must not go on lighting its probes with the last one.
+   */
+  private frameSky: SkyColors | null = null;
   /** That matrix with the clip-space correction folded in, rebuilt once a frame. */
   private readonly correctedViewProj = new Float32Array(16);
 
   private readonly skyLayout: GPUBindGroupLayout;
-  private readonly skyUniforms: GPUBuffer;
-  private readonly skyStaging = new ArrayBuffer(SKY_UNIFORM_SIZE);
-  private readonly skyFloats = new Float32Array(this.skyStaging);
+  /**
+   * A slot a sky draw, as every per-draw resource here is: see `UniformRing` and the 2026-08-27 rule.
+   * It was one buffer rewritten at each draw, which gave every sky in an encoder the last camera.
+   */
+  private readonly skyUniforms: UniformRing;
+  private readonly skyFloats = new Float32Array(SKY_UNIFORM_SIZE / 4);
   private readonly skyBindGroup: GPUBindGroup;
   /** The camera's inverse with the clip correction undone, rebuilt once a frame. */
   private readonly skyInvViewProj = new Float32Array(16);
@@ -2363,35 +2412,74 @@ export class WebGPURenderer implements RendererApi {
    * prefix that has already been uploaded costs one write of unchanged bytes and cannot be
    * wrong: a ring only ever appends within a frame.
    */
+  /**
+   * Every per-draw ring the frame writes and flushes together, in one list.
+   *
+   * **One list, read by the flush and by the probe bake's rewind**, so a ring added to one cannot be
+   * forgotten by the other: a ring flushed but never rewound would let a grid bake spend it, and one
+   * rewound but never flushed would upload nothing. Built on first use, after the constructor has
+   * set every field; `growTo` replaces a ring's buffer, never the ring, so the list stays true.
+   */
+  private ringList: readonly UniformRing[] | null = null;
+  private rings(): readonly UniformRing[] {
+    this.ringList ??= [
+      this.perDraw,
+      this.lightVolumeVertices,
+      this.lightVolumeFragments,
+      this.plumeVerts,
+      this.plumeFrags,
+      this.waterVerts,
+      this.waterFrags,
+      this.boltVerts,
+      this.boltFrags,
+      this.causticsVerts,
+      this.causticsFrags,
+      this.flockVerts,
+      this.flockFrags,
+      this.windStreakVerts,
+      this.windStreakFrags,
+      this.scatterVerts,
+      this.scatterFrags,
+      this.perFrame,
+      this.filmVerts,
+      this.filmFrags,
+      this.insetUniforms,
+      this.panelVerts,
+      this.panelFrags,
+      this.textVerts,
+      this.textFrags,
+      this.sdfTextVerts,
+      this.sdfTextFrags,
+      this.lineVerts,
+      this.lineFrags,
+      this.skyUniforms,
+    ];
+    return this.ringList;
+  }
+
   private flushRings(): void {
-    this.perDraw.flush();
-    this.lightVolumeVertices.flush();
-    this.lightVolumeFragments.flush();
-    this.plumeVerts.flush();
-    this.plumeFrags.flush();
-    this.waterVerts.flush();
-    this.waterFrags.flush();
-    this.boltVerts.flush();
-    this.boltFrags.flush();
-    this.causticsVerts.flush();
-    this.causticsFrags.flush();
-    this.flockVerts.flush();
-    this.flockFrags.flush();
-    this.windStreakVerts.flush();
-    this.windStreakFrags.flush();
-    this.scatterVerts.flush();
-    this.perFrame.flush();
-    this.filmVerts.flush();
-    this.filmFrags.flush();
-    this.insetUniforms.flush();
-    this.panelVerts.flush();
-    this.panelFrags.flush();
-    this.textVerts.flush();
-    this.textFrags.flush();
-    this.sdfTextVerts.flush();
-    this.sdfTextFrags.flush();
-    this.lineVerts.flush();
-    this.lineFrags.flush();
+    for (const ring of this.rings()) ring.flush();
+  }
+
+  /** Where every ring stands before work that submits an encoder of its own. */
+  private readonly ringMarks: number[] = [];
+  private markRings(): void {
+    const rings = this.rings();
+    this.ringMarks.length = rings.length;
+    for (let i = 0; i < rings.length; i++) this.ringMarks[i] = (rings[i] as UniformRing).mark();
+  }
+
+  /**
+   * Give back every slot taken since `markRings`, once that work has been submitted.
+   *
+   * See `UniformRing.rewind` for why this is safe only after the submit. The palette ring goes back
+   * with them, and the cached palette slot is dropped if it was one of those given back.
+   */
+  private rewindRings(skinMark: number): void {
+    const rings = this.rings();
+    for (let i = 0; i < rings.length; i++) (rings[i] as UniformRing).rewind(this.ringMarks[i] ?? 0);
+    this.skinPalettes.rewind(skinMark);
+    if (this.skinPaletteSlot >= skinMark) this.skinPaletteSlot = -1;
   }
 
   /* -- The film ------------------------------------------------------------------------- */
@@ -2600,6 +2688,8 @@ export class WebGPURenderer implements RendererApi {
   private blankAlbedoBindGroup: GPUBindGroup;
   /** Repeats across the mesh's own UV range. Per draw, because `uUvScale` is a vertex uniform. */
   private readonly uvScale = new Float32Array([1, 1]);
+  /** Whether the bound material is seen from both faces. See `SurfaceMaterial.doubleSided`. */
+  private materialDoubleSided = false;
 
   createSurfaceTexture(
     source: TexImageSource,
@@ -2664,6 +2754,8 @@ export class WebGPURenderer implements RendererApi {
    * a group holding the old view hands a destroyed texture to the next draw that asks.
    */
   private forgetBindingsOf(texture: GpuSurfaceTexture): void {
+    this.cutoutGroups.delete(texture);
+    this.cutoutPeelGroups.delete(texture);
     /* Same reasoning, for whichever SDF labels were bound against this atlas. */
     this.sdfTextBindGroups.delete(texture);
     this.flatBindGroups.clear();
@@ -2720,12 +2812,14 @@ export class WebGPURenderer implements RendererApi {
     const albedo = material?.albedo ?? null;
     this.uvScale[0] = material?.uScale ?? 1;
     this.uvScale[1] = material?.vScale ?? 1;
+    this.materialDoubleSided = material?.doubleSided === true;
     const normal = (material?.normal ?? null) as GpuSurfaceTexture | null;
     const orm = (material?.orm ?? null) as GpuSurfaceTexture | null;
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
     this.material((f, i) => {
       i[this.materialField('uAlbedoEnabled')] = albedo === null ? 0 : 1;
       f[this.materialField('uAlbedoCutout')] = material?.cutout ?? 0;
+      i[this.materialField('uDoubleSided')] = material?.doubleSided === true ? 1 : 0;
       /* 0 is no map, and gates the whole block in the shader. See `uNormalStrength`. */
       f[this.materialField('uNormalStrength')] =
         normal === null ? 0 : (material?.normalStrength ?? 1);
@@ -3586,6 +3680,18 @@ export class WebGPURenderer implements RendererApi {
     timeSeconds: number,
   ): void {
     if (!this.canDraw() || data.count === 0) return;
+    if (batch.drawnInEncoder === this.encoderEpoch) {
+      if (!this.warnedParticlesTwice) {
+        this.warnedParticlesTwice = true;
+        console.warn(
+          'WebGPU: a particle batch was drawn twice into one encoder — a mirror and the view, or a ' +
+            "probe's faces — and the second draw is skipped, because both would show the second " +
+            "draw's particles. Give each view its own batch.",
+        );
+      }
+      return;
+    }
+    batch.drawnInEncoder = this.encoderEpoch;
     const live = packInstances(batch, data);
     if (live === 0) return;
 
@@ -4364,7 +4470,6 @@ export class WebGPURenderer implements RendererApi {
 
     this.windStreakFragFloats.set(tint, (WIND_STREAK_FRAG_FIELDS.uTint.offset ?? 0) / 4);
 
-    const { queue } = this.surface.device;
     this.windStreakVerts.writeBlock(vertexSlot, this.windStreakVertBlock);
     this.windStreakFrags.writeBlock(fragmentSlot, this.windStreakFragBlock);
 
@@ -4466,7 +4571,6 @@ export class WebGPURenderer implements RendererApi {
 
     this.flockFragFloats.set(tint, (FLOCK_FRAG_FIELDS.uTint.offset ?? 0) / 4);
 
-    const { queue } = this.surface.device;
     this.flockVerts.writeBlock(vertexSlot, this.flockVertBlock);
     this.flockFrags.writeBlock(fragmentSlot, this.flockFragBlock);
 
@@ -4819,7 +4923,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly scatterLayout: GPUBindGroupLayout;
   /** One slot per batch: the gust and the trample field belong to the batch, not the frame. */
   private readonly scatterVerts: UniformRing;
-  private readonly scatterFragUniforms: GPUBuffer;
+  /** A slot a draw, beside the vertex block's: see `createScatterBindGroupLayout` for why. */
+  private readonly scatterFrags: UniformRing;
   private readonly scatterFragStaging = new ArrayBuffer(SCATTER_FRAG_SIZE);
   private readonly scatterFragFloats = new Float32Array(this.scatterFragStaging);
   private readonly scatterFragInts = new Int32Array(this.scatterFragStaging);
@@ -5014,17 +5119,28 @@ export class WebGPURenderer implements RendererApi {
   private readonly dynamicView: GPUTextureView | null;
   /** The peel's own bind groups: `uPeelShadowLayer` at 1, and the static map to peel against. */
   private readonly shadowPeelBindGroup: GPUBindGroup | null;
+  /**
+   * The cutout casters' layout, and a bind group per cutout map for each layer, built the first
+   * time a map casts and kept: a `createBindGroup` per draw is the allocation the house rules forbid.
+   * Cleared in `forgetBindingsOf`, because a group outliving its texture is a destroyed-texture error
+   * at submit, and a texture's view is new when an update changes its size.
+   */
+  private readonly shadowCutoutLayout: GPUBindGroupLayout;
+  private readonly cutoutGroups = new Map<GpuSurfaceTexture, GPUBindGroup>();
+  private readonly cutoutPeelGroups = new Map<GpuSurfaceTexture, GPUBindGroup>();
+  private shadowPeelPassUniforms: GPUBuffer | null = null;
+  private shadowPeelSampler: GPUSampler | null = null;
   private readonly scatterDepthPeelBindGroup: GPUBindGroup | null;
   /** Which layer the open pass is writing, so the sink picks the bindings that match it. */
   private shadowLayerIsPeel = false;
   /**
    * Whether a peel pass has filled the map, which is what the frame may sample it on.
    *
-   * **Not whether the map exists.** `renderer.ts` can ask that question because a GL texture is
-   * born cleared; a WebGPU texture no pass has written holds undefined contents, so a scene
-   * that builds a peel map and never opens the layer would sample garbage. Cleared when the
-   * static layer opens and set when a peel pass ends, which is per frame because both demo
-   * scenes that peel do so every frame.
+   * **Not whether the map exists.** `renderer.ts` asked that question, on the belief that a GL
+   * texture is born reading as the far plane, and it is born zeroed: a scene that built a peel
+   * map and never opened the layer had no sun at all under ANGLE's GL backend. It holds this
+   * rule now as well. Cleared when the static layer opens and set when a peel pass ends, which
+   * is per frame because every scene that peels does so every frame.
    */
   private peelFilled = false;
   /** One slot per caster, the same trick `perDraw` uses and for the same reason. */
@@ -5066,6 +5182,44 @@ export class WebGPURenderer implements RendererApi {
    * otherwise. A lookup rather than a rebind, because a `createBindGroup` per draw is the
    * per-frame allocation the house rules forbid; both groups are built once at init.
    */
+  /** The cutout bind group for `texture` in the open layer, built the first time it casts there. */
+  private cutoutGroup(texture: GpuSurfaceTexture): GPUBindGroup | null {
+    const peel = this.shadowLayerIsPeel && this.shadowPeelPassUniforms !== null;
+    const groups = peel ? this.cutoutPeelGroups : this.cutoutGroups;
+    const held = groups.get(texture);
+    if (held !== undefined) return held;
+    const passUniforms = peel ? this.shadowPeelPassUniforms : this.shadowPassUniforms;
+    const previousView = peel ? this.shadowView : this.shadowBlankView;
+    const previousSampler = peel ? this.shadowPeelSampler : this.shadowBlankSampler;
+    if (passUniforms === null || previousView === null || previousSampler === null) return null;
+    const group = createDepthBindGroup(
+      this.surface.device,
+      this.shadowCutoutLayout,
+      this.shadowDraws.buffer,
+      passUniforms,
+      previousView,
+      previousSampler,
+      null,
+      { view: texture.view, sampler: texture.sampler },
+    );
+    groups.set(texture, group);
+    return group;
+  }
+
+  /** The cutoff and UV scale into a cutout draw's slot, at the offsets its own variant declares. */
+  private writeCutout(
+    slot: number,
+    cutout: CutoutCaster<unknown>,
+    fields: {
+      readonly uUvScale: { readonly offset: number };
+      readonly uAlphaCutout: { readonly offset: number };
+    },
+  ): void {
+    this.shadowDraws.writeFloat(slot, fields.uUvScale.offset, cutout.u);
+    this.shadowDraws.writeFloat(slot, fields.uUvScale.offset + 4, cutout.v);
+    this.shadowDraws.writeFloat(slot, fields.uAlphaCutout.offset, cutout.cutoff);
+  }
+
   private shadowGroup(): GPUBindGroup {
     return this.shadowLayerIsPeel && this.shadowPeelBindGroup !== null
       ? this.shadowPeelBindGroup
@@ -5114,9 +5268,13 @@ export class WebGPURenderer implements RendererApi {
    * every frame would be an allocation in a per-frame path.
    */
   private readonly casterSink: ShadowCasterSink = {
-    mesh: (mesh, model) => {
+    mesh: (mesh, model, material) => {
       const pass = this.shadowPass;
       if (pass === null) return;
+      /* A cutout caster's group is looked up before a slot is spent, so a miss costs nothing. */
+      const cutout = cutoutOf(material);
+      const cutoutGroup =
+        cutout === null ? null : this.cutoutGroup(cutout.albedo as unknown as GpuSurfaceTexture);
       const slot = this.shadowDraws.allocate();
       if (slot === null) return;
 
@@ -5127,20 +5285,28 @@ export class WebGPURenderer implements RendererApi {
       );
       this.shadowDraws.writeFloats(slot, DEPTH_VERT_FIELDS.uModel.offset, model as Float32Array);
       this.writeShadowWind(slot);
+      if (cutout !== null && cutoutGroup !== null)
+        this.writeCutout(slot, cutout, DEPTH_CUTOUT_VERT_FIELDS);
 
       const geometry = mesh as GpuMesh & { key?: string };
       if (geometry.vertexBuffers === undefined) return;
+      const cuts = cutoutGroup !== null;
+      /* A two-sided caster casts from whichever face the light sees: nothing culled. */
+      const cull = material?.doubleSided === true ? 'none' : this.depthCullMode;
       pass.setPipeline(
         depthPipeline(
           this.pipelines,
           this.surface.device,
-          this.shadowLayout,
-          `depth|${this.depthCullMode}|${geometry.key ?? ''}`,
+          cuts ? this.shadowCutoutLayout : this.shadowLayout,
+          `${cuts ? 'depth-cutout' : 'depth'}|${cull}|${geometry.key ?? ''}`,
           this.presentOf(geometry),
-          this.depthCullMode,
+          cull,
+          false,
+          false,
+          cuts,
         ),
       );
-      pass.setBindGroup(0, this.shadowGroup(), [slot]);
+      pass.setBindGroup(0, cutoutGroup ?? this.shadowGroup(), [slot]);
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
@@ -5151,7 +5317,7 @@ export class WebGPURenderer implements RendererApi {
      * A batch of rigid meshes into the depth map, placed by the same matrices the visible draw
      * uses — one draw, however many instances, exactly as the colour pass does it.
      */
-    instanced: (batch, data) => {
+    instanced: (batch, data, material) => {
       const pass = this.shadowPass;
       if (pass === null) return;
       const gpuBatch = batch as GpuInstancedBatch;
@@ -5159,6 +5325,9 @@ export class WebGPURenderer implements RendererApi {
       if (geometry.vertexBuffers === undefined) return;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
+      const cutout = cutoutOf(material);
+      const cutoutGroup =
+        cutout === null ? null : this.cutoutGroup(cutout.albedo as unknown as GpuSurfaceTexture);
 
       const slot = this.shadowDraws.allocate();
       if (slot === null) return;
@@ -5169,20 +5338,26 @@ export class WebGPURenderer implements RendererApi {
         DEPTH_VERT_FIELDS.uLightViewProj.offset,
         this.correctedLightViewProj,
       );
+      if (cutout !== null && cutoutGroup !== null) {
+        this.writeCutout(slot, cutout, DEPTH_INSTANCED_CUTOUT_VERT_FIELDS);
+      }
 
+      const cuts = cutoutGroup !== null;
+      const cull = material?.doubleSided === true ? 'none' : this.depthCullMode;
       pass.setPipeline(
         depthPipeline(
           this.pipelines,
           this.surface.device,
-          this.shadowLayout,
-          `depth-instanced|${this.depthCullMode}|${geometry.key ?? ''}`,
+          cuts ? this.shadowCutoutLayout : this.shadowLayout,
+          `${cuts ? 'depth-instanced-cutout' : 'depth-instanced'}|${cull}|${geometry.key ?? ''}`,
           this.presentOf(geometry),
-          this.depthCullMode,
+          cull,
           false,
           true,
+          cuts,
         ),
       );
-      pass.setBindGroup(0, this.shadowGroup(), [slot]);
+      pass.setBindGroup(0, cutoutGroup ?? this.shadowGroup(), [slot]);
       let index = 0;
       for (; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
@@ -5682,34 +5857,6 @@ export class WebGPURenderer implements RendererApi {
     const blankSampler = device.createSampler({ label: 'flat.sampler' });
 
     /*
-     * A one-texel cube for every point-shadow sampler the variant declares.
-     *
-     * Twelve of them exist in the `pointShadows` permutation and none has a map behind it
-     * until row 3, but WebGPU requires every declared binding to be filled — and a cube view
-     * needs six array layers, so the flat 1×1 stand-in above cannot serve.
-     *
-     * **White is the second guard, and it is a deliberate value rather than a spare one.** The
-     * first is `uPointShadowIndex`, written to −1 for every light in `bindMeshPass`. If that
-     * ever failed, a full-depth texel reads as an occluder at the far plane — `pointShadow`
-     * converts the stored value back to a distance and 1.0 comes out as `far` — so the worst a
-     * mis-selected light can do is find nothing in the way. Zeroes would have meant an
-     * occluder pressed against the lamp, and every surface in the scene in shadow.
-     */
-    const blankCube = device.createTexture({
-      label: 'flat.emptyPointShadow',
-      size: [1, 1, 6],
-      format: 'rgba8unorm',
-      usage: 0x2 | 0x4, // COPY_DST | TEXTURE_BINDING
-    });
-    device.queue.writeTexture(
-      { texture: blankCube },
-      new Uint8Array(4 * 6).fill(255),
-      { bytesPerRow: 4, rowsPerImage: 1 },
-      [1, 1, 6],
-    );
-    const blankCubeView = blankCube.createView({ dimension: 'cube' });
-
-    /*
      * A one-texel integer stand-in for the froxel table.
      *
      * **Needed whether or not clustering is on**, because the sampler is declared in every
@@ -5758,6 +5905,17 @@ export class WebGPURenderer implements RendererApi {
       [1, 1, 1],
     );
     const blankArrayView = blankArray.createView({ dimension: '2d-array' });
+    /*
+     * DriftLight's two volumes before a field is whole: an index of one empty cell and an atlas
+     * of one zero texel. Never read while `uDriftLight.x` is zero, and bound anyway, because a
+     * group missing an entry its layout declares is a validation failure at `submit`.
+     */
+    const blankVolume = (label: string, format: GPUTextureFormat): GPUTextureView =>
+      device
+        .createTexture({ label, size: [1, 1, 1], dimension: '3d', format, usage: 0x2 | 0x4 })
+        .createView({ dimension: '3d' });
+    const blankDriftIndexView = blankVolume('flat.emptyDriftLightIndex', 'r32uint');
+    const blankDriftAtlasView = blankVolume('flat.emptyDriftLightAtlas', 'rgba16float');
 
     this.shadowMap = device.createTexture({
       label: 'shadow.static',
@@ -5797,14 +5955,15 @@ export class WebGPURenderer implements RendererApi {
     this.dynamicView = this.dynamicMap === null ? null : this.dynamicMap.createView();
 
     /*
-     * **Cleared once, here, because a texture no pass has written holds undefined contents.**
+     * **Cleared once, here, because a texture no pass has written reads as zero**, which the
+     * specification requires, and a zero in a map compared with `LEQUAL` is an occluder at the
+     * light. A scene is entitled to switch directional shadows *on* and never open a pass —
+     * `night-street` does exactly that, with `shadowStrength` at 0.85 and no `beginShadowPass`
+     * anywhere in it — and sampling that zero shadows everything, which is a picture rather than
+     * an error and reads as a lighting bug.
      *
-     * A GL depth texture is born defined and reads as the far plane, so `renderer.ts` can hand
-     * an unrendered shadow map to the shader and get "nothing occludes anything". WebGPU makes
-     * no such promise, and a scene is entitled to switch directional shadows *on* and never
-     * open a pass — `night-street` does exactly that, with `shadowStrength` at 0.85 and no
-     * `beginShadowPass` anywhere in it. Sampling garbage then shadows whatever the garbage
-     * happens to say, which is a picture rather than an error and reads as a lighting bug.
+     * `shadowMap.ts` does the same for the other backend, for the same reason found later: WebGL
+     * zeroes a new texture too, and only ANGLE on Vulkan happened to hand one back reading 1.
      *
      * Found by dumping the flat block off both live renderers and comparing it field by field;
      * `uPeeledShadowEnabled` came back 1 against 0 and pointed straight at the maps behind it.
@@ -5914,7 +6073,7 @@ export class WebGPURenderer implements RendererApi {
        * is writing, so the binding has to move whatever the shader intends to do with it.
        */
       if (name === 'uEnvironment') {
-        return this.probeView === null || !this.probeBaked || this.probePassActive
+        return this.probeView === null || !this.probeReadable()
           ? { view: blankArrayView, sampler: blankSampler }
           : { view: this.probeView, sampler: this.probeSampler };
       }
@@ -5947,6 +6106,17 @@ export class WebGPURenderer implements RendererApi {
        */
       if (name === 'uCookieAtlas') {
         return { view: this.cookieView ?? blankView, sampler: iesSampler };
+      }
+      /*
+       * DriftLight's brick index, read by `texelFetch` alone, so it shares the shadow group's
+       * sampler the way the froxel table does; and its atlas, which is filtered inside a brick and
+       * so takes the linear, clamped one the photometric atlas uses.
+       */
+      if (name === 'uDriftLightIndex') {
+        return { view: this.driftIndexView ?? blankDriftIndexView, sampler: shadowSampler };
+      }
+      if (name === 'uDriftLightAtlas') {
+        return { view: this.driftAtlasView ?? blankDriftAtlasView, sampler: iesSampler };
       }
       /*
        * The colour the frame had already drawn, or the blank texel a frame that refracts nothing
@@ -6003,12 +6173,14 @@ export class WebGPURenderer implements RendererApi {
     this.blankAlbedoBindGroup = this.bindGroup;
 
     this.skyLayout = createSkyBindGroupLayout(device);
-    this.skyUniforms = device.createBuffer({
-      label: 'sky.uniforms',
-      size: SKY_UNIFORM_SIZE,
-      usage: USAGE_UNIFORM_DST,
-    });
-    this.skyBindGroup = createSkyBindGroup(device, this.skyLayout, this.skyUniforms);
+    this.skyUniforms = new UniformRing(
+      device,
+      SKY_UNIFORM_SIZE,
+      MAX_SKY_DRAWS,
+      USAGE_UNIFORM_DST,
+      'sky.ring',
+    );
+    this.skyBindGroup = createSkyBindGroup(device, this.skyLayout, this.skyUniforms.buffer);
 
     this.plumeLayout = createPlumeBindGroupLayout(device);
     this.plumeVerts = new UniformRing(
@@ -6087,6 +6259,8 @@ export class WebGPURenderer implements RendererApi {
           usage: 0x10 | 0x4 | 0x2, // RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_DST
         })
       : null;
+    this.probeTargets =
+      this.probe === null ? null : new ProbeTargets(device, this.probe, this.probeSize);
     /*
      * The prefiltered twin, allocated on exactly the condition the capture is and with exactly
      * its format and level count. Same format because a pipeline's colour target must equal its
@@ -6129,6 +6303,10 @@ export class WebGPURenderer implements RendererApi {
          is not a screen-sized target. Filtering is what makes a 32-lattice table smooth rather
          than banded, so it is declared filterable like the colour inputs and unlike the depth. */
       { binding: RUSH_TEXTURES.uGradeLut, dimension: '3d' },
+      /* Eye adaptation's held brightness: one half-float texel, or the scene where none is held. */
+      { binding: RUSH_TEXTURES.uExposureHeld },
+      /* Local exposure's grid, read filtered between tiles. See `localExposure.ts`. */
+      { binding: RUSH_TEXTURES.uExposureLocal },
     ]);
     this.rushUniforms = device.createBuffer({
       label: 'post.rushUniforms',
@@ -6358,23 +6536,27 @@ export class WebGPURenderer implements RendererApi {
       MAX_PLUMES_PER_FRAME,
       USAGE_UNIFORM_DST,
     );
-    this.scatterFragUniforms = device.createBuffer({
-      label: 'scatter.fragUniforms',
-      size: SCATTER_FRAG_SIZE,
-      usage: USAGE_UNIFORM_DST,
-    });
+    this.scatterFrags = new UniformRing(
+      device,
+      SCATTER_FRAG_SIZE,
+      MAX_PLUMES_PER_FRAME,
+      USAGE_UNIFORM_DST,
+      'scatter.fragRing',
+    );
     this.scatterBindGroup = createScatterBindGroup(
       device,
       this.scatterLayout,
       this.scatterVerts.buffer,
-      this.scatterFragUniforms,
+      this.scatterFrags.buffer,
     );
 
     this.shadowLayout = createDepthBindGroupLayout(device);
     this.shadowSkinnedLayout = createDepthBindGroupLayout(device, true);
+    this.shadowCutoutLayout = createDepthBindGroupLayout(device, false, true);
     this.shadowDraws = new UniformRing(
       device,
-      DEPTH_VERT_SIZE,
+      /* The cutout block is the plain one and two fields more, and a slot must hold either. */
+      Math.max(DEPTH_VERT_SIZE, DEPTH_CUTOUT_VERT_SIZE),
       MAX_DRAWS_PER_FRAME,
       USAGE_UNIFORM_DST,
       'shadow.drawRing',
@@ -6446,6 +6628,8 @@ export class WebGPURenderer implements RendererApi {
     if (peelPassUniforms !== null) {
       device.queue.writeBuffer(peelPassUniforms, 0, new Int32Array([1]));
     }
+    this.shadowPeelPassUniforms = peelPassUniforms;
+    this.shadowPeelSampler = shadowSampler;
     this.shadowPeelBindGroup =
       peelPassUniforms === null
         ? null
@@ -6469,15 +6653,6 @@ export class WebGPURenderer implements RendererApi {
             this.shadowView,
             shadowSampler,
           );
-
-    /*
-     * The light volume, last because it wants the shadow map and the stand-in that everything
-     * above already built. The peel and dynamic maps get the white one-pixel texture, which is
-     * depth 1 and therefore nothing in the way — see `createLightVolumeBindGroup` for why a
-     * stand-in of zero would put every beam in shadow instead.
-     */
-    const uniformBuffer = (label: string, size: number): GPUBuffer =>
-      device.createBuffer({ label, size, usage: USAGE_UNIFORM_DST });
 
     /*
      * The overlays. Rings rather than single blocks because a frame draws several of each —
@@ -6801,6 +6976,7 @@ export class WebGPURenderer implements RendererApi {
     this.reflectionQueue.reset();
     /* Redeclared every frame, so a field a consumer stops declaring stops lighting. */
     this.distanceFields.reset();
+    this.frameSky = null;
     this.oitActive =
       this.quality.orderIndependent && this.quality.screenEffects && this.samples === 1;
     /* Read off the line above rather than restating its last term: with the other two true, the
@@ -6823,6 +6999,7 @@ export class WebGPURenderer implements RendererApi {
     this.flushOverlay();
 
     this.framePresented = false;
+    this.encoderEpoch = ++this.encoderEpochs;
     /* Before the budget is cleared, because what to grow to is what the last frame asked for. */
     this.growRings();
     this.budget.reset();
@@ -6862,6 +7039,7 @@ export class WebGPURenderer implements RendererApi {
     this.windStreakVerts.reset();
     this.windStreakFrags.reset();
     this.scatterVerts.reset();
+    this.scatterFrags.reset();
     this.panelVerts.reset();
     this.panelFrags.reset();
     this.filmVerts.reset();
@@ -6873,6 +7051,7 @@ export class WebGPURenderer implements RendererApi {
     this.sdfTextFrags.reset();
     this.lineVerts.reset();
     this.lineFrags.reset();
+    this.skyUniforms.reset();
     /* The material ring, and the open slot with it: last frame's slots are gone. */
     this.perFrame.reset();
     this.materials.dirty();
@@ -7469,9 +7648,29 @@ export class WebGPURenderer implements RendererApi {
         f[base + 1] = counts[1];
         f[base + 2] = counts[2];
       }
+      /* Which sets the shading reads, and how far between them. See `probeSweeps.ts`. */
+      const setsAt = this.fragment.fields['uProbeGridSets'];
+      if (setsAt !== undefined) {
+        const sets = this.probeSweeps?.uniforms(this.probeSets) ?? this.probeSets.fill(0);
+        const base = setsAt.offset / 4;
+        f[base] = sets[0] ?? 0;
+        f[base + 1] = sets[1] ?? 0;
+        f[base + 2] = sets[2] ?? 0;
+      }
       /* Which chain is bound, because the level and the weight both depend on it. */
       f[at('uEnvironmentPrefiltered')] = this.quality.environmentPrefilter ? 1 : 0;
     }
+    /* DriftLight, or zeros that switch it off: see `driftLight/uniforms.ts`. */
+    this.uploadLightField();
+    const drift = this.driftUniforms;
+    resolveDriftLight(
+      this.driftAtlas === null ? null : this.lightField,
+      this.probePassActive,
+      camera.position,
+      drift,
+    );
+    f.set(drift.light, at('uDriftLight'));
+    f.set(drift.origin, at('uDriftLightOrigin'));
     /*
      * The ORM scales, whose base is 1 and not 0 — the value an unwritten uniform would hold.
      *
@@ -7549,7 +7748,7 @@ export class WebGPURenderer implements RendererApi {
      * it every frame.
      */
     if (this.probeEnabled) {
-      const usable = this.probeBaked && !this.probePassActive;
+      const usable = this.probeReadable();
       f[at('uEnvironmentEnabled')] = usable ? 1 : 0;
       f[at('uEnvironmentMaxLod')] = this.probeMaxLod;
       /*
@@ -7808,6 +8007,14 @@ export class WebGPURenderer implements RendererApi {
 
   /** Said once rather than every frame, for the reason `warnedFull` gives. */
   private warnedMaterialsFull = false;
+  private warnedSkyFull = false;
+  private warnedParticlesTwice = false;
+  /**
+   * Which encoder draws are being recorded into, by count: a new one at every `beginFrame`, and one
+   * of its own for each probe bake, restored after. What a batch drawn per encoder is checked by.
+   */
+  private encoderEpoch = 0;
+  private encoderEpochs = 0;
 
   /**
    * Draw one mesh.
@@ -8121,7 +8328,9 @@ export class WebGPURenderer implements RendererApi {
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
       /* The two order-independent buffers are two formats and two blend states, so a draw into
          one must never share a cached pipeline with the same mesh drawn into the other. */
-      `${this.oitMode === 'none' ? '' : `|oit${this.oitMode}`}`;
+      `${this.oitMode === 'none' ? '' : `|oit${this.oitMode}`}` +
+      /* Culling is pipeline state here: a two-sided surface culls nothing. */
+      `${this.materialDoubleSided ? '|2s' : ''}`;
 
     /*
      * The morph uniforms, written only for a morphed draw and read from the *morphed* variant's
@@ -8166,6 +8375,7 @@ export class WebGPURenderer implements RendererApi {
         layer,
         false,
         this.oitMode,
+        this.materialDoubleSided,
       );
     }
 
@@ -8399,7 +8609,8 @@ export class WebGPURenderer implements RendererApi {
        plain one would hand a draw the wrong layout. */
     const key =
       `${base}|inst${blend ? '|blend' : ''}` +
-      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}`;
+      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
+      `${this.materialDoubleSided ? '|2s' : ''}`;
 
     const pipelines = this.targetPipelines();
     let pipeline = pipelines.peek(key);
@@ -8421,6 +8632,8 @@ export class WebGPURenderer implements RendererApi {
         depthWrite,
         layer,
         true,
+        'none',
+        this.materialDoubleSided,
       );
     }
 
@@ -8581,7 +8794,9 @@ export class WebGPURenderer implements RendererApi {
     f[atF('uFogNear')] = medium.fogNear;
     f[atF('uFogFar')] = medium.fogFar;
 
-    this.surface.device.queue.writeBuffer(this.scatterFragUniforms, 0, this.scatterFragStaging);
+    const fragmentSlot = this.scatterFrags.allocate();
+    if (fragmentSlot === null) return;
+    this.scatterFrags.writeBlock(fragmentSlot, this.scatterFragInts);
 
     const scatterPipe = scatterPipeline(this.pipelines, this.surface.device, this.scatterLayout);
     /* One dynamic offset, and a group of two uniform buffers: nothing sampled, nothing read. */
@@ -8590,7 +8805,8 @@ export class WebGPURenderer implements RendererApi {
       scatterCommand.pipeline = scatterPipe;
       scatterCommand.bindGroup = this.scatterBindGroup;
       scatterCommand.offsetA = slot;
-      scatterCommand.offsetCount = 1;
+      scatterCommand.offsetB = fragmentSlot;
+      scatterCommand.offsetCount = 2;
       for (let index = 0; index < scatter.vertexBuffers.length; index++) {
         scatterCommand.vertexBuffers[index] = scatter.vertexBuffers[index] as GPUBuffer;
       }
@@ -8603,7 +8819,7 @@ export class WebGPURenderer implements RendererApi {
       const pass = this.openPass();
       if (pass === null) return;
       pass.setPipeline(scatterPipe);
-      pass.setBindGroup(0, this.scatterBindGroup, [slot]);
+      pass.setBindGroup(0, this.scatterBindGroup, [slot, fragmentSlot]);
       for (let index = 0; index < scatter.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, scatter.vertexBuffers[index] as GPUBuffer);
       }
@@ -9264,6 +9480,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatGroupsForNewRings(): void {
     this.flatBindGroups.clear();
+    this.flatEnvironment = this.flatTextures('uEnvironment').view;
     this.skinnedGroups.length = 0;
 
     const albedo = this.albedo;
@@ -9291,6 +9508,27 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * The environment view the cached flat groups bind: the grid, or the blank stand-in while the
+   * grid may not be read. What `rebindEnvironment` compares against.
+   */
+  private flatEnvironment: GPUTextureView | null = null;
+
+  /**
+   * Rebuild the flat groups if, and only if, the environment they bind has changed.
+   *
+   * **Every cached group holds the environment view**, so a change of it makes all of them stale;
+   * but nothing else a bake does touches a group. Rebuilding on every bake's two edges regardless
+   * emptied the cache twice a bake, and every material built its group again inside the bake and
+   * again after it: a courtyard re-baking a few faces a frame spent 28% of its CPU there on the
+   * native host, where a `createBindGroup` costs most. What would make this wrong is a second
+   * binding that a bake changes, which would have to be compared here too.
+   */
+  private rebindEnvironment(): void {
+    if (this.flatTextures('uEnvironment').view !== this.flatEnvironment)
+      this.rebuildFlatBindGroup();
+  }
+
+  /**
    * Rebuild the group for the open material, and drop every cached one.
    *
    * **The cache is keyed by albedo and every entry also holds the shadow cubemaps**, so when a
@@ -9301,6 +9539,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatBindGroup(): void {
     this.flatBindGroups.clear();
+    this.flatEnvironment = this.flatTextures('uEnvironment').view;
     if (
       this.albedo === null &&
       this.normalMap === null &&
@@ -9341,6 +9580,7 @@ export class WebGPURenderer implements RendererApi {
    */
   drawSky(camera: Camera, sky: SkyColors, env: Environment): void {
     if (!this.canDraw()) return;
+    this.frameSky = sky;
 
     const f = this.skyFloats;
     const at = (name: keyof typeof SKY_FIELDS): number => SKY_FIELDS[name].offset / 4;
@@ -9375,7 +9615,17 @@ export class WebGPURenderer implements RendererApi {
     f.set(medium.underwaterColor, at('uUnderwaterColor'));
     f[at('uUnderwaterFactor')] = medium.underwaterFactor;
 
-    this.surface.device.queue.writeBuffer(this.skyUniforms, 0, this.skyStaging);
+    const slot = this.skyUniforms.allocate();
+    if (slot === null) {
+      if (!this.warnedSkyFull) {
+        this.warnedSkyFull = true;
+        console.warn(
+          `WebGPU: more than ${MAX_SKY_DRAWS} sky draws in a frame; the rest are skipped`,
+        );
+      }
+      return;
+    }
+    this.skyUniforms.writeFloats(slot, 0, f);
 
     const skyPipe = skyPipeline(this.pipelines, this.surface.device, this.skyLayout);
     /* Reads nothing: the group is one uniform buffer, and the sky samples no attachment. */
@@ -9383,12 +9633,14 @@ export class WebGPURenderer implements RendererApi {
     if (skyCommand !== null) {
       skyCommand.pipeline = skyPipe;
       skyCommand.bindGroup = this.skyBindGroup;
+      skyCommand.offsetA = slot;
+      skyCommand.offsetCount = 1;
       skyCommand.count = 3;
     } else {
       const pass = this.openPass();
       if (pass === null) return;
       pass.setPipeline(skyPipe);
-      pass.setBindGroup(0, this.skyBindGroup);
+      pass.setBindGroup(0, this.skyBindGroup, [slot]);
       pass.draw(3);
     }
   }
@@ -9499,6 +9751,18 @@ export class WebGPURenderer implements RendererApi {
     if (aoStrength > 0 && this.frameProjection !== null) this.runOcclusion(encoder);
     const bloomStrength = this.quality.bloom * this.bloomScale;
     if (bloomStrength > 0) this.runBloom(encoder);
+    /*
+     * Eye adaptation, metered from the scene the composite shows, and local exposure's grid beside
+     * it. The held brightness is kept for either, since local exposure moves regions relative to it.
+     * See `setAutoExposure` and `setLocalExposure`.
+     */
+    const localising = this.localExposure > 0;
+    const measuring = (this.autoExposure > 0 || localising) && this.exposurePass !== null;
+    const adapting = measuring && this.autoExposure > 0;
+    const shownScene = this.reconstructing ? this.reconShownView : this.sceneColorView;
+    if (measuring && shownScene !== null) {
+      this.exposurePass?.run(encoder, shownScene, this.autoExposureDt, localising);
+    }
 
     /* The grade travels here only where the mesh pass gave it up. See `bindMeshPass`. */
     const graded = this.quality.hdrScene;
@@ -9538,6 +9802,12 @@ export class WebGPURenderer implements RendererApi {
     /* The grade, sampled after the curve and before the veil. See `uGradeLut` in `rush.ts`. */
     f[at('uGradeStrength')] = this.gradeStrength;
     f[at('uGradeSize')] = this.gradeSize;
+    /* The lens and the print. See `setVignette` and `setFilmGrain`. */
+    f[at('uVignette')] = this.vignette;
+    f[at('uAutoExposure')] = adapting ? this.autoExposure : 0;
+    f[at('uLocalExposure')] = measuring && localising ? this.localExposure : 0;
+    f[at('uGrain')] = this.grain;
+    f[at('uGrain') + 1] = this.grainSeed;
     device.queue.writeBuffer(this.rushUniforms, 0, this.rushStaging);
 
     const pass = encoder.beginRenderPass({
@@ -9620,6 +9890,10 @@ export class WebGPURenderer implements RendererApi {
            a frame that never grades anything should not carry a texture, and a declared binding
            must still have a complete one — the argument the bloom fallback above makes. */
         ...entry(RUSH_TEXTURES.uGradeLut, this.ensureGradeView()),
+        /* The scene as the placeholder until adaptation is asked for: the strength is zero then,
+           and a declared binding still needs a complete texture, as the bloom fallback says. */
+        ...entry(RUSH_TEXTURES.uExposureHeld, this.exposurePass?.heldView ?? sceneView),
+        ...entry(RUSH_TEXTURES.uExposureLocal, this.exposurePass?.localView ?? sceneView),
       ],
       layout: this.rushLayout,
     });
@@ -11509,8 +11783,13 @@ export class WebGPURenderer implements RendererApi {
     const swap = this.swapView();
     if (swap === null) return null;
 
-    const width = this.depth?.width ?? 1;
-    const height = this.depth?.height ?? 1;
+    /*
+     * **The drawing buffer's size, not the scene depth's.** The overlay draws on the swap image,
+     * past the resolve, and a reconstruction draws the scene depth small: sized from that, the
+     * device refused the pass beside a full-size swap image and every overlay went missing.
+     */
+    const width = Math.max(1, this.surface.canvas.width);
+    const height = Math.max(1, this.surface.canvas.height);
     if (
       this.overlayDepth === null ||
       this.overlayDepth.width !== width ||
@@ -11868,9 +12147,31 @@ export class WebGPURenderer implements RendererApi {
      * had stopped declaring. What the guard is actually for is not *building* a composer for a
      * profile that never declares anything, so that is all it now guards.
      */
+    if (this.fieldComposer === null && this.distanceFields.length === 0) return;
+    /*
+     * **As many cascades as reach the probe grid**, and rebuilt when the grid asks for a different
+     * number: the far end of a courtyard longer than the default 16 m was traced against no field
+     * at all and lit as open sky from every side. See `gi/fieldReach.ts`.
+     */
+    const grid = this.indirectGrid();
+    const cascades =
+      grid === null
+        ? DEFAULT_FIELD_COMPOSE.cascades
+        : cascadesForGrid(
+            grid,
+            DEFAULT_FIELD_COMPOSE.radius,
+            DEFAULT_FIELD_COMPOSE.cascades,
+            MAX_FIELD_CASCADES,
+          );
+    if (this.fieldComposer !== null && this.fieldComposer.cascadeCount !== cascades) {
+      this.fieldComposer.dispose();
+      this.fieldComposer = null;
+    }
     if (this.fieldComposer === null) {
-      if (this.distanceFields.length === 0) return;
-      this.fieldComposer = new FieldComposer(this.surface.device, DEFAULT_FIELD_COMPOSE);
+      this.fieldComposer = new FieldComposer(this.surface.device, {
+        ...DEFAULT_FIELD_COMPOSE,
+        cascades,
+      });
     }
     this.fieldComposer.compose(encoder, this.distanceFields, this.frameEye);
   }
@@ -11938,12 +12239,34 @@ export class WebGPURenderer implements RendererApi {
      * never said what was lighting it.
      */
     const env = this.frameEnv;
-    this.probeBaker.bake(encoder, field, grid, this.probeBaked, {
-      direction: env?.directionalDir ?? NO_SUN,
-      colour: env?.directionalColor ?? NO_SUN,
-      /* What a ray that left the world finds. The frame's own ambient, not a capture. */
-      sky: env?.ambient ?? NO_SUN,
-    });
+    /*
+     * And the scene's summed fixed lights, which the trace adds to what a hit receives: the bounce
+     * of every candle, not only of the ones near enough to be shaded exactly.
+     */
+    resolveDriftLight(
+      this.bakeLightField === null ? null : this.lightField,
+      true,
+      this.frameEye,
+      this.bakeDriftUniforms,
+    );
+    /* And the frame's exact lights, flickering and moving as the frame shades them. */
+    this.bakeLamps.count = resolveBounceLights(env, this.bounceLights);
+    this.bakeLamps.falloff = this.lights.falloff;
+    this.probeBaker.bake(
+      encoder,
+      field,
+      grid,
+      this.probeBaked,
+      this.bakeLightField,
+      this.bakeLamps,
+      {
+        direction: env?.directionalDir ?? NO_SUN,
+        colour: env?.directionalColor ?? NO_SUN,
+        /* What a ray that left the world finds: the sky this frame drew, or its ambient. */
+        ambient: env?.ambient ?? NO_SUN,
+        sky: this.frameSky,
+      },
+    );
     /*
      * **The bake is what fills the layers now, so it is what marks them filled.** `probeBaked`
      * gates the whole array, and a grid nothing rasterised would otherwise never be sampled — the
@@ -12170,7 +12493,7 @@ export class WebGPURenderer implements RendererApi {
      * currently open. Offering it earlier hands a pass a texture of undefined contents, which is
      * the failure `probeBaked` was introduced for on the forward path.
      */
-    const usable = this.probeView !== null && this.probeBaked && !this.probePassActive;
+    const usable = this.probeView !== null && this.probeReadable();
     if (usable) {
       const environment = this.passEnvironment;
       environment.view = this.probeView;
@@ -12658,6 +12981,8 @@ export class WebGPURenderer implements RendererApi {
    */
 
   private bloomScale = 1;
+  /** In scene units, once `setBloom` has moved it; null reads the profile's. */
+  private bloomThresholdSet: number | null = null;
   private rushStrength = 0;
   private motionBlurScale = 1;
   /**
@@ -12669,6 +12994,51 @@ export class WebGPURenderer implements RendererApi {
    */
   private readonly veilColor: Vec3 = [0, 0, 0];
   private veilAlpha = 0;
+  private vignette = 0;
+  private grain = 0;
+  private grainSeed = 0;
+  private warnedLookWithoutComposite = false;
+  /** Eye adaptation: how far, this frame's time step, and the pass once asked for. */
+  private autoExposure = 0;
+  private autoExposureDt = 0;
+  /** How far each region is brought toward the frame. See `setLocalExposure`. */
+  private localExposure = 0;
+  private exposurePass: ExposurePass | null = null;
+
+  /**
+   * How strongly the lens darkens the frame's corners, held until changed: 0 is none, 0.5 is about
+   * 1.2 stops at the corner. Applied to scene light before the tone curve, as a lens loses light;
+   * see `filmLook.ts`. Needs `screenEffects`, and says so once rather than doing nothing.
+   */
+  setVignette(strength: number): void {
+    if (!this.hasComposite) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.vignette = clampVignette(strength);
+  }
+
+  /**
+   * Film grain, held until changed: an amplitude in display values (0 is none, 0.03 is a fine
+   * grain) and this frame's seed. **The seed is the caller's**, because the engine takes time from
+   * its caller: pass a new one each frame for grain that moves, and the same one for a still that
+   * is identical run to run. Applied last, after the grade and the veil; see `filmLook.ts`.
+   */
+  setFilmGrain(strength: number, seed: number): void {
+    if (!this.hasComposite) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.grain = clampGrain(strength);
+    this.grainSeed = grainSeed(seed);
+  }
+
+  private warnLookWithoutComposite(strength: number): void {
+    if (strength > 0 && !this.warnedLookWithoutComposite) {
+      this.warnedLookWithoutComposite = true;
+      console.warn(FILM_LOOK_WITHOUT_COMPOSITE);
+    }
+  }
 
   /*
    * **These three warned that the composite did not exist, and went on warning after it did.**
@@ -12754,8 +13124,14 @@ export class WebGPURenderer implements RendererApi {
     this.gradeSize = lut.size;
   }
 
-  setBloom(scale: number): void {
+  setBloom(scale: number, threshold?: number): void {
     this.bloomScale = Math.min(Math.max(scale, 0), 1);
+    if (threshold === undefined) return;
+    const next = bloomThresholdOf(threshold);
+    if (next === this.bloomThresholdSet) return;
+    this.bloomThresholdSet = next;
+    /* The blocks are written once per size, so a moved threshold rewrites them now. */
+    if (this.bloomLevels.length > 0) this.writeBloomBlocks();
   }
 
   /**
@@ -12787,6 +13163,62 @@ export class WebGPURenderer implements RendererApi {
   /** How much of the frame's camera motion blur to apply, 0 to 1. */
   setCameraMotionBlur(scale: number): void {
     this.motionBlurScale = Math.min(Math.max(scale, 0), 1);
+  }
+  /**
+   * The camera has cut: this frame is a new shot, not the next moment of the last one.
+   *
+   * **Everything temporal reprojects through the previous frame's view**: the motion blur measures
+   * its smear against it, and the temporal resolve reads its history through it. A cut is a jump
+   * the renderer cannot tell from a fast camera, so without this a transport that seeks, a respawn
+   * or an edit smears its first frame along the whole jump and blends in a picture of somewhere
+   * else. The caller knows it cut; this is how it says so, before the frame's `beginFrame`.
+   *
+   * What it gives up is one frame of history: the frame after a cut has no blur and no temporal
+   * blend, as the first frame of a session has none. Nothing else is reset.
+   */
+  cameraCut(): void {
+    this.hasPreviousView = false;
+    this.temporalHistory.invalidate();
+    /* The reconstruction keeps histories of its own, and they are the last shot's too. */
+    this.reconHasHistory = false;
+    /* And the eye was adapted to the last shot. */
+    this.exposurePass?.cut();
+  }
+
+  /**
+   * Eye adaptation. **The other backend's `setAutoExposure` carries the reasoning**, whole; this is
+   * the same setter over the same state, and the pass is built the first time it is asked for, so
+   * a renderer that never adapts carries none of it.
+   */
+  setAutoExposure(strength: number, dtSec: number): void {
+    if (!this.hasComposite || !this.quality.hdrScene) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.autoExposure = clampAutoExposure(strength);
+    this.autoExposureDt = dtSec;
+    if (this.autoExposure > 0) this.ensureExposurePass();
+  }
+
+  /**
+   * Local exposure. **The other backend's `setLocalExposure` carries the reasoning**, whole; this is
+   * the same setter over the same state, sharing eye adaptation's pass, which is built the first
+   * time either is asked for.
+   */
+  setLocalExposure(strength: number): void {
+    if (!this.hasComposite || !this.quality.hdrScene) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.localExposure = clampLocalExposure(strength);
+    if (this.localExposure > 0) this.ensureExposurePass();
+  }
+
+  /** The exposure pass, built once; the composite's group holds placeholders until it exists. */
+  private ensureExposurePass(): void {
+    if (this.exposurePass !== null) return;
+    this.exposurePass = new ExposurePass(this.surface.device, this.pipelines, this.postSampler);
+    this.rebuildRushBindGroup();
   }
 
   /**
@@ -13027,6 +13459,8 @@ export class WebGPURenderer implements RendererApi {
    * over a lobe-convolved one.
    */
   private readonly probe: GPUTexture | null;
+  /** The views, groups and attachments a bake draws with, made once. See `probeTargets.ts`. */
+  private readonly probeTargets: ProbeTargets | null;
   /**
    * The prefiltered cube: what the lit pass samples, one GGX-convolved level per roughness.
    *
@@ -13058,6 +13492,19 @@ export class WebGPURenderer implements RendererApi {
   private readonly probeMipLayout: GPUBindGroupLayout;
   /** The photometric atlas, allocated on first use. See `setIesProfiles`. */
   private iesTexture: GPUTexture | null = null;
+  /** The scene's DriftLight field, and its two volumes once it is whole. See `createLightField`. */
+  private lightField: LightField | null = null;
+  private driftIndex: GPUTexture | null = null;
+  private driftAtlas: GPUTexture | null = null;
+  private driftIndexView: GPUTextureView | null = null;
+  private driftAtlasView: GPUTextureView | null = null;
+  private readonly driftUniforms = createDriftLightUniforms();
+  /** The same field resolved for a traced probe, and what the baker binds; null while not whole. */
+  private readonly bakeDriftUniforms = createDriftLightUniforms();
+  private bakeLightField: ProbeBakeLightField | null = null;
+  /** The frame's exact lights packed for the traced bake. See `gi/bounceLights.ts`. */
+  private readonly bounceLights = createBounceLights();
+  private readonly bakeLamps = { data: this.bounceLights, count: 0, falloff: 0 };
   private iesView: GPUTextureView | null = null;
   private cookieTexture: GPUTexture | null = null;
   private cookieView: GPUTextureView | null = null;
@@ -13082,8 +13529,9 @@ export class WebGPURenderer implements RendererApi {
    * mirroring uninitialised memory is worse than a car mirroring a gradient — the rule one probe
    * already had, unchanged by there being more of them.
    */
-  private probeFilled = new Uint8Array(1);
-  private probeFilledCount = 0;
+  private probeSweeps: ProbeSweeps | null = null;
+  /** `uProbeGridSets`, rewritten in place. */
+  private readonly probeSets = new Float32Array(3);
   /**
    * Whether a bake is running, which is when the cube may be neither sampled nor bound.
    *
@@ -13091,15 +13539,26 @@ export class WebGPURenderer implements RendererApi {
    * load-bearing rather than defensive: WebGPU rejects a pass that holds the texture it writes.
    */
   private probePassActive = false;
+  /** Whether the bake under way lights its faces by the grid. `ProbeBakeOptions.bounce`. */
+  private probeBounce = false;
+
+  /**
+   * Whether the shading may read the grid now: once every probe is filled, and not during a bake
+   * unless it is a bounce bake. A bounce bake's faces are drawn into the probe's own cube and only
+   * the resolve writes the array, in a pass of its own, so no pass both samples and writes it.
+   */
+  private probeReadable(): boolean {
+    return this.probeBaked && (!this.probePassActive || this.probeBounce);
+  }
 
   /** How many mip levels the roughness blur has to work with. `flat.ts` reads this. */
   private get probeMaxLod(): number {
     return ggxMaxLevelFor(this.probeEdge);
   }
 
-  /** Whether every layer of the grid has been convolved. See `probeFilled`. */
+  /** Whether a whole sweep of the grid has been convolved. See `probeSweeps.ts`. */
   private get probeBaked(): boolean {
-    return this.probes !== null && this.probeFilledCount === this.probes.layers;
+    return this.probes !== null && this.probeSweeps?.ready === true;
   }
 
   /**
@@ -13119,11 +13578,9 @@ export class WebGPURenderer implements RendererApi {
    * mistake, and `setProbeGrid` says it about the array being replaced.
    */
   private markProbeFilled(layer: number): void {
-    if (layer < 0 || layer >= this.probeFilled.length) return;
-    if (this.probeFilled[layer] === 1) return;
-    this.probeFilled[layer] = 1;
-    this.probeFilledCount++;
-    if (this.probeBaked) this.rebuildFlatGroupsForNewRings();
+    const was = this.probeBaked;
+    this.probeSweeps?.baked(layer);
+    if (!was && this.probeBaked) this.rebuildFlatGroupsForNewRings();
   }
 
   /**
@@ -13134,6 +13591,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private allocateProbeArray(layers: number, device: GPUDevice): void {
     this.probeArray?.destroy();
+    this.probeTargets?.forgetArray();
     this.probeArray = device.createTexture({
       label: 'probe.array',
       size: [this.probeEdge, this.probeEdge, layers],
@@ -13143,8 +13601,6 @@ export class WebGPURenderer implements RendererApi {
       usage: 0x10 | 0x4, // RENDER_ATTACHMENT | TEXTURE_BINDING
     });
     this.probeView = this.probeArray.createView({ dimension: '2d-array' });
-    this.probeFilled = new Uint8Array(layers);
-    this.probeFilledCount = 0;
 
     /*
      * **Cleared here, because a texture no pass has written holds undefined contents** — the same
@@ -13201,8 +13657,16 @@ export class WebGPURenderer implements RendererApi {
     const current = this.probes;
     if (current !== null && this.probeArray !== null && sameGrid(current, grid)) return true;
     this.probes = grid;
-    if (this.probeArray === null || this.probeArray.depthOrArrayLayers !== grid.layers) {
-      this.allocateProbeArray(grid.layers, this.surface.device);
+    /* A traced grid writes its layers itself, so it keeps one set. See `ProbeGridOptions.crossfade`. */
+    const crossfade = grid.crossfade && !this.quality.indirectLight;
+    const sets = crossfade ? 3 : 1;
+    if (
+      this.probeArray === null ||
+      this.probeArray.depthOrArrayLayers !== grid.layers * sets ||
+      this.probeSweeps?.sets !== sets
+    ) {
+      this.probeSweeps = new ProbeSweeps(grid.layers, crossfade);
+      this.allocateProbeArray(grid.layers * sets, this.surface.device);
       this.rebuildFlatGroupsForNewRings();
     }
     return true;
@@ -13278,40 +13742,20 @@ export class WebGPURenderer implements RendererApi {
     camera.roll = 0;
 
     const { device } = this.surface;
-    const depth = device.createTexture({
-      label: 'probe.depth',
-      size: [this.probeSize, this.probeSize],
-      format: DEPTH_FORMAT,
-      /*
-       * **The world's sample count, because a bake draws the world with the world's pipelines.**
-       * A pipeline whose count disagrees with its attachment is rejected at `finish` and takes
-       * the whole bake with it, and WebGPU requires every attachment in a pass to agree — so a
-       * single-sample depth beside a four-sample colour is refused in words that read as a depth
-       * problem and are a multisampling one.
-       */
-      sampleCount: this.samples,
-      usage: 0x10, // RENDER_ATTACHMENT
-    });
-    const depthView = depth.createView();
+    const targets = this.probeTargets;
+    if (targets === null) return false;
     /*
-     * The multisampled twin the faces are drawn into, resolved into the cube.
-     *
-     * **A cube face cannot be both multisampled and sampled**, which is the same bind the mirror
-     * is in and it is solved the same way: render into this, name the face as `resolveTarget`,
-     * and the averaging happens on the way out. One twin for all six faces, because they are
-     * drawn one at a time and nothing reads it between them.
+     * The depth, at the world's sample count because a bake draws the world with the world's
+     * pipelines: a pipeline whose count disagrees with its attachment is rejected at `finish` and
+     * takes the whole bake with it, in words that read as a depth problem and are a multisampling
+     * one. And the multisampled twin the faces are drawn into and resolved from, since **a cube
+     * face cannot be both multisampled and sampled** — the same bind the mirror is in. Both kept
+     * between bakes: see `probeTargets.ts`.
      */
-    const colorMsaa =
-      this.samples > 1
-        ? device.createTexture({
-            label: 'probe.colorMsaa',
-            size: [this.probeSize, this.probeSize],
-            format: this.pipelines.format,
-            sampleCount: this.samples,
-            usage: 0x10, // RENDER_ATTACHMENT
-          })
-        : null;
-    const colorMsaaView = colorMsaa?.createView() ?? null;
+    const { depth: depthView, colorMsaa: colorMsaaView } = targets.attachments(
+      this.samples,
+      this.pipelines.format,
+    );
 
     /*
      * The frame's own pass is set aside and restored, because `drawFace` calls straight back into
@@ -13330,16 +13774,26 @@ export class WebGPURenderer implements RendererApi {
      */
     if (this.quality.frameGraph) this.flushGraph();
     const savedEncoder = this.encoder;
+    /*
+     * **The rings are marked here and given back after the submit below**, because this bake is its
+     * own encoder: once it is submitted nothing in the frame can read its slots, and a grid baked in
+     * one call would otherwise spend the frame's whole ring on probes and skip the draws past it.
+     */
+    this.markRings();
+    const skinMark = this.skinPalettes.mark();
+    const frameEpoch = this.encoderEpoch;
+    this.encoderEpoch = ++this.encoderEpochs;
     const encoder = device.createCommandEncoder({ label: 'probe' });
     this.encoder = encoder;
     /*
-     * Fenced before the first face and released after the last, with the group rebuilt on both
-     * edges so the cube is not bound while it is being written. Two `createBindGroup` calls per
-     * bake, which is not a frame path: a bake is six passes and a mip chain, asked for by a
-     * scene at a moment of its choosing.
+     * Fenced before the first face and released after the last, so the grid is not bound while a
+     * plain bake is drawn. **Rebuilt only where that changes what the group binds**: a bounce bake
+     * of a whole grid binds it exactly as the frame does, and it is the bake a scene repeats every
+     * frame, a few faces at a time. See `rebindEnvironment`.
      */
+    this.probeBounce = options?.bounce ?? false;
     this.probePassActive = true;
-    this.rebuildFlatBindGroup();
+    this.rebindEnvironment();
     /*
      * **A probe stores radiance, not display pixels.** See `renderer.ts` for the whole argument:
      * baking through the output transform crushes every highlight with the tone curve before it
@@ -13352,7 +13806,9 @@ export class WebGPURenderer implements RendererApi {
     this.perFrameFloats[this.materialField('uOutputExposure')] = 1;
     this.materials.dirty();
 
-    for (let face = 0; face < PROBE_FACES.length; face++) {
+    /* Only the faces asked for; the chain waits for the sixth. See `ProbeBakeOptions.faces`. */
+    const [firstFace, endFace] = probeFaceRange(options);
+    for (let face = firstFace; face < endFace; face++) {
       const aim = PROBE_FACES[face];
       if (aim === undefined) continue;
       camera.yaw = aim.yaw;
@@ -13363,13 +13819,7 @@ export class WebGPURenderer implements RendererApi {
        */
       camera.updateMatrices(1);
 
-      const faceView = probe.createView({
-        dimension: '2d',
-        baseArrayLayer: face,
-        arrayLayerCount: 1,
-        baseMipLevel: 0,
-        mipLevelCount: 1,
-      });
+      const faceView = targets.faceViews[face] as GPUTextureView;
       this.pass = encoder.beginRenderPass({
         label: `probe.face${face}`,
         colorAttachments: [
@@ -13418,20 +13868,22 @@ export class WebGPURenderer implements RendererApi {
       this.pass.end();
     }
     this.pass = null;
-    this.buildProbeChain(encoder, probe, layer);
+    const whole = endFace === PROBE_FACES.length;
+    if (whole) this.buildProbeChain(encoder, probe, this.probeSweeps?.writeLayer(layer) ?? layer);
     this.flushRings();
     device.queue.submit([encoder.finish()]);
-    depth.destroy();
-    colorMsaa?.destroy();
+    this.rewindRings(skinMark);
+    this.encoderEpoch = frameEpoch;
 
     this.encoder = savedEncoder;
     this.pass = savedPass;
-    this.markProbeFilled(layer);
+    if (whole) this.markProbeFilled(layer);
     this.perFrameInts[this.materialField('uOutputTransform')] = heldGrade;
     this.perFrameFloats[this.materialField('uOutputExposure')] = heldExposure;
     this.materials.dirty();
     this.probePassActive = false;
-    this.rebuildFlatBindGroup();
+    this.probeBounce = false;
+    this.rebindEnvironment();
     return true;
   }
 
@@ -13582,6 +14034,92 @@ export class WebGPURenderer implements RendererApi {
     this.rebuildFlatBindGroup();
   }
 
+  /**
+   * Sum a scene's many fixed lights into a DriftLight field. The same contract as
+   * `Renderer.createLightField`; see `driftLight/lightField.ts`.
+   */
+  createLightField(
+    lights: readonly LightFieldSource[],
+    options: Omit<LightFieldOptions, 'falloff'> = {},
+  ): LightField {
+    this.forgetLightFieldVolumes();
+    const field = new LightField(lights, { ...options, falloff: this.quality.pointLightFalloff });
+    this.lightField = field;
+    return field;
+  }
+
+  /** Let go of the field and its volumes; the scene's lights are all exact again. */
+  disposeLightField(): void {
+    this.forgetLightFieldVolumes();
+    this.lightField = null;
+  }
+
+  private forgetLightFieldVolumes(): void {
+    const bound = this.driftAtlas !== null;
+    this.driftIndex?.destroy();
+    this.driftAtlas?.destroy();
+    this.driftIndex = null;
+    this.driftAtlas = null;
+    this.driftIndexView = null;
+    this.driftAtlasView = null;
+    this.bakeLightField = null;
+    /* The groups hold the destroyed volumes, and a group holding a destroyed texture fails. */
+    if (bound && !this.surface.lost) this.rebuildFlatBindGroup();
+  }
+
+  /**
+   * Upload the field's two volumes, once, when its last brick has baked, and rebuild the groups
+   * that bind them: nothing samples them before that, so uploading as bricks land would be work
+   * for no picture, and a rebuild per brick would be a bind group per brick.
+   */
+  private uploadLightField(): void {
+    const field = this.lightField;
+    if (field === null || this.driftAtlas !== null || !field.ready || field.layout.count === 0) {
+      return;
+    }
+    if (this.surface.lost) return;
+    const { device } = this.surface;
+    const [ix, iy, iz] = field.layout.dims;
+    const index = device.createTexture({
+      label: 'driftLight.index',
+      size: [ix, iy, iz],
+      dimension: '3d',
+      format: 'r32uint',
+      usage: 0x2 | 0x4, // COPY_DST | TEXTURE_BINDING
+    });
+    device.queue.writeTexture(
+      { texture: index },
+      field.layout.index,
+      { bytesPerRow: ix * 4, rowsPerImage: iy },
+      [ix, iy, iz],
+    );
+    const [aw, ah, ad] = field.atlasSize;
+    const atlas = device.createTexture({
+      label: 'driftLight.atlas',
+      size: [aw, ah, ad],
+      dimension: '3d',
+      format: 'rgba16float',
+      usage: 0x2 | 0x4, // COPY_DST | TEXTURE_BINDING
+    });
+    device.queue.writeTexture(
+      { texture: atlas },
+      field.atlas,
+      { bytesPerRow: aw * 8, rowsPerImage: ah },
+      [aw, ah, ad],
+    );
+    this.driftIndex = index;
+    this.driftAtlas = atlas;
+    this.driftIndexView = index.createView({ dimension: '3d' });
+    this.driftAtlasView = atlas.createView({ dimension: '3d' });
+    this.bakeLightField = {
+      index: this.driftIndexView,
+      atlas: this.driftAtlasView,
+      light: this.bakeDriftUniforms.light,
+      origin: this.bakeDriftUniforms.origin,
+    };
+    this.rebuildFlatBindGroup();
+  }
+
   setIesProfiles(profiles: readonly PhotometricProfile[]): void {
     if (this.surface.lost) return;
     const { device } = this.surface;
@@ -13629,6 +14167,8 @@ export class WebGPURenderer implements RendererApi {
   /** Each level from the one above it, six faces at a time. See `probePass.ts`. */
   private buildProbeChain(encoder: GPUCommandEncoder, probe: GPUTexture, layer: number): void {
     const { device } = this.surface;
+    const targets = this.probeTargets;
+    if (targets === null) return;
     /*
      * **Reset and flushed here, because a bake is not a frame.**
      *
@@ -13657,12 +14197,13 @@ export class WebGPURenderer implements RendererApi {
     );
     const levels = probeLevels(this.probeSize);
     for (let level = 1; level < levels; level++) {
-      /* A view of the whole cube at the level above, so the blur can cross a face edge. */
-      const source = probe.createView({
-        dimension: 'cube',
-        baseMipLevel: level - 1,
-        mipLevelCount: 1,
-      });
+      /* The whole cube at the level above, so the blur can cross a face edge, in a group kept. */
+      const group = targets.chainGroup(
+        this.probeMipLayout,
+        this.probeMipUniforms.buffer,
+        this.probeSampler,
+        level,
+      );
       for (let face = 0; face < PROBE_FACE_BASIS.length; face++) {
         const basis = PROBE_FACE_BASIS[face];
         if (basis === undefined) continue;
@@ -13679,22 +14220,16 @@ export class WebGPURenderer implements RendererApi {
           this.probeMipUniforms.flush();
           return;
         }
-        this.probeMipUniforms.writeFloats(slot, 0, [...basis.basisX, 0]);
-        this.probeMipUniforms.writeFloats(slot, 16, [...basis.basisY, 0]);
-        this.probeMipUniforms.writeFloats(slot, 32, [...basis.forward, 0]);
-        this.probeMipUniforms.writeFloats(slot, 48, [0, 0, 0, 0]);
+        this.probeMipUniforms.writeFloats(slot, 0, padded(basis.basisX));
+        this.probeMipUniforms.writeFloats(slot, 16, padded(basis.basisY));
+        this.probeMipUniforms.writeFloats(slot, 32, padded(basis.forward));
+        this.probeMipUniforms.writeFloats(slot, 48, ZERO4);
 
         const pass = encoder.beginRenderPass({
           label: `probe.mip${level}.face${face}`,
           colorAttachments: [
             {
-              view: probe.createView({
-                dimension: '2d',
-                baseArrayLayer: face,
-                arrayLayerCount: 1,
-                baseMipLevel: level,
-                mipLevelCount: 1,
-              }),
+              view: targets.chainTarget(level, face),
               loadOp: 'clear',
               storeOp: 'store',
               clearValue: { r: 0, g: 0, b: 0, a: 1 },
@@ -13702,21 +14237,7 @@ export class WebGPURenderer implements RendererApi {
           ],
         });
         pass.setPipeline(pipeline);
-        pass.setBindGroup(
-          0,
-          device.createBindGroup({
-            layout: this.probeMipLayout,
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: this.probeMipUniforms.buffer, size: PROBE_MIP_UNIFORM_SIZE },
-              },
-              { binding: 1, resource: source },
-              { binding: 2, resource: this.probeSampler },
-            ],
-          }),
-          [slot],
-        );
+        pass.setBindGroup(0, group, [slot]);
         pass.draw(3);
         pass.end();
       }
@@ -13742,8 +14263,12 @@ export class WebGPURenderer implements RendererApi {
         this.probePrefilterLayout,
         this.pipelines.format,
       );
-      /* The whole chain, so a wide sample can select a level from it. */
-      const source = probe.createView({ dimension: 'cube' });
+      /* The whole chain, so a wide sample can select a level from it, in a group kept. */
+      const group = targets.prefilterGroupFor(
+        this.probePrefilterLayout,
+        this.probeMipUniforms.buffer,
+        this.probeSampler,
+      );
       const offsets = PREFILTER_UNIFORM_OFFSETS;
       const topLevel = levels - 1;
       const samples = this.quality.environmentPrefilterSamples;
@@ -13751,13 +14276,20 @@ export class WebGPURenderer implements RendererApi {
       const irradianceLevel = irradianceLevelFor(edge);
       const ggxTop = ggxMaxLevelFor(edge);
       const boxChain = !this.quality.environmentPrefilter;
+      /*
+       * **The diffuse level of a layer the trace has written is the trace's**, so a rasterised bake
+       * stops one level short of it. See `ProbeBaker.traced`: two writers of one level was light
+       * sweeping down a courtyard a probe at a time with the clock paused.
+       */
+      const lastLevel =
+        this.probeBaker?.traced(layer) === true ? irradianceLevel - 1 : irradianceLevel;
 
       /*
        * **One draw a level, where the cube needed six.** An octahedral map has no faces, so the
        * six-way loop is gone rather than moved, and a probe's convolution is six times fewer
        * passes than the cube it replaces.
        */
-      for (let level = 0; level <= irradianceLevel; level++) {
+      for (let level = 0; level <= lastLevel; level++) {
         const irradiance = level === irradianceLevel;
         const roughness = irradiance ? 1 : roughnessForLevel(level, ggxTop);
         const slot = this.probeMipUniforms.allocate();
@@ -13776,32 +14308,40 @@ export class WebGPURenderer implements RendererApi {
         /* Written at the generator's own offsets rather than at literals, because a roughness at
            the wrong offset is a level convolved for some other roughness — which looks like a
            plausible reflection and points at nothing. */
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterEdge.offset, [
-          Math.max(1, edge >> level),
-        ]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterIrradiance.offset, [
-          irradiance ? 1 : 0,
-        ]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterBox.offset, [boxChain ? 1 : 0]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterLevel.offset, [level]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterRoughness.offset, [roughness]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterSamples.offset, [samples]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterSourceTexels.offset, [
-          this.probeSize,
-        ]);
-        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterSourceMaxLod.offset, [topLevel]);
+        this.probeMipUniforms.writeFloats(
+          slot,
+          offsets.uPrefilterEdge.offset,
+          one(Math.max(1, edge >> level)),
+        );
+        this.probeMipUniforms.writeFloats(
+          slot,
+          offsets.uPrefilterIrradiance.offset,
+          one(irradiance ? 1 : 0),
+        );
+        this.probeMipUniforms.writeFloats(
+          slot,
+          offsets.uPrefilterBox.offset,
+          one(boxChain ? 1 : 0),
+        );
+        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterLevel.offset, one(level));
+        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterRoughness.offset, one(roughness));
+        this.probeMipUniforms.writeFloats(slot, offsets.uPrefilterSamples.offset, one(samples));
+        this.probeMipUniforms.writeFloats(
+          slot,
+          offsets.uPrefilterSourceTexels.offset,
+          one(this.probeSize),
+        );
+        this.probeMipUniforms.writeFloats(
+          slot,
+          offsets.uPrefilterSourceMaxLod.offset,
+          one(topLevel),
+        );
 
         const pass = encoder.beginRenderPass({
           label: `probe.prefilter${level}.layer${layer}`,
           colorAttachments: [
             {
-              view: prefilterTarget.createView({
-                dimension: '2d',
-                baseArrayLayer: layer,
-                arrayLayerCount: 1,
-                baseMipLevel: level,
-                mipLevelCount: 1,
-              }),
+              view: targets.arrayView(prefilterTarget, layer, level),
               loadOp: 'clear',
               storeOp: 'store',
               clearValue: { r: 0, g: 0, b: 0, a: 1 },
@@ -13809,21 +14349,7 @@ export class WebGPURenderer implements RendererApi {
           ],
         });
         pass.setPipeline(prefilter);
-        pass.setBindGroup(
-          0,
-          device.createBindGroup({
-            layout: this.probePrefilterLayout,
-            entries: [
-              {
-                binding: PREFILTER_UNIFORM_BINDING,
-                resource: { buffer: this.probeMipUniforms.buffer, size: PROBE_MIP_UNIFORM_SIZE },
-              },
-              { binding: PREFILTER_TEXTURE_BINDING, resource: source },
-              { binding: PREFILTER_SAMPLER_BINDING, resource: this.probeSampler },
-            ],
-          }),
-          [slot],
-        );
+        pass.setBindGroup(0, group, [slot]);
         pass.draw(3);
         pass.end();
       }
@@ -14302,7 +14828,7 @@ export class WebGPURenderer implements RendererApi {
     f[slot(0) + prefilter('uTexel') + 1] = 1 / Math.max(1, this.frameHeight);
     /* In scene units, which is why an HDR target is what makes a threshold above 1 mean
        anything: against a clamped buffer nothing is ever brighter than white. */
-    f[slot(0) + prefilter('uThreshold')] = this.quality.bloomThreshold;
+    f[slot(0) + prefilter('uThreshold')] = this.bloomThresholdSet ?? this.quality.bloomThreshold;
 
     /* Each downsample's texel is its *source's*, which is the level above it. */
     const down = (name: string): number => this.postField(BLOOM_DOWNSAMPLE_FIELDS, name);
@@ -14420,6 +14946,8 @@ export class WebGPURenderer implements RendererApi {
 
     this.fieldComposer?.dispose();
     this.fieldComposer = null;
+    this.driftIndex?.destroy();
+    this.driftAtlas?.destroy();
 
     this.pass = null;
     this.encoder = null;
@@ -14427,6 +14955,9 @@ export class WebGPURenderer implements RendererApi {
     this.gpuTimer.dispose();
     this.reflection?.dispose();
     this.reflection = null;
+    this.probeTargets?.dispose();
+    this.exposurePass?.dispose();
+    this.exposurePass = null;
     this.surface.dispose();
   }
 }

@@ -35,6 +35,9 @@ import {
   CHUNK_LODF,
   CHUNK_MORP,
   CHUNK_NODE,
+  CHUNK_INST,
+  CHUNK_LITE,
+  CHUNK_MSHQ,
   CHUNK_SKIN,
   CHUNK_SPLT,
   SPLAT_BLOCK_PREFIX,
@@ -66,6 +69,11 @@ import { type EntsScene, buildEnts } from './ents.ts';
 import { type NavPolyMesh, buildNavm } from './navm.ts';
 import { type DrftGraph, buildNgrf } from './ngrf.ts';
 import { buildColliders } from './drftColliders.ts';
+import { buildInstances } from './drftInstances.ts';
+import type { DrftInstanceGroup } from './drftInstances.ts';
+import { buildLights } from './drftLights.ts';
+import type { DrftLight } from './drftLights.ts';
+import { encodeQuantisedMesh } from './drftQuantised.ts';
 
 /** An image to embed, already compressed, with what its own header said about it. */
 export interface DrftTextureSource {
@@ -155,6 +163,19 @@ export interface DrftSource {
    * the meshes exactly as it always did, which is why this is additive.
    */
   readonly nodes?: readonly DrftNode[];
+  /**
+   * Meshes drawn many times: one `INST` chunk, written ahead of the geometry and required. The mesh
+   * a group names holds one copy; see `drftInstances.ts`.
+   */
+  readonly instances?: readonly DrftInstanceGroup[];
+  /** The lights the scene was authored with: one `LITE` chunk, optional. See `drftLights.ts`. */
+  readonly lights?: readonly DrftLight[];
+  /**
+   * Write each mesh as `MSHQ` rather than `MESH`: constants, 16-bit ranges and octahedral
+   * directions, about a third of the bytes, within the bounds `drftQuantised.ts` states. Off unless
+   * asked, so a caller writing a file gets the bytes it always got; the baker asks by default.
+   */
+  readonly quantise?: boolean;
   /** Skins, one `SKIN` chunk each, or absent for an asset that deforms nothing. */
   readonly skins?: readonly DrftSkin[];
   /** Clips, one `ANIM` chunk each, or absent for an asset that animates nothing. */
@@ -292,7 +313,11 @@ function encodeString(value: string): Uint8Array {
   return bytes;
 }
 
-function buildHead(head: Partial<DrftHead> | undefined, meshes: readonly MeshData[]): PendingChunk {
+function buildHead(
+  head: Partial<DrftHead> | undefined,
+  meshes: readonly MeshData[],
+  instances: readonly DrftInstanceGroup[] = [],
+): PendingChunk {
   /*
    * Bounds are computed rather than taken on trust. A caller that gets them wrong would
    * produce an asset that culls itself out of frame, which looks like a rendering bug and
@@ -304,17 +329,72 @@ function buildHead(head: Partial<DrftHead> | undefined, meshes: readonly MeshDat
   let maxX = -Infinity;
   let maxY = -Infinity;
   let maxZ = -Infinity;
-  for (const mesh of meshes) {
+  const placed = new Map<number, Float32Array>();
+  for (const group of instances) placed.set(group.mesh, group.transforms);
+  for (let m = 0; m < meshes.length; m++) {
+    const mesh = meshes[m] as MeshData;
+    const transforms = placed.get(m);
+    if (transforms === undefined) {
+      for (let at = 0; at + 2 < mesh.positions.length; at += 3) {
+        const x = mesh.positions[at] as number;
+        const y = mesh.positions[at + 1] as number;
+        const z = mesh.positions[at + 2] as number;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (z < minZ) minZ = z;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+        if (z > maxZ) maxZ = z;
+      }
+      continue;
+    }
+    /*
+     * **An instanced mesh's bounds are every copy's**, or a file of ten thousand candles reports one
+     * candle's box and a consumer fits and culls it as one candle. Each copy's box is the prototype's
+     * eight corners through its matrix: conservative for a copy that turns, exact for one that moves.
+     */
+    let lx = Infinity;
+    let ly = Infinity;
+    let lz = Infinity;
+    let hx = -Infinity;
+    let hy = -Infinity;
+    let hz = -Infinity;
     for (let at = 0; at + 2 < mesh.positions.length; at += 3) {
-      const x = mesh.positions[at] as number;
-      const y = mesh.positions[at + 1] as number;
-      const z = mesh.positions[at + 2] as number;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (z < minZ) minZ = z;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-      if (z > maxZ) maxZ = z;
+      lx = Math.min(lx, mesh.positions[at] as number);
+      ly = Math.min(ly, mesh.positions[at + 1] as number);
+      lz = Math.min(lz, mesh.positions[at + 2] as number);
+      hx = Math.max(hx, mesh.positions[at] as number);
+      hy = Math.max(hy, mesh.positions[at + 1] as number);
+      hz = Math.max(hz, mesh.positions[at + 2] as number);
+    }
+    if (!Number.isFinite(lx)) continue;
+    for (let k = 0; k + 15 < transforms.length; k += 16) {
+      for (let corner = 0; corner < 8; corner++) {
+        const cx = corner & 1 ? hx : lx;
+        const cy = corner & 2 ? hy : ly;
+        const cz = corner & 4 ? hz : lz;
+        const x =
+          (transforms[k] as number) * cx +
+          (transforms[k + 4] as number) * cy +
+          (transforms[k + 8] as number) * cz +
+          (transforms[k + 12] as number);
+        const y =
+          (transforms[k + 1] as number) * cx +
+          (transforms[k + 5] as number) * cy +
+          (transforms[k + 9] as number) * cz +
+          (transforms[k + 13] as number);
+        const z =
+          (transforms[k + 2] as number) * cx +
+          (transforms[k + 6] as number) * cy +
+          (transforms[k + 10] as number) * cz +
+          (transforms[k + 14] as number);
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (z < minZ) minZ = z;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+        if (z > maxZ) maxZ = z;
+      }
     }
   }
   if (!Number.isFinite(minX)) {
@@ -478,6 +558,11 @@ function buildMaterials(materials: readonly DrftMaterial[]): PendingChunk {
     view.setFloat32(at + 64, material.metallicScale, true);
     view.setFloat32(at + 68, material.occlusionStrength, true);
     view.setFloat32(at + 72, material.cutout, true);
+    view.setUint32(
+      at + 76,
+      (material.blend === true ? 1 : 0) | (material.doubleSided === true ? 2 : 0),
+      true,
+    );
     at += MATERIAL_ENTRY_BYTES;
   }
   return { code: CHUNK_MATL, flags: 0, bytes };
@@ -537,7 +622,7 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
    * same asset less its textures rather than a refusal. Moving it earlier in the file changes
    * nothing about that, because a chunk is found through the table rather than by position.
    */
-  const chunks: PendingChunk[] = [buildHead(source.head, source.meshes)];
+  const chunks: PendingChunk[] = [buildHead(source.head, source.meshes, source.instances)];
   /*
    * The outline first, ahead of even the paint. It is the one thing that puts a recognisable
    * whole object on screen, it is a few hundred kilobytes against tens of megabytes, and the
@@ -567,6 +652,28 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
    */
   for (const node of source.nodes === undefined ? [] : [source.nodes]) {
     chunks.push({ code: CHUNK_NODE, flags: 0, bytes: buildNodes(node) });
+  }
+  /*
+   * The placements ahead of the meshes they place, for the rig's reason: a streaming consumer must
+   * know a mesh is drawn ten thousand times before it lands, or it has already made it one part.
+   */
+  if ((source.instances?.length ?? 0) > 0) {
+    for (const group of source.instances ?? []) {
+      if (group.mesh >= source.meshes.length) {
+        throw new DrftError(
+          `an instance group places mesh ${group.mesh}, and the asset has ${source.meshes.length}`,
+        );
+      }
+    }
+    chunks.push({
+      code: CHUNK_INST,
+      flags: CHUNK_REQUIRED,
+      bytes: buildInstances(source.instances as readonly DrftInstanceGroup[]),
+    });
+  }
+  /* Small, and ahead of the geometry, so a streaming consumer can place its lamps early. */
+  if ((source.lights?.length ?? 0) > 0) {
+    chunks.push({ code: CHUNK_LITE, flags: 0, bytes: buildLights(source.lights ?? []) });
   }
   for (const skin of source.skins ?? []) {
     chunks.push({ code: CHUNK_SKIN, flags: 0, bytes: buildSkin(skin) });
@@ -613,7 +720,12 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
         }),
       });
     }
-    chunks.push(buildMesh(mesh));
+    if (source.quantise === true) {
+      validateMeshData(mesh);
+      chunks.push({ code: CHUNK_MSHQ, flags: CHUNK_REQUIRED, bytes: encodeQuantisedMesh(mesh) });
+    } else {
+      chunks.push(buildMesh(mesh));
+    }
   });
   for (const texture of source.textures ?? []) chunks.push(buildTexture(texture));
   /* One `SUBS` for the file, and only where something was labelled — an empty chunk would cost

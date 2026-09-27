@@ -219,6 +219,18 @@ export const COOKIE_ATLAS_TEXTURE_UNIT = MORPH_DELTA_TEXTURE_UNIT + 1;
 export const REFRACT_SCENE_TEXTURE_UNIT = COOKIE_ATLAS_TEXTURE_UNIT + 1;
 
 /**
+ * DriftLight's brick index and atlas, the lit program's fourteenth and fifteenth fragment samplers.
+ *
+ * Units past fifteen are legal: `MAX_TEXTURE_IMAGE_UNITS` caps how many samplers a stage *uses*,
+ * sixteen at the least, while a unit's number only has to be under the combined limit, which WebGL2
+ * guarantees is at least thirty-two. The skin palette and morph deltas below them are vertex
+ * textures and count against the vertex stage instead. What would make this wrong is a sixteenth
+ * fragment sampler, which the lit program would then be one short of on the guaranteed minimum.
+ */
+export const DRIFT_LIGHT_INDEX_TEXTURE_UNIT = REFRACT_SCENE_TEXTURE_UNIT + 1;
+export const DRIFT_LIGHT_ATLAS_TEXTURE_UNIT = DRIFT_LIGHT_INDEX_TEXTURE_UNIT + 1;
+
+/**
  * A cookie's tile, in texels a side.
  *
  * **128, which is what a gobo is.** A cookie is a soft mask — a window frame, a leaf canopy, a

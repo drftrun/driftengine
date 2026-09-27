@@ -5,7 +5,13 @@
  * the next generation, and `npm run wgsl:check` fails the build when this is stale.
  */
 
+export const DEPTH_CUTOUT_FRAG_WGSL = "struct Uniforms {\n    uPeelShadowLayer: i32,\n}\n\n@group(0) @binding(34) \nvar uCutoutMap_t: texture_2d<f32>;\n@group(0) @binding(35) \nvar uCutoutMap_s: sampler;\nvar<private> vUv_1: vec2<f32>;\n@group(0) @binding(1) \nvar<uniform> unnamed: Uniforms;\nvar<private> vLightPosition_1: vec4<f32>;\n@group(0) @binding(32) \nvar uPreviousShadowMap_t: texture_2d<f32>;\n@group(0) @binding(33) \nvar uPreviousShadowMap_s: sampler;\nvar<private> gl_FragCoord_1: vec4<f32>;\nvar<private> vAlphaCutout_1: f32;\n\nfn cutoutAlpha_u0028_f1_u003b_vf2_u003b(alpha: ptr<function, f32>, texels: ptr<function, vec2<f32>>) -> f32 {\n    var dx: vec2<f32>;\n    var dy: vec2<f32>;\n    var level: f32;\n\n    let _e23 = (*texels);\n    let _e24 = dpdx(_e23);\n    dx = _e24;\n    let _e25 = (*texels);\n    let _e26 = dpdy(_e25);\n    dy = _e26;\n    let _e27 = dx;\n    let _e28 = dx;\n    let _e30 = dy;\n    let _e31 = dy;\n    level = max(0f, (0.5f * log2(max(dot(_e27, _e28), dot(_e30, _e31)))));\n    let _e37 = (*alpha);\n    let _e38 = level;\n    return (_e37 * (1f + (_e38 * 0.25f)));\n}\n\nfn main_1() {\n    var alpha_1: f32;\n    var param: f32;\n    var param_1: vec2<f32>;\n    var p: vec3<f32>;\n    var uv: vec2<f32>;\n    var previousDepth: f32;\n\n    let _e24 = vUv_1;\n    let _e25 = textureSample(uCutoutMap_t, uCutoutMap_s, _e24);\n    let _e26 = vUv_1;\n    let _e27 = textureDimensions(uCutoutMap_t, 0i);\n    param = _e25.w;\n    param_1 = (_e26 * vec2<f32>(vec2<i32>(_e27)));\n    let _e32 = cutoutAlpha_u0028_f1_u003b_vf2_u003b((&param), (&param_1));\n    alpha_1 = _e32;\n    let _e34 = unnamed.uPeelShadowLayer;\n    if (_e34 != 0i) {\n        let _e36 = vLightPosition_1;\n        let _e39 = vLightPosition_1[3u];\n        p = (_e36.xyz / vec3(_e39));\n        let _e42 = p;\n        uv = ((_e42.xy * 0.5f) + vec2(0.5f));\n        let _e47 = uv;\n        let _e48 = textureSampleLevel(uPreviousShadowMap_t, uPreviousShadowMap_s, _e47, 0f);\n        previousDepth = _e48.x;\n        let _e51 = gl_FragCoord_1[2u];\n        let _e52 = previousDepth;\n        if (_e51 <= (_e52 + 0.00001f)) {\n            discard;\n        }\n    }\n    let _e55 = alpha_1;\n    let _e56 = vAlphaCutout_1;\n    if (_e55 < _e56) {\n        discard;\n    }\n    return;\n}\n\n@fragment \nfn main(@location(1) vUv: vec2<f32>, @location(0) vLightPosition: vec4<f32>, @builtin(position) gl_FragCoord: vec4<f32>, @location(2) @interpolate(flat) vAlphaCutout: f32) {\n    vUv_1 = vUv;\n    vLightPosition_1 = vLightPosition;\n    gl_FragCoord_1 = gl_FragCoord;\n    vAlphaCutout_1 = vAlphaCutout;\n    main_1();\n}\n";
+
+export const DEPTH_CUTOUT_VERT_WGSL = "struct Uniforms {\n    uLightViewProj: mat4x4<f32>,\n    uModel: mat4x4<f32>,\n    uWindDirection: vec2<f32>,\n    uWindSpeed: f32,\n    uWindGust: f32,\n    uWindTime: f32,\n    uWindSpatialPhase: vec2<f32>,\n    uUvScale: vec2<f32>,\n    uAlphaCutout: f32,\n}\n\nstruct gl_PerVertex {\n    @builtin(position) gl_Position: vec4<f32>,\n    gl_PointSize: f32,\n}\n\nstruct VertexOutput {\n    @location(0) member: vec4<f32>,\n    @builtin(position) gl_Position: vec4<f32>,\n    @location(1) member_1: vec2<f32>,\n    @location(2) @interpolate(flat) member_2: f32,\n}\n\n@group(0) @binding(0) \nvar<uniform> unnamed: Uniforms;\nvar<private> aPosition_1: vec3<f32>;\nvar<private> aChannel_1: vec4<f32>;\nvar<private> vLightPosition: vec4<f32>;\nvar<private> unnamed_1: gl_PerVertex = gl_PerVertex(vec4<f32>(0f, 0f, 0f, 1f), 1f);\nvar<private> vUv: vec2<f32>;\nvar<private> aUv_1: vec2<f32>;\nvar<private> vAlphaCutout: f32;\n\nfn channelBend_u0028_vf3_u003b_f1_u003b(worldPos: ptr<function, vec3<f32>>, sway: ptr<function, f32>) -> vec3<f32> {\n    var phase: f32;\n    var bend: f32;\n\n    let _e27 = (*sway);\n    if (_e27 <= 0f) {\n        let _e29 = (*worldPos);\n        return _e29;\n    }\n    let _e30 = (*worldPos);\n    let _e33 = unnamed.uWindSpatialPhase;\n    let _e36 = unnamed.uWindTime;\n    phase = (dot(_e30.xz, _e33) + _e36);\n    let _e39 = unnamed.uWindSpeed;\n    let _e41 = unnamed.uWindGust;\n    let _e43 = phase;\n    let _e46 = (*sway);\n    bend = (((_e39 + _e41) * sin(_e43)) * _e46);\n    let _e49 = (*worldPos)[0u];\n    let _e52 = unnamed.uWindDirection[0u];\n    let _e53 = bend;\n    let _e57 = (*worldPos)[1u];\n    let _e59 = (*worldPos)[2u];\n    let _e62 = unnamed.uWindDirection[1u];\n    let _e63 = bend;\n    return vec3<f32>((_e49 + (_e52 * _e53)), _e57, (_e59 + (_e62 * _e63)));\n}\n\nfn main_1() {\n    var local: vec4<f32>;\n    var model: mat4x4<f32>;\n    var world: vec4<f32>;\n    var bent: vec3<f32>;\n    var param: vec3<f32>;\n    var param_1: f32;\n\n    let _e29 = aPosition_1;\n    local = vec4<f32>(_e29.x, _e29.y, _e29.z, 1f);\n    let _e35 = unnamed.uModel;\n    model = _e35;\n    let _e36 = model;\n    let _e37 = local;\n    world = (_e36 * _e37);\n    let _e39 = world;\n    param = _e39.xyz;\n    let _e42 = aChannel_1[0u];\n    param_1 = _e42;\n    let _e43 = channelBend_u0028_vf3_u003b_f1_u003b((&param), (&param_1));\n    bent = _e43;\n    let _e45 = unnamed.uLightViewProj;\n    let _e46 = bent;\n    let _e48 = world[3u];\n    vLightPosition = (_e45 * vec4<f32>(_e46.x, _e46.y, _e46.z, _e48));\n    let _e54 = vLightPosition;\n    unnamed_1.gl_Position = _e54;\n    let _e56 = aUv_1;\n    let _e58 = unnamed.uUvScale;\n    vUv = (_e56 * _e58);\n    let _e61 = unnamed.uAlphaCutout;\n    vAlphaCutout = _e61;\n    return;\n}\n\n@vertex \nfn main(@location(0) aPosition: vec3<f32>, @location(13) aChannel: vec4<f32>, @location(5) aUv: vec2<f32>) -> VertexOutput {\n    aPosition_1 = aPosition;\n    aChannel_1 = aChannel;\n    aUv_1 = aUv;\n    main_1();\n    let _e12 = unnamed_1.gl_Position.y;\n    unnamed_1.gl_Position.y = -(_e12);\n    let _e14 = vLightPosition;\n    let _e15 = unnamed_1.gl_Position;\n    let _e16 = vUv;\n    let _e17 = vAlphaCutout;\n    return VertexOutput(_e14, _e15, _e16, _e17);\n}\n";
+
 export const DEPTH_FRAG_WGSL = "struct Uniforms {\n    uPeelShadowLayer: i32,\n}\n\n@group(0) @binding(1) \nvar<uniform> unnamed: Uniforms;\nvar<private> vLightPosition_1: vec4<f32>;\n@group(0) @binding(32) \nvar uPreviousShadowMap_t: texture_2d<f32>;\n@group(0) @binding(33) \nvar uPreviousShadowMap_s: sampler;\nvar<private> gl_FragCoord_1: vec4<f32>;\n\nfn main_1() {\n    var p: vec3<f32>;\n    var uv: vec2<f32>;\n    var previousDepth: f32;\n\n    let _e15 = unnamed.uPeelShadowLayer;\n    if (_e15 != 0i) {\n        let _e17 = vLightPosition_1;\n        let _e20 = vLightPosition_1[3u];\n        p = (_e17.xyz / vec3(_e20));\n        let _e23 = p;\n        uv = ((_e23.xy * 0.5f) + vec2(0.5f));\n        let _e28 = uv;\n        let _e29 = textureSample(uPreviousShadowMap_t, uPreviousShadowMap_s, _e28);\n        previousDepth = _e29.x;\n        let _e32 = gl_FragCoord_1[2u];\n        let _e33 = previousDepth;\n        if (_e32 <= (_e33 + 0.00001f)) {\n            discard;\n        }\n    }\n    return;\n}\n\n@fragment \nfn main(@location(0) vLightPosition: vec4<f32>, @builtin(position) gl_FragCoord: vec4<f32>) {\n    vLightPosition_1 = vLightPosition;\n    gl_FragCoord_1 = gl_FragCoord;\n    main_1();\n}\n";
+
+export const DEPTH_INSTANCED_CUTOUT_VERT_WGSL = "struct Uniforms {\n    uLightViewProj: mat4x4<f32>,\n    uUvScale: vec2<f32>,\n    uAlphaCutout: f32,\n}\n\nstruct gl_PerVertex {\n    @builtin(position) gl_Position: vec4<f32>,\n    gl_PointSize: f32,\n}\n\nstruct VertexOutput {\n    @location(0) member: vec4<f32>,\n    @builtin(position) gl_Position: vec4<f32>,\n    @location(1) member_1: vec2<f32>,\n    @location(2) @interpolate(flat) member_2: f32,\n}\n\nvar<private> aPosition_1: vec3<f32>;\nvar<private> aInstanceModel0_1: vec4<f32>;\nvar<private> aInstanceModel1_1: vec4<f32>;\nvar<private> aInstanceModel2_1: vec4<f32>;\nvar<private> aInstanceModel3_1: vec4<f32>;\nvar<private> vLightPosition: vec4<f32>;\n@group(0) @binding(0) \nvar<uniform> unnamed: Uniforms;\nvar<private> unnamed_1: gl_PerVertex = gl_PerVertex(vec4<f32>(0f, 0f, 0f, 1f), 1f);\nvar<private> vUv: vec2<f32>;\nvar<private> aUv_1: vec2<f32>;\nvar<private> vAlphaCutout: f32;\n\nfn main_1() {\n    var local: vec4<f32>;\n    var model: mat4x4<f32>;\n    var world: vec4<f32>;\n    var bent: vec3<f32>;\n\n    let _e21 = aPosition_1;\n    local = vec4<f32>(_e21.x, _e21.y, _e21.z, 1f);\n    let _e26 = aInstanceModel0_1;\n    let _e27 = aInstanceModel1_1;\n    let _e28 = aInstanceModel2_1;\n    let _e29 = aInstanceModel3_1;\n    model = mat4x4<f32>(vec4<f32>(_e26.x, _e26.y, _e26.z, _e26.w), vec4<f32>(_e27.x, _e27.y, _e27.z, _e27.w), vec4<f32>(_e28.x, _e28.y, _e28.z, _e28.w), vec4<f32>(_e29.x, _e29.y, _e29.z, _e29.w));\n    let _e51 = model;\n    let _e52 = local;\n    world = (_e51 * _e52);\n    let _e54 = world;\n    bent = _e54.xyz;\n    let _e57 = unnamed.uLightViewProj;\n    let _e58 = bent;\n    let _e60 = world[3u];\n    vLightPosition = (_e57 * vec4<f32>(_e58.x, _e58.y, _e58.z, _e60));\n    let _e66 = vLightPosition;\n    unnamed_1.gl_Position = _e66;\n    let _e68 = aUv_1;\n    let _e70 = unnamed.uUvScale;\n    vUv = (_e68 * _e70);\n    let _e73 = unnamed.uAlphaCutout;\n    vAlphaCutout = _e73;\n    return;\n}\n\n@vertex \nfn main(@location(0) aPosition: vec3<f32>, @location(11) aInstanceModel0_: vec4<f32>, @location(12) aInstanceModel1_: vec4<f32>, @location(13) aInstanceModel2_: vec4<f32>, @location(14) aInstanceModel3_: vec4<f32>, @location(5) aUv: vec2<f32>) -> VertexOutput {\n    aPosition_1 = aPosition;\n    aInstanceModel0_1 = aInstanceModel0_;\n    aInstanceModel1_1 = aInstanceModel1_;\n    aInstanceModel2_1 = aInstanceModel2_;\n    aInstanceModel3_1 = aInstanceModel3_;\n    aUv_1 = aUv;\n    main_1();\n    let _e18 = unnamed_1.gl_Position.y;\n    unnamed_1.gl_Position.y = -(_e18);\n    let _e20 = vLightPosition;\n    let _e21 = unnamed_1.gl_Position;\n    let _e22 = vUv;\n    let _e23 = vAlphaCutout;\n    return VertexOutput(_e20, _e21, _e22, _e23);\n}\n";
 
 export const DEPTH_INSTANCED_VERT_WGSL = "struct Uniforms {\n    uLightViewProj: mat4x4<f32>,\n}\n\nstruct gl_PerVertex {\n    @builtin(position) gl_Position: vec4<f32>,\n    gl_PointSize: f32,\n}\n\nstruct VertexOutput {\n    @location(0) member: vec4<f32>,\n    @builtin(position) gl_Position: vec4<f32>,\n}\n\nvar<private> aPosition_1: vec3<f32>;\nvar<private> aInstanceModel0_1: vec4<f32>;\nvar<private> aInstanceModel1_1: vec4<f32>;\nvar<private> aInstanceModel2_1: vec4<f32>;\nvar<private> aInstanceModel3_1: vec4<f32>;\nvar<private> vLightPosition: vec4<f32>;\n@group(0) @binding(0) \nvar<uniform> unnamed: Uniforms;\nvar<private> unnamed_1: gl_PerVertex = gl_PerVertex(vec4<f32>(0f, 0f, 0f, 1f), 1f);\n\nfn main_1() {\n    var local: vec4<f32>;\n    var model: mat4x4<f32>;\n    var world: vec4<f32>;\n    var bent: vec3<f32>;\n\n    let _e16 = aPosition_1;\n    local = vec4<f32>(_e16.x, _e16.y, _e16.z, 1f);\n    let _e21 = aInstanceModel0_1;\n    let _e22 = aInstanceModel1_1;\n    let _e23 = aInstanceModel2_1;\n    let _e24 = aInstanceModel3_1;\n    model = mat4x4<f32>(vec4<f32>(_e21.x, _e21.y, _e21.z, _e21.w), vec4<f32>(_e22.x, _e22.y, _e22.z, _e22.w), vec4<f32>(_e23.x, _e23.y, _e23.z, _e23.w), vec4<f32>(_e24.x, _e24.y, _e24.z, _e24.w));\n    let _e46 = model;\n    let _e47 = local;\n    world = (_e46 * _e47);\n    let _e49 = world;\n    bent = _e49.xyz;\n    let _e52 = unnamed.uLightViewProj;\n    let _e53 = bent;\n    let _e55 = world[3u];\n    vLightPosition = (_e52 * vec4<f32>(_e53.x, _e53.y, _e53.z, _e55));\n    let _e61 = vLightPosition;\n    unnamed_1.gl_Position = _e61;\n    return;\n}\n\n@vertex \nfn main(@location(0) aPosition: vec3<f32>, @location(11) aInstanceModel0_: vec4<f32>, @location(12) aInstanceModel1_: vec4<f32>, @location(13) aInstanceModel2_: vec4<f32>, @location(14) aInstanceModel3_: vec4<f32>) -> VertexOutput {\n    aPosition_1 = aPosition;\n    aInstanceModel0_1 = aInstanceModel0_;\n    aInstanceModel1_1 = aInstanceModel1_;\n    aInstanceModel2_1 = aInstanceModel2_;\n    aInstanceModel3_1 = aInstanceModel3_;\n    main_1();\n    let _e14 = unnamed_1.gl_Position.y;\n    unnamed_1.gl_Position.y = -(_e14);\n    let _e16 = vLightPosition;\n    let _e17 = unnamed_1.gl_Position;\n    return VertexOutput(_e16, _e17);\n}\n";
 
@@ -19,6 +25,81 @@ export const DEPTH_VERT_WGSL = "struct Uniforms {\n    uLightViewProj: mat4x4<f3
  * A permuted shader has one entry per variant, keyed as `FLAT_FRAG_WGSL` is.
  */
 export const DEPTH_BINDINGS = {
+  "DEPTH_CUTOUT_FRAG": {
+    "uniforms": 1,
+    "uniformSize": 16,
+    "fields": {
+      "uPeelShadowLayer": {
+        "offset": 0,
+        "size": 4,
+        "type": "int"
+      }
+    },
+    "textures": {
+      "uPreviousShadowMap": {
+        "texture": 32,
+        "sampler": 33,
+        "type": "sampler2D"
+      },
+      "uCutoutMap": {
+        "texture": 34,
+        "sampler": 35,
+        "type": "sampler2D"
+      }
+    }
+  },
+  "DEPTH_CUTOUT_VERT": {
+    "uniforms": 0,
+    "uniformSize": 176,
+    "fields": {
+      "uLightViewProj": {
+        "offset": 0,
+        "size": 64,
+        "type": "mat4"
+      },
+      "uModel": {
+        "offset": 64,
+        "size": 64,
+        "type": "mat4"
+      },
+      "uWindDirection": {
+        "offset": 128,
+        "size": 8,
+        "type": "vec2"
+      },
+      "uWindSpeed": {
+        "offset": 136,
+        "size": 4,
+        "type": "float"
+      },
+      "uWindGust": {
+        "offset": 140,
+        "size": 4,
+        "type": "float"
+      },
+      "uWindTime": {
+        "offset": 144,
+        "size": 4,
+        "type": "float"
+      },
+      "uWindSpatialPhase": {
+        "offset": 152,
+        "size": 8,
+        "type": "vec2"
+      },
+      "uUvScale": {
+        "offset": 160,
+        "size": 8,
+        "type": "vec2"
+      },
+      "uAlphaCutout": {
+        "offset": 168,
+        "size": 4,
+        "type": "float"
+      }
+    },
+    "textures": {}
+  },
   "DEPTH_FRAG": {
     "uniforms": 1,
     "uniformSize": 16,
@@ -36,6 +117,28 @@ export const DEPTH_BINDINGS = {
         "type": "sampler2D"
       }
     }
+  },
+  "DEPTH_INSTANCED_CUTOUT_VERT": {
+    "uniforms": 0,
+    "uniformSize": 80,
+    "fields": {
+      "uLightViewProj": {
+        "offset": 0,
+        "size": 64,
+        "type": "mat4"
+      },
+      "uUvScale": {
+        "offset": 64,
+        "size": 8,
+        "type": "vec2"
+      },
+      "uAlphaCutout": {
+        "offset": 72,
+        "size": 4,
+        "type": "float"
+      }
+    },
+    "textures": {}
   },
   "DEPTH_INSTANCED_VERT": {
     "uniforms": 0,

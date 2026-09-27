@@ -62,6 +62,21 @@ describe('createRenderer', () => {
   });
 
   /*
+   * **An option only one backend has is asked of that backend alone.** Traced indirect light and
+   * reconstruction are WebGPU's, and WebGL2 refuses either in words when it is handed one, which is
+   * right for a consumer who asked for it there and noise for one who wanted it wherever it runs:
+   * every phone that fell back printed a refusal of something nobody had asked it for. A function
+   * of the backend lets a consumer say "this where it runs" without guessing the backend first.
+   */
+  it('ASKS FOR QUALITY OF THE BACKEND THAT WILL DRAW, where a consumer passes a function of it', async () => {
+    const asked = vi.fn(() => ({}));
+    const canvas = { getContext: vi.fn(() => null) } as unknown as HTMLCanvasElement;
+    await createRenderer(canvas, asked, { search: '', preferWebGpu: false }).catch(() => undefined);
+    expect(asked).toHaveBeenCalledWith('webgl2');
+    expect(asked).not.toHaveBeenCalledWith('webgpu');
+  });
+
+  /*
    * The device the probe acquires is released again, because nothing reads it yet and an
    * unread device costs memory and can keep a discrete GPU awake.
    */

@@ -4,10 +4,10 @@ import { mat4, vec4 } from 'gl-matrix';
 
 import { maskOf, resourceBit } from '../../frame/index.ts';
 import { nodeCount } from '../../frame/arena.ts';
-import { DEPTH_VERT_FIELDS } from './depthPass.ts';
+import { DEPTH_CUTOUT_VERT_FIELDS, DEPTH_VERT_FIELDS } from './depthPass.ts';
 import { flatFragmentBindings, flatVariant } from './flatPass.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
-import { RUSH_FRAG_FIELDS } from './postPass.ts';
+import { BLOOM_PREFILTER_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
 import { SCATTER_DEPTH_FIELDS } from './scatterPass.ts';
 import { TEXT_VERT_FIELDS } from './textPass.ts';
 import { DEFAULT_TEXT_STYLE } from '../../textLayout.ts';
@@ -33,6 +33,17 @@ import { DEFAULT_SDF_TEXT_STYLE } from '../../sdfTextLayout.ts';
 import { Camera } from '../../camera.ts';
 import { MeshBuilder } from '../../../geometry/meshBuilder.ts';
 import { createEnvironment } from '../webgl2/renderer.ts';
+import type { SkyColors } from '../webgl2/renderer.ts';
+import { PROBE_HISTORY } from './probeBake.ts';
+import {
+  BAKE_FRAME,
+  BAKE_HISTORY,
+  BAKE_SKY_COLOUR,
+  BAKE_SKY_DEEP,
+  BAKE_SKY_DRAWN,
+  BAKE_SKY_SUN,
+  BAKE_SKY_TOP,
+} from '../../shaders/gi/probeBake.wgsl.ts';
 import {
   BODY_DYNAMIC,
   BODY_STATIC,
@@ -635,6 +646,209 @@ describe('the webgpu renderer', () => {
     expect(stub.surface.canvas.height).toBe(480);
   });
 
+  /*
+   * **The overlay is on the far side of the resolve**, so its depth is the drawing buffer's. It was
+   * sized from the scene's depth, which a reconstruction draws small: the device refused a depth of
+   * 427 by 320 beside a swap image of 640 by 480, every overlay command buffer came back invalid,
+   * and a load screen or any interface drawn after `endFrame` vanished whenever reconstruction was
+   * on. Found by a scene turning reconstruction on for the first time.
+   */
+  /*
+   * **A cut is a new shot, and nothing temporal may carry the last one into it.** The motion blur
+   * and the temporal resolve both reproject through the previous frame's view, so a transport that
+   * seeks, a respawn or an edit smeared the first frame of the new view along the whole jump. The
+   * renderer cannot tell a cut from a fast camera; the caller can, and `cameraCut` is how it says.
+   */
+  it('A CAMERA CUT LEAVES THE NEXT FRAME UNSMEARED, and the one after it blurs again', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, cameraMotionBlur: 1 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const view = (camera as unknown as { viewProjection: mat4 }).viewProjection;
+    const frame = (x: number): void => {
+      mat4.fromTranslation(view, [x, 0, 0]);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+    };
+    const strength = (): number => {
+      const floats = new Float32Array(ringUpload(stub.device, 'post.rushUniforms'));
+      return floats[(RUSH_FRAG_FIELDS['uMotionStrength']?.offset ?? -4) / 4] as number;
+    };
+
+    frame(0);
+    frame(0.5);
+    expect(strength(), 'a camera with a previous frame is blurred').toBe(1);
+    renderer.cameraCut();
+    frame(100);
+    expect(strength(), 'the frame after a cut is not').toBe(0);
+    frame(100.5);
+    expect(strength(), 'and the one after that is again').toBe(1);
+  });
+
+  /*
+   * **A lens and a print, reaching the composite.** Two uniforms added to a shader are two
+   * uniforms a backend can forget to bind, and an unbound one is zero, which for these is off: the
+   * failure would be a setter that does nothing on one backend with no error anywhere.
+   */
+  it('HANDS THE VIGNETTE AND THE GRAIN TO THE COMPOSITE, and 0 takes them away again', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const frame = (): Float32Array => {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      return new Float32Array(ringUpload(stub.device, 'post.rushUniforms'));
+    };
+    const read = (floats: Float32Array, name: string, index = 0): number =>
+      floats[(RUSH_FRAG_FIELDS[name]?.offset ?? -4) / 4 + index] as number;
+
+    renderer.setVignette(0.5);
+    renderer.setFilmGrain(0.03, 7.9);
+    const on = frame();
+    expect(read(on, 'uVignette')).toBeCloseTo(0.5, 6);
+    expect(read(on, 'uGrain', 0)).toBeCloseTo(0.03, 6);
+    expect(read(on, 'uGrain', 1), 'the seed as a whole number a float carries exactly').toBe(7);
+
+    renderer.setVignette(0);
+    renderer.setFilmGrain(0, 7);
+    const off = frame();
+    expect(read(off, 'uVignette')).toBe(0);
+    expect(read(off, 'uGrain', 0)).toBe(0);
+  });
+
+  /*
+   * **Eye adaptation, metered in the frame and handed to the composite.** The meter and the
+   * adaptation are recorded into the frame's own encoder, before the composite that reads them; a
+   * separate submission would run before the frame that draws the scene it is meant to measure.
+   */
+  it('ADAPTS THE EXPOSURE WHEN ASKED, easing frame to frame, and a cut snaps it', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, hdrScene: true }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const labels = (): string[] =>
+      stub.encoder.beginRenderPass.mock.calls.map((call) => String(call[0]?.label ?? ''));
+    const frame = (): { rush: Float32Array; blend: number; passes: string[] } => {
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const uniforms = ringUpload(stub.device, 'exposure.uniforms');
+      return {
+        rush: new Float32Array(ringUpload(stub.device, 'post.rushUniforms')),
+        blend: uniforms === undefined ? Number.NaN : (new Float32Array(uniforms)[0] as number),
+        passes: labels(),
+      };
+    };
+    const strength = (floats: Float32Array): number =>
+      floats[(RUSH_FRAG_FIELDS.uAutoExposure?.offset ?? -4) / 4] as number;
+
+    const none = frame();
+    expect(none.passes).not.toContain('exposure.meter');
+    expect(strength(none.rush)).toBe(0);
+
+    renderer.setAutoExposure(1, 1 / 60);
+    const first = frame();
+    expect(first.passes.indexOf('exposure.meter')).toBeGreaterThanOrEqual(0);
+    expect(first.passes.indexOf('exposure.adapt')).toBeGreaterThan(
+      first.passes.indexOf('exposure.meter'),
+    );
+    expect(first.passes.indexOf('post.composite')).toBeGreaterThan(
+      first.passes.indexOf('exposure.adapt'),
+    );
+    expect(strength(first.rush)).toBe(1);
+    expect(first.blend, 'nothing held yet: the first frame snaps').toBe(1);
+    /* 1 - e^(-1.5 / 60) = 0.024690. */
+    expect(frame().blend).toBeCloseTo(0.02469, 5);
+    renderer.cameraCut();
+    expect(frame().blend, 'a cut is a new shot, metered afresh').toBe(1);
+
+    renderer.setAutoExposure(0, 1 / 60);
+    const off = frame();
+    expect(off.passes).not.toContain('exposure.meter');
+    expect(strength(off.rush)).toBe(0);
+  });
+
+  /*
+   * **Local exposure, in the same encoder and before the same composite.** Its grid is drawn beside
+   * the meter, and the held brightness is kept whether or not the frame as a whole adapts, because
+   * each region is moved relative to it.
+   */
+  it('DRAWS THE LOCAL EXPOSURE GRID WHEN ASKED, with or without the eye adapting', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, hdrScene: true }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const frame = (): { local: number; auto: number; passes: string[] } => {
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const rush = new Float32Array(ringUpload(stub.device, 'post.rushUniforms'));
+      return {
+        local: rush[(RUSH_FRAG_FIELDS.uLocalExposure?.offset ?? -4) / 4] as number,
+        auto: rush[(RUSH_FRAG_FIELDS.uAutoExposure?.offset ?? -4) / 4] as number,
+        passes: stub.encoder.beginRenderPass.mock.calls.map((call) => String(call[0]?.label ?? '')),
+      };
+    };
+
+    const none = frame();
+    expect(none.passes).not.toContain('exposure.local');
+    expect(none.local).toBe(0);
+
+    renderer.setLocalExposure(0.5);
+    const on = frame();
+    expect(on.passes.indexOf('exposure.local')).toBeGreaterThan(
+      on.passes.indexOf('exposure.meter'),
+    );
+    expect(on.passes.indexOf('exposure.adapt'), 'the held brightness').toBeGreaterThanOrEqual(0);
+    expect(on.passes.indexOf('post.composite')).toBeGreaterThan(
+      on.passes.indexOf('exposure.local'),
+    );
+    expect(on.local).toBe(0.5);
+    expect(on.auto, 'the frame as a whole is not adapted for it').toBe(0);
+
+    renderer.setLocalExposure(0);
+    const off = frame();
+    expect(off.passes).not.toContain('exposure.local');
+    expect(off.local).toBe(0);
+  });
+
+  it('SIZES THE OVERLAY DEPTH TO THE DRAWING BUFFER, not to the reconstruction size', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+    const text = renderer.createText();
+    renderer.setText(text, 'AFTER');
+    renderer.drawText(text, 640, 480, 10, 10, { ...DEFAULT_TEXT_STYLE, alpha: 1 }, 0);
+
+    const overlay = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'overlay.depth');
+    expect(overlay, 'the overlay opened').toBeDefined();
+    expect((overlay?.size as number[] | undefined)?.slice(0, 2)).toEqual([640, 480]);
+  });
+
   it('draws everything at the drawing buffer when no reconstruction was asked for', () => {
     /* The gate every published scene is held to: off allocates exactly what it always did. */
     const stub = stubSurface();
@@ -1064,6 +1278,39 @@ describe('the webgpu renderer', () => {
       .map(([descriptor]) => String(descriptor.label ?? ''))
       .filter((label) => label === 'post.taa');
     expect(taa).toEqual([]);
+  });
+
+  it('A FRAME MAY MOVE THE BLOOM THRESHOLD, AND IT HOLDS UNTIL MOVED AGAIN', () => {
+    /*
+     * A threshold is in scene units and exposure is applied after it, so one fixed at construction
+     * means a different brightness on screen at every exposure. A day whose exposure spans 2.5 to
+     * 14 had to choose between a courtyard blooming at noon and candles never blooming at night.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ bloom: 1, hdrScene: true, bloomThreshold: 2 }),
+    );
+    const at = (BLOOM_PREFILTER_FIELDS['uThreshold']?.offset ?? -1) / 4;
+    const threshold = (): number | undefined => {
+      const writes = stub.device.queue.writeBuffer.mock.calls.filter(
+        (call) => (call[0] as { label?: string }).label === 'post.bloomUniforms',
+      );
+      const last = writes[writes.length - 1];
+      return last === undefined ? undefined : new Float32Array(last[2] as ArrayBuffer)[at];
+    };
+    const frame = (): void => {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.endFrame();
+    };
+    frame();
+    expect(threshold(), "the profile's own threshold, until a frame says otherwise").toBe(2);
+    renderer.setBloom(1, 0.25);
+    frame();
+    expect(threshold()).toBe(0.25);
+    renderer.setBloom(0.5);
+    frame();
+    expect(threshold(), 'a scale alone leaves the threshold where it was').toBe(0.25);
   });
 
   it('builds the whole bloom pyramid rather than only its first level', () => {
@@ -1992,8 +2239,12 @@ describe('the webgpu renderer', () => {
      * for the same reason on the mesh pass.
      */
     renderer.drawSky(camera, sky, stubScene().env);
+    /* The sky is a ring slot now and uploads with the other rings, when the frame is flushed. */
+    renderer.endFrame();
 
-    const upload = device.queue.writeBuffer.mock.calls.at(-1);
+    const upload = device.queue.writeBuffer.mock.calls
+      .filter((call: unknown[]) => (call[0] as { label?: string }).label === 'sky.ring')
+      .at(-1);
     const written = new Float32Array(upload?.[2] as ArrayBuffer, 0, 16);
 
     /* Y comes back the other way, and depth comes back to [-1, 1]. */
@@ -3316,6 +3567,46 @@ describe('particle batches', () => {
     expect(near.vertUniforms).not.toBe(far.vertUniforms);
     expect(near.fragUniforms).not.toBe(far.fragUniforms);
     expect(near.bindGroup).not.toBe(far.bindGroup);
+  });
+
+  it('A BATCH DRAWN TWICE IN ONE ENCODER IS REFUSED BY NAME, not drawn twice with its last data', () => {
+    /*
+     * **A batch's instances and uniforms are its own buffers, written at each draw.** Queue writes
+     * land before the encoder runs, so a second draw of one batch in one encoder — a mirror and the
+     * view, or a probe's six faces — would draw the second draw's particles twice, from the second
+     * camera. WebGL2 draws both correctly, and the two backends are held to one rule: what one
+     * cannot do fails loudly. A batch per view is the way to draw one effect twice.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const scene = stubScene();
+    const batch = renderer.createParticles(4, { material: 'mote', blend: 'alpha' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      renderer.beginFrame([0, 0, 0]);
+      stub.pass.draw.mockClear();
+      stub.pass.drawIndexed.mockClear();
+      renderer.drawParticles(batch, oneParticle(), scene.camera, scene.env, 0);
+      renderer.drawParticles(batch, oneParticle(), scene.camera, scene.env, 0);
+      renderer.endFrame();
+      const said = warn.mock.calls.map((c) => String(c[0])).filter((m) => /drawn twice/.test(m));
+      expect(said).toHaveLength(1);
+      /*
+       * And the next frame is a new encoder, so the same batch draws again. Asked of the upload a
+       * drawn batch makes rather than of the warning, which is said once per renderer and so is
+       * silent whether or not the second frame was refused.
+       */
+      const uploads = () =>
+        stub.device.queue.writeBuffer.mock.calls.filter((call) => call[0] === batch.instances)
+          .length;
+      const before = uploads();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.drawParticles(batch, oneParticle(), scene.camera, scene.env, 0);
+      renderer.endFrame();
+      expect(uploads() - before, 'the next frame draws the batch').toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('writes each batch of the same material to its own fragment uniform buffer when both draw in one frame', () => {
@@ -5542,6 +5833,127 @@ describe('the probes a frame traces', () => {
     return stub;
   }
 
+  it('TRACES THE SAME DIRECTIONS AT EVERY REFRESH, so a still scene lights a still picture', () => {
+    /*
+     * The direction set used to turn every frame, so every refresh of a probe was a new estimate a
+     * few per cent from the last, and a courtyard held perfectly still flickered: 77% of its pixels
+     * moved by more than 3 levels over a dozen frames, against 2.5% with the rasterised grid.
+     * Blending in history only shrinks that; a set that does not turn removes it.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+    const source = field();
+    const turns = new Set<number>();
+    for (let frame = 0; frame < 12; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.addDistanceField(source, mat4.create());
+      renderer.endFrame();
+      const writes = stub.device.queue.writeBuffer.mock.calls.filter(
+        (call) => (call[0] as { label?: string }).label === 'probe bake bake',
+      );
+      const last = writes[writes.length - 1];
+      if (last !== undefined) turns.add(((last as unknown[])[2] as Float32Array)[BAKE_FRAME] ?? -1);
+    }
+    expect(Array.from(turns)).toEqual([0]);
+  });
+
+  it('BLENDS A REFRESH INTO THE PROBE ONLY ONCE THE WHOLE GRID HAS BEEN TRACED', () => {
+    /*
+     * Before every probe has one traced value there is nothing to blend with but whatever filled
+     * the layer first, so the first pass is taken as it comes and the grid lights at once; after
+     * it, each refresh keeps `PROBE_HISTORY` of what the layer held.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+    const source = field();
+    const blocks: number[] = [];
+    for (let frame = 0; frame < 40; frame += 1) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.addDistanceField(source, mat4.create());
+      renderer.endFrame();
+      const writes = stub.device.queue.writeBuffer.mock.calls.filter(
+        (call) => (call[0] as { label?: string }).label === 'probe bake bake',
+      );
+      const last = writes[writes.length - 1];
+      if (last !== undefined)
+        blocks.push(((last as unknown[])[2] as Float32Array)[BAKE_HISTORY] ?? -1);
+    }
+    expect(blocks[0], 'the first pass blended with nothing').toBe(0);
+    expect(blocks[blocks.length - 1]).toBeCloseTo(PROBE_HISTORY, 6);
+  });
+
+  it('HANDS THE BAKE THE SKY THE FRAME DREW, and the ambient only where it drew none', () => {
+    /*
+     * **A ray that leaves the world sees the sky, and the sky is the one the frame drew.** The bake
+     * read the environment's ambient for every escaping ray, a grade's fill a palette sets apart
+     * from the sky: at ten degrees of sun a courtyard's ambient was five times dimmer than its
+     * horizon and blue where the horizon was amber, so traced shade at dusk came out cool. So the
+     * block carries the drawn sky, and says so with a flag; a frame that drew none still gets one
+     * colour for outside, and the flag says that too.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, indirectLight: true }),
+    );
+    const { camera, env } = stubScene();
+    const source = field();
+    const sky = {
+      top: new Float32Array([0.3, 0.45, 0.8]),
+      horizon: new Float32Array([1.5, 1.08, 0.66]),
+      deep: new Float32Array([0.05, 0.05, 0.06]),
+      sunDir: new Float32Array([0.6, 0.13, 0.79]),
+      sunColor: new Float32Array([1, 1, 1]),
+      sunAngularRadius: 0.01,
+      moonDir: new Float32Array([0, -1, 0]),
+      moonColor: new Float32Array([0, 0, 0]),
+      moonAngularRadius: 0.01,
+      moonPhase: 0.5,
+      nightFactor: 0,
+      cloudOffsetX: 0,
+      cloudOffsetZ: 0,
+    } as never as SkyColors;
+    const draw = (withSky: boolean): Float32Array => {
+      for (let frame = 0; frame < 2; frame += 1) {
+        renderer.beginFrame([0, 0, 0]);
+        if (withSky) renderer.drawSky(camera, sky, env);
+        renderer.bindMeshPass(camera, env);
+        renderer.addDistanceField(source, mat4.create());
+        renderer.endFrame();
+      }
+      const writes = stub.device.queue.writeBuffer.mock.calls.filter(
+        (call) => (call[0] as { label?: string }).label === 'probe bake bake',
+      );
+      const last = writes[writes.length - 1];
+      expect(last, 'the bake wrote no block').toBeDefined();
+      return Float32Array.from((last as unknown[])[2] as Float32Array);
+    };
+    const three = (block: Float32Array, at: number): number[] =>
+      Array.from(block.subarray(at, at + 3));
+
+    const drawn = draw(true);
+    expect(drawn[BAKE_SKY_DRAWN]).toBe(1);
+    expect(three(drawn, BAKE_SKY_COLOUR)).toEqual(Array.from(sky.horizon));
+    expect(three(drawn, BAKE_SKY_TOP)).toEqual(Array.from(sky.top));
+    expect(three(drawn, BAKE_SKY_DEEP)).toEqual(Array.from(sky.deep));
+    expect(three(drawn, BAKE_SKY_SUN)).toEqual(Array.from(sky.sunDir));
+
+    const none = draw(false);
+    expect(none[BAKE_SKY_DRAWN]).toBe(0);
+    /* `stubScene`'s ambient, 0.1 a channel, as the device holds it. */
+    expect(three(none, BAKE_SKY_COLOUR)).toEqual(Array.from(Float32Array.from([0.1, 0.1, 0.1])));
+  });
+
   /** Every compute pass this frame opened, by the label its descriptor carries. */
   function computeLabels(stub: ReturnType<typeof stubSurface>): string[] {
     return stub.encoder.beginComputePass.mock.calls.map((call) => String(call[0]?.label ?? ''));
@@ -5619,6 +6031,352 @@ describe('the probes a frame traces', () => {
       expect(attachment?.loadOp).toBe('clear');
       expect(attachment?.clearValue).toEqual({ r: 0, g: 0, b: 0, a: 1 });
     }
+  });
+
+  it('A PROBE GRID BAKED IN ONE CALL GETS EVERY DRAW, however many the grid adds up to', () => {
+    /*
+     * **Each probe submits its own encoder, and its ring slots were never given back.** So a grid
+     * baked in one call spent the *frame's* rings: 64 probes of six faces over a real scene is
+     * thousands of draws, the per-draw ring holds 4,096 and the material ring 1,024, and every
+     * probe past the ceiling was baked with its draws skipped. Found by a bought courtyard whose
+     * grid came back with the warning and a floor lit by half its walls.
+     *
+     * 64 probes × 6 faces × 20 draws, each a material change: 7,680 of each. Any one probe needs
+     * 120, which fits; the grid does not unless the slots come back after each submit.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    const { env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const model = mat4.create();
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [8, 2, 4] }),
+    ).toBe(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stub.pass.drawIndexed.mockClear();
+    try {
+      renderer.bakeProbeGrid([0, 0, 0], (camera) => {
+        renderer.bindMeshPass(camera, env);
+        for (let i = 0; i < 20; i++) {
+          renderer.setSurfaceReflectivity(i % 2 === 0 ? 0.1 : 0.2);
+          renderer.drawMesh(mesh, model);
+        }
+      });
+      const ceilings = warn.mock.calls.map((c) => String(c[0])).filter((m) => /in a frame/.test(m));
+      expect(ceilings).toEqual([]);
+      expect(stub.pass.drawIndexed.mock.calls.length).toBe(64 * 6 * 20);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('CONVOLVES A PROBE BAKED A FEW FACES AT A TIME ONCE, when its last face lands', () => {
+    /* Each face is a pass named for it, and the convolution's passes name their level. */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+    ).toBe(true);
+    const bake = (faces: readonly [number, number]): { faces: string[]; convolved: boolean } => {
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.bakeProbe(1, [0, 0, 0], () => {}, { faces });
+      const labels = stub.encoder.beginRenderPass.mock.calls.map((call) =>
+        String(call[0]?.label ?? ''),
+      );
+      return {
+        faces: labels.filter((label) => label.startsWith('probe.face')),
+        convolved: labels.some((label) => label.startsWith('probe.prefilter')),
+      };
+    };
+    expect(bake([0, 2]), 'the first two faces, and nothing to convolve yet').toEqual({
+      faces: ['probe.face0', 'probe.face1'],
+      convolved: false,
+    });
+    expect(bake([2, 2])).toEqual({ faces: ['probe.face2', 'probe.face3'], convolved: false });
+    expect(bake([4, 2]), 'the last two, and the layer is written').toEqual({
+      faces: ['probe.face4', 'probe.face5'],
+      convolved: true,
+    });
+  });
+
+  it('WRITES EACH SWEEP OF A CROSSFADING GRID INTO A SET THE SHADING IS NOT READING', () => {
+    /* Three sets of two layers; each bake's convolution names its layer in its label. */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    expect(
+      renderer.setProbeGrid({
+        origin: [0, 0, 0],
+        spacing: [1, 1, 1],
+        counts: [2, 1, 1],
+        crossfade: true,
+      }),
+    ).toBe(true);
+    const array = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .filter((descriptor) => descriptor.label === 'probe.array')
+      .at(-1);
+    expect((array?.size as number[] | undefined)?.[2], 'three sets of two').toBe(6);
+    const layerOf = (probe: number): string | undefined => {
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.bakeProbe(probe, [0, 0, 0], () => {});
+      const label = stub.encoder.beginRenderPass.mock.calls
+        .map((call) => String(call[0]?.label ?? ''))
+        .find((name) => name.startsWith('probe.prefilter0.'));
+      return label?.replace('probe.prefilter0.', '');
+    };
+    expect([layerOf(0), layerOf(1)], 'the first sweep, the first set').toEqual([
+      'layer0',
+      'layer1',
+    ]);
+    expect([layerOf(1), layerOf(0)], 'the second, the second').toEqual(['layer3', 'layer2']);
+    expect([layerOf(0), layerOf(1)], 'the third, the third').toEqual(['layer4', 'layer5']);
+    expect(layerOf(0), 'and round again').toBe('layer0');
+  });
+
+  it('EVERY SKY DRAW IN ONE ENCODER READS ITS OWN CAMERA, not the last one written', () => {
+    /*
+     * **The sky's uniforms were one buffer, written with `queue.writeBuffer` at each draw.** Queue
+     * writes land before the encoder that records the draws is submitted, so every sky in one
+     * encoder drew with the last one's matrix. A probe bake records six faces in one encoder, so a
+     * probe drawing the sky saw one direction's sky on all six faces. The 2026-08-27 rule again: a
+     * per-draw resource is a ring, a slot a draw.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    const { env } = stubScene();
+    const sky = {
+      top: [0, 0, 1],
+      horizon: [0, 1, 0],
+      deep: [1, 0, 0],
+      sunDir: [0, 1, 0],
+      sunColor: [1, 1, 1],
+      sunAngularRadius: 0.01,
+      moonDir: [0, -1, 0],
+      moonColor: [1, 1, 1],
+      moonAngularRadius: 0.01,
+      moonPhase: 0,
+      nightFactor: 0,
+      cloudOffsetX: 0,
+      cloudOffsetZ: 0,
+    } as never;
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [1, 1, 1] }),
+    ).toBe(true);
+    stub.pass.setBindGroup.mockClear();
+    renderer.bakeProbe(0, [0, 0, 0], (camera) => {
+      renderer.bindMeshPass(camera, env);
+      renderer.drawSky(camera, sky, env);
+    });
+    const offsets = stub.pass.setBindGroup.mock.calls
+      .filter((call) => (call[1] as { label?: string } | undefined)?.label === 'sky.bindGroup')
+      .map((call) => (call[2] as number[] | undefined)?.[0]);
+    expect(offsets).toHaveLength(6);
+    expect(new Set(offsets).size, 'six faces, six slots').toBe(6);
+  });
+
+  it("SCATTER DRAWN IN SEVERAL PASSES OF ONE ENCODER READS EACH PASS'S OWN CAMERA", () => {
+    /*
+     * **The scatter's fragment block was one buffer, on the argument that it is settled per pass.**
+     * It holds the camera, the sun, the lights and the medium, and a pass is not an encoder: a probe
+     * records six passes in one, and a mirror and the view share the frame's. Queue writes land
+     * before the encoder runs, so every pass drew its grass lit and fogged from the last camera.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    const { env } = stubScene();
+    const scatter = renderer.createScatter(
+      {
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+        colors: new Float32Array(9).fill(1),
+        emissive: new Float32Array(3),
+        indices: new Uint32Array([0, 1, 2]),
+      } as never,
+      createInstanceData(4),
+    );
+    const blades = createInstanceData(4);
+    blades.count = 2;
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [1, 1, 1] }),
+    ).toBe(true);
+    stub.pass.setBindGroup.mockClear();
+    renderer.bakeProbe(0, [0, 0, 0], (camera) => {
+      renderer.bindMeshPass(camera, env);
+      renderer.drawScatter(scatter, blades, camera, env, 0, 0, 0, 0);
+    });
+    const fragmentOffsets = stub.pass.setBindGroup.mock.calls
+      .filter((call) => (call[1] as { label?: string } | undefined)?.label === 'scatter.bindGroup')
+      .map((call) => (call[2] as number[] | undefined)?.[1]);
+    expect(fragmentOffsets).toHaveLength(6);
+    expect(new Set(fragmentOffsets).size, 'six faces, six fragment slots').toBe(6);
+  });
+
+  it('A CUTOUT CASTER CASTS THROUGH THE CUTOUT PIPELINE WITH ITS CUTOFF IN ITS OWN SLOT', () => {
+    /*
+     * A leaf card cast its whole quad on this backend as on the other: the depth pass had no alpha
+     * test. The cutout variant reads the map and discards by the material's cutoff, which is
+     * written into the draw's own ring slot, never into a shared buffer (the 2026-08-27 rule).
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const leaf = renderer.createSurfaceTexture(
+      { width: 4, height: 4 } as unknown as TexImageSource,
+      {},
+    );
+    const light = mat4.create();
+    const model = mat4.create();
+    const pipelineLabels = () =>
+      stub.pass.setPipeline.mock.calls.map((call) => String((call[0] as { label?: string }).label));
+    const groupLabels = () =>
+      stub.pass.setBindGroup.mock.calls.map((call) =>
+        String((call[1] as { label?: string }).label),
+      );
+
+    stub.pass.setPipeline.mockClear();
+    stub.pass.setBindGroup.mockClear();
+    stub.device.queue.writeBuffer.mockClear();
+    renderer.beginShadowPass(light, 'static');
+    renderer.drawShadowCasters((sink) => sink.mesh(mesh, model, { albedo: leaf, cutout: 0.5 }));
+    renderer.endShadowPass();
+    expect(pipelineLabels().filter((l) => l.startsWith('depth'))).toEqual([
+      expect.stringMatching(/^depth-cutout\|/),
+    ]);
+    expect(groupLabels()).toContain('depth.bindGroup.cutout');
+    /* The cutoff, read out of the ring's upload at the cutout variant's own offset. */
+    const upload = stub.device.queue.writeBuffer.mock.calls.find(
+      (call) => (call[0] as { label?: string }).label === 'shadow.drawRing',
+    );
+    const floats = new Float32Array(upload?.[2] as ArrayBuffer);
+    expect(floats[DEPTH_CUTOUT_VERT_FIELDS.uAlphaCutout.offset / 4]).toBe(0.5);
+
+    stub.pass.setPipeline.mockClear();
+    renderer.beginShadowPass(light, 'static');
+    renderer.drawShadowCasters((sink) => sink.mesh(mesh, model, { albedo: leaf, cutout: 0 }));
+    renderer.endShadowPass();
+    expect(pipelineLabels().filter((l) => l.startsWith('depth'))).toEqual([
+      expect.stringMatching(/^depth\|/),
+    ]);
+  });
+
+  it('A TWO-SIDED SURFACE IS DRAWN AND CAST WITH NOTHING CULLED, and a one-sided one keeps its culling', () => {
+    /*
+     * glTF's \`doubleSided\` is what a curtain and a leaf card are, and every pipeline here culled
+     * back faces: a curtain seen from behind its arch was a hole, and one whose front faced away
+     * from the sun cast nothing. Culling is pipeline state on this backend, so a two-sided draw
+     * needs a pipeline of its own, in the colour pass and in the depth pass alike.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const { camera, env } = stubScene();
+    const model = mat4.create();
+    const culls = () =>
+      stub.device.createRenderPipeline.mock.calls.map((call) => ({
+        label: String(call[0]?.label ?? ''),
+        cull: call[0]?.primitive?.cullMode,
+      }));
+
+    stub.device.createRenderPipeline.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ doubleSided: true });
+    renderer.drawMesh(mesh, model);
+    renderer.setMaterial({});
+    renderer.drawMesh(mesh, model);
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(mesh, model, { doubleSided: true });
+      sink.mesh(mesh, model, {});
+    });
+    renderer.endShadowPass();
+    renderer.endFrame();
+
+    /* Labels lead with the shader variant, so the pass is told apart by its name inside them. */
+    const flat = culls().filter((c) => c.label.includes('|flat') && !c.label.startsWith('depth'));
+    const depth = culls().filter((c) => c.label.startsWith('depth'));
+    expect(flat.find((c) => c.label.includes('|2s'))?.cull).toBe('none');
+    expect(flat.filter((c) => !c.label.includes('|2s')).map((c) => c.cull)).not.toContain('none');
+    expect(depth.map((c) => c.cull)).toContain('none');
+    expect(depth.map((c) => c.cull).filter((c) => c !== 'none').length).toBeGreaterThan(0);
+  });
+
+  it('A BOUNCE BAKE READS THE GRID IT IS REFILLING, ONCE THE GRID IS WHOLE, AND A PLAIN BAKE NEVER DOES', () => {
+    /*
+     * One sweep of the grid holds one bounce, which left a courtyard's arcades two stops under a
+     * reference render. `bounce` keeps the array bound while the faces are drawn: they go into the
+     * probe's own cube and only the resolve writes the array, so no pass both reads and writes it.
+     * Never before every probe is filled, when the array has undefined contents.
+     */
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const quality = resolveRenderQuality({ reflectionProbeSize: 64 });
+    const renderer = freshRenderer(stub, quality);
+    const { env } = stubScene();
+    const mesh = stubMesh(renderer);
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+    ).toBe(true);
+    const at = flatFragmentBindings(
+      flatVariant({
+        directionalShadows: quality.directionalShadows,
+        environmentProbe: true,
+        nightEmissive: quality.nightEmissive,
+        pointShadows: quality.pointShadows,
+      }),
+    ).fields['uEnvironmentEnabled']?.offset;
+    expect(at, 'the probe variant must compile the term in').toBeTypeOf('number');
+
+    /** Whether the faces of this bake were bound to the grid and told to read it. */
+    const readsGrid = (layer: number, options?: { bounce: boolean }) => {
+      stub.device.queue.writeBuffer.mockClear();
+      stub.pass.setBindGroup.mockClear();
+      const baked = renderer.bakeProbe(
+        layer,
+        [0, 0, 0],
+        (camera) => {
+          renderer.bindMeshPass(camera, env);
+          renderer.drawMesh(mesh, mat4.create());
+        },
+        options,
+      );
+      expect(baked, 'the bake must have run').toBe(true);
+      /*
+       * **What the faces were drawn with, not what was built during the bake.** A group is built
+       * once and kept, and a bounce bake binds exactly what the frame does, so it builds nothing:
+       * the question is which group each draw set, traced back to the descriptor it was built
+       * from, whenever that was. Only a flat group binds the grid's array.
+       */
+      const built = stub.device.createBindGroup.mock;
+      const bound = stub.pass.setBindGroup.mock.calls
+        .map((call) => built.calls[built.results.findIndex((r) => r.value === call[1])]?.[0])
+        .some(
+          (descriptor) =>
+            descriptor !== undefined &&
+            [...descriptor.entries].some(
+              (entry) =>
+                String((entry.resource as { label?: string }).label ?? '') === 'probe.array',
+            ),
+        );
+      const upload = stub.device.queue.writeBuffer.mock.calls.find(
+        (call) => (call[0] as { label?: string }).label === 'flat.fragRing',
+      );
+      const enabled = new Float32Array(upload?.[2] as ArrayBuffer)[(at ?? 0) / 4];
+      return { bound, enabled };
+    };
+
+    expect(readsGrid(0, { bounce: true }), 'a grid never baked has nothing to read').toEqual({
+      bound: false,
+      enabled: 0,
+    });
+    readsGrid(1);
+    expect(readsGrid(0), 'a plain bake lights its faces by the ambient').toEqual({
+      bound: false,
+      enabled: 0,
+    });
+    expect(readsGrid(0, { bounce: true }), 'a bounce bake of a whole grid reads it').toEqual({
+      bound: true,
+      enabled: 1,
+    });
   });
 
   it('BINDS THE PROBE ARRAY TO THE SHADING ONCE THE TRACE HAS FILLED IT', () => {
@@ -5747,6 +6505,52 @@ describe('the probes a frame traces', () => {
 
     expect(offered[0], 'nothing is offered before anything is baked').toBe(false);
     expect(offered.at(-1), 'and the grid is offered once every layer holds one').toBe(true);
+  });
+
+  it('A RASTERISED BAKE LEAVES THE IRRADIANCE OF A TRACED LAYER TO THE TRACE', () => {
+    /*
+     * **Two writers of one texel is a flicker, and a scene found it.** A courtyard re-rasterised a
+     * probe a frame for its reflections while the trace refreshed the same grid five probes a frame.
+     * Each raster bake overwrote a layer's irradiance with its own answer and the trace pulled it
+     * back over the next frames, so light swept down the courtyard a probe at a time, for ever,
+     * with the clock paused. Measured on the held frame: region-scale flicker of 1.11 levels (peaks
+     * of 6.3) against 0.17 with the trace alone and 0.13 with the raster grid alone.
+     *
+     * So once the trace has written a layer it owns that layer's diffuse level, and a rasterised
+     * bake refreshes only the roughness chain a reflection reads. The control is the same bake with
+     * no trace, which still writes every level: the raster grid is the whole grid there.
+     */
+    const prefilterLevels = (indirectLight: boolean): number[] => {
+      const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+      const renderer = freshRenderer(
+        stub,
+        resolveRenderQuality({ reflectionProbeSize: 64, indirectLight }),
+      );
+      const { camera, env } = stubScene();
+      expect(
+        renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+      ).toBe(true);
+      const source = field();
+      /* Two layers and five traced a frame: every layer is the trace's after the second frame. */
+      for (let frame = 0; frame < 3; frame += 1) {
+        renderer.beginFrame([0, 0, 0]);
+        renderer.bindMeshPass(camera, env);
+        renderer.addDistanceField(source, mat4.create());
+        renderer.endFrame();
+      }
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.bakeProbe(0, [0, 0, 0], (face) => renderer.bindMeshPass(face, env));
+      return stub.encoder.beginRenderPass.mock.calls
+        .map((call) => /^probe\.prefilter(\d+)\.layer0$/.exec(String(call[0]?.label ?? '')))
+        .filter((match) => match !== null)
+        .map((match) => Number(match[1]));
+    };
+    const untraced = prefilterLevels(false);
+    const traced = prefilterLevels(true);
+    const irradianceLevel = Math.max(...untraced);
+    expect(untraced.length, 'the control convolved a chain at all').toBeGreaterThan(1);
+    expect(traced, 'the roughness chain is still refreshed').toContain(0);
+    expect(traced).toEqual(untraced.filter((level) => level !== irradianceLevel));
   });
 
   it('writes the whole roughness chain of a layer once and its irradiance level after', () => {
@@ -6240,5 +7044,95 @@ describe('the replay fingerprint, with reconstruction and without', () => {
     /* 2 / 1280 of the clip square a pixel, and a hundredth of that. Without this, a run whose pick
        never landed would pass above whatever the renderer did to the camera. */
     expect(run(0, 0.02 / 1280)).not.toBe(run(0));
+  });
+});
+
+/**
+ * **A probe bake that binds what the frame binds rebuilds nothing.**
+ *
+ * `bakeProbe` rebuilt the flat bind group on entering and on leaving, to keep the cube it writes
+ * out of the group, and its comment called that two `createBindGroup` calls a bake and not a frame
+ * path. Neither held once bakes could be spread over frames: the rebuild empties the whole cache, so
+ * every material built its group again inside the bake and again after it, every frame a scene
+ * re-baked a face. A courtyard with the sun moving spent 28% of its CPU there on the native host.
+ * What a bake changes in the group is only whether the grid is bound, and a bounce bake of a whole
+ * grid binds it exactly as the frame does.
+ */
+describe('the flat bind groups across a probe bake', () => {
+  it('A BOUNCE BAKE OF A WHOLE GRID BUILDS NO GROUPS, inside it or after it', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ reflectionProbeSize: 64 }));
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+    ).toBe(true);
+    const make = () =>
+      renderer.createSurfaceTexture({ width: 4, height: 4 } as unknown as TexImageSource, {});
+    const materials = [make(), make(), make()].map((albedo) => ({ albedo }));
+    /* Groups built while the materials are drawn, and only then. */
+    let built = 0;
+    const draw = (): void => {
+      stub.device.createBindGroup.mockClear();
+      for (const material of materials) renderer.setMaterial(material);
+      built += stub.device.createBindGroup.mock.calls.length;
+    };
+
+    /* Whole, so the frame reads the grid, and warm, so every material has its group. */
+    renderer.bakeProbe(0, [0, 0, 0], draw);
+    renderer.bakeProbe(1, [0, 0, 0], draw);
+    draw();
+    draw();
+
+    built = 0;
+    renderer.bakeProbe(0, [0, 0, 0], draw, { bounce: true });
+    draw();
+    expect(built, 'a bounce bake and the frame after it').toBe(0);
+
+    /* A plain bake does unbind the grid, so it may build; it has to bind something else. */
+    built = 0;
+    renderer.bakeProbe(1, [0, 0, 0], draw);
+    expect(built, 'a plain bake rebuilds, because its group differs').toBeGreaterThan(0);
+  });
+});
+
+/**
+ * **A bake that runs every frame makes nothing every frame.**
+ *
+ * A probe bake allocated its targets as a one-off would: a depth and a multisampled colour texture
+ * created and destroyed per call, a view per face, and for each completed probe a view and a bind
+ * group per level and face of its blur and its convolution. That was a load-time cost until bakes
+ * could be spread a few faces a frame, and then it was a per-frame one, which the house rules
+ * forbid and which the native host, where each object costs most, measured.
+ */
+describe('the targets a probe bake draws into', () => {
+  it('A REPEATED BAKE CREATES NO TEXTURES, VIEWS OR BIND GROUPS FOR ITS TARGETS', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ reflectionProbeSize: 64, sceneSamples: 4 }),
+    );
+    expect(
+      renderer.setProbeGrid({ origin: [0, 0, 0], spacing: [1, 1, 1], counts: [2, 1, 1] }),
+    ).toBe(true);
+    const views = (): number =>
+      stub.device.createTexture.mock.results.reduce(
+        (sum, result) =>
+          sum +
+          (result.value as { createView: { mock: { calls: unknown[] } } }).createView.mock.calls
+            .length,
+        0,
+      );
+    /* Both probes once, so every target either bake needs has been made. */
+    renderer.bakeProbe(0, [0, 0, 0], () => {});
+    renderer.bakeProbe(1, [0, 0, 0], () => {});
+
+    const textures = stub.device.createTexture.mock.calls.length;
+    const viewed = views();
+    stub.device.createBindGroup.mockClear();
+    renderer.bakeProbe(0, [0, 0, 0], () => {}, { bounce: true, faces: [0, 2] });
+    renderer.bakeProbe(0, [0, 0, 0], () => {}, { bounce: true, faces: [2, 4] });
+    renderer.bakeProbe(0, [0, 0, 0], () => {}, { bounce: true, faces: [4, 2] });
+    expect(stub.device.createTexture.mock.calls.length - textures, 'textures').toBe(0);
+    expect(views() - viewed, 'views').toBe(0);
+    expect(stub.device.createBindGroup.mock.calls.length, 'bind groups').toBe(0);
   });
 });

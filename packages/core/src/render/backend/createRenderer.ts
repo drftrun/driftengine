@@ -49,6 +49,20 @@ export function pipelineRefusal(
 }
 
 /** Everything about selection a caller may want to decide instead of inherit. */
+/**
+ * The quality to build with, or a function of the backend `createRenderer` chose.
+ *
+ * **A function is how an option only one backend has is asked of that backend alone.** Traced
+ * indirect light and reconstruction are WebGPU's, and WebGL2 refuses either in words when handed
+ * one: right for a consumer who asked for it there, and noise for one who wanted it wherever it
+ * runs, since every device that fell back printed a refusal. Called once for the backend that
+ * draws, and once more for WebGPU's timing request where WebGPU is tried. What would make it wrong
+ * is a consumer needing to know *why* the backend fell back before choosing, which `reason` on the
+ * result says after the fact and nothing says before.
+ */
+export type QualityForBackend =
+  RenderQualityOptions | ((backend: RenderBackend) => RenderQualityOptions);
+
 export interface CreateRendererOptions {
   /**
    * Whether to try WebGPU at all. **Defaults to true**: WebGPU is the backend this engine is
@@ -234,9 +248,11 @@ function presentOnFirstFrame(renderer: RendererApi, splash: MountedSplash): void
  */
 export async function createRenderer(
   canvas: HTMLCanvasElement,
-  quality: RenderQualityOptions = {},
+  quality: QualityForBackend = {},
   options: CreateRendererOptions = {},
 ): Promise<CreatedRenderer> {
+  const qualityFor = (backend: RenderBackend): RenderQualityOptions =>
+    typeof quality === 'function' ? quality(backend) : quality;
   const search = options.search ?? globalThis.location?.search ?? '';
 
   /*
@@ -317,7 +333,7 @@ export async function createRenderer(
   const choice = await selectBackend(
     search,
     options.preferWebGpu ?? true,
-    quality.gpuTiming ?? false,
+    (options.preferWebGpu ?? true) ? (qualityFor('webgpu').gpuTiming ?? false) : false,
     options.probeShaders ?? [],
     budgetMs,
   );
@@ -364,7 +380,7 @@ export async function createRenderer(
       if (settled === TIMED_OUT) {
         device.destroy();
         return built({
-          renderer: new Renderer(canvas, quality),
+          renderer: new Renderer(canvas, qualityFor('webgl2')),
           backend: 'webgl2',
           reason: `WebGPU stalled while ${stage}, fell back after ${budgetMs} ms`,
         });
@@ -385,7 +401,7 @@ export async function createRenderer(
          */
         renderer: new WebGPURenderer(
           surface,
-          resolveRenderQuality(quality),
+          resolveRenderQuality(qualityFor('webgpu')),
           /* The adapter's own words, so the capability clamp has a part number to
              recognise rather than the literal string `WebGPU`. */
           choice.rendererName ?? undefined,
@@ -397,7 +413,7 @@ export async function createRenderer(
       choice.device.destroy();
       const detail = error instanceof Error ? error.message : String(error);
       return built({
-        renderer: new Renderer(canvas, quality),
+        renderer: new Renderer(canvas, qualityFor('webgl2')),
         backend: 'webgl2',
         reason: `WebGPU surface failed, fell back: ${detail}`,
       });
@@ -425,7 +441,7 @@ export async function createRenderer(
     console.warn(`[driftengine] WebGPU was asked for and is not being used: ${choice.reason}`);
   }
   return built({
-    renderer: new Renderer(canvas, quality),
+    renderer: new Renderer(canvas, qualityFor('webgl2')),
     backend: 'webgl2',
     reason: choice.reason,
   });

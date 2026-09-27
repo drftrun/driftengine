@@ -18,6 +18,13 @@ import type { DrftMaterial } from '@driftengine/drft';
 export interface DrawSurfaceOverride {
   readonly opacity?: number;
   readonly reflectivity?: number;
+  /**
+   * The scale over the ORM map's metallic channel, in place of the material's. For a map whose
+   * channel says metal where the surface is not: a bought courtyard's stone carried up to 0.37 on
+   * its clean stone, and each patch in shade swapped its diffuse light for a reflection of a dark
+   * gallery and read as a black blotch. 0 says dielectric.
+   */
+  readonly metallicScale?: number;
 }
 
 /**
@@ -38,6 +45,11 @@ export interface DrawGrouping {
   readonly metallicScale: number;
   readonly occlusionStrength: number;
   readonly cutout: number;
+  /** Whether the texture's alpha is coverage, so the part is drawn blended whatever its opacity. */
+  readonly blend: boolean;
+  /** Whether both faces are drawn and lit. A merge of a two-sided part and a one-sided one would cull
+   *  one of them or unhide the back of the other, so it is part of the key. */
+  readonly doubleSided: boolean;
 }
 
 /**
@@ -48,7 +60,7 @@ export interface DrawGrouping {
  * 0, which is the identity that lets a file saying nothing about a property draw the same as one
  * that did not have the property to say.
  *
- * The override wins over the material for the two fields it may carry, because a consumer dressing
+ * The override wins over the material for the three fields it may carry, because a consumer dressing
  * a surface by name knows more than a default an exporter wrote. A cutout is not among them: it is
  * a fact about the *image* a material wears, so nothing outside the file has anything to say
  * about it.
@@ -65,9 +77,11 @@ export function resolveDrawGrouping(
     opacity: override?.opacity ?? material?.opacity ?? 1,
     reflectivity: override?.reflectivity ?? material?.reflectivity ?? 0,
     roughnessScale: material?.roughnessScale ?? 1,
-    metallicScale: material?.metallicScale ?? 1,
+    metallicScale: override?.metallicScale ?? material?.metallicScale ?? 1,
     occlusionStrength: material?.occlusionStrength ?? 0,
     cutout: material?.cutout ?? 0,
+    blend: material?.blend === true,
+    doubleSided: material?.doubleSided === true,
   };
 }
 
@@ -87,5 +101,5 @@ export function drawKeyOf(
   override?: DrawSurfaceOverride,
 ): string {
   const g = resolveDrawGrouping(material, override);
-  return `${g.albedo}:${g.orm}:${g.normal}:${g.emissive}:${g.opacity}:${g.reflectivity}:${g.roughnessScale}:${g.metallicScale}:${g.occlusionStrength}:${g.cutout}`;
+  return `${g.albedo}:${g.orm}:${g.normal}:${g.emissive}:${g.opacity}:${g.reflectivity}:${g.roughnessScale}:${g.metallicScale}:${g.occlusionStrength}:${g.cutout}:${g.blend ? 1 : 0}:${g.doubleSided ? 1 : 0}`;
 }

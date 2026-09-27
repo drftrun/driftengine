@@ -47,7 +47,21 @@ export interface HostWindowOptions {
   /** As a packaged game's manifest says; windowed and resizable when it says nothing. */
   readonly mode?: WindowMode;
   readonly resizable?: boolean;
+  /**
+   * How a frame reaches the screen: `fifo`, the default, waits for the display's next refresh.
+   *
+   * **Named because the pacing is the compositor's, not the engine's.** The binding renders into
+   * X11 windows only, so a Wayland session runs this through XWayland, and what `fifo` waits for
+   * there differs by window: measured on one session, a hidden window held 58 fps where a visible
+   * one drew a light scene at 250. A caller measuring the engine wants the wait out of the way.
+   * `mailbox` never waits and the display takes the newest frame at its own rate, at the cost of
+   * drawing frames nobody sees; `immediate` also tears.
+   */
+  readonly presentMode?: PresentMode;
 }
+
+/** The binding's swap-chain modes, as `renderGPUDeviceToWindow` takes them. */
+export type PresentMode = 'fifo' | 'fifoRelaxed' | 'immediate' | 'mailbox';
 
 export class HostWindow {
   readonly canvas: NativeCanvas;
@@ -57,6 +71,7 @@ export class HostWindow {
   private device: GPUDevice | null = null;
   private renderer: WindowRenderer | null = null;
   private presenter: Presenter | null = null;
+  private readonly presentMode: PresentMode;
   private closed = false;
 
   constructor(options: HostWindowOptions) {
@@ -68,6 +83,7 @@ export class HostWindow {
       visible: options.hidden !== true,
       webgpu: true,
     });
+    this.presentMode = options.presentMode ?? 'fifo';
     this.canvas = new NativeCanvas(this.window.pixelWidth, this.window.pixelHeight);
     this.instance = gpuModule.create([]);
     this.gpu = nativeGpu(this.instance as unknown as Parameters<typeof nativeGpu>[0]);
@@ -186,6 +202,7 @@ export class HostWindow {
     this.renderer = gpuModule.renderGPUDeviceToWindow({
       device: device as unknown as DawnDevice,
       window: this.window,
+      presentMode: this.presentMode,
     });
     this.presenter = new Presenter(device, this.renderer.getCurrentTexture().format);
   }

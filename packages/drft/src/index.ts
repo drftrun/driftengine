@@ -17,7 +17,13 @@ export type { DrftMorph, DrftNode } from './drftSkin.ts';
 export type { DrftSubs, DrftSubstanceEntry } from './drftSubs.ts';
 export { buildSubs, readSubs } from './drftSubs.ts';
 export type { DrftSdfv, DrftSdfvEntry } from './sdfv.ts';
-export { buildSdfv, readSdfv, SDFV_ENTRY_BYTES, SDFV_MAX_SAMPLES } from './sdfv.ts';
+export {
+  buildSdfv,
+  readSdfv,
+  SDFV_ENTRY_BYTES,
+  SDFV_MAX_SAMPLES,
+  SDFV_WHOLE_FILE,
+} from './sdfv.ts';
 export {
   NNET_ENTRY_BYTES,
   NNET_MAX_HIDDEN,
@@ -59,6 +65,11 @@ export {
   buildColliders,
   readColliders,
 } from './drftColliders.ts';
+/* Meshes drawn many times, one matrix a copy, as the baker finds merged copies again. */
+export { buildInstances, readInstances } from './drftInstances.ts';
+export { buildLights, readLights } from './drftLights.ts';
+export type { DrftLight, DrftLightKind } from './drftLights.ts';
+export type { DrftInstanceGroup } from './drftInstances.ts';
 /*
  * **`DTEX`: a material as a decode program over a latent, rather than as pictures.** The chunk
  * carries no semantics — this package is the container and does not know what a channel means —
@@ -83,8 +94,8 @@ export type { EntsScene } from './ents.ts';
 export { readDrft } from './drftRead.ts';
 export type { DrftAsset, DrftTexture } from './drftRead.ts';
 /* Reading one while it is still arriving, for a scene that would rather show a model build. */
-export { DrftStream, streamDrft } from './drftStream.ts';
-export type { DrftManifest, DrftStreamHandlers } from './drftStream.ts';
+export { DEFAULT_STREAM_SLICE_MS, DrftStream, streamDrft } from './drftStream.ts';
+export type { DrftManifest, DrftStreamHandlers, DrftStreamPacing } from './drftStream.ts';
 export { writeDrft } from './drftWrite.ts';
 export type { DrftSource, DrftTextureSource } from './drftWrite.ts';
 export { DrftError, DRFT_VERSION_MAJOR, DRFT_VERSION_MINOR } from './drftFormat.ts';

@@ -383,6 +383,32 @@ test('the default buffer is still the fixed budget, so nothing that does not ask
   expect(buffer.count).toBe(MAX_POINT_LIGHTS);
 });
 
+test('THE NEAREST 320 OF 10,000 LIGHTS OFFERED IN NO ORDER ARE CHOSEN, NEAREST FIRST', () => {
+  /*
+   * Lamps 1 to 10,000 m along x, offered in a scrambled order: 7919 is prime and does not divide
+   * 10,000, so n → 7919·n mod 10,000 visits every distance once. So the answer is hand-derived:
+   * slot k holds the lamp k + 1 metres away, and the nearest left out is 321 m away. Radius and
+   * view range are wide enough that none is culled.
+   */
+  const sources: PointLightSource[] = [];
+  for (let n = 0; n < 10_000; n++) {
+    sources.push({ ...light(((7919 * n) % 10_000) + 1, 0, 0), radius: 20_000 });
+  }
+  const buffer = createPointLightBuffer(320);
+  selectPointLights(sources, 0, 0, 0, buffer, 0, 20_000);
+  expect(buffer.count).toBe(320);
+  for (const k of [0, 1, 159, 318, 319]) expect(buffer.positions[k * 3]).toBe(k + 1);
+  /* Each slot names the source it came from. */
+  const slot = 57;
+  expect(sources[buffer.sourceIndex[slot] ?? -1]?.x).toBe(slot + 1);
+  /*
+   * The contested fade is measured against the nearest lamp left out, 321 m. The 320th, 1 m
+   * nearer, sits a third of the way into the three-metre band, so it is dimmed to a third.
+   */
+  expect(buffer.weights[319]).toBeCloseTo(1 / 3, 5);
+  expect(buffer.weights[315]).toBe(1);
+});
+
 describe('a spot light', () => {
   const LAMP = {
     x: 0,
@@ -477,5 +503,53 @@ describe('a spot light', () => {
     selectPointLights([{ ...LAMP, dirX: 0, dirY: -1, dirZ: 0 }], 0, 0, 0, buffer, 0);
     expect(buffer.coneCos[0]).toBe(-1);
     expect(buffer.coneCos[1]).toBe(-2);
+  });
+});
+
+/**
+ * **How far from the centre the choice is complete**, for the lights a DriftLight field also sums.
+ *
+ * A pixel nearer than that is reached only by lights that were chosen at full strength, so it can
+ * be shaded exactly; past it some light that reaches it was left out, and the field's summed light
+ * stands in. A light left out at distance d with reach r reaches nothing nearer than d - r, and a
+ * chosen light dimmed at the cut counts as partly left out.
+ */
+describe('the completeness radius', () => {
+  const inField = (x: number, radius: number): PointLightSource => ({
+    ...light(x, 0, 0),
+    radius,
+    inLightField: true,
+  });
+
+  it('IS WHERE THE NEAREST LEFT-OUT FIELD LIGHT FIRST REACHES', () => {
+    /*
+     * Two slots and field lights at 1, 2 and 5 metres, each reaching a metre. The one at 5 is left
+     * out and reaches down to 4. The cut is 5, so the chosen two are 3 and 4 metres inside the three
+     * metre contention band and keep full strength.
+     */
+    const out = createPointLightBuffer(2);
+    selectPointLights([inField(1, 1), inField(2, 1), inField(5, 1)], 0, 0, 0, out);
+    expect(out.complete).toBe(4);
+    expect(Array.from(out.weights.subarray(0, 2)), 'marked as the field’s own').toEqual([-1, -1]);
+  });
+
+  it('shrinks to a chosen light the cut dims', () => {
+    /* At 3.5 m the light is 1.5 m inside the band, so it is at half strength and reaches down to 2.5. */
+    const out = createPointLightBuffer(2);
+    selectPointLights([inField(1, 1), inField(3.5, 1), inField(5, 1)], 0, 0, 0, out);
+    expect(out.weights[1]).toBeCloseTo(-0.5, 6);
+    expect(out.complete).toBeCloseTo(2.5, 6);
+  });
+
+  it('IGNORES LIGHTS NO FIELD SUMS, which nothing stands in for, and stops at the view range', () => {
+    /* The same three, the left-out one not a field light: nothing is incomplete within 40 m. */
+    const out = createPointLightBuffer(2);
+    const outside = { ...light(5, 0, 0), radius: 1 };
+    selectPointLights([inField(1, 1), inField(2, 1), outside], 0, 0, 0, out, 0, 40);
+    expect(out.complete).toBe(40);
+    /* And a chosen light outside any field keeps a positive weight beside a field light's. */
+    const mixed = createPointLightBuffer(2);
+    selectPointLights([inField(1, 1), { ...light(2, 0, 0), radius: 1 }], 0, 0, 0, mixed);
+    expect(Array.from(mixed.weights.subarray(0, 2))).toEqual([-1, 1]);
   });
 });

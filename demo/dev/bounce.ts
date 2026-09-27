@@ -18,9 +18,12 @@
  * already lit — because the rasterised probe bake captures the whole room from each probe and its
  * irradiance level carries the red wall's light across. The engine has bounced light for as long as
  * it has had a probe grid. What Wave 4A set out to do is bounce it *without* rasterising six faces
- * a probe, and the traced grid measures **66.0/11.7/11.5 at a red-over-blue ratio of 5.7** against
- * the rasterised **99.1/67.3/65.4 at 1.5** — two thirds of the light and nearly four times the
- * saturation, because a rasterised bake's irradiance carries the whole room's white with it.
+ * a probe, and the traced grid measures **187.7/36.0/34.6** against the rasterised
+ * **99.1/67.3/65.4**, where a path tracer of this room (`scripts/bounce-reference.mjs`) says 195 to
+ * 218 of red and 25 to 31 of green. The rasterised grid is short because this page keeps no range,
+ * so its capture is eight bits and clips a sunlit wall at one; the traced one read **66.0/11.7/11.5**
+ * until 2026-09-27, a third of the truth, because its bake divided the sun by pi where the frame
+ * does not.
  *
  * **It measured a thirty-fifth of that until 2026-09-18**, and the cause was here rather than in
  * the engine: `boxField` sampled each slab `n` cubed over a box that is not a cube, which gives
@@ -55,6 +58,7 @@ import {
   createRenderer,
 } from '../../packages/core/src/index';
 import type { FieldSource, MeshHandle, RendererApi, Vec3 } from '../../packages/core/src/index';
+import { boxField } from './boxField';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 /** Black, so anything on the far wall came from the room rather than from the clear colour. */
@@ -69,10 +73,14 @@ const WALL = 0.2;
 /**
  * Frames drawn before the reading is taken.
  *
- * Enough for a 64-probe grid to come round at five a frame, several times over: the first pass
- * fills every probe, and the passes after it are what the turning direction set converges with.
+ * Enough for the grid to come round at five probes a frame many times over: the first pass fills
+ * every probe, and the passes after it are what the turning direction set converges with. Doubled
+ * from 240 when each refresh began keeping four fifths of what a probe held (`PROBE_HISTORY`): a
+ * grid starting at black then closes on one starting from a rasterised capture by about 0.91 a
+ * refresh, the bounce feeding part of each probe's error back, and at 120 frames the two were
+ * still 4 levels apart where the check allows 1. At 240, some 66 refreshes, it is a fifth of one.
  */
-const FRAMES = 240;
+const FRAMES = 480;
 
 /** How much a channel may move between frames and still count as settled, out of 255. */
 const SETTLE_LEVEL = 1;
@@ -86,7 +94,7 @@ const SETTLE_RUN = 8;
  * Halfway, so each half has as long to settle as the other and the two readings are comparable.
  * Nothing else about the scene changes: same geometry, same sun, same probes.
  */
-const REPAINT_AT = 120;
+const REPAINT_AT = 240;
 
 interface Reading {
   r: number;
@@ -141,56 +149,6 @@ interface Result {
   bakeMs: number;
   frames: number;
   error: string | null;
-}
-
-/**
- * A box's exact field on a grid, which is what the room's walls are traced against.
- *
- * **Sampled at one step with a count an axis, and the first version was not.** It took `n` cubed
- * over a box that is not a cube, which gives oblong voxels — and `sourceAt` derives one step from
- * the x axis and uses it on all three, because that is what `bakeObjectSdf` produces. So every one
- * of these slabs was read at its own corner and the composed field held almost no room at all: a
- * census of the bake counted **98.9% of every probe's rays leaving a closed room**, which is where
- * the bounce's missing light went. `assertCubicVoxels` now refuses a source shaped that way, so
- * this is the shape that gets past it as well as the shape that is right.
- */
-function boxField(half: [number, number, number], pad: number, step: number): FieldSource {
-  const low: [number, number, number] = [-half[0] - pad, -half[1] - pad, -half[2] - pad];
-  const dims = [0, 1, 2].map((axis) => Math.round((2 * ((half[axis] as number) + pad)) / step) + 1);
-  const [nx, ny, nz] = dims as [number, number, number];
-  const field = new Float32Array(nx * ny * nz);
-  for (let iz = 0; iz < nz; iz += 1) {
-    for (let iy = 0; iy < ny; iy += 1) {
-      for (let ix = 0; ix < nx; ix += 1) {
-        const p = [ix, iy, iz].map((whole, axis) => (low[axis] as number) + whole * step);
-        const gap = [
-          Math.abs(p[0] as number) - half[0],
-          Math.abs(p[1] as number) - half[1],
-          Math.abs(p[2] as number) - half[2],
-        ];
-        const outside = Math.hypot(
-          Math.max(gap[0] as number, 0),
-          Math.max(gap[1] as number, 0),
-          Math.max(gap[2] as number, 0),
-        );
-        const inside = Math.min(Math.max(gap[0] as number, gap[1] as number, gap[2] as number), 0);
-        field[ix + nx * (iy + ny * iz)] = outside + inside;
-      }
-    }
-  }
-  return {
-    field,
-    dims: [nx, ny, nz],
-    /* The box the counts actually span, so the step `sourceAt` derives is the step used here. */
-    bounds: new Float32Array([
-      low[0],
-      low[1],
-      low[2],
-      low[0] + (nx - 1) * step,
-      low[1] + (ny - 1) * step,
-      low[2] + (nz - 1) * step,
-    ]),
-  };
 }
 
 /** A placement with no rotation, column-major, which is all a room of slabs needs. */
@@ -439,8 +397,8 @@ async function main(): Promise<void> {
    * **The grid is declared here, and rasterised once unless `?seed=0` says not to.**
    *
    * The capture used to be mandatory and is not: since the trace evaluates the sun at what it hits,
-   * a grid starting at black climbs away from black on its own, and `?seed=0` measures exactly the
-   * same room — 66.0/11.7/11.5, the same follow. It read 209 grey for as long as it did because a
+   * a grid starting at black climbs away from black on its own, and `?seed=0` measures the same
+   * room within a level once the history has let go of where it started — 187.1 against 187.7. It read 209 grey for as long as it did because a
    * flat bind group built before anything was baked holds the one-texel white `uEnvironment`
    * stand-in for ever, which was twice mistaken for a fixed point and for undefined memory.
    *

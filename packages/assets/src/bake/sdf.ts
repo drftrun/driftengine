@@ -1,5 +1,6 @@
 /** A signed distance field per object, baked offline, for tracing light through a world. */
 
+import { surfaceDepth } from './surfaceDepth.ts';
 import type { MeshData } from '@driftengine/drft';
 
 /**
@@ -57,11 +58,11 @@ const UNREACHED = 1e30;
  * has a gradient whose length varies with direction, which is the one property a sphere trace
  * depends on, and the failure is a march that overshoots along the coarse axis.
  *
- * **The sign comes from crossing parity, not from the winding.** A face normal, an
- * angle-weighted pseudonormal and a generalised winding number all flip when a mesh is exported
- * with its triangles the other way round, and importers disagree about that constantly — so a
- * model from the wrong tool would come back solid where it is empty. Counting how many times a
- * ray along `x` crosses the surface does not care which way a triangle faces.
+ * **The sign comes from how many surfaces separate a point from open air, not from the winding.**
+ * A face normal, an angle-weighted pseudonormal and a generalised winding number all flip when a
+ * mesh is exported with its triangles the other way round, and importers disagree about that
+ * constantly. A walk over the grid from its own faces does not care which way a triangle faces, and
+ * unlike crossing parity along one axis it does not need the mesh to be closed. See `surfaceDepth.ts`.
  *
  * **The magnitude comes from exact point-to-triangle distance, not from voxelisation.** Marking
  * the cells a triangle passes through and flooding outward loses any wall thinner than a cell,
@@ -130,8 +131,6 @@ export function bakeObjectSdf(mesh: MeshData, resolution: number): ObjectSdf {
   const field = new Float32Array(count).fill(UNREACHED);
   /** The triangle each grid point's distance was measured to, and -1 where none has reached. */
   const closest = new Int32Array(count).fill(-1);
-  /** How many times the surface is crossed between grid point `i - 1` and `i` along `x`. */
-  const crossings = new Int32Array(count);
 
   const ox = origin[0] as number;
   const oy = origin[1] as number;
@@ -173,34 +172,6 @@ export function bakeObjectSdf(mesh: MeshData, resolution: number): ObjectSdf {
         }
       }
     }
-
-    /*
-     * Where a ray along `x` through each grid column crosses this triangle. Recorded at the first
-     * grid point past the crossing, so a scan along `x` accumulating these counts knows, at every
-     * point, how many surfaces stand between it and the grid's `-x` face.
-     */
-    for (let k = clampIndex(Math.ceil((Math.min(az, bz, cz) - oz) / step), nz); k < nz; k++) {
-      const gz = oz + k * step;
-      if (gz > Math.max(az, bz, cz)) break;
-      for (let j = clampIndex(Math.ceil((Math.min(ay, by, cy) - oy) / step), ny); j < ny; j++) {
-        const gy = oy + j * step;
-        if (gy > Math.max(ay, by, cy)) break;
-        const bary = barycentric2d(gy, gz, ay, az, by, bz, cy, cz);
-        if (bary === null) continue;
-        const x = bary[0] * ax + bary[1] * bx + bary[2] * cx;
-        const i = Math.ceil((x - ox) / step);
-        /*
-         * **Unreachable while `PAD_VOXELS` is at least one, and kept because it is a constant.**
-         * The grid reaches two voxels past the mesh on every axis, so no crossing can land past
-         * the `+x` face; with no padding one could, and clamping it would mark the last grid point
-         * as having one more surface behind it than it does — flipping the parity of a point that
-         * is outside. A crossing before the `-x` face is clamped to zero, where it is true: the
-         * grid's first point really does have that surface behind it.
-         */
-        if (i >= nx) continue;
-        crossings[Math.max(0, i) + nx * (j + ny * k)]++;
-      }
-    }
   }
 
   /*
@@ -221,15 +192,14 @@ export function bakeObjectSdf(mesh: MeshData, resolution: number): ObjectSdf {
     if ((field[index] as number) >= UNREACHED) field[index] = reach;
   }
 
-  for (let k = 0; k < nz; k++) {
-    for (let j = 0; j < ny; j++) {
-      let total = 0;
-      const row = nx * (j + ny * k);
-      for (let i = 0; i < nx; i++) {
-        total += crossings[row + i] as number;
-        if (total % 2 === 1) field[row + i] = -(field[row + i] as number);
-      }
-    }
+  /*
+   * **The sign is how many surfaces stand between a point and the open air**: odd is inside. A walk
+   * over the grid answers that for every point, where crossing parity along one axis answered it
+   * only for a closed solid and striped the air of anything built from sheets. See `surfaceDepth.ts`.
+   */
+  const depth = surfaceDepth(field, dims, step);
+  for (let index = 0; index < count; index++) {
+    if ((depth[index] as number) % 2 === 1) field[index] = -(field[index] as number);
   }
 
   return { field, dims, bounds };
@@ -331,61 +301,6 @@ const NEIGHBOURS: readonly (readonly [number, number, number])[] = [
 /** A whole index forced inside a grid, for a triangle's box which may hang over an edge. */
 function clampIndex(value: number, count: number): number {
   return value < 0 ? 0 : value > count - 1 ? count - 1 : value;
-}
-
-/**
- * Where a point stands in a triangle projected onto one plane, or null if it stands outside.
- *
- * **The tie-break is what stops a shared edge being counted twice or not at all.** A grid column
- * passing exactly along the edge two triangles share is inside both or neither depending on the
- * sign of a zero, and either answer flips the parity of an entire row. Breaking the tie on the
- * coordinates themselves makes the choice consistent between the two triangles: whichever way it
- * goes, exactly one of them claims the column.
- */
-function barycentric2d(
-  px: number,
-  py: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  cx: number,
-  cy: number,
-): [number, number, number] | null {
-  const bxr = bx - px;
-  const byr = by - py;
-  const cxr = cx - px;
-  const cyr = cy - py;
-  const axr = ax - px;
-  const ayr = ay - py;
-
-  const areaA = orientation(bxr, byr, cxr, cyr);
-  if (areaA.sign === 0) return null;
-  const areaB = orientation(cxr, cyr, axr, ayr);
-  if (areaB.sign !== areaA.sign) return null;
-  const areaC = orientation(axr, ayr, bxr, byr);
-  if (areaC.sign !== areaA.sign) return null;
-
-  const sum = areaA.area + areaB.area + areaC.area;
-  if (sum === 0) return null;
-  return [areaA.area / sum, areaB.area / sum, areaC.area / sum];
-}
-
-/** Twice the signed area of a triangle with the origin, with zero broken deterministically. */
-function orientation(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-): { sign: number; area: number } {
-  const area = y1 * x2 - x1 * y2;
-  if (area > 0) return { sign: 1, area };
-  if (area < 0) return { sign: -1, area };
-  if (y2 > y1) return { sign: 1, area };
-  if (y2 < y1) return { sign: -1, area };
-  if (x1 > x2) return { sign: 1, area };
-  if (x1 < x2) return { sign: -1, area };
-  return { sign: 0, area };
 }
 
 /**

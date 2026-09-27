@@ -2,6 +2,7 @@ import { resolveConditionals } from '../conditionals.ts';
 import { OCTAHEDRAL_GLSL } from '../octahedral.ts';
 import { PROBEGRID_GLSL } from './probeGrid.ts';
 import { TANGENT_FRAME_GLSL } from '../tangentFrame.ts';
+import { CUTOUT_COVERAGE_GLSL } from '../cutoutCoverage.ts';
 import { preambleGlsl } from './preamble.ts';
 import { LOBES_GLSL } from './lobes.ts';
 import { POINTSHADOW_GLSL } from './pointShadow.ts';
@@ -10,6 +11,7 @@ import { MORPH_GLSL } from '../morph.ts';
 import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
 import { MAIN_GLSL } from './main.ts';
+import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
 import { FULL_LIGHT_BUDGET, type LightBudget } from '../../uniformVectorBudget.ts';
 
@@ -489,6 +491,9 @@ export function flatFrag(options: FlatShaderOptions): string {
        * and `main` is unconditional by construction.
        */
       TANGENT_FRAME_GLSL,
+      /* Unconditional for the same reason, and called only where a cutoff was asked for. */
+      CUTOUT_COVERAGE_GLSL,
+      DRIFT_LIGHT_GLSL,
       MAIN_GLSL,
     ].join('\n'),
     {

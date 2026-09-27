@@ -127,7 +127,7 @@ function tintFor(index: number, out: { [i: number]: number }, at: number): void 
 }
 
 class InstancingHandle implements DemoHandle {
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly canvas: HTMLCanvasElement;
   private readonly camera = new Camera();
   readonly view = new OrbitView(34, 150, 14);

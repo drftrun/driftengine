@@ -28,11 +28,20 @@ import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
 /**
  * The estimate. Writes one channel: 1 is open sky, 0 is fully enclosed.
  *
- * The estimator is the Alchemy/scalable-AO one — for each neighbour, the vector v from this
- * surface to it, weighted max(0, v·n) / (v·v). Two properties earn it its place over a
- * hemisphere of offset points: nothing has to be oriented, so there is no tangent frame and
- * no rotation matrix per pixel, and the 1 / v·v term falls away on its own, so a neighbour
- * further off contributes less without a second range test doing it by hand.
+ * **Horizons, not neighbours: ground-truth ambient occlusion (Jimenez et al. 2016).** Each pixel
+ * walks two lines across the screen, both ways, and keeps the highest thing it can see along each
+ * half: the horizon. The sky left between the two horizons of a line, weighted by the cosine to the
+ * surface's own normal, is that line's visibility in closed form, and two lines a pixel with the
+ * rotation tile below turning them is the hemisphere. It replaced a sum over twelve neighbours that
+ * counted anything within the radius as a blocker, however thin: cloth hanging a hand in front of a
+ * column darkened the column behind it, which read as a halo round every curtain in a courtyard.
+ *
+ * **What stops the halo is two rules about the horizon**, both the paper's. A sample fades out of
+ * the horizon as it approaches the radius, so a far wall does not shade a floor; and once the walk
+ * has passed the highest sample, the horizon sinks back toward what it sees next, so a thin thing
+ * in front raises it only while the walk is behind that thing. What that gives up is the shade under
+ * a thick object seen edge on, which reads as a thin one; the thickness is a constant because depth
+ * alone cannot say how deep anything is.
  */
 export const AO_FRAG = `#version 300 es
 precision highp float;
@@ -69,16 +78,18 @@ uniform float uRadius;
 
 out float fragColor;
 
-/** How many depths each pixel compares itself against. Fixed, so the cost is fixed. */
-const int AO_TAPS = 12;
+/** Lines across the screen a pixel walks, each both ways. Fixed, so the cost is fixed. */
+const int AO_SLICES = 2;
+/** Depth samples each way along a line: two lines, two ways, six steps is 24 a pixel. */
+const int AO_STEPS = 6;
 /**
- * The golden angle, in radians.
+ * How far the horizon sinks back toward each later sample once the walk has passed the highest one.
  *
- * Successive taps turned by it never line up into spokes, which a rational fraction of a
- * turn does: a kernel that repeats a direction is blind along it, and it is blind the same
- * way in every pixel, so it reads as a pattern in the surface rather than as noise.
+ * The paper's thickness heuristic. At zero anything within the radius shades for good, which is the
+ * halo; at one a horizon lasts one sample and a real corner loses its shade. A fifth keeps a corner,
+ * whose samples keep rising, and lets a curtain's shade drop within the few samples past its edge.
  */
-const float AO_GOLDEN_ANGLE = 2.39996323;
+const float AO_THIN = 0.2;
 /**
  * How far the sampling may reach across the frame, whatever the depth says.
  *
@@ -87,25 +98,6 @@ const float AO_GOLDEN_ANGLE = 2.39996323;
  * being contact shading and becomes an expensive wide darkening. 6% of the frame.
  */
 const float AO_MAX_REACH_UV = 0.06;
-/**
- * Self-occlusion guard, as a fraction of the pixel's own view depth.
- *
- * Depth is quantised, so a flat surface samples itself very slightly in front of itself and
- * every flat surface in the world comes back faintly dirty. The error grows with distance,
- * which is why the guard is proportional to depth rather than a constant.
- */
-const float AO_BIAS = 0.004;
-/**
- * The floor under the 1 / (v·v) weighting, in square metres.
- *
- * Not a guard against dividing by zero, which is what a value near the float epsilon would
- * be. The nearest taps land about a centimetre away, where v·v is 1e-4 and the weight is ten
- * thousand — so a depth quantised to a millimetre yields several units of occlusion out of
- * nothing at all. Measured that way first, with 1e-4 here: a flat floor came back as static.
- * A hundredth of a square metre is a tenth of a metre of separation, which is the scale
- * below which two samples are the same surface rather than one occluding the other.
- */
-const float AO_EPSILON = 0.01;
 /**
  * How many times further one neighbour may be than the other before the pair straddles an edge.
  *
@@ -132,6 +124,17 @@ vec3 viewPosition(vec2 uv, float depth) {
   vec4 clip = vec4(uv * 2.0 - 1.0, ${glslSceneDepthToNdc('depth')}, 1.0);
   vec4 view = uInvProjection * clip;
   return view.xyz / view.w;
+}
+
+/**
+ * The cosine-weighted sky between two horizon angles h0 < 0 < h1, measured from the eye, for a
+ * normal at the angle given in the same plane: the paper's closed form. 1 for an open plane facing
+ * the eye.
+ */
+float gtaoArc(float h0, float h1, float normal) {
+  float c = cos(normal);
+  float s2 = 2.0 * sin(normal);
+  return 0.25 * (-cos(2.0 * h0 - normal) + c + h0 * s2) + 0.25 * (-cos(2.0 * h1 - normal) + c + h1 * s2);
 }
 
 void main() {
@@ -215,15 +218,16 @@ void main() {
   vec3 n = normalize(cross(dpdx, dpdy));
   /*
    * Turned to face the eye. Which sign the cross product comes out with is a fact about the
-   * screen-space winding and the handedness of the projection, and a normal pointing away
-   * from the camera makes every v·n come back zero, which is a frame with no occlusion in it
-   * anywhere. In view space the eye is the origin, so a normal facing it satisfies n·p < 0.
+   * screen-space winding and the handedness of the projection, and a normal pointing away from the
+   * camera puts every horizon behind the surface. In view space the eye is the origin, so a normal
+   * facing it satisfies n·p < 0.
    */
   if (dot(n, p) > 0.0) n = -n;
+  vec3 toEye = normalize(-p);
 
   /*
-   * The radius as a fraction of the frame. A metre subtends less of the screen the further
-   * away it is, which is the entire reason this is computed per pixel rather than handed in.
+   * The radius as a fraction of the frame. A metre subtends less of the screen the further away it
+   * is, which is the entire reason this is computed per pixel rather than handed in.
    */
   vec2 reach = min(
     uRadius * uProjScale * 0.5 / max(-p.z, 1e-3),
@@ -231,41 +235,77 @@ void main() {
   );
 
   /*
-   * A rotation that repeats every four pixels: sixteen distinct turns laid out over a 4x4
-   * tile. Paired with the four-wide blur that follows, every blurred pixel averages all
-   * sixteen, which is what makes twelve taps enough. A per-pixel hash would decorrelate
-   * neighbours better in principle and is worse here, because the blur can then only soften
-   * the noise rather than complete the kernel.
+   * A rotation that repeats every four pixels: sixteen turns laid out over a 4x4 tile, spanning the
+   * quarter turn between one line and the next, so the eight-wide blur that follows averages every
+   * turn of both lines. The first step's distance is staggered by the same tile, so neighbouring
+   * pixels do not all sample the same rings either.
    */
   float tile = mod(gl_FragCoord.x, 4.0) + 4.0 * mod(gl_FragCoord.y, 4.0);
-  float turn = tile * (6.2831853 / 16.0);
+  float turn = tile * (1.5707963 / 16.0);
+  float stagger = fract(tile * 0.618034);
+  /* One output pixel along each axis, in UV. */
+  vec2 pixel = vec2(length(stepX), length(stepY));
 
-  float sum = 0.0;
-  for (int i = 0; i < AO_TAPS; i++) {
-    float t = (float(i) + 0.5) / float(AO_TAPS);
-    float angle = turn + float(i) * AO_GOLDEN_ANGLE;
-    /* The square root spreads the taps evenly over the disk; without it they crowd the
-       centre, where they are measuring the pixel's own depth. */
-    vec2 uv = vUv + vec2(cos(angle), sin(angle)) * sqrt(t) * reach;
-
+  float visible = 0.0;
+  for (int slice = 0; slice < AO_SLICES; slice++) {
+    float angle = turn + float(slice) * (3.1415927 / float(AO_SLICES));
     /*
-     * textureLod, not texture, and it is the rule rather than a preference: this sample sits
-     * inside a loop whose iterations a compiler cannot prove uniform, and an implicit
-     * derivative there is what lets one flatten the body and pay for every arm. The fetch is
-     * identical — the depth texture has one storage level and NEAREST filters, so there is no
-     * mip for a derivative to select. See AGENTS.md, 2026-08-07.
+     * **Even in pixels, not in UV.** A UV step across a wide frame is longer than one down it, so
+     * turns spread evenly in UV crowd toward the horizontal once they reach the screen, and on a
+     * floor the horizontal lines are the ones that see least of its normal: every flat floor and
+     * ceiling came back at 0.82 open, measured, where the construction gives 0.97. A pixel is as
+     * wide as it is tall in view space, so a direction even in pixels is even in the world. It is
+     * scaled here into UV, and the reach is taken down the frame, whose UV is the same pixels.
      */
-    float sampled = textureLod(uDepth, uv, 0.0).r;
-    if (${glslIsFarDepth('sampled')}) continue;
+    vec2 screen = vec2(cos(angle) * pixel.x / pixel.y, sin(angle));
+    /*
+     * The line in view space, taken through the same reconstruction the samples use: a step along
+     * the screen at this pixel's own depth, so the samples lie in the plane the arc is measured in
+     * whatever the frame's aspect and whichever way a backend's clip space counts up.
+     */
+    vec3 along = normalize(viewPosition(vUv + screen * 1e-3, depth) - p);
+    vec3 across = normalize(along - toEye * dot(along, toEye));
+    vec3 axis = cross(across, toEye);
+    /* The normal projected into the line's plane, and its angle from the eye toward +across. */
+    vec3 projected = n - axis * dot(n, axis);
+    float projectedLength = length(projected);
+    if (projectedLength < 1e-4) continue;
+    float normalAngle = atan(dot(projected, across), dot(projected, toEye));
 
-    vec3 v = viewPosition(uv, sampled) - p;
-    float vv = dot(v, v);
-    /* Past the radius it is a different surface rather than a neighbour of this one. */
-    if (vv > uRadius * uRadius) continue;
-    sum += max(0.0, dot(v, n) - AO_BIAS * (-p.z)) / (vv + AO_EPSILON);
+    /* The highest cosine seen each way. */
+    float horizon0 = -1.0;
+    float horizon1 = -1.0;
+    for (int k = 0; k < AO_STEPS; k++) {
+      float t = (float(k) + stagger) / float(AO_STEPS);
+      /* Squared, so the steps crowd the pixel, where contact shade lives. */
+      vec2 stride = screen * reach.y * (t * t + 0.5 / float(AO_STEPS * AO_STEPS));
+      for (int side = 0; side < 2; side++) {
+        vec2 uv = side == 0 ? vUv - stride : vUv + stride;
+        /*
+         * textureLod, not texture, and it is the rule rather than a preference: this sits inside a
+         * loop whose iterations a compiler cannot prove uniform. The depth texture has one level and
+         * NEAREST filters, so the fetch is identical. See AGENTS.md, 2026-08-07.
+         */
+        float sampled = textureLod(uDepth, uv, 0.0).r;
+        if (${glslIsFarDepth('sampled')}) continue;
+        vec3 v = viewPosition(uv, sampled) - p;
+        float distance2 = dot(v, v);
+        if (distance2 < 1e-8) continue;
+        float cosine = dot(v, toEye) * inversesqrt(distance2);
+        /* Faded to nothing at the radius: a far wall is not an occluder of this surface. */
+        float fade = clamp(1.0 - distance2 / (uRadius * uRadius), 0.0, 1.0);
+        cosine = mix(-1.0, cosine, fade);
+        if (side == 0) horizon0 = cosine > horizon0 ? cosine : mix(horizon0, cosine, AO_THIN);
+        else horizon1 = cosine > horizon1 ? cosine : mix(horizon1, cosine, AO_THIN);
+      }
+    }
+    /* Angles from the eye, negative toward -across, and never below the surface's own tangent. */
+    float h0 = max(-acos(clamp(horizon0, -1.0, 1.0)), normalAngle - 1.5707963);
+    float h1 = min(acos(clamp(horizon1, -1.0, 1.0)), normalAngle + 1.5707963);
+    visible += projectedLength * gtaoArc(h0, h1, normalAngle);
   }
 
-  fragColor = clamp(1.0 - 2.0 * uRadius * sum / float(AO_TAPS), 0.0, 1.0);
+  fragColor = clamp(visible / float(AO_SLICES), 0.0, 1.0);
 }
 `;
 
@@ -352,3 +392,25 @@ void main() {
   fragColor = weight > 0.0 ? sum / weight : textureLod(uAo, vUv, 0.0).r;
 }
 `;
+
+/**
+ * The estimate's closed form, written out once more so a test can pin it to hand-derived values:
+ * the cosine-weighted sky between horizon angles `h0 < 0 < h1` for a normal at `normal`, all in
+ * radians from the eye within one line's plane.
+ */
+export function gtaoArc(h0: number, h1: number, normal: number): number {
+  const c = Math.cos(normal);
+  const s2 = 2 * Math.sin(normal);
+  return (
+    0.25 * (-Math.cos(2 * h0 - normal) + c + h0 * s2) +
+    0.25 * (-Math.cos(2 * h1 - normal) + c + h1 * s2)
+  );
+}
+
+/** One step of a horizon: up to a higher sample, or a fifth of the way down toward a lower one. */
+export function nextHorizon(horizon: number, cosine: number): number {
+  return cosine > horizon ? cosine : horizon + (cosine - horizon) * AO_THIN;
+}
+
+/** The shader's thickness heuristic. See `AO_THIN` inside `AO_FRAG`. */
+export const AO_THIN = 0.2;

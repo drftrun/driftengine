@@ -13,7 +13,7 @@
 import { crc32, deflateSync } from 'node:zlib';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodePng, encodePng } from '../packages/core/scripts/png.mjs';
+import { decodePng, encodePng, rgbaOf } from '../packages/core/scripts/png.mjs';
 
 /** A PNG around already-filtered rows: `rows` is one `[filter, ...bytes]` per line. */
 function buildPng(width, height, channels, rows) {
@@ -29,7 +29,7 @@ function buildPng(width, height, channels, rows) {
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
-  ihdr[9] = channels === 4 ? 6 : 2;
+  ihdr[9] = { 1: 0, 2: 4, 3: 2, 4: 6 }[channels];
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
@@ -89,6 +89,37 @@ test('paeth picks the neighbour the gradient points at, including the corner', (
   ]);
   const { pixels } = decodePng(png);
   assert.deepEqual([...pixels.subarray(6, 12)], [10, 10, 10, 200, 200, 200]);
+});
+
+/*
+ * **A bought model's single-channel maps are greyscale PNGs**, measured at 50 of 135 in one
+ * photogrammetry-matched scene: roughness, metalness and height, each one channel. The reader
+ * refused them, so the baker's texture cap carried every one at full size and the native host could
+ * not draw them at all.
+ */
+test('A GREYSCALE PNG DECODES, and widens to RGBA as grey with an opaque alpha', () => {
+  /* Two rows, the second predicting from its left neighbour one *byte* back, as a grey pixel is. */
+  const png = buildPng(2, 2, 1, [
+    [0, 0, 200],
+    [1, 10, 20],
+  ]);
+  const decoded = decodePng(png);
+  assert.equal(decoded.channels, 1);
+  assert.deepEqual([...decoded.pixels], [0, 200, 10, 30]);
+  assert.deepEqual(
+    [...rgbaOf(decoded).rgba],
+    [0, 0, 0, 255, 200, 200, 200, 255, 10, 10, 10, 255, 30, 30, 30, 255],
+  );
+});
+
+test('a grey-and-alpha PNG keeps its alpha when it widens', () => {
+  const png = buildPng(1, 1, 2, [[0, 90, 40]]);
+  assert.deepEqual([...rgbaOf(decodePng(png)).rgba], [90, 90, 90, 40]);
+});
+
+test('an RGB PNG still widens with its three channels in place', () => {
+  const png = buildPng(1, 1, 3, [[0, 1, 2, 3]]);
+  assert.deepEqual([...rgbaOf(decodePng(png)).rgba], [1, 2, 3, 255]);
 });
 
 test('what it cannot read, it names rather than guesses', () => {

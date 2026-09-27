@@ -1028,7 +1028,7 @@ class ShowroomHandle implements DemoHandle {
    * either backend.
    */
   private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
 
   /** Which backend is actually drawing, asked of the renderer rather than of the address bar. */
   get backend(): RenderBackend {

@@ -286,7 +286,7 @@ class WindFieldHandle implements DemoHandle {
    */
   private readonly gl: WebGL2RenderingContext | null;
   private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
 
   /** Which backend is actually drawing, asked of the renderer rather than of the address bar. */
   get backend(): RenderBackend {

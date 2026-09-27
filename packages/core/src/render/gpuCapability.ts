@@ -194,11 +194,24 @@ export async function describeGpu(options: DescribeGpuOptions = {}): Promise<Gpu
     source,
   });
 
-  /* WebGL2 first: it is the API that gives a model number. See the header for the measurement. */
-  const canvas =
-    options.createCanvas === undefined
-      ? (globalThis.document?.createElement('canvas') ?? null)
-      : options.createCanvas();
+  /*
+   * WebGL2 first: it is the API that gives a model number. See the header for the measurement.
+   *
+   * **The canvas is made inside the guard as well as the context.** A host can have a `document`
+   * and still refuse to make one: the native host installs a page so a game finds what it expects,
+   * and its `createElement` throws, because there is no DOM behind it. Made outside the guard, that
+   * took a scene's mount down on the second host; inside it, such a host is simply one without
+   * WebGL2, and the adapter below names the part.
+   */
+  let canvas: HTMLCanvasElement | null = null;
+  try {
+    canvas =
+      options.createCanvas === undefined
+        ? (globalThis.document?.createElement('canvas') ?? null)
+        : options.createCanvas();
+  } catch {
+    canvas = null;
+  }
   if (canvas !== null) {
     let gl: WebGL2RenderingContext | null = null;
     try {

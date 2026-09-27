@@ -18,6 +18,10 @@ import {
   fourCCName,
   CHUNK_ANIM,
   CHUNK_NODE,
+  CHUNK_INST,
+  CHUNK_LITE,
+  CHUNK_SDFV,
+  CHUNK_MSHQ,
   CHUNK_SKIN,
   CHUNK_MORP,
 } from './drftFormat.ts';
@@ -28,6 +32,13 @@ import type { AnimationClip, DrftSkin } from './animationData.ts';
 import type { DrftNode } from './drftSkin.ts';
 import type { DrftMorph } from './drftSkin.ts';
 import { readClip, readMorph, readNodes, readSkin } from './drftSkin.ts';
+import { readInstances } from './drftInstances.ts';
+import type { DrftInstanceGroup } from './drftInstances.ts';
+import { readLights } from './drftLights.ts';
+import { readSdfv } from './sdfv.ts';
+import type { DrftSdfvEntry } from './sdfv.ts';
+import type { DrftLight } from './drftLights.ts';
+import { decodeQuantisedMesh } from './drftQuantised.ts';
 
 /**
  * What the file says is coming, known from the first few kilobytes.
@@ -101,6 +112,18 @@ export interface DrftStreamHandlers {
    * not useful — a child whose parent has not arrived cannot be placed.
    */
   readonly onNodes?: (nodes: readonly DrftNode[]) => void;
+  /**
+   * The asset's instance groups, once, when `INST` lands — ahead of the meshes, where the writer
+   * puts it, so a consumer knows a mesh is drawn many times before that mesh arrives.
+   */
+  readonly onInstances?: (groups: readonly DrftInstanceGroup[]) => void;
+  /** The lights the scene was authored with, once, when `LITE` lands. See `drftLights.ts`. */
+  readonly onLights?: (lights: readonly DrftLight[]) => void;
+  /**
+   * The distance fields indirect light is traced against, once, when `SDFV` lands. Each names the
+   * mesh it belongs to, or `SDFV_WHOLE_FILE` for one over all of the file's static geometry.
+   */
+  readonly onFields?: (fields: readonly DrftSdfvEntry[]) => void;
   /** One mesh's morph deltas, naming the mesh ordinal they belong to. */
   readonly onMorph?: (morph: DrftMorph) => void;
   /** One skin, as its `SKIN` chunk lands. Several arrive for an asset with several. */
@@ -327,7 +350,9 @@ export class DrftStream {
        * counted in `meshCount`, which is the number of parts — an outline is not a part, and
        * a readout saying "1 of 188 parts" would be counting the model twice.
        */
-      if (chunk.code === CHUNK_MESH || chunk.code === CHUNK_LODM) meshBytes += chunk.byteLength;
+      if (chunk.code === CHUNK_MESH || chunk.code === CHUNK_MSHQ || chunk.code === CHUNK_LODM) {
+        meshBytes += chunk.byteLength;
+      }
       if (chunk.code === CHUNK_TEXS) textureBytes += chunk.byteLength;
       /* Its own weight rather than geometry's: a capture is not made of parts, so folding it into
          `meshBytes` would make a "parts" readout weigh something that is not one. */
@@ -346,7 +371,7 @@ export class DrftStream {
     this.manifestSent = true;
     this.handlers.onManifest?.({
       totalBytes: this.buffer.byteLength,
-      meshCount: this.chunks.filter((c) => c.code === CHUNK_MESH).length,
+      meshCount: this.chunks.filter((c) => c.code === CHUNK_MESH || c.code === CHUNK_MSHQ).length,
       textureCount: this.chunks.filter((c) => c.code === CHUNK_TEXS).length,
       lodCount: this.chunks.filter((c) => c.code === CHUNK_LODM).length,
       splatBlockCount: this.chunks.filter((c) => c.code === CHUNK_SPLT).length,
@@ -369,8 +394,11 @@ export class DrftStream {
       if (chunk.code === CHUNK_HEAD) {
         this.head = readHead(this.buffer, chunk);
         this.handlers.onHead?.(this.head);
-      } else if (chunk.code === CHUNK_MESH) {
-        const mesh = readMesh(this.buffer, chunk);
+      } else if (chunk.code === CHUNK_MESH || chunk.code === CHUNK_MSHQ) {
+        const mesh =
+          chunk.code === CHUNK_MESH
+            ? readMesh(this.buffer, chunk)
+            : decodeQuantisedMesh(this.buffer, chunk.offset, chunk.byteLength);
         this.meshCount++;
         this.handlers.onMesh?.(mesh, this.meshOrdinal++);
       } else if (chunk.code === CHUNK_SPLT) {
@@ -388,6 +416,17 @@ export class DrftStream {
         this.handlers.onMorph?.(readMorph(this.buffer, chunk.offset, chunk.byteLength));
       } else if (chunk.code === CHUNK_NODE) {
         this.handlers.onNodes?.(readNodes(this.buffer, chunk.offset, chunk.byteLength));
+      } else if (chunk.code === CHUNK_INST) {
+        const meshes = this.chunks.filter(
+          (c) => c.code === CHUNK_MESH || c.code === CHUNK_MSHQ,
+        ).length;
+        this.handlers.onInstances?.(
+          readInstances(this.buffer, chunk.offset, chunk.byteLength, meshes),
+        );
+      } else if (chunk.code === CHUNK_LITE) {
+        this.handlers.onLights?.(readLights(this.buffer, chunk.offset, chunk.byteLength));
+      } else if (chunk.code === CHUNK_SDFV) {
+        this.handlers.onFields?.(readSdfv(this.buffer, chunk.offset, chunk.byteLength).entries);
       } else if (chunk.code === CHUNK_SKIN) {
         this.handlers.onSkin?.(readSkin(this.buffer, chunk.offset, chunk.byteLength), chunk.index);
       } else if (chunk.code === CHUNK_ANIM) {
@@ -409,6 +448,42 @@ export class DrftStream {
 }
 
 /**
+ * How long a stream may work before it gives way for a task, in milliseconds. The loader's own
+ * frame budget is six, and this is the same share of a 60 Hz frame for the same reason.
+ */
+export const DEFAULT_STREAM_SLICE_MS = 6;
+
+/**
+ * When a stream stops to let something else run, and how.
+ *
+ * **Why a stream has to stop at all.** Once a body's bytes are buffered, every `read` resolves as a
+ * microtask, so a loop that pushes what it reads decodes chunk after chunk inside one task and no
+ * frame can draw until the file is done. From a local server a five-file courtyard ran in
+ * stretches of 0.6 to 1.1 s and drew 117 frames in five seconds. From a slow network the reads
+ * wait, the loop yields there by itself, and this costs nothing.
+ *
+ * Both functions are capabilities, for the reason `FetchLike` is: a host with its own clock or its
+ * own scheduler supplies them. What it gives up is throughput when nothing else wants the thread —
+ * a task per slice, which a browser may clamp to four milliseconds once timers nest. What would
+ * make it wrong is a single chunk longer than the slice, which a slice cannot divide.
+ */
+export interface DrftStreamPacing {
+  /** Work this long, then give way. `DEFAULT_STREAM_SLICE_MS` when absent. */
+  readonly sliceMs?: number;
+  /** A monotonic clock in milliseconds. `performance.now` when absent. */
+  readonly now?: () => number;
+  /** Resolve after other tasks have had a turn. A zero-delay timer when absent. */
+  readonly giveWay?: () => Promise<void>;
+}
+
+const monotonicNow = (): number => performance.now();
+/* A timer rather than a microtask: a microtask would rejoin the task it is trying to leave. */
+const nextTask = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+/**
  * Read a `.drft` from a fetch response as it arrives.
  *
  * The whole point of the sequential design in one function: a plain `fetch` of a plain file,
@@ -418,6 +493,7 @@ export class DrftStream {
 export async function streamDrft(
   response: Response,
   handlers: DrftStreamHandlers = {},
+  pacing: DrftStreamPacing = {},
 ): Promise<void> {
   if (!response.ok) {
     throw new DrftError(`fetching the asset returned ${response.status} ${response.statusText}`);
@@ -425,12 +501,20 @@ export async function streamDrft(
   const body = response.body;
   if (body === null) throw new DrftError('the response carried no body to stream');
 
+  const sliceMs = pacing.sliceMs ?? DEFAULT_STREAM_SLICE_MS;
+  const now = pacing.now ?? monotonicNow;
+  const giveWay = pacing.giveWay ?? nextTask;
   const stream = new DrftStream(handlers);
   const reader = body.getReader();
+  let sliceStarted = now();
   for (;;) {
     const next = await reader.read();
     if (next.done) break;
     if (next.value !== undefined) stream.push(next.value);
+    if (now() - sliceStarted >= sliceMs) {
+      await giveWay();
+      sliceStarted = now();
+    }
   }
   stream.end();
 }

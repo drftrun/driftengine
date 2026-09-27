@@ -61,6 +61,11 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
   /** Alpha below which a fragment is discarded. See `uAlbedoCutout`. */
   cutout?: number;
   /**
+   * Whether both faces are seen: glTF's `doubleSided`, what a curtain or a leaf card is. Drawn
+   * without culling, and a back face is lit as its front, with the normal turned to the viewer.
+   */
+  doubleSided?: boolean;
+  /**
    * How hard the normal map turns the shading normal.
    *
    * **Defaults to 1 when a `normal` is supplied and 0 when it is not**, because binding a map and

@@ -23,6 +23,9 @@ tools/recon-train/.data/
 packages/package/android/.gradle/
 packages/package/android/build/
 
+# Vite's dependency cache for the harness, written beside its root. Machine-local, regenerated.
+demo/dev/.vite/
+
 # Agent scratch: holds git worktrees, which are whole checkouts of this repository.
 # `scripts/docs.test.mjs` skips it for the same reason — walking one moves every file out
 # of the path its exemptions are written against.

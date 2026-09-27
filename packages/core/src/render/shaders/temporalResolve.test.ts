@@ -43,7 +43,7 @@ test('the depth sampler asks for highp, which its default is not', () => {
 test('a zero blend returns this frame before it touches depth or history', () => {
   const early = TEMPORAL_RESOLVE_FRAG.indexOf('if (uHistoryBlend <= 0.0)');
   const depth = TEMPORAL_RESOLVE_FRAG.indexOf('textureLod(uDepth');
-  const history = TEMPORAL_RESOLVE_FRAG.indexOf('textureLod(uHistory');
+  const history = TEMPORAL_RESOLVE_FRAG.indexOf('historyCatmullRom(wasUv)');
   expect(early).toBeGreaterThan(-1);
   expect(depth).toBeGreaterThan(early);
   expect(history).toBeGreaterThan(early);
@@ -75,4 +75,16 @@ test('a reprojection that leaves the frame falls back to this frame', () => {
 test('the neighbourhood includes its diagonals', () => {
   expect(TEMPORAL_RESOLVE_FRAG).toContain('for (int y = -1; y <= 1; y++)');
   expect(TEMPORAL_RESOLVE_FRAG).toContain('for (int x = -1; x <= 1; x++)');
+});
+
+/**
+ * **The history is read through a Catmull-Rom filter.** A bilinear read of a picture that is itself
+ * last frame's blend compounds a small blur every frame, and a still camera settled on a picture
+ * visibly softer than one frame of it: stone read as out of focus beside the same frame with the
+ * resolve off. Every tap at an explicit level, for the reason the first test here gives.
+ */
+test('THE HISTORY IS READ SHARP, through Catmull-Rom rather than one bilinear fetch', () => {
+  expect(TEMPORAL_RESOLVE_FRAG).toContain('vec3 history = historyCatmullRom(wasUv);');
+  expect(TEMPORAL_RESOLVE_FRAG).toContain('vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);');
+  expect(TEMPORAL_RESOLVE_FRAG).not.toContain('textureLod(uHistory, wasUv');
 });

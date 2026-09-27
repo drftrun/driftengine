@@ -36,19 +36,21 @@ import {
   clamp,
   computeLightMatrix,
   createCelestialState,
+  createDaylightPalette,
+  createDaylightState,
   createEnvironment,
   createPointLightBuffer,
   createRenderer,
-  lerp,
-  mixColorInto,
   moonIllumination,
   mulberry32,
+  resolveDaylight,
   selectPointLights,
 } from '../packages/core/src/index';
 import type { RenderBackend, RendererApi } from '../packages/core/src/index';
 import type {
   CelestialSite,
   CelestialState,
+  DaylightState,
   Environment,
   MeshHandle,
   MeshData,
@@ -58,6 +60,12 @@ import type {
   SkyColors,
   Vec3,
 } from '../packages/core/src/index';
+
+function copyColorInto(out: Vec3, from: Readonly<Vec3>): void {
+  out[0] = from[0];
+  out[1] = from[1];
+  out[2] = from[2];
+}
 
 /* -- The set, in metres ---------------------------------------------------- */
 
@@ -109,6 +117,45 @@ const SUN_COLOR: Vec3 = [1.2, 1.05, 0.82];
 const MOON_LIGHT: Vec3 = [0.16, 0.2, 0.3];
 const DAY_FOG: Vec3 = [0.66, 0.71, 0.78];
 const NIGHT_FOG: Vec3 = [0.035, 0.043, 0.062];
+
+/*
+ * The two extremes as a palette keyed by the day factor, so the blend between them is the engine's
+ * `resolveDaylight` rather than this file's. At 0 and 1 it is exactly the lerp the scene always did.
+ * The moon's key carries its full light; the phase scales it where it is used, because a phase is
+ * not a point on the palette.
+ */
+const PALETTE = createDaylightPalette([
+  {
+    at: 0,
+    sunColor: [0, 0, 0],
+    moonColor: MOON_LIGHT,
+    skyTop: NIGHT_SKY.top,
+    skyHorizon: NIGHT_SKY.horizon,
+    skyDeep: NIGHT_SKY.deep,
+    ambient: NIGHT_AMBIENT,
+    ambientGround: NIGHT_GROUND,
+    fogColor: NIGHT_FOG,
+    fogDensity: 0.0075,
+    shadowStrength: 0.42,
+    emissiveGain: 1,
+    exposure: 1,
+  },
+  {
+    at: 1,
+    sunColor: SUN_COLOR,
+    moonColor: [0, 0, 0],
+    skyTop: DAY_SKY.top,
+    skyHorizon: DAY_SKY.horizon,
+    skyDeep: DAY_SKY.deep,
+    ambient: DAY_AMBIENT,
+    ambientGround: DAY_GROUND,
+    fogColor: DAY_FOG,
+    fogDensity: 0.0075,
+    shadowStrength: 0.9,
+    emissiveGain: 0,
+    exposure: 1,
+  },
+]);
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -239,7 +286,7 @@ function readSite(): CelestialSite | undefined {
 
 class DayClockHandle implements DemoHandle {
   private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
 
   /** Which backend is actually drawing, asked of the renderer rather than of the address bar. */
   get backend(): RenderBackend {
@@ -257,6 +304,7 @@ class DayClockHandle implements DemoHandle {
   private readonly env: Environment;
   private readonly sky: SkyColors;
   private readonly celestial: CelestialState = createCelestialState();
+  private readonly daylight: DaylightState = createDaylightState();
   /**
    * Where in the world this sky is, or nothing — which is the model the scene was authored against.
    *
@@ -439,7 +487,7 @@ class DayClockHandle implements DemoHandle {
       this.lightMatrix,
     );
     env.lightViewProj = this.lightMatrix;
-    env.shadowStrength = lerp(0.42, 0.9, this.celestial.dayFactor);
+    env.shadowStrength = this.daylight.shadowStrength;
     renderer.beginShadowPass(this.lightMatrix, 'static');
     renderer.drawShadowCasters(this.casters);
     renderer.endShadowPass();
@@ -484,19 +532,20 @@ class DayClockHandle implements DemoHandle {
     env.directionalDir[1] = dir[1];
     env.directionalDir[2] = dir[2];
 
+    const light = resolveDaylight(day, PALETTE, this.daylight);
     const moonlit = moonIllumination(state.moonPhase);
-    env.directionalColor[0] = lerp(MOON_LIGHT[0] * moonlit, SUN_COLOR[0], day);
-    env.directionalColor[1] = lerp(MOON_LIGHT[1] * moonlit, SUN_COLOR[1], day);
-    env.directionalColor[2] = lerp(MOON_LIGHT[2] * moonlit, SUN_COLOR[2], day);
+    env.directionalColor[0] = light.moonColor[0] * moonlit + light.sunColor[0];
+    env.directionalColor[1] = light.moonColor[1] * moonlit + light.sunColor[1];
+    env.directionalColor[2] = light.moonColor[2] * moonlit + light.sunColor[2];
 
-    mixColorInto(env.ambient, NIGHT_AMBIENT, DAY_AMBIENT, day);
-    mixColorInto(env.ambientGround as Vec3, NIGHT_GROUND, DAY_GROUND, day);
-    mixColorInto(env.fogColor as Vec3, NIGHT_FOG, DAY_FOG, day);
+    copyColorInto(env.ambient, light.ambient);
+    copyColorInto(env.ambientGround as Vec3, light.ambientGround);
+    copyColorInto(env.fogColor as Vec3, light.fogColor);
     env.nightFactor = state.nightFactor;
 
-    mixColorInto(sky.top, NIGHT_SKY.top, DAY_SKY.top, day);
-    mixColorInto(sky.horizon, NIGHT_SKY.horizon, DAY_SKY.horizon, day);
-    mixColorInto(sky.deep, NIGHT_SKY.deep, DAY_SKY.deep, day);
+    copyColorInto(sky.top, light.skyTop);
+    copyColorInto(sky.horizon, light.skyHorizon);
+    copyColorInto(sky.deep, light.skyDeep);
     sky.nightFactor = state.nightFactor;
     sky.moonPhase = state.moonPhase;
 

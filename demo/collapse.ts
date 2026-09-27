@@ -217,7 +217,7 @@ const PROFILES: Readonly<Record<DemoBudget, RenderQualityOptions>> = {
 
 class CollapseHandle implements DemoHandle {
   private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
 
   /** Which backend is actually drawing, asked of the renderer rather than of the address bar. */
   get backend(): RenderBackend {

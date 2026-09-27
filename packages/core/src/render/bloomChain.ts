@@ -49,6 +49,15 @@ export const BLOOM_FILTER_RADIUS_UV = 0.005;
  * an exposure with no curve to be exposed into — where everything is switched on, nothing is
  * wrong, and nothing happens.
  */
+/**
+ * A threshold a frame asked for through `setBloom`, made safe: at least a thousandth of a scene
+ * unit, because zero blooms the whole frame including what is meant to be dark, and a
+ * non-number would reach the shader as one. Decided here so both backends answer the same.
+ */
+export function bloomThresholdOf(threshold: number): number {
+  return Number.isFinite(threshold) ? Math.max(threshold, 1e-3) : 1e-3;
+}
+
 export function bloomProfileWarning(quality: {
   readonly bloom: number;
   readonly screenEffects: boolean;

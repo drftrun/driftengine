@@ -42,16 +42,28 @@
  */
 
 import { PROBE_DIRECTIONS } from '../../gi/probeTrace.ts';
+import { BOUNCE_LIGHT_FLOATS } from '../../gi/bounceLights.ts';
 import { probeUpdateSchedule } from '../../gi/probeVolume.ts';
+import { probesTheFieldReaches } from '../../gi/fieldReach.ts';
 import { irradianceLevelFor } from '../../prefilterEnvMap.ts';
 import {
   BAKE_COUNTS,
+  BAKE_DRIFT_LIGHT,
+  BAKE_DRIFT_ORIGIN,
   BAKE_EDGE,
+  BAKE_FALLOFF,
+  BAKE_LIGHT_COUNT,
+  BOUNCE_LIGHT_ROWS,
   BAKE_FRAME,
   BAKE_ORIGIN,
   BAKE_SCHEDULED,
   BAKE_SPACING,
+  BAKE_HISTORY,
   BAKE_SKY_COLOUR,
+  BAKE_SKY_DEEP,
+  BAKE_SKY_DRAWN,
+  BAKE_SKY_SUN,
+  BAKE_SKY_TOP,
   BAKE_SUN_COLOUR,
   BAKE_SUN_DIR,
   PROBE_BAKE_FLOATS,
@@ -97,6 +109,20 @@ const VISIBILITY_COMPUTE = 0x4;
  */
 export const PROBES_PER_FRAME = 5;
 
+/**
+ * How much of what a probe held each refresh keeps, once the grid has been traced whole.
+ *
+ * Four fifths, so a probe is about the mean of its last five refreshes. The directions no longer
+ * turn, so a still scene gives the same estimate every time and this has nothing to average there;
+ * what it smooths is a light that moves, whose sun crosses from one direction of the set to the next
+ * in steps. What it gives up is how fast the bounce follows: a fifth of the way each time a probe
+ * comes round, which with 64
+ * probes at five a frame is a time constant of about half a second at 120 frames and a second at
+ * 60. It is counted in refreshes rather than seconds, because the renderer is given no clock; what
+ * would make it wrong is a scene whose light jumps and has to be followed at once.
+ */
+export const PROBE_HISTORY = 0.8;
+
 export interface ProbeBakeTargets {
   /** The array the shading samples, whose irradiance level this writes. */
   readonly array: GPUTexture;
@@ -106,6 +132,27 @@ export interface ProbeBakeTargets {
   /** Texels across level 0, gutter included. */
   readonly edge: number;
   readonly format: GPUTextureFormat;
+}
+
+/**
+ * A DriftLight field as the bake reads it: its two volumes and its two uniform rows, resolved for a
+ * probe by `resolveDriftLight` (radius zero, every fixed light through the volume).
+ */
+/**
+ * The frame's exact lights as the bake lights a hit with them: `resolveBounceLights`'s packing,
+ * how many it packed, and the frame's falloff code.
+ */
+export interface ProbeBakeLamps {
+  readonly data: Float32Array;
+  readonly count: number;
+  readonly falloff: number;
+}
+
+export interface ProbeBakeLightField {
+  readonly index: GPUTextureView;
+  readonly atlas: GPUTextureView;
+  readonly light: ArrayLike<number>;
+  readonly origin: ArrayLike<number>;
 }
 
 export class ProbeBaker {
@@ -124,15 +171,22 @@ export class ProbeBaker {
   private readonly marchBuffer: GPUBuffer;
   private readonly bakeBuffer: GPUBuffer;
   private readonly volumeBuffer: GPUBuffer;
+  private readonly lampBuffer: GPUBuffer;
   private readonly scheduleBuffer: GPUBuffer;
   private readonly rayBuffer: GPUBuffer;
   private readonly irradianceBuffer: GPUBuffer;
   private readonly blitParams: GPUBuffer;
 
   private readonly blitGroup: GPUBindGroup;
-  /** Rebuilt only when the field it was built against is a different object. */
+  /** Rebuilt only when the field or the light field's volumes it was built against change. */
   private computeGroup: GPUBindGroup | null = null;
   private boundTo: PassDistanceField | null = null;
+  private boundAtlas: GPUTextureView | null = null;
+  /** DriftLight's volumes while a scene has none whole: one texel each, never read while off. */
+  private readonly emptyIndex: GPUTexture;
+  private readonly emptyAtlas: GPUTexture;
+  private readonly emptyIndexView: GPUTextureView;
+  private readonly emptyAtlasView: GPUTextureView;
 
   private readonly marchScratch = new Float32Array(PROBE_MARCH_FLOATS);
   private readonly marchInts = new Uint32Array(this.marchScratch.buffer);
@@ -200,8 +254,26 @@ export class ProbeBaker {
         },
         { binding: 9, visibility: VISIBILITY_COMPUTE, sampler: { type: 'filtering' } },
         { binding: 10, visibility: VISIBILITY_COMPUTE, buffer: storageRead },
+        {
+          binding: 11,
+          visibility: VISIBILITY_COMPUTE,
+          texture: { sampleType: 'uint', viewDimension: '3d' },
+        },
+        {
+          binding: 12,
+          visibility: VISIBILITY_COMPUTE,
+          texture: { sampleType: 'float', viewDimension: '3d' },
+        },
+        { binding: 13, visibility: VISIBILITY_COMPUTE, sampler: { type: 'filtering' } },
+        { binding: 14, visibility: VISIBILITY_COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
+    const emptyVolume = (label: string, format: GPUTextureFormat): GPUTexture =>
+      device.createTexture({ label, size: [1, 1, 1], dimension: '3d', format, usage: 0x4 });
+    this.emptyIndex = emptyVolume('probe bake.emptyDriftLightIndex', 'r32uint');
+    this.emptyAtlas = emptyVolume('probe bake.emptyDriftLightAtlas', 'rgba16float');
+    this.emptyIndexView = this.emptyIndex.createView({ dimension: '3d' });
+    this.emptyAtlasView = this.emptyAtlas.createView({ dimension: '3d' });
     const computeLayout = device.createPipelineLayout({
       bindGroupLayouts: [this.computeLayout],
     });
@@ -258,6 +330,7 @@ export class ProbeBaker {
     this.marchBuffer = this.uniform('march', PROBE_MARCH_FLOATS * 4);
     this.bakeBuffer = this.uniform('bake', PROBE_BAKE_FLOATS * 4);
     this.volumeBuffer = this.uniform('volume', PROBE_VOLUME_FLOATS * 4);
+    this.lampBuffer = this.uniform('lamps', BOUNCE_LIGHT_ROWS * 16);
     this.scheduleBuffer = this.storage('schedule', PROBES_PER_FRAME * 4);
     this.rayBuffer = this.storage(
       'rays',
@@ -420,6 +493,18 @@ export class ProbeBaker {
   }
 
   /**
+   * Whether the trace has written `layer`'s irradiance, after which that level is the trace's alone.
+   *
+   * A rasterised bake of a traced layer refreshes only its roughness chain. Two writers of one
+   * level is a layer that jumps to the raster's answer and is pulled back over the next refreshes,
+   * which on screen is light sweeping across a scene a probe at a time. What it gives up is the
+   * raster's own diffuse answer for that layer, which the trace replaces within a few frames anyway.
+   */
+  traced(layer: number): boolean {
+    return this.filled[layer] === 1;
+  }
+
+  /**
    * Refresh this frame's share of the grid.
    *
    * Returns how many probes were baked, which is zero when there is nothing to trace against.
@@ -429,18 +514,29 @@ export class ProbeBaker {
     field: PassDistanceField,
     grid: ProbeGrid,
     seeded: boolean,
+    lightField: ProbeBakeLightField | null,
+    lamps: ProbeBakeLamps,
     sun: {
       readonly direction: ArrayLike<number>;
       readonly colour: ArrayLike<number>;
-      readonly sky: ArrayLike<number>;
+      /** Outside, flat, for a frame that drew no sky: the environment's ambient. */
+      readonly ambient: ArrayLike<number>;
+      /** The sky the frame drew, which an escaping ray reads when there is one. */
+      readonly sky: {
+        readonly top: ArrayLike<number>;
+        readonly horizon: ArrayLike<number>;
+        readonly deep: ArrayLike<number>;
+        readonly sunDir: ArrayLike<number>;
+      } | null;
     },
   ): number {
     if (this.layers !== grid.layers) this.setGrid(grid.layers);
-    const scheduled = probeUpdateSchedule(
-      grid.layers,
-      PROBES_PER_FRAME,
-      this.frameIndex,
+    /* A probe the field does not reach keeps what it has. See `gi/fieldReach.ts`. */
+    const scheduled = probesTheFieldReaches(
+      grid,
       this.scheduleScratch,
+      probeUpdateSchedule(grid.layers, PROBES_PER_FRAME, this.frameIndex, this.scheduleScratch),
+      field.outerBounds,
     );
     if (scheduled === 0) return 0;
 
@@ -476,8 +572,19 @@ export class ProbeBaker {
       this.volumeScratch[VOLUME_COUNTS + axis] = grid.counts[axis] as number;
     }
     this.bakeScratch[BAKE_EDGE] = this.levelEdge;
-    this.bakeScratch[BAKE_FRAME] = this.frameIndex;
+    /*
+     * **The same directions at every refresh.** The set used to turn with the frame so a probe
+     * would converge, but only a running mean converges and a blended history never stops moving:
+     * every refresh was a new estimate a few per cent from the last, and a courtyard held still
+     * flickered, 77% of its pixels moving by more than 3 levels over a dozen frames against 2.5%
+     * rasterised. Held, it is 4.8%. What it gives up is the quadrature error of one set of 256
+     * directions, which stays where it is rather than averaging away: the held frame read 2.5 levels
+     * brighter than the turning one's mean. What would make it wrong is a small bright source that
+     * falls between the directions of every probe that sees it.
+     */
+    this.bakeScratch[BAKE_FRAME] = 0;
     this.bakeScratch[BAKE_SCHEDULED] = scheduled;
+    this.bakeScratch[BAKE_HISTORY] = this.complete ? PROBE_HISTORY : 0;
     /*
      * **The sun, because the trace shades what it hits rather than reading a capture.** That is
      * the whole of what a traced grid buys over a rasterised one: a light that moves changes the
@@ -486,7 +593,24 @@ export class ProbeBaker {
     for (let axis = 0; axis < 3; axis += 1) {
       this.bakeScratch[BAKE_SUN_DIR + axis] = sun.direction[axis] ?? 0;
       this.bakeScratch[BAKE_SUN_COLOUR + axis] = sun.colour[axis] ?? 0;
-      this.bakeScratch[BAKE_SKY_COLOUR + axis] = sun.sky[axis] ?? 0;
+      const sky = sun.sky;
+      this.bakeScratch[BAKE_SKY_COLOUR + axis] =
+        sky === null ? (sun.ambient[axis] ?? 0) : (sky.horizon[axis] ?? 0);
+      this.bakeScratch[BAKE_SKY_TOP + axis] = sky === null ? 0 : (sky.top[axis] ?? 0);
+      this.bakeScratch[BAKE_SKY_DEEP + axis] = sky === null ? 0 : (sky.deep[axis] ?? 0);
+      this.bakeScratch[BAKE_SKY_SUN + axis] = sky === null ? 0 : (sky.sunDir[axis] ?? 0);
+    }
+    this.bakeScratch[BAKE_SKY_DRAWN] = sun.sky === null ? 0 : 1;
+    /* The summed light of the scene's fixed lights, or zeros that switch it off. */
+    for (let lane = 0; lane < 4; lane += 1) {
+      this.bakeScratch[BAKE_DRIFT_LIGHT + lane] = lightField?.light[lane] ?? 0;
+      this.bakeScratch[BAKE_DRIFT_ORIGIN + lane] = lightField?.origin[lane] ?? 0;
+    }
+    /* And the frame's exact lights, which light what a ray strikes as they light the frame. */
+    this.bakeScratch[BAKE_LIGHT_COUNT] = lamps.count;
+    this.bakeScratch[BAKE_FALLOFF] = lamps.falloff;
+    if (lamps.count > 0) {
+      queue.writeBuffer(this.lampBuffer, 0, lamps.data, 0, lamps.count * BOUNCE_LIGHT_FLOATS);
     }
     queue.writeBuffer(this.bakeBuffer, 0, this.bakeScratch);
 
@@ -501,7 +625,8 @@ export class ProbeBaker {
     this.volumeScratch[VOLUME_RADIANCE_LEVEL] = 0;
     queue.writeBuffer(this.volumeBuffer, 0, this.volumeScratch);
 
-    if (this.boundTo !== field || this.computeGroup === null) {
+    const atlas = lightField?.atlas ?? this.emptyAtlasView;
+    if (this.boundTo !== field || this.boundAtlas !== atlas || this.computeGroup === null) {
       this.computeGroup = this.device.createBindGroup({
         label: 'probe bake',
         layout: this.computeLayout,
@@ -517,9 +642,14 @@ export class ProbeBaker {
           { binding: 8, resource: this.targets.view },
           { binding: 9, resource: this.targets.sampler },
           { binding: 10, resource: { buffer: field.albedo } },
+          { binding: 11, resource: lightField?.index ?? this.emptyIndexView },
+          { binding: 12, resource: atlas },
+          { binding: 13, resource: this.targets.sampler },
+          { binding: 14, resource: { buffer: this.lampBuffer } },
         ],
       });
       this.boundTo = field;
+      this.boundAtlas = atlas;
     }
 
     const pass = encoder.beginComputePass({
@@ -579,9 +709,13 @@ export class ProbeBaker {
     this.rayBuffer.destroy();
     this.irradianceBuffer.destroy();
     this.blitParams.destroy();
+    this.lampBuffer.destroy();
+    this.emptyIndex.destroy();
+    this.emptyAtlas.destroy();
     this.views = [];
     this.computeGroup = null;
     this.boundTo = null;
+    this.boundAtlas = null;
   }
 }
 

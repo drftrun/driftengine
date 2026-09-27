@@ -125,6 +125,22 @@ function dispatchScript(request) {
         });
         continue;
       }
+      if (spec.kind === 'emptyVolume') {
+        /* A new texture is zeros by the specification, so there is nothing to write. */
+        const texture = device.createTexture({
+          size: [1, 1, 1],
+          dimension: '3d',
+          format: spec.format,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
+        entries.push({ binding: at, resource: texture.createView({ dimension: '3d' }) });
+        bindings.push({
+          binding: at,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: spec.format === 'r32uint' ? 'uint' : 'float', viewDimension: '3d' },
+        });
+        continue;
+      }
       if (spec.kind === 'sampler') {
         const sampler = device.createSampler({
           magFilter: 'linear',
@@ -225,7 +241,7 @@ export async function openGpuCompute(options = {}) {
      * `features` are the device features the shader needs, `'shader-f16'` for a half-precision one;
      * an adapter without one of them is an error rather than a device created without it.
      *
-     * Each entry of `buffers` is bound at the binding its index names, as one of four kinds:
+     * Each entry of `buffers` is bound at the binding its index names, as one of six kinds:
      *
      * - `'storage'`, the default — `type`, `values` or `length`, `read`, `readOnly`. An `'f16'`
      *   buffer takes half-precision bits as its values, and is never read back.
@@ -242,14 +258,19 @@ export async function openGpuCompute(options = {}) {
      *   the device's sampler rounds to.
      * - `'sampler'` — `{ kind: 'sampler', address: 'clamp-to-edge' | 'repeat' }`, linear in
      *   magnification, minification and between levels.
+     * - `'emptyVolume'` — `{ kind: 'emptyVolume', format: 'r32uint' | 'rgba16float' }`: one texel
+     *   of zeros in a 3D texture, for a module that declares a volume the check leaves switched off
+     *   (the probe bake's DriftLight field).
      *
      * @param {{ wgsl: string, entryPoint?: string, workgroups?: number[], features?: string[],
-     *           buffers: { kind?: 'storage'|'uniform'|'texture2dArray'|'texture2d'|'sampler',
+     *           buffers: { kind?: 'storage'|'uniform'|'texture2dArray'|'texture2d'|'sampler'|
+     *                            'emptyVolume',
      *                      type?: 'f32'|'f16'|'u32'|'i32', values?: number[], length?: number,
      *                      read?: boolean, readOnly?: boolean, size?: number, layers?: number,
      *                      levels?: ArrayLike<number>[], address?: string,
      *                      width?: number, height?: number,
-     *                      format?: 'r32float'|'rgba32float' }[] }} request
+     *                      format?: 'r32float'|'rgba32float'|'r32uint'|'rgba16float' }[] }}
+     *        request
      */
     async run(request) {
       const prepared = {

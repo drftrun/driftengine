@@ -1,5 +1,9 @@
 import { glSceneDepthFormat } from './depthConvention.ts';
+import { clampGrain, clampVignette, grainSeed } from './shaders/filmLook.ts';
 import { AmbientOcclusionPass } from './ambientOcclusionPass.ts';
+import { ExposurePass } from './exposurePass.ts';
+import { clampAutoExposure } from './shaders/exposure.ts';
+import { clampLocalExposure } from './shaders/localExposure.ts';
 import { BloomPass } from './bloomPass.ts';
 import {
   type ColourGradeLut,
@@ -91,6 +95,16 @@ export class SceneTarget {
   private gradeSource: ColourGradeLut | null = null;
   private gradeSize = GRADE_PLACEHOLDER_SIZE;
   private gradeStrength = 0;
+  /** The lens and the print, held like the grade. See `filmLook.ts`. */
+  private vignette = 0;
+  private grain = 0;
+  private grainSeed = 0;
+  /** Eye adaptation: how far, and this frame's time step. See `Renderer.setAutoExposure`. */
+  private autoExposure = 0;
+  private autoExposureDt = 0;
+  /** How far each region is brought toward the frame. See `Renderer.setLocalExposure`. */
+  private localExposure = 0;
+  private exposure: ExposurePass | null = null;
   private width = 0;
   private height = 0;
 
@@ -606,6 +620,33 @@ export class SceneTarget {
    * `null`, or a strength at or below zero, is exactly the frame that existed before the effect
    * did: the shader's branch is on a uniform, so no fetch happens at all.
    */
+  /** The lens's corner falloff, held until changed. See `Renderer.setVignette`. */
+  setVignette(strength: number): void {
+    this.vignette = clampVignette(strength);
+  }
+
+  /** The print's grain and this frame's seed, held until changed. See `Renderer.setFilmGrain`. */
+  setFilmGrain(strength: number, seed: number): void {
+    this.grain = clampGrain(strength);
+    this.grainSeed = grainSeed(seed);
+  }
+
+  /** How far the eye adapts, and the time since the last frame. See `Renderer.setAutoExposure`. */
+  setAutoExposure(strength: number, dtSec: number): void {
+    this.autoExposure = clampAutoExposure(strength);
+    this.autoExposureDt = dtSec;
+  }
+
+  /** How far each region is brought toward the frame. See `Renderer.setLocalExposure`. */
+  setLocalExposure(strength: number): void {
+    this.localExposure = clampLocalExposure(strength);
+  }
+
+  /** A new shot: the eye meters it afresh rather than easing in from the last one. */
+  cutExposure(): void {
+    this.exposure?.cut();
+  }
+
   setColourGrade(lut: ColourGradeLut | null, strength: number): void {
     this.gradeStrength = lut === null ? 0 : Math.max(0, Math.min(1, strength));
     if (lut === null || lut === this.gradeSource) return;
@@ -851,6 +892,17 @@ export class SceneTarget {
       bloomTexture = this.bloom.run(scene, this.width, this.height, bloom.threshold);
     }
 
+    /*
+     * Eye adaptation, metered from the same resolved scene bloom reads, and after it for the same
+     * reason: the composite consumes it. Off at zero strength, where nothing is allocated or drawn.
+     */
+    let heldExposure: WebGLTexture | null = null;
+    const local = this.localExposure > 0;
+    if ((this.autoExposure > 0 || local) && scene !== null) {
+      this.exposure ??= new ExposurePass(gl);
+      heldExposure = this.exposure.run(scene, this.autoExposureDt, local);
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
     gl.disable(gl.DEPTH_TEST);
@@ -946,6 +998,25 @@ export class SceneTarget {
     gl.uniform1i(this.uniforms['uGradeLut'] ?? null, 4);
     gl.uniform1f(this.uniforms['uGradeStrength'] ?? null, this.gradeStrength);
     gl.uniform1f(this.uniforms['uGradeSize'] ?? null, this.gradeSize);
+
+    /* The held brightness on unit 5, and the scene as the placeholder where there is none, for
+       the reason the occlusion's placeholder gives. Zero strength is the whole of the off path. */
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, heldExposure ?? scene);
+    gl.uniform1i(this.uniforms['uExposureHeld'] ?? null, 5);
+    gl.uniform1f(
+      this.uniforms['uAutoExposure'] ?? null,
+      heldExposure === null ? 0 : this.autoExposure,
+    );
+    /* Local exposure's grid on unit 6, with the same placeholder and the same off path. */
+    const localGrid = local && heldExposure !== null ? (this.exposure?.localTexture ?? null) : null;
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, localGrid ?? scene);
+    gl.uniform1i(this.uniforms['uExposureLocal'] ?? null, 6);
+    gl.uniform1f(
+      this.uniforms['uLocalExposure'] ?? null,
+      localGrid === null ? 0 : this.localExposure,
+    );
     gl.activeTexture(gl.TEXTURE0);
 
     /* No unit and no texture: a flat colour, not a sample. Uploaded unconditionally — two
@@ -954,6 +1025,8 @@ export class SceneTarget {
        mix it does not need. */
     gl.uniform3fv(this.uniforms['uVeilColor'] ?? null, veilColor);
     gl.uniform1f(this.uniforms['uVeilAlpha'] ?? null, veilAlpha);
+    gl.uniform1f(this.uniforms['uVignette'] ?? null, this.vignette);
+    gl.uniform2f(this.uniforms['uGrain'] ?? null, this.grain, this.grainSeed);
 
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -970,7 +1043,7 @@ export class SceneTarget {
      * own framebuffers on the next frame, and that is how this was found: 120 pixels of a frame
      * that should have been identical, and a warning per draw explaining why.
      */
-    for (let unit = 0; unit <= 4; unit++) {
+    for (let unit = 0; unit <= 5; unit++) {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
@@ -999,6 +1072,7 @@ export class SceneTarget {
   dispose(): void {
     const { gl } = this;
     this.ao?.dispose();
+    this.exposure?.dispose();
     this.ao = null;
     this.bloom?.dispose();
     this.bloom = null;

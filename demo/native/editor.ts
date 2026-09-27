@@ -183,23 +183,27 @@ while (!host.isClosed && drawn < frames) {
   editor.frame(now);
   renderer.beginFrame([0, 0, 0]);
   /*
-   * **Inside the frame, before `endFrame`, and that is the whole of why this window was black.**
+   * **Inside the frame, before `endFrame`**, which is where this window's interface has been since
+   * it came up black with the panels painted after `endFrame`: measured 2026-09-20 on Dawn, **0
+   * pixels above black** against **1,747,114** with them before it, one line moved.
    *
-   * The interface used to be painted after `endFrame`, on the reading that an overlay lands on the
-   * presented swap view. On this host it lands nowhere: measured 2026-09-20 on Dawn, the canvas
-   * context held **0 pixels above black** with the panels issued after `endFrame` and **1,747,114**
-   * with them issued before it — the same frame, the same calls, one line moved. `demo/voxelSandbox.ts`
-   * has carried the rule in a comment since it was written: *before `endFrame`, always; an overlay
-   * issued after it survives on WebGL2 and vanishes on WebGPU.*
+   * **The cause recorded then was wrong, and the rule it produced was a workaround.** An overlay
+   * drawn after `endFrame` does land on this backend: the WebGPU renderer submits it on a
+   * microtask, as it must, and a browser presents after the microtask checkpoint. This loop
+   * presented straight after the frame, before that submission, so the window was handed the frame
+   * without it. `runFrames` in the host now waits for the checkpoint, as a browser does, and this
+   * loop does too below; painting inside the frame stays because it needs neither.
    *
    * **It was invisible to every capture this harness takes**, because `--out` reads the canvas
-   * texture rather than the window, and a texture that is never presented still reads back. The
-   * maintainer's screen was the only instrument that could see it.
+   * texture after the run rather than what the window was handed, and the texture holds the
+   * overlay by then. The maintainer's screen was the only instrument that could see it.
    */
   textsUsed = 0;
   editor.paint(painter);
   painter.text(editor.readout(), renderer.cssWidth - 318, renderer.cssHeight - 16, '#d7dde5');
   renderer.endFrame();
+  /* The microtask checkpoint before the present, as a browser has it: see `runFrames`. */
+  await new Promise((resolve) => setImmediate(resolve));
   host.present();
   drawn += 1;
   await new Promise((resolve) => setImmediate(resolve));

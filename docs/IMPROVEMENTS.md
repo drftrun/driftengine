@@ -48,6 +48,23 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### A cutout surface on the GPU-driven pipeline casts the shadow of its whole quad
+
+**The row `visbufferRaster.wgsl.ts` has cited since the cutout landed, and which did not exist
+until 2026-09-25**, when a survey for alpha-tested shadows followed the reference and found nothing
+at the end of it.
+
+The GPU-driven shadow pass shares the raster's vertex stage and has no fragment stage, so a leaf card
+or a chain link throws a solid rectangle. The cost of the fix is the reason it is open. A fragment
+stage there would need the material table and the texture decode tables to answer "is this texel
+solid", and the shadow map is drawn every frame over the whole scene. The colour raster pays that
+only for materials whose cutoff is non-zero, and a shadow stage built the same way would too. The
+template is `visbufferRaster.wgsl.ts:173-199`: derivatives taken before the branch, the branch
+skipped at a zero cutoff, and `alphaKept` from `gpudriven/alphaTest.ts`.
+
+**What would close it**: a depth-only variant with a fragment stage, bound only for clusters whose
+material has a cutoff, measured against the city's shadow cost with and without its foliage.
+
 ### The fitted LTC fit works now, and what is left is that a polynomial cannot carry it
 
 **Reopened and moved on 2026-09-05**, at the condition the fourth attempt wrote: fit against polygon

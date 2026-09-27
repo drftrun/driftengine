@@ -2,7 +2,7 @@
 
 A texture as a compiled, sampled field rather than an image.
 
-**Cost: 2,305 bytes gzipped, standalone** — 2,226 of code and 79 for the licence banner every
+**Cost: 2,304 bytes gzipped, standalone** — 2,225 of code and 79 for the licence banner every
 package carries. Measured by `scripts/size-gate.test.mjs`, which fails if
 it drifts more than 3%. The package imports no renderer, so this is the whole of what a consumer
 pays — there is no core in the number.

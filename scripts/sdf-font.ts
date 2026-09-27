@@ -474,7 +474,12 @@ async function main(): Promise<void> {
      * started the process, and only a `finally` that covers this call closes it. The one
      * outside covering only what came after `connect` leaked exactly that browser.
      */
-    const client = await connect(browser.port);
+    /*
+     * **A timeout sized for a whole atlas, not for a call.** Each glyph's distance transform runs
+     * inside one `Runtime.evaluate`, so the call lasts as long as the batch: a dozen glyphs came
+     * in under the protocol's ten-second default, and printable ASCII did not.
+     */
+    const client = await connect(browser.port, { timeoutMs: 600_000 });
     try {
       const page = await client.page('about:blank', 64, 64);
       try {

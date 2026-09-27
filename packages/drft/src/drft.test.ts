@@ -488,7 +488,8 @@ test('a texture carries the name its source gave it', () => {
 /**
  * Every stride this format has declared, forged and reopened.
  *
- * **44** predates `reflectivity`; **48** predates the three map indices; **72** predates `cutout`.
+ * **44** predates `reflectivity`; **48** predates the three map indices; **72** predates `cutout`;
+ * **76** predates `blend`.
  * All three must still open, and all three must default the fields they cannot reach rather than
  * reading past themselves into the name block. Anything else breaks §4.4 rule 1, that a file
  * written today opens in every future reader.
@@ -498,9 +499,10 @@ test('a texture carries the name its source gave it', () => {
  * writer ever produced while still passing.
  */
 for (const [stride, absent] of [
-  [44, ['reflectivity', 'normalMap', 'ormMap', 'emissiveMap', 'cutout']],
-  [48, ['normalMap', 'ormMap', 'emissiveMap', 'cutout']],
-  [72, ['cutout']],
+  [44, ['reflectivity', 'normalMap', 'ormMap', 'emissiveMap', 'cutout', 'blend']],
+  [48, ['normalMap', 'ormMap', 'emissiveMap', 'cutout', 'blend']],
+  [72, ['cutout', 'blend']],
+  [76, ['blend']],
 ] as const) {
   test(`a ${stride} byte material entry still opens, defaulting what it cannot reach`, () => {
     const mesh: MeshData = {
@@ -530,6 +532,7 @@ for (const [stride, absent] of [
           metallicScale: 1,
           occlusionStrength: 0,
           cutout: 0.5,
+          blend: true,
         },
       ],
       /*
@@ -577,9 +580,11 @@ for (const [stride, absent] of [
     expect(material?.name).toBe('paint');
 
     /* And each absent field reads as the engine's default rather than as garbage. */
-    const defaults: Record<string, number> = {
+    const defaults: Record<string, number | boolean> = {
       /* Discard nothing, which is what a file written before the field meant. */
       cutout: 0,
+      /* Opaque unless its opacity says otherwise, which is what a file before 1.18 meant. */
+      blend: false,
       reflectivity: 0,
       normalMap: -1,
       ormMap: -1,
@@ -678,4 +683,96 @@ test('a material naming a texture the file does not carry is refused', () => {
     ],
   });
   expect(() => readDrft(buffer)).toThrow(/names ORM texture 7/);
+});
+
+/*
+ * **A blended material says so.** glTF's `BLEND` makes a material's alpha the factor times the
+ * texture, and a material whose factor is 1 carried no sign of blending at all: `opacity` 1, so every
+ * loader drew it opaque and its texture's alpha, a leaf's shape, was never read. 1.18 adds one flag.
+ */
+test('A BLENDED MATERIAL CARRIES ITS BLEND, and an opaque one does not', () => {
+  const mesh: MeshData = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    colors: new Float32Array(9).fill(0.5),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const base = {
+    color: [1, 1, 1] as [number, number, number],
+    specular: 0,
+    roughness: 0.5,
+    emissive: 0,
+    emissiveColor: [-1, -1, -1] as [number, number, number],
+    opacity: 1,
+    albedo: -1,
+    reflectivity: 0,
+    normalMap: -1,
+    ormMap: -1,
+    emissiveMap: -1,
+    roughnessScale: 1,
+    metallicScale: 1,
+    occlusionStrength: 0,
+    cutout: 0,
+  };
+  const asset = readDrft(
+    writeDrft({
+      meshes: [mesh, mesh],
+      materials: [
+        { ...base, name: 'leaf', blend: true },
+        { ...base, name: 'bark' },
+      ],
+    }),
+  );
+  expect(asset.materials[0]?.blend).toBe(true);
+  expect(asset.materials[1]?.blend).toBe(false);
+});
+
+/*
+ * **A two-sided material says so, in the flags word blend already uses.** glTF's `doubleSided` says
+ * a surface is seen from both faces — a curtain, a leaf card — and a reader that never heard of it
+ * culled the back and lit the front only, so a curtain seen from behind was a hole. Bit 1 of the
+ * same word, so the stride does not move and a file that never set it reads as one-sided, which is
+ * how everything before it was drawn.
+ */
+test('A TWO-SIDED MATERIAL CARRIES IT, apart from its blend', () => {
+  const mesh: MeshData = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    colors: new Float32Array(9).fill(0.5),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const base = {
+    color: [1, 1, 1] as [number, number, number],
+    specular: 0,
+    roughness: 0.5,
+    emissive: 0,
+    emissiveColor: [-1, -1, -1] as [number, number, number],
+    opacity: 1,
+    albedo: -1,
+    reflectivity: 0,
+    normalMap: -1,
+    ormMap: -1,
+    emissiveMap: -1,
+    roughnessScale: 1,
+    metallicScale: 1,
+    occlusionStrength: 0,
+    cutout: 0,
+  };
+  const asset = readDrft(
+    writeDrft({
+      meshes: [mesh, mesh, mesh],
+      materials: [
+        { ...base, name: 'curtain', doubleSided: true },
+        { ...base, name: 'leaf', doubleSided: true, blend: true },
+        { ...base, name: 'wall', blend: true },
+      ],
+    }),
+  );
+  expect(asset.materials.map((m) => [m.doubleSided, m.blend])).toEqual([
+    [true, false],
+    [true, true],
+    [false, true],
+  ]);
 });

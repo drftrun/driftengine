@@ -1,16 +1,26 @@
 /** Loading a `.drft` into drawable parts progressively, without stalling the frame. */
 
 import type { MeshData } from '@driftengine/drft';
-import type { Mesh } from '@driftengine/core';
 import type { MeshHandle, RendererApi } from '@driftengine/core';
 import type { SurfaceTextureHandle } from '@driftengine/core';
-import { MeshBuilder } from '@driftengine/core';
+import { MeshBuilder, concatMeshes, createMeshInstances, placeMesh } from '@driftengine/core';
 import type { DrftMaterial } from '@driftengine/drft';
+import type { DrftSdfvEntry } from '@driftengine/drft';
+import { placeFields } from './fieldPlacement.ts';
+import type { DrftFieldPlacement } from './fieldPlacement.ts';
 import type { DrftTexture } from '@driftengine/drft';
 import { TextureSet, textureColorSpaces } from './drftTextures.ts';
 import { drawKeyOf, resolveDrawGrouping } from './drawKey.ts';
-import { streamDrft, CODEC_PNG, CODEC_RAW, CODEC_WEBP, DrftError } from '@driftengine/drft';
-import type { AnimationClip, DrftMorph, DrftNode, DrftSkin } from '@driftengine/drft';
+import type { DrawSurfaceOverride } from './drawKey.ts';
+import {
+  streamDrft,
+  CODEC_JPEG,
+  CODEC_PNG,
+  CODEC_RAW,
+  CODEC_WEBP,
+  DrftError,
+} from '@driftengine/drft';
+import type { AnimationClip, DrftLight, DrftMorph, DrftNode, DrftSkin } from '@driftengine/drft';
 import type { DrftLoadProgress, DrftPart } from './loadProgress.ts';
 import {
   DEFAULT_REVEAL_SEC,
@@ -112,10 +122,8 @@ export interface DrftLoaderOptions {
    * can have its paint decided here, per material, without the loader knowing what a car is.
    */
   readonly transform?: (mesh: MeshData, material: DrftMaterial | undefined) => MeshData;
-  /** Per-material opacity and reflectivity overrides, for the same reason as `transform`. */
-  readonly surface?: (
-    material: DrftMaterial | undefined,
-  ) => { readonly opacity?: number; readonly reflectivity?: number } | undefined;
+  /** Per-material opacity, reflectivity and metalness overrides, for the same reason as `transform`. */
+  readonly surface?: (material: DrftMaterial | undefined) => DrawSurfaceOverride | undefined;
   /**
    * Draw a coarse whole model while the parts arrive, where the file carries one.
    *
@@ -203,7 +211,19 @@ export class DrftLoader {
   private readonly options: DrftLoaderOptions;
   private readonly revealed: DrftPart[] = [];
   /** Arrived, not yet uploaded. Drained by `update` at the budget. */
-  private readonly queue: { mesh: MeshData; material: DrftMaterial | undefined }[] = [];
+  private readonly queue: {
+    mesh: MeshData;
+    material: DrftMaterial | undefined;
+    /** Sixteen floats a copy when the file draws this mesh many times, else null. */
+    instances: Float32Array | null;
+  }[] = [];
+  /** `INST`'s placements by mesh ordinal, in hand before the meshes they place arrive. */
+  private readonly loadedInstances = new Map<number, Float32Array>();
+  /**
+   * The instanced parts, which the merge leaves alone: merging would bake one copy into a group
+   * and lose the rest. Kept here so the swap to merged groups carries them across.
+   */
+  private readonly instancedParts: DrftPart[] = [];
   /**
    * Coarse levels that have arrived and not yet been uploaded, in arrival order.
    *
@@ -238,7 +258,10 @@ export class DrftLoader {
       metallicScale: number;
       occlusionStrength: number;
       cutout: number;
-      builder: MeshBuilder;
+      blend: boolean;
+      doubleSided: boolean;
+      /** The group's parts, placed, joined once when the group is built. See `concatMeshes`. */
+      members: MeshData[];
     }
   >();
   /** Group keys still to be built and uploaded, drained one per frame after the stream ends. */
@@ -279,6 +302,10 @@ export class DrftLoader {
    * hand on is invisible to every test of either side.
    */
   private loadedNodes: readonly DrftNode[] = [];
+  private loadedLights: readonly DrftLight[] = [];
+  private loadedFields: readonly DrftSdfvEntry[] = [];
+  /** The fields placed, built once the fit and the fields are both known. See `fields`. */
+  private placedFields: readonly DrftFieldPlacement[] | null = null;
   private readonly loadedSkins: DrftSkin[] = [];
   private readonly loadedClips: AnimationClip[] = [];
   /**
@@ -345,6 +372,28 @@ export class DrftLoader {
    */
   get nodes(): readonly DrftNode[] {
     return this.loadedNodes;
+  }
+
+  /**
+   * The lights the file was authored with, in glTF's units, or empty. They arrive ahead of the
+   * geometry. What a candela is in this scene's light units is the caller's decision.
+   */
+  get lights(): readonly DrftLight[] {
+    return this.loadedLights;
+  }
+
+  /**
+   * The distance fields the file carries, each where it stands: at the loader's fit, and once a
+   * copy for a mesh drawn many times. Empty until the fields and the fit have both arrived, and for
+   * a file carrying none. A scene declares these to `addDistanceField` every frame, with the colour
+   * of the surface each covers. See `fieldPlacement.ts`.
+   */
+  get fields(): readonly DrftFieldPlacement[] {
+    if (this.placedFields === null) {
+      if (this.loadedFields.length === 0 || this.fit === null) return [];
+      this.placedFields = placeFields(this.loadedFields, this.fit, this.loadedInstances);
+    }
+    return this.placedFields;
   }
 
   /** Skins the file carried, in the order their chunks appeared. Empty for a file with none. */
@@ -509,6 +558,16 @@ export class DrftLoader {
         onNodes: (nodes) => {
           this.loadedNodes = nodes;
         },
+        onLights: (lights) => {
+          this.loadedLights = lights;
+        },
+        onFields: (fields) => {
+          this.loadedFields = fields;
+          this.placedFields = null;
+        },
+        onInstances: (groups) => {
+          for (const group of groups) this.loadedInstances.set(group.mesh, group.transforms);
+        },
         onSkin: (skin) => {
           this.loadedSkins.push(skin);
         },
@@ -591,7 +650,11 @@ export class DrftLoader {
             morph === undefined
               ? mesh
               : { ...mesh, morphTargets: morph.deltas, morphTargetCount: morph.targetCount };
-          this.queue.push({ mesh: withMorph, material });
+          this.queue.push({
+            mesh: withMorph,
+            material,
+            instances: this.loadedInstances.get(ordinal) ?? null,
+          });
           this.arrived++;
           this.set({ phase: 'geometry', partsDone: this.arrived });
         },
@@ -729,7 +792,7 @@ export class DrftLoader {
     ) {
       const next = this.queue.shift();
       if (next === undefined) break;
-      if (this.uploadOne(next.mesh, next.material)) changed = true;
+      if (this.uploadOne(next.mesh, next.material, next.instances)) changed = true;
       begun++;
     }
 
@@ -792,9 +855,26 @@ export class DrftLoader {
       if (this.mergeQueue.length === 0) {
         this.merged = true;
         this.swapInMerged();
-        this.set({ phase: 'ready', fraction: 1 });
         changed = true;
       }
+    }
+
+    /*
+     * **Ready once the picture is right, not once the parts are**, which is what `DrftLoadProgress`
+     * has promised consumers since `imagesDone` was corrected, and what this did not do: it said
+     * ready at the merge, with images still decoding behind it. A consumer that baked its light
+     * probes on `ready` baked them against untextured stone, and came out overexposed on exactly the
+     * runs where the decodes lost the race. Every image is counted whether it decoded or failed, so
+     * this cannot wait for ever on a bad one.
+     */
+    if (
+      this.merged &&
+      this.state.phase !== 'ready' &&
+      this.imageQueue.length === 0 &&
+      this.state.imagesDone >= this.state.imagesTotal
+    ) {
+      this.set({ phase: 'ready', fraction: 1 });
+      changed = true;
     }
     return changed;
   }
@@ -816,6 +896,11 @@ export class DrftLoader {
     for (const part of this.finished) meshes.add(part.mesh);
     for (const part of this.mergedParts) meshes.add(part.mesh);
     for (const mesh of this.singles) meshes.add(mesh);
+    for (const part of this.instancedParts) {
+      meshes.add(part.mesh);
+      if (part.instances !== null) this.renderer.disposeInstanced(part.instances.batch);
+    }
+    this.instancedParts.length = 0;
     if (this.outlineMesh !== null) meshes.add(this.outlineMesh);
     for (const mesh of meshes) this.renderer.disposeMesh(mesh);
     this.revealed.length = 0;
@@ -877,7 +962,10 @@ export class DrftLoader {
       metallicScale: 1,
       occlusionStrength: 0,
       cutout: 0,
+      blend: false,
+      doubleSided: false,
       reveal: this.outlinePart?.reveal ?? 0,
+      instances: null,
     };
     const at = this.outlinePart === null ? -1 : this.revealed.indexOf(this.outlinePart);
     /* First in the list, so it is drawn before the parts that stand in front of it. */
@@ -891,12 +979,17 @@ export class DrftLoader {
   }
 
   /** One part, transformed, dressed and uploaded. Returns whether it landed. */
-  private uploadOne(mesh: MeshData, material: DrftMaterial | undefined): boolean {
+  private uploadOne(
+    mesh: MeshData,
+    material: DrftMaterial | undefined,
+    instances: Float32Array | null,
+  ): boolean {
     const fit = this.fit;
     if (fit === null) return false;
     const dressed = this.options.transform?.(mesh, material) ?? mesh;
-    const single = new MeshBuilder();
-    single.addMesh(dressed, fit.x, fit.y, fit.z, fit.scale);
+    /* The file's mesh itself where the fit is the identity, with its tangents and every other
+       attribute it carried. It went through a builder here, which copied it and dropped them. */
+    const placed = placeMesh(dressed, fit.x, fit.y, fit.z, fit.scale);
     const override = this.options.surface?.(material);
     /*
      * **The resolution and the key both live in `drawKey.ts`, and that is the point of them.**
@@ -918,12 +1011,31 @@ export class DrftLoader {
       metallicScale,
       occlusionStrength,
       cutout,
+      blend,
+      doubleSided,
     } = g;
 
     /*
      * Added to its merged group here, while there is a budget governing how much of this happens
      * in one frame.
      */
+    if (instances !== null) {
+      return this.uploadInstanced(placed, instances, fit, {
+        albedo,
+        orm,
+        normal,
+        emissive,
+        opacity,
+        reflectivity,
+        roughnessScale,
+        metallicScale,
+        occlusionStrength,
+        cutout,
+        blend,
+        doubleSided,
+      });
+    }
+
     const key = drawKeyOf(material, override);
     let group = this.groups.get(key);
     if (group === undefined) {
@@ -938,38 +1050,33 @@ export class DrftLoader {
         metallicScale,
         occlusionStrength,
         cutout,
-        builder: new MeshBuilder(),
+        blend,
+        doubleSided,
+        members: [],
       };
       this.groups.set(key, group);
     }
     /* Not merged, for the reason above: a group's deltas would deform its neighbours. */
-    if (dressed.morphTargets === undefined) {
-      group.builder.addMesh(dressed, fit.x, fit.y, fit.z, fit.scale);
-    }
+    if (dressed.morphTargets === undefined) group.members.push(placed);
 
     try {
       /*
-       * **A morphed part bypasses the builder, and is never merged.**
-       *
-       * `MeshBuilder` carries the attributes it knows and morph deltas are not among them, so a
-       * part built through it arrives on the GPU with its targets dropped. Merging is worse than
-       * that rather than merely lossy: a merged group concatenates vertices from several parts,
-       * and one part's deltas applied across that buffer would deform whatever geometry happened
-       * to follow it.
+       * **A morphed part is never merged.** A merged group concatenates vertices from several
+       * parts, and one part's deltas applied across that buffer would deform whatever geometry
+       * happened to follow it.
        *
        * So the deltas are scaled by the fit and handed straight to `createMesh`. **Scaled and not
        * translated** — a delta is a displacement, and moving it by the fit's offset would drag
        * every vertex toward the origin of the model rather than deform it in place.
        */
-      const built = single.build();
       const morphable =
         dressed.morphTargets !== undefined && dressed.morphTargetCount !== undefined
           ? {
-              ...built,
+              ...placed,
               morphTargets: dressed.morphTargets.map((delta) => delta * fit.scale),
               morphTargetCount: dressed.morphTargetCount,
             }
-          : built;
+          : placed;
       const uploaded = this.renderer.createMesh(morphable);
       this.singles.push(uploaded);
       const part: DrftPart = {
@@ -984,7 +1091,10 @@ export class DrftLoader {
         metallicScale,
         occlusionStrength,
         cutout,
+        blend,
+        doubleSided,
         reveal: 0,
+        instances: null,
       };
       this.revealed.push(part);
       if (this.options.keepReveal === true) this.arrivals.push(part);
@@ -1004,12 +1114,70 @@ export class DrftLoader {
    * and differ in blend: merging on the image alone means one cannot be made translucent without
    * taking the other with it.
    */
+  /**
+   * A mesh the file draws many times: uploaded once, placed by a batch, and kept out of the merge.
+   *
+   * **The fit is conjugated into each placement.** The prototype is uploaded with the fit already
+   * applied, as every part is, so a copy's matrix M becomes F·M·F⁻¹: the same turn, and a translation
+   * of t − R·t + s·u for the fit's scale s and offset t and the copy's own translation u. A fitted
+   * model's copies then land where its geometry does, and are not scaled twice.
+   */
+  private uploadInstanced(
+    prototype: MeshData,
+    instances: Float32Array,
+    fit: { scale: number; x: number; y: number; z: number },
+    surface: Omit<DrftPart, 'mesh' | 'reveal' | 'instances'>,
+  ): boolean {
+    try {
+      const uploaded = this.renderer.createMesh(prototype);
+      const count = instances.length / 16;
+      const batch = this.renderer.createInstanced(uploaded, count);
+      const data = createMeshInstances(count);
+      const s = fit.scale;
+      for (let k = 0; k < count; k++) {
+        const at = k * 16;
+        for (let i = 0; i < 12; i++) data.models[at + i] = instances[at + i] as number;
+        const ux = instances[at + 12] as number;
+        const uy = instances[at + 13] as number;
+        const uz = instances[at + 14] as number;
+        /* R·t, with R the copy's own 3×3 read column-major. */
+        const rtx =
+          (instances[at] as number) * fit.x +
+          (instances[at + 4] as number) * fit.y +
+          (instances[at + 8] as number) * fit.z;
+        const rty =
+          (instances[at + 1] as number) * fit.x +
+          (instances[at + 5] as number) * fit.y +
+          (instances[at + 9] as number) * fit.z;
+        const rtz =
+          (instances[at + 2] as number) * fit.x +
+          (instances[at + 6] as number) * fit.y +
+          (instances[at + 10] as number) * fit.z;
+        data.models[at + 12] = fit.x - rtx + s * ux;
+        data.models[at + 13] = fit.y - rty + s * uy;
+        data.models[at + 14] = fit.z - rtz + s * uz;
+        data.models[at + 15] = 1;
+      }
+      data.tints.fill(1);
+      data.count = count;
+      this.renderer.uploadInstanced(batch, data);
+      const part: DrftPart = { mesh: uploaded, ...surface, reveal: 0, instances: { batch, data } };
+      this.revealed.push(part);
+      this.instancedParts.push(part);
+      if (this.options.keepReveal === true) this.arrivals.push(part);
+      return true;
+    } catch (error) {
+      console.warn('DrftLoader: an instanced part would not upload and was skipped', error);
+      return false;
+    }
+  }
+
   private buildGroup(key: string): void {
     const group = this.groups.get(key);
     if (group === undefined) return;
     try {
       this.mergedParts.push({
-        mesh: this.renderer.createMesh(group.builder.build()),
+        mesh: this.renderer.createMesh(concatMeshes(group.members)),
         albedo: group.albedo,
         orm: group.orm,
         normal: group.normal,
@@ -1020,7 +1188,10 @@ export class DrftLoader {
         metallicScale: group.metallicScale,
         occlusionStrength: group.occlusionStrength,
         cutout: group.cutout,
+        blend: group.blend,
+        doubleSided: group.doubleSided,
         reveal: 1,
+        instances: null,
       });
     } catch (error) {
       /* One bad group costs one surface rather than the model. */
@@ -1039,11 +1210,13 @@ export class DrftLoader {
    */
   private swapInMerged(): void {
     /*
-     * Nothing merged means every group failed to upload, and then the outline is the only thing
-     * standing between a viewer and an empty room. Keeping it is the honest state: something
-     * incomplete rather than nothing at all.
+     * Nothing merged and nothing instanced means every part failed to upload, and then the outline
+     * is the only thing standing between a viewer and an empty room. Keeping it is the honest
+     * state: something incomplete rather than nothing at all. **Instanced parts count**: a file
+     * whose every mesh is instanced merges nothing, and a guard on merged groups alone kept its
+     * outline on screen over the finished model for ever.
      */
-    if (this.mergedParts.length === 0) return;
+    if (this.mergedParts.length === 0 && this.instancedParts.length === 0) return;
     /*
      * The outline leaves in the same frame the model arrives. Two representations of one object
      * is worse than either of them, and it is what a fade would otherwise cross-dissolve.
@@ -1059,6 +1232,11 @@ export class DrftLoader {
     }
     this.revealed.length = 0;
     for (const part of this.mergedParts) this.revealed.push(part);
+    /* Never merged, so carried across as they are: see `uploadInstanced`. */
+    for (const part of this.instancedParts) {
+      part.reveal = 1;
+      this.revealed.push(part);
+    }
     this.mergedParts.length = 0;
     /* Solid first, blended last, which is the whole of the sort: a translucent surface needs the
        world behind it already drawn to blend against. */
@@ -1140,10 +1318,11 @@ export class DrftLoader {
  * decoder that had no chance with them. Naming each codec and returning `null` for the one that is
  * not an encoded image makes the omission a value rather than a default, and lets a test say so.
  */
-export function imageTypeFor(codec: number): string {
+export function imageTypeFor(codec: number): string | null {
   if (codec === CODEC_PNG) return 'image/png';
   if (codec === CODEC_WEBP) return 'image/webp';
-  return 'image/jpeg';
+  if (codec === CODEC_JPEG) return 'image/jpeg';
+  return null;
 }
 
 /**
@@ -1228,7 +1407,14 @@ async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<
       AS_AUTHORED,
     );
   }
-  const blob = new Blob([texture.bytes.slice()], { type: imageTypeFor(texture.codec) });
+  const type = imageTypeFor(texture.codec);
+  if (type === null) {
+    throw new DrftError(
+      `texture codec ${texture.codec} is not one this loader can decode; bake it again with a ` +
+        'current baker',
+    );
+  }
+  const blob = new Blob([texture.bytes.slice()], { type });
   if (longestSide === undefined) return await createImageBitmap(blob, AS_AUTHORED);
   /*
    * Resized while it decodes, which is the point: asking for a 256 pixel version of a 2048

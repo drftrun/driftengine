@@ -46,6 +46,81 @@ const CONTENTION_BAND_M = 3;
 /** Sort keys for the shadow list, which is ordered independently of the shaded one. */
 const shadowRank = new Float32Array(POINT_SHADOW_POOL);
 
+/**
+ * Every light in range this frame, by source index and squared distance, before the nearest are
+ * chosen. Grown when a world offers more than it has held, and never shrunk, so a frame allocates
+ * only when the world has grown. Float64, so two lights a hair apart are ordered by their real
+ * distances rather than by what survives a float's rounding.
+ */
+let candidateIndex = new Int32Array(64);
+let candidateDistance = new Float64Array(64);
+
+function growCandidates(needed: number): void {
+  if (needed <= candidateIndex.length) return;
+  const size = Math.max(needed, candidateIndex.length * 2);
+  const index = new Int32Array(size);
+  const distance = new Float64Array(size);
+  index.set(candidateIndex);
+  distance.set(candidateDistance);
+  candidateIndex = index;
+  candidateDistance = distance;
+}
+
+/** Whether candidate `a` goes before candidate `b`: nearer, or as near and offered first. */
+function before(a: number, b: number): boolean {
+  const da = candidateDistance[a] ?? 0;
+  const db = candidateDistance[b] ?? 0;
+  return da < db || (da === db && (candidateIndex[a] ?? 0) < (candidateIndex[b] ?? 0));
+}
+
+function swap(a: number, b: number): void {
+  const index = candidateIndex[a] ?? 0;
+  const distance = candidateDistance[a] ?? 0;
+  candidateIndex[a] = candidateIndex[b] ?? 0;
+  candidateDistance[a] = candidateDistance[b] ?? 0;
+  candidateIndex[b] = index;
+  candidateDistance[b] = distance;
+}
+
+/**
+ * Move the `keep` nearest of the first `count` candidates into `[0, keep)`, in no order: a
+ * quickselect, linear on average. The pivot is the median of three, which keeps a list that
+ * arrives already sorted — a world laid out along the camera's path — away from the quadratic case.
+ */
+function chooseNearest(count: number, keep: number): void {
+  let lo = 0;
+  let hi = count - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (before(mid, lo)) swap(mid, lo);
+    if (before(hi, lo)) swap(hi, lo);
+    if (before(hi, mid)) swap(hi, mid);
+    swap(mid, hi);
+    let store = lo;
+    for (let at = lo; at < hi; at++) {
+      if (before(at, hi)) {
+        swap(at, store);
+        store++;
+      }
+    }
+    swap(store, hi);
+    if (store === keep || store === keep - 1) return;
+    if (store < keep) lo = store + 1;
+    else hi = store - 1;
+  }
+}
+
+/** Sort the first `count` candidates nearest first. An insertion sort: `count` is a slot budget. */
+function sortCandidates(count: number): void {
+  for (let at = 1; at < count; at++) {
+    let back = at;
+    while (back > 0 && before(back, back - 1)) {
+      swap(back, back - 1);
+      back--;
+    }
+  }
+}
+
 export interface PointLightSource {
   x: number;
   y: number;
@@ -105,6 +180,15 @@ export interface PointLightSource {
    * They are floor lighting 35 cm off the deck and were never meant to cast at all.
    */
   castsShadow?: boolean;
+  /**
+   * Whether a DriftLight field also sums this light (`createLightField` sets it).
+   *
+   * Then the lit shader shades it exactly only where the choice is complete and lets the field's
+   * summed light take over past it, so the light is never counted twice. Carried to the shader as
+   * the sign of the light's weight, which both light paths already have: no new storage on a part
+   * whose uniform budget has none to spare.
+   */
+  inLightField?: boolean;
 }
 
 export interface PointLightBuffer {
@@ -179,6 +263,13 @@ export interface PointLightBuffer {
    */
   readonly shadowIndex: Int32Array;
   shadowCount: number;
+  /**
+   * How far from the selection's centre the choice is complete for DriftLight field lights: a
+   * point nearer than this is reached only by field lights chosen at full strength. A field light
+   * left out at distance d reaching r first reaches d - r; one dimmed at the cut counts as left
+   * out. At most the view range, past which nothing is chosen.
+   */
+  complete: number;
 }
 
 /**
@@ -213,6 +304,7 @@ export function createPointLightBuffer(capacity: number = MAX_POINT_LIGHTS): Poi
     scratchDistance: new Float32Array(Math.max(shaded, POINT_SHADOW_POOL)),
     shadowIndex: new Int32Array(POINT_SHADOW_POOL),
     shadowCount: 0,
+    complete: 0,
   };
 }
 
@@ -268,6 +360,7 @@ export function selectPointLights(
    * shader binds, which is the case where nothing is contested and nothing dims.
    */
   let cutSq = Infinity;
+  let candidateCount = 0;
 
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
     const light = sources[sourceIndex];
@@ -305,84 +398,14 @@ export function selectPointLights(
      *
      * Sharing one sorted list is what made them drift apart, so they do not share one.
      */
-    let slot = out.count;
-    while (slot > 0 && (out.scratchDistance[slot - 1] ?? 0) > distanceSq) slot--;
-    if (slot >= shadedCapacity) {
-      // Rejected outright, so it is a candidate for the boundary the set fades against.
-      if (distanceSq < cutSq) cutSq = distanceSq;
-    } else {
-      // Full, so making room drops whoever was last off the end — and that is the
-      // nearest light not in the set unless something nearer is rejected later.
-      if (out.count >= shadedCapacity) {
-        const displaced = out.scratchDistance[shadedCapacity - 1] ?? Infinity;
-        if (displaced < cutSq) cutSq = displaced;
-      }
-      const last = Math.min(out.count, shadedCapacity - 1);
-      for (let index = last; index > slot; index--) {
-        out.scratchDistance[index] = out.scratchDistance[index - 1] ?? 0;
-        out.radii[index] = out.radii[index - 1] ?? 0;
-        out.sourceRadii[index] = out.sourceRadii[index - 1] ?? 0;
-        out.sourceIndex[index] = out.sourceIndex[index - 1] ?? -1;
-        for (let component = 0; component < 3; component++) {
-          out.positions[index * 3 + component] = out.positions[(index - 1) * 3 + component] ?? 0;
-          out.colors[index * 3 + component] = out.colors[(index - 1) * 3 + component] ?? 0;
-          out.directions[index * 3 + component] = out.directions[(index - 1) * 3 + component] ?? 0;
-        }
-        out.coneCos[index * 2] = out.coneCos[(index - 1) * 2] ?? 0;
-        out.coneCos[index * 2 + 1] = out.coneCos[(index - 1) * 2 + 1] ?? 0;
-        out.iesProfiles[index] = out.iesProfiles[index - 1] ?? -1;
-      }
-      out.scratchDistance[slot] = distanceSq;
-      out.sourceIndex[slot] = sourceIndex;
-      out.radii[slot] = light.radius;
-      out.sourceRadii[slot] = Math.max(light.sourceRadius, 0);
-      out.positions[slot * 3] = light.x;
-      out.positions[slot * 3 + 1] = light.y;
-      out.positions[slot * 3 + 2] = light.z;
-      const scale = flickerScale(light, timeSeconds);
-      out.colors[slot * 3] = light.r * scale;
-      out.colors[slot * 3 + 1] = light.g * scale;
-      out.colors[slot * 3 + 2] = light.b * scale;
-
-      /*
-       * **Normalised here rather than trusted**, because the cone is a comparison against a cosine
-       * and an un-normalised direction scales that cosine — so a vector of length 2 gives a cone of
-       * the wrong width, which reads as the angle having been set wrong rather than the vector.
-       * A zero-length direction is a light that declared no cone, and it takes the open pair.
-       */
-      const dx = light.dirX ?? 0;
-      const dy = light.dirY ?? 0;
-      const dz = light.dirZ ?? 0;
-      const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const aimed = length > 1e-6 && light.coneOuterDeg !== undefined;
-      const inverse = aimed ? 1 / length : 0;
-      out.directions[slot * 3] = dx * inverse;
-      out.directions[slot * 3 + 1] = dy * inverse;
-      out.directions[slot * 3 + 2] = dz * inverse;
-      if (aimed) {
-        /*
-         * Clamped so the inner edge never passes the outer. A caller that swaps them would
-         * otherwise get `smoothstep` with its edges inverted, which is a cone that is dark in the
-         * middle and bright at the rim — a picture nobody would attribute to two numbers being the
-         * wrong way round.
-         */
-        const outerDeg = Math.min(89.9, Math.max(0, light.coneOuterDeg ?? 45));
-        const innerDeg = Math.min(outerDeg, Math.max(0, light.coneInnerDeg ?? outerDeg * 0.75));
-        out.coneCos[slot * 2] = Math.cos((innerDeg * Math.PI) / 180);
-        out.coneCos[slot * 2 + 1] = Math.cos((outerDeg * Math.PI) / 180);
-      } else {
-        out.coneCos[slot * 2] = POINT_LIGHT_COS_INNER;
-        out.coneCos[slot * 2 + 1] = POINT_LIGHT_COS_OUTER;
-      }
-      /*
-       * The profile applies to a point light as readily as to a spot: a bare bulb has a measured
-       * distribution too, and the arithmetic does not care whether a cone is also being applied.
-       * Restricting it to spots would be a smaller feature for no saving.
-       */
-      out.iesProfiles[slot] = light.iesProfile ?? -1;
-
-      if (out.count < shadedCapacity) out.count++;
-    }
+    /*
+     * A candidate for the shaded list. Which of them win is decided once every source has been
+     * seen, below, rather than by keeping a sorted list as they arrive: see `chooseNearest`.
+     */
+    growCandidates(candidateCount + 1);
+    candidateIndex[candidateCount] = sourceIndex;
+    candidateDistance[candidateCount] = distanceSq;
+    candidateCount++;
 
     /*
      * Inside its own radius, so it is lighting something and therefore has something
@@ -421,6 +444,85 @@ export function selectPointLights(
   }
 
   /*
+   * The nearest `shadedCapacity` candidates, nearest first, and the nearest one left out.
+   *
+   * **Partitioned, then only the winners sorted.** This kept a sorted list as the sources arrived,
+   * shifting fourteen fields a slot to make room, which is O(sources × slots): 3.2 ms a frame to
+   * choose 320 of a courtyard's 10,000 candles, most of it moving lights that were then displaced.
+   * A quickselect finds the winners in time linear in the sources and the sort touches only them,
+   * and each winner is packed once. Ties go to the earlier source, as they did.
+   */
+  const chosen = Math.min(candidateCount, shadedCapacity);
+  let complete = viewRange;
+  if (candidateCount > shadedCapacity) {
+    chooseNearest(candidateCount, shadedCapacity);
+    for (let at = shadedCapacity; at < candidateCount; at++) {
+      const distanceSq = candidateDistance[at] ?? Infinity;
+      if (distanceSq < cutSq) cutSq = distanceSq;
+      const left = sources[candidateIndex[at] ?? 0];
+      if (left?.inLightField === true) {
+        complete = Math.min(complete, Math.sqrt(distanceSq) - left.radius);
+      }
+    }
+  }
+  sortCandidates(chosen);
+  for (let slot = 0; slot < chosen; slot++) {
+    const sourceIndex = candidateIndex[slot] ?? 0;
+    const light = sources[sourceIndex];
+    if (light === undefined) continue;
+    const distanceSq = candidateDistance[slot] ?? 0;
+    out.scratchDistance[slot] = distanceSq;
+    out.sourceIndex[slot] = sourceIndex;
+    out.radii[slot] = light.radius;
+    out.sourceRadii[slot] = Math.max(light.sourceRadius, 0);
+    out.positions[slot * 3] = light.x;
+    out.positions[slot * 3 + 1] = light.y;
+    out.positions[slot * 3 + 2] = light.z;
+    const scale = flickerScale(light, timeSeconds);
+    out.colors[slot * 3] = light.r * scale;
+    out.colors[slot * 3 + 1] = light.g * scale;
+    out.colors[slot * 3 + 2] = light.b * scale;
+
+    /*
+     * **Normalised here rather than trusted**, because the cone is a comparison against a cosine
+     * and an un-normalised direction scales that cosine — so a vector of length 2 gives a cone of
+     * the wrong width, which reads as the angle having been set wrong rather than the vector.
+     * A zero-length direction is a light that declared no cone, and it takes the open pair.
+     */
+    const dx = light.dirX ?? 0;
+    const dy = light.dirY ?? 0;
+    const dz = light.dirZ ?? 0;
+    const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const aimed = length > 1e-6 && light.coneOuterDeg !== undefined;
+    const inverse = aimed ? 1 / length : 0;
+    out.directions[slot * 3] = dx * inverse;
+    out.directions[slot * 3 + 1] = dy * inverse;
+    out.directions[slot * 3 + 2] = dz * inverse;
+    if (aimed) {
+      /*
+       * Clamped so the inner edge never passes the outer. A caller that swaps them would
+       * otherwise get `smoothstep` with its edges inverted, which is a cone that is dark in the
+       * middle and bright at the rim — a picture nobody would attribute to two numbers being the
+       * wrong way round.
+       */
+      const outerDeg = Math.min(89.9, Math.max(0, light.coneOuterDeg ?? 45));
+      const innerDeg = Math.min(outerDeg, Math.max(0, light.coneInnerDeg ?? outerDeg * 0.75));
+      out.coneCos[slot * 2] = Math.cos((innerDeg * Math.PI) / 180);
+      out.coneCos[slot * 2 + 1] = Math.cos((outerDeg * Math.PI) / 180);
+    } else {
+      out.coneCos[slot * 2] = POINT_LIGHT_COS_INNER;
+      out.coneCos[slot * 2 + 1] = POINT_LIGHT_COS_OUTER;
+    }
+    /*
+     * The profile applies to a point light as readily as to a spot: a bare bulb has a measured
+     * distribution too, and the arithmetic does not care whether a cone is also being applied.
+     * Restricting it to spots would be a smaller feature for no saving.
+     */
+    out.iesProfiles[slot] = light.iesProfile ?? -1;
+  }
+  out.count = chosen;
+
+  /*
    * How present each of them is, now that the set — and with it the boundary — is
    * known. A second pass over at most eight entries, which is why the cut can be a
    * fact about the whole frame rather than a guess made light by light.
@@ -434,8 +536,18 @@ export function selectPointLights(
     const cullDistance = viewRange + (out.radii[index] ?? 0);
     const arriving = (cullDistance - distance) / FADE_BAND_M;
     const contested = (cut - distance) / CONTENTION_BAND_M;
-    out.weights[index] = Math.max(0, Math.min(1, arriving, contested));
+    const field = sources[out.sourceIndex[index] ?? 0]?.inLightField === true;
+    /*
+     * **A field light does not fade in at the edge of the view range**, because the field is what
+     * stands in for it past the choice: the fade exists so a light does not switch on in front of
+     * the player, and a light the field sums was never off. Kept, it dimmed every light across a
+     * short range, and a dimmed light is an incomplete one, so the field took over at the camera.
+     */
+    const weight = Math.max(0, Math.min(1, field ? contested : Math.min(arriving, contested)));
+    out.weights[index] = field ? -weight : weight;
+    if (field && weight < 1) complete = Math.min(complete, distance - (out.radii[index] ?? 0));
   }
+  out.complete = Math.max(0, complete);
 }
 
 function flickerScale(light: PointLightSource, timeSeconds: number): number {

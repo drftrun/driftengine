@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { DEFAULT_UPLOAD_MS_PER_FRAME, isDocumentResponse, mayBeginMore } from './uploadBudget.ts';
-import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP } from '@driftengine/drft';
+import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP, SDFV_WHOLE_FILE } from '@driftengine/drft';
 import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
 import { writeDrft } from '@driftengine/drft';
 import type { DrftMaterial } from '@driftengine/drft';
@@ -132,6 +132,16 @@ test('every encoded codec names its own type rather than falling through to one'
   expect(imageTypeFor(CODEC_JPEG)).toBe('image/jpeg');
 });
 
+test('A CODEC WITH NO IMAGE DECODER NAMES NO TYPE, rather than being called a JPEG', () => {
+  /*
+   * Raw is four bytes a pixel rather than an encoded image, and 99 stands for a codec a later
+   * format adds. Either labelled `image/jpeg` reaches a decoder with no chance of reading it, and
+   * the failure then names JPEG rather than the codec.
+   */
+  expect(imageTypeFor(CODEC_RAW)).toBeNull();
+  expect(imageTypeFor(99)).toBeNull();
+});
+
 /*
  * **The map indices the container carries have to reach the part, and one of them did not.**
  *
@@ -152,6 +162,9 @@ function fakeRenderer(): RendererApi {
     createSurfaceTexture: () => ({ id: next++ }),
     updateSurfaceTexture: () => {},
     disposeSurfaceTexture: () => {},
+    createInstanced: (mesh: unknown, capacity: number) => ({ id: next++, mesh, capacity }),
+    uploadInstanced: () => {},
+    disposeInstanced: () => {},
   } as unknown as RendererApi;
 }
 
@@ -323,6 +336,39 @@ test('hands on the skin, the clips and the hierarchy the container carried', asy
   expect(loader.skins[0]?.joints.map((joint) => joint.name)).toEqual(['root', 'elbow']);
   expect(loader.clips.map((clip) => clip.name)).toEqual(['walk']);
   expect(loader.nodes.map((node) => node.name)).toEqual(['root']);
+});
+
+/* The same rule for the lamps: a field the container carries and the loader drops is invisible. */
+test('HANDS ON THE LIGHTS THE FILE CARRIES, and none for a file that carries none', async () => {
+  const loader = new DrftLoader(fakeRenderer(), {});
+  const drft = writeDrft({
+    head: { name: 'lit' },
+    meshes: [triangle()],
+    lights: [
+      {
+        kind: 'point',
+        name: 'lamp',
+        position: [1, 2, 3],
+        direction: [0, 0, -1],
+        color: [1, 0.5, 0.25],
+        intensity: 40,
+        range: 0,
+        innerConeRad: 0,
+        outerConeRad: 0.5,
+      },
+    ],
+  });
+  await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+  expect(loader.lights.map((light) => [light.name, ...light.position])).toEqual([
+    ['lamp', 1, 2, 3],
+  ]);
+  const plain = new DrftLoader(fakeRenderer(), {});
+  await plain.consume(new Response(writeDrft({ meshes: [triangle()] })), {
+    footprint: 1,
+    height: 1,
+    baseY: 0,
+  });
+  expect(plain.lights).toEqual([]);
 });
 
 /* A file with no rig answers empty rather than undefined, so a caller needs no branch. */
@@ -550,4 +596,207 @@ test('every image decodes premultiplied and with no colour conversion, preview a
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+/*
+ * **A mesh the file draws many times arrives as one part with its placements, never merged.** A
+ * merge would bake one copy's geometry into a group and lose the other ten thousand; an instanced
+ * part draws them all from one mesh and one upload.
+ */
+async function instancedParts(fitTo: Parameters<DrftLoader['consume']>[1]) {
+  const loader = new DrftLoader(fakeRenderer(), {});
+  const at = (x: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1];
+  const drft = writeDrft({
+    head: { name: 'copies' },
+    meshes: [triangle(), triangle()],
+    materials: [material({ name: 'wall' }), material({ name: 'candle' })],
+    instances: [{ mesh: 1, transforms: new Float32Array([...at(0), ...at(10), ...at(20)]) }],
+  });
+  await loader.consume(new Response(drft), fitTo);
+  for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+  return loader;
+}
+
+test('A MESH DRAWN MANY TIMES ARRIVES AS ONE INSTANCED PART, with every placement', async () => {
+  const loader = await instancedParts({ fit: 'none' });
+  const instanced = loader.parts.filter((part) => part.instances !== null);
+  expect(instanced).toHaveLength(1);
+  const data = instanced[0]?.instances?.data;
+  expect(data?.count).toBe(3);
+  /* No fit: the placements are the file's, the third moved 20 along x. */
+  expect(data?.models[2 * 16 + 12]).toBeCloseTo(20, 6);
+  /* And the other mesh is an ordinary part, as it always was. */
+  expect(loader.parts.filter((part) => part.instances === null).length).toBeGreaterThan(0);
+});
+
+test('a fitted model moves its copies with its geometry', async () => {
+  const loader = await instancedParts({ footprint: 1, height: 1, baseY: 0 });
+  const placement = loader.placement;
+  expect(placement).not.toBeNull();
+  const s = placement?.scale ?? 0;
+  const models = loader.parts.find((part) => part.instances !== null)?.instances?.data.models;
+  /*
+   * The invariant, for the triangle's corner p = (1, 0, 0) of the copy moved u = (20, 0, 0): the
+   * fitted prototype puts p at F(p) = s·p + t, and the copy's matrix must carry that to F(p + u),
+   * where the fit would have put the copy's own vertex. For a pure move that is F(p) + s·u.
+   */
+  const fitted = s * 1 + (placement?.x ?? 0);
+  const expected = s * (1 + 20) + (placement?.x ?? 0);
+  expect(fitted + (models?.[2 * 16 + 12] ?? NaN)).toBeCloseTo(expected, 5);
+  expect(models?.[2 * 16 + 13]).toBeCloseTo(0, 5);
+  /* And the copy is not scaled a second time: the prototype already carries the fit. */
+  expect(models?.[2 * 16 + 0]).toBeCloseTo(1, 6);
+});
+
+test('A FILE WHOSE EVERY PART IS INSTANCED STILL LETS ITS OUTLINE GO when the parts are in', async () => {
+  /*
+   * The outline leaves when the merged groups swap in, and the swap waited on there being a merged
+   * group. A file whose every mesh is instanced has none, so its outline stayed on screen over the
+   * finished model for ever: a bought candle pack drew a pale hull over ten thousand candles.
+   */
+  const loader = new DrftLoader(fakeRenderer(), { outline: true });
+  const at = (x: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1];
+  const drft = writeDrft({
+    head: { name: 'only copies' },
+    meshes: [triangle()],
+    lods: [triangle()],
+    materials: [material({ name: 'candle' })],
+    instances: [{ mesh: 0, transforms: new Float32Array([...at(0), ...at(5)]) }],
+  });
+  await loader.consume(new Response(drft), { fit: 'none' });
+  for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+  expect(loader.parts).toHaveLength(1);
+  expect(loader.parts[0]?.instances).not.toBeNull();
+});
+
+/**
+ * A part's surface frame reaches the renderer, alone and merged.
+ *
+ * **The frame was dropped on both paths until 4.4.0, and nothing said so.** Every part went
+ * through a `MeshBuilder` to be moved into the fit, and every merge through another, and the
+ * builder carries no tangents: so a file that baked a frame per vertex for its normal maps drew
+ * with the derived one, and the only place the difference shows is the tilt of a relief under a
+ * low light. The copies were also most of a heavy load's main-thread time.
+ */
+test('A PART KEEPS THE TANGENTS ITS FILE CARRIED, on its own and merged with another', async () => {
+  const built: MeshData[] = [];
+  const renderer = fakeRenderer();
+  const spy = {
+    ...renderer,
+    createMesh: (data: MeshData) => {
+      built.push(data);
+      return renderer.createMesh(data);
+    },
+  } as unknown as RendererApi;
+  const framed = (): MeshData => ({
+    ...triangle(),
+    tangents: new Float32Array([1, 0, 0, -1, 1, 0, 0, -1, 1, 0, 0, -1]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+  });
+
+  const loader = new DrftLoader(spy, {});
+  const drft = writeDrft({
+    head: { name: 'framed' },
+    /* The first two are alike to a draw and merge; the third is alone. */
+    meshes: [framed(), framed(), framed()],
+    materials: [
+      material({ name: 'wall', albedo: 0 }),
+      material({ name: 'pier', albedo: 0 }),
+      material({ name: 'door', albedo: 1 }),
+    ],
+  });
+  await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+  for (let frame = 0; frame < 32; frame++) loader.update(1 / 60);
+
+  const merged = built.find((data) => data.positions.length === 18);
+  const alone = built.find((data) => data.positions.length === 9);
+  expect(merged, 'the two walls came through as one mesh').toBeDefined();
+  expect(alone, 'and the door on its own').toBeDefined();
+  expect([...(merged?.tangents ?? [])].filter((_, i) => i % 4 === 3)).toEqual([
+    -1, -1, -1, -1, -1, -1,
+  ]);
+  expect([...(alone?.tangents ?? [])].filter((_, i) => i % 4 === 3)).toEqual([-1, -1, -1]);
+});
+
+/**
+ * **`ready` is the picture being right, as its own documentation says it is.** The loader said it
+ * once the parts were merged, with images still decoding behind it, so a consumer gating on it
+ * judged surfaces that were still untextured. One baked a grid of light probes at that moment and
+ * held the hour: white stone bounced into every probe and the courtyard came out overexposed on
+ * the runs where the decodes lost the race, and correct on the runs where they won.
+ */
+test('READY WAITS FOR EVERY IMAGE TO BE ON THE GPU, not only for the parts', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(async () => {
+      await held;
+      return { width: 4, height: 4, close: () => {} };
+    }),
+  );
+  try {
+    const loader = new DrftLoader(fakeRenderer(), {});
+    const drft = writeDrft({
+      head: { name: 'painted' },
+      meshes: [triangle()],
+      materials: [material({ name: 'wall', albedo: 0 })],
+      textures: [
+        { name: 'albedo.png', codec: CODEC_PNG, width: 4, height: 4, bytes: new Uint8Array(8) },
+      ],
+    });
+    await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+    for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+    expect(loader.parts, 'the part is in and merged').toHaveLength(1);
+    expect(loader.progress.phase, 'while its image is still decoding').not.toBe('ready');
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+    expect(loader.progress.phase).toBe('ready');
+    expect(loader.progress.imagesDone).toBe(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+/**
+ * **Where each field stands, which is the loader's to say.** The fields are in the file's own
+ * space and the loader moved the model into its fit, so a field handed on as it was read would
+ * trace light through a courtyard somewhere the courtyard is not. A mesh drawn many times is
+ * traced once a copy, at that copy's placement.
+ */
+test('A FIELD STANDS WHERE THE LOADER PUT THE MODEL, once for the file and once a copy for a copied mesh', async () => {
+  const loader = new DrftLoader(fakeRenderer(), {});
+  const at = (x: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1];
+  const field = new Float32Array(8).fill(1);
+  const bounds = new Float32Array([0, 0, 0, 1, 1, 1]);
+  const drft = writeDrft({
+    head: { name: 'traced' },
+    meshes: [triangle(), triangle()],
+    materials: [material({ name: 'wall' }), material({ name: 'pillar' })],
+    instances: [{ mesh: 1, transforms: new Float32Array([...at(0), ...at(10)]) }],
+    fields: [
+      { mesh: SDFV_WHOLE_FILE, dims: [2, 2, 2], bounds, field },
+      { mesh: 1, dims: [2, 2, 2], bounds, field },
+    ],
+  });
+  /* A fit of scale 2 about the model's footprint, so the placement is not the identity. */
+  await loader.consume(new Response(drft), { footprint: 2, height: 2, baseY: 0 });
+  for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+
+  const placements = loader.fields;
+  const whole = placements.filter((p) => p.mesh === SDFV_WHOLE_FILE);
+  const copies = placements.filter((p) => p.mesh === 1);
+  expect(whole).toHaveLength(1);
+  expect(copies).toHaveLength(2);
+  const scale = whole[0]?.model[0] ?? 0;
+  expect(scale, 'the fit scales the field with the model').not.toBe(1);
+  expect(whole[0]?.model[5]).toBeCloseTo(scale, 6);
+  /* The second copy stands ten units along x in the file, so ten times the fit's scale further. */
+  const dx = (copies[1]?.model[12] ?? 0) - (copies[0]?.model[12] ?? 0);
+  expect(dx).toBeCloseTo(10 * scale, 5);
+  expect(Array.from(whole[0]?.source.field ?? [])).toEqual(Array.from(field));
 });

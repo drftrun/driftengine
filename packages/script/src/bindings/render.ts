@@ -26,7 +26,7 @@ export const RENDER_MODULE = 'drift/render';
  * from what the device can afford, and is clamped by `capabilityClamp` against what the adapter
  * actually reports; a script that wrote to one would be overruling a decision made about hardware
  * it cannot see, and two machines running the same script would draw different pictures for
- * reasons the script did not choose. So this module binds the seven dials and none of the ceilings.
+ * reasons the script did not choose. So this module binds the dials and none of the ceilings.
  *
  * ## Writes only, and the reason is the same one
  *
@@ -86,6 +86,15 @@ export const RENDER_CAPABILITIES: readonly CapabilityDefinition[] = [
     [R, { name: 'scale', type: 'f32' }],
     "How much of the frame's bloom ceiling to take, 0 to 1. Held until changed. Does nothing " +
       "when the quality profile's `bloom` is 0, because the chain is never built.",
+  ),
+  define(
+    'bloomAbove',
+    [R, { name: 'scale', type: 'f32' }, { name: 'threshold', type: 'f32' }],
+    'How much of the bloom ceiling to take, 0 to 1, and how bright a pixel must be before it ' +
+      'blooms, in scene units, above 0. Both held until changed. The threshold is compared before ' +
+      'exposure, so a script that moves `exposure` through a day moves this with it: pass the ' +
+      'brightness wanted on screen over the exposure, or sunlit stone blooms at noon and lamps ' +
+      'never do at night.',
   ),
   define(
     'exposure',
@@ -173,6 +182,8 @@ export const RENDER_CAPABILITIES: readonly CapabilityDefinition[] = [
 export function renderImplementation(): Record<string, unknown> {
   return {
     bloom: (renderer: RendererApi, scale: number) => renderer.setBloom(scale),
+    bloomAbove: (renderer: RendererApi, scale: number, threshold: number) =>
+      renderer.setBloom(scale, threshold),
     exposure: (renderer: RendererApi, stops: number) => renderer.setOutputExposure(stops),
     motionBlur: (renderer: RendererApi, scale: number) => renderer.setCameraMotionBlur(scale),
     speedBlur: (renderer: RendererApi, strength: number) => renderer.setSpeedRush(strength),

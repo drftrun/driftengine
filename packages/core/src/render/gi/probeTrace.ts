@@ -62,8 +62,10 @@ export const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 /**
  * How far the set turns between one refresh and the next, in turns.
  *
- * The golden ratio's fractional part: successive frames land their offsets as far from each other
+ * The golden ratio's fractional part: successive turns land their offsets as far from each other
  * as the sequence allows, for the same reason the spiral's own points do, and it never repeats.
+ * The WebGPU bake holds the turn at 0, because a set that turns makes every refresh a new estimate
+ * and a still scene flicker; see `ProbeBaker.bake`.
  */
 export const FRAME_TURN = 0.618033988749895;
 

@@ -50,15 +50,23 @@ describe('countUniformVectors', () => {
      * The two numbers a consumer counted on an Adreno 740 and confirmed on the device by linking
      * both permutations there: 440 is refused where the part offers 256, and 248 links. They are
      * pinned here because the whole budget rests on this function agreeing with a real driver.
+     *
+     * **Each is one more since two-sided surfaces**, 441 and 249: \`uDoubleSided\` is an int, and a
+     * scalar takes a row of its own. The device's two numbers were 440 and 248 for the source it
+     * linked; the count moves by exactly what the source added.
+     *
+     * **And two more since DriftLight**, 443 and 251: its two vectors, and no more, because the
+     * eight-light rung is then 254 of this part's 256. A first cut at five vectors put that rung at
+     * 258 and dropped the part to four lights, which is what this pin is here to catch.
      */
-    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(440);
+    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(443);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,
       environmentProbe: false,
       nightEmissive: false,
     });
-    expect(countUniformVectors(withoutPointShadows)).toBe(248);
+    expect(countUniformVectors(withoutPointShadows)).toBe(251);
   });
 });
 
@@ -177,7 +185,7 @@ it('reports what the ceiling would have spent even when it could not have it', (
     builds++;
     return lit(budget);
   });
-  expect(plan.ceilingVectors).toBe(440);
+  expect(plan.ceilingVectors).toBe(443);
   expect(plan.vectors).toBeLessThan(plan.ceilingVectors);
   expect(builds, 'one build per rung tried and not one more').toBe(3);
 });

@@ -34,6 +34,14 @@ export interface ProbeGridOptions {
    * convolution and the shader instead of a grid path and a legacy path that drift.
    */
   readonly counts: Vec3;
+  /**
+   * Blend each sweep of bakes into the next rather than showing each probe's bake the moment it
+   * lands. For a grid re-baked a probe a frame under a moving light, where each probe otherwise
+   * jumps once a sweep and the jumps travel across the scene as a pass of light. Costs three times
+   * the layers and a sweep of lag; ignored where indirect light is traced, which writes the grid's
+   * layers itself. See `probeSweeps.ts`. Off by default.
+   */
+  readonly crossfade?: boolean;
 }
 
 /**
@@ -97,15 +105,17 @@ export function sameGrid(a: ProbeGrid, b: ProbeGrid): boolean {
     if (a.origin[axis] !== b.origin[axis]) return false;
     if (a.spacing[axis] !== b.spacing[axis]) return false;
   }
-  return true;
+  return a.crossfade === b.crossfade;
 }
 
 export class ProbeGrid {
   readonly origin: Vec3;
   readonly spacing: Vec3;
   readonly counts: Vec3;
-  /** Probes in total, which is also the array's layer count. */
+  /** Probes in total: the array's layer count, or a third of it for a crossfading grid. */
   readonly layers: number;
+  /** Whether sweeps blend into one another. See `ProbeGridOptions.crossfade`. */
+  readonly crossfade: boolean;
   /** The reciprocal of the spacing, because the shader multiplies and so does everything here. */
   readonly invSpacing: Vec3;
 
@@ -149,6 +159,7 @@ export class ProbeGrid {
     this.invSpacing = [1 / this.spacing[0], 1 / this.spacing[1], 1 / this.spacing[2]];
     this.counts = counts;
     this.layers = layers;
+    this.crossfade = options.crossfade === true;
   }
 
   /**

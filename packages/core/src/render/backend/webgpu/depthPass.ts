@@ -1,6 +1,9 @@
 import {
   DEPTH_BINDINGS,
+  DEPTH_CUTOUT_FRAG_WGSL,
+  DEPTH_CUTOUT_VERT_WGSL,
   DEPTH_FRAG_WGSL,
+  DEPTH_INSTANCED_CUTOUT_VERT_WGSL,
   DEPTH_INSTANCED_VERT_WGSL,
   DEPTH_SKINNED_VERT_WGSL,
   DEPTH_VERT_WGSL,
@@ -20,6 +23,15 @@ import { shaderModule } from './shaderModules.ts';
 export const DEPTH_VERT_FIELDS = DEPTH_BINDINGS.DEPTH_VERT.fields;
 export const DEPTH_VERT_SIZE = DEPTH_BINDINGS.DEPTH_VERT.uniformSize;
 export const DEPTH_FRAG_SIZE = DEPTH_BINDINGS.DEPTH_FRAG.uniformSize;
+/*
+ * The cutout variants' vertex blocks. The rigid one is the plain block with `uUvScale` and
+ * `uAlphaCutout` after every other field, so a slot written for it is written with the plain
+ * offsets plus these two; the instanced one has no model and no wind, so its two sit earlier.
+ */
+export const DEPTH_CUTOUT_VERT_FIELDS = DEPTH_BINDINGS.DEPTH_CUTOUT_VERT.fields;
+export const DEPTH_CUTOUT_VERT_SIZE = DEPTH_BINDINGS.DEPTH_CUTOUT_VERT.uniformSize;
+export const DEPTH_INSTANCED_CUTOUT_VERT_FIELDS = DEPTH_BINDINGS.DEPTH_INSTANCED_CUTOUT_VERT.fields;
+const CUTOUT_MAP = DEPTH_BINDINGS.DEPTH_CUTOUT_FRAG.textures.uCutoutMap;
 /** Re-exported so the scatter depth pass can pair with the same fragment stage. */
 export { DEPTH_FRAG_WGSL };
 export const DEPTH_FRAG_BINDING = DEPTH_BINDINGS.DEPTH_FRAG.uniforms;
@@ -55,9 +67,15 @@ export function createDepthBindGroupLayout(
    * frame that skins nothing pays nothing at all.
    */
   skinned = false,
+  /**
+   * Whether this layout carries a cutout map, for a caster whose shape is in its texture's alpha.
+   * Separate for the palette's reason: the plain layout stays exactly what it was, and a frame with
+   * no cutout caster pays nothing.
+   */
+  cutout = false,
 ): GPUBindGroupLayout {
   return device.createBindGroupLayout({
-    label: skinned ? 'depth.layout.skinned' : 'depth.layout',
+    label: skinned ? 'depth.layout.skinned' : cutout ? 'depth.layout.cutout' : 'depth.layout',
     entries: [
       /* The texture and no sampler: the shader reads the palette with `textureLoad`, an integer
          coordinate with nothing to filter, which is what `flatPass.ts` binds for the same
@@ -74,7 +92,11 @@ export function createDepthBindGroupLayout(
       {
         binding: VERT_BINDING,
         visibility: VISIBILITY_VERTEX,
-        buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: DEPTH_VERT_SIZE },
+        buffer: {
+          type: 'uniform',
+          hasDynamicOffset: true,
+          minBindingSize: cutout ? DEPTH_CUTOUT_VERT_SIZE : DEPTH_VERT_SIZE,
+        },
       },
       {
         binding: FRAG_BINDING,
@@ -107,6 +129,22 @@ export function createDepthBindGroupLayout(
         visibility: VISIBILITY_FRAGMENT,
         sampler: { type: 'non-filtering' },
       },
+      /* A colour map sampled with its own filter and mips, so a leaf's edge in the map is the edge
+         a colour pass at that distance would draw. */
+      ...(cutout
+        ? [
+            {
+              binding: CUTOUT_MAP.texture,
+              visibility: VISIBILITY_FRAGMENT,
+              texture: { sampleType: 'float' as GPUTextureSampleType },
+            },
+            {
+              binding: CUTOUT_MAP.sampler,
+              visibility: VISIBILITY_FRAGMENT,
+              sampler: { type: 'filtering' as GPUSamplerBindingType },
+            },
+          ]
+        : []),
     ],
   });
 }
@@ -120,16 +158,35 @@ export function createDepthBindGroup(
   sampler: GPUSampler,
   /** The joint palette, for a layout built with `skinned`. Omit for the rigid layout. */
   palette: GPUTextureView | null = null,
+  /** The cutout map and its sampler, for a layout built with `cutout`. */
+  cutout: { readonly view: GPUTextureView; readonly sampler: GPUSampler } | null = null,
 ): GPUBindGroup {
   return device.createBindGroup({
-    label: palette === null ? 'depth.bindGroup' : 'depth.bindGroup.skinned',
+    label:
+      palette !== null
+        ? 'depth.bindGroup.skinned'
+        : cutout !== null
+          ? 'depth.bindGroup.cutout'
+          : 'depth.bindGroup',
     layout,
     entries: [
-      { binding: VERT_BINDING, resource: { buffer: perDraw, size: DEPTH_VERT_SIZE } },
+      {
+        binding: VERT_BINDING,
+        resource: {
+          buffer: perDraw,
+          size: cutout !== null ? DEPTH_CUTOUT_VERT_SIZE : DEPTH_VERT_SIZE,
+        },
+      },
       { binding: FRAG_BINDING, resource: { buffer: perPass, size: DEPTH_FRAG_SIZE } },
       { binding: PREVIOUS.texture, resource: previous },
       { binding: PREVIOUS.sampler, resource: sampler },
       ...(palette !== null ? [{ binding: DEPTH_PALETTE_BINDING.texture, resource: palette }] : []),
+      ...(cutout !== null
+        ? [
+            { binding: CUTOUT_MAP.texture, resource: cutout.view },
+            { binding: CUTOUT_MAP.sampler, resource: cutout.sampler },
+          ]
+        : []),
     ],
   });
 }
@@ -169,6 +226,8 @@ export function depthPipeline(
    * reclaims the two attribute locations the joint indices and weights occupy.
    */
   instanced = false,
+  /** Whether this pipeline casts a cutout: the variant that reads a map and discards by it. */
+  cutout = false,
 ): GPURenderPipeline {
   return cache.get(key, () => ({
     label: key,
@@ -176,17 +235,26 @@ export function depthPipeline(
     vertex: {
       module: shaderModule(
         device,
-        instanced
-          ? { label: 'depth.instanced.vert', code: DEPTH_INSTANCED_VERT_WGSL }
-          : skinned
-            ? { label: 'depth.skinned.vert', code: DEPTH_SKINNED_VERT_WGSL }
-            : { label: 'depth.vert', code: DEPTH_VERT_WGSL },
+        cutout
+          ? instanced
+            ? { label: 'depth.instanced.cutout.vert', code: DEPTH_INSTANCED_CUTOUT_VERT_WGSL }
+            : { label: 'depth.cutout.vert', code: DEPTH_CUTOUT_VERT_WGSL }
+          : instanced
+            ? { label: 'depth.instanced.vert', code: DEPTH_INSTANCED_VERT_WGSL }
+            : skinned
+              ? { label: 'depth.skinned.vert', code: DEPTH_SKINNED_VERT_WGSL }
+              : { label: 'depth.vert', code: DEPTH_VERT_WGSL },
       ),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),
     },
     fragment: {
-      module: shaderModule(device, { label: 'depth.frag', code: DEPTH_FRAG_WGSL }),
+      module: shaderModule(
+        device,
+        cutout
+          ? { label: 'depth.cutout.frag', code: DEPTH_CUTOUT_FRAG_WGSL }
+          : { label: 'depth.frag', code: DEPTH_FRAG_WGSL },
+      ),
       entryPoint: 'main',
       targets: [],
     },

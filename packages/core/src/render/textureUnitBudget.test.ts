@@ -189,15 +189,14 @@ test('the froxel table sits directly above the environment probe', () => {
   expect(CLUSTER_TABLE_TEXTURE_UNIT).toBeLessThan(GUARANTEED_UNITS);
 });
 
-test('a froxel holds exactly as many lights as the fixed budget, so the loop bound is unchanged', () => {
+test('a froxel holds at least the fixed budget, so the one loop bound covers both arms', () => {
   /*
-   * **The equality is load-bearing and is not a coincidence to be tidied away.** There is one
-   * light loop and its bound must be a constant, so a larger froxel cap would raise the bound for
-   * the fixed path too — a scene that never asks for clustering would carry a loop of 28 where it
-   * carries 16 today, on the same driver that faulted under the full shader. Raising
-   * `MAX_LIGHTS_PER_CLUSTER` means raising `MAX_POINT_LIGHTS` with it, or splitting the loop.
+   * **This was an equality until a candlelit interior needed more.** The loop's bound is the
+   * froxel cap now, and the fixed arm leaves it at `MAX_LIGHTS` of its own accord, which
+   * `flat.test.ts` pins in the source. What must still hold is that the bound is never below the
+   * fixed budget, or the fixed arm would stop short of its own lights.
    */
-  expect(MAX_LIGHTS_PER_CLUSTER).toBe(MAX_POINT_LIGHTS);
+  expect(MAX_LIGHTS_PER_CLUSTER).toBeGreaterThanOrEqual(MAX_POINT_LIGHTS);
 });
 
 test('the photometric atlas sits directly above the froxel table, with no gap', () => {

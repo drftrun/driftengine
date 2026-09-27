@@ -156,9 +156,9 @@ test('the sky shadow reaching emissive geometry keeps every cap', () => {
    * edge fades. `sunShade` has to *be* that function's result rather than anything
    * re-derived, or the emissive path grows its own uncapped copy of the shadow.
    */
-  expect(source).toContain('float sunShade = shadowFactor(ndl);');
+  expect(source).toContain('float sunShade = shadowFactor(max(surfaceNdl, 0.0));');
   expect(source, 'and the direct term still uses the same value').toContain(
-    'float direct = ndl * sunShade;',
+    'float direct = ndl * sunShade * sunFacing;',
   );
 });
 
@@ -216,7 +216,7 @@ test('a shining surface takes a highlight from the sun, and only where it is ask
      assertions are split to match — that it is built with the sun's shadow, and that it reaches
      `lit` — because the property under test is the shadow, not the line number. */
   expect(source, 'and it is shadowed like any other sunlight').toContain(
-    'uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade;',
+    'uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;',
   );
   /*
    * **Both halves, because the split is the whole point.** A dielectric's share goes in before the
@@ -467,8 +467,18 @@ test('every uniform the flat shader declares is uploaded somewhere', async () =>
     iesStart,
     (rendererSource ?? '').indexOf('\n  }\n', iesStart),
   );
+  /* And DriftLight's field, on the same reading again: bound by the pass, through its own method. */
+  expect(meshPass, 'the mesh pass binds the light field itself').toContain('this.bindDriftLight(');
+  const driftStart = (rendererSource ?? '').indexOf('private bindDriftLight(');
+  expect(driftStart, 'bindDriftLight must be findable').toBeGreaterThan(-1);
+  const driftBinder = (rendererSource ?? '').slice(
+    driftStart,
+    (rendererSource ?? '').indexOf('\n  }\n', driftStart),
+  );
 
-  const renderer = [meshPass, binder, clusterBinder, iesBinder, ...delegates].join('\n');
+  const renderer = [meshPass, binder, clusterBinder, iesBinder, driftBinder, ...delegates].join(
+    '\n',
+  );
 
   /** Written per draw or per material rather than when the pass is bound. */
   const writtenElsewhere = new Set([
@@ -780,9 +790,12 @@ test('the frame is only built under a uniform gate', () => {
 
 test('the varying selects between two frames rather than branching on one', () => {
   expect(source, 'a ternary, so no derivative sits under a varying').toContain(
-    'hasTangents != 0 ? attrT : derivedT',
+    'framed ? attrT : derivedT',
   );
+  /* The selector is the varying and the frame's own length, never a uniform-free branch. */
+  expect(source).toContain('bool framed = hasTangents != 0 && alongSq > 1e-8;');
   expect(source, 'and nothing branches on it').not.toContain('if (hasTangents');
+  expect(source).not.toContain('if (framed');
 });
 
 /*
@@ -1239,7 +1252,7 @@ test('the sky lane is applied where the specular lobe also reads it', () => {
     nightEmissive: false,
   });
   expect(source.indexOf('sunShade *= vSkyDirect;')).toBeLessThan(
-    source.indexOf('float direct = ndl * sunShade;'),
+    source.indexOf('float direct = ndl * sunShade * sunFacing;'),
   );
 });
 
@@ -1334,6 +1347,17 @@ test('the refraction branch is entered only when a draw asks for it', () => {
  * it catches the case that actually reintroduces the bug: somebody adding a *new* shadow array
  * beside these and indexing it with the raw slot.
  */
+/*
+ * **The loop's bound is the froxel cap, and the fixed arm leaves at its own.** The two bounds were
+ * one number until a froxel needed seventy-six lights; the fixed arm indexes uniform arrays of
+ * `MAX_LIGHTS`, and a loop that ran it past them would read undefined values as light.
+ */
+test('THE FIXED ARM LEAVES THE SHARED LOOP AT ITS OWN BUDGET, whatever the loop is bounded by', () => {
+  expect(source).toContain('#define LIGHT_LOOP_MAX MAX_LIGHTS_PER_CLUSTER');
+  expect(source).toContain('for (int slot = 0; slot < LIGHT_LOOP_MAX; slot++)');
+  expect(source).toContain('if (i >= uLightCount || i >= MAX_LIGHTS) break;');
+});
+
 test('reads every point-shadow array through the clamped slot', () => {
   const source = flatFrag({
     pointShadows: true,
@@ -1410,4 +1434,50 @@ test('refuses a light budget that is not a whole number of slots', () => {
   expect(() => flatFrag({ ...variant, maxLights: 0 })).toThrow(/at least 1/);
   expect(() => flatFrag({ ...variant, maxLights: 7.5 })).toThrow(/whole number/);
   expect(() => flatFrag({ ...variant, maxAreaLights: -1 })).toThrow(/maxAreaLights/);
+});
+
+/*
+ * A surface turned from a high sun kept the sun wherever its normal map leaned a texel toward it,
+ * and the shadow's filter handed that band back fully lit: a gallery's back wall and its columns'
+ * shaded faces took the sun through the vault above them, as a field of white specks over stone
+ * in shade. The side of the surface the sun is on is the surface's own; the band is filtered
+ * coarsely rather than let go.
+ */
+test("A SURFACE TURNED FROM THE SUN STAYS IN ITS ROOF'S SHADOW, whatever its normal map says", () => {
+  const source = flatFrag({
+    pointShadows: false,
+    directionalShadows: true,
+    environmentProbe: true,
+    nightEmissive: false,
+  });
+  expect(source).toContain('float surfaceNdl = dot(surfaceN, uDirectionalDir);');
+  expect(source).toContain('float sunShade = shadowFactor(max(surfaceNdl, 0.0));');
+  expect(source).toContain('float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);');
+  /* The band where the fine filter cannot hold still takes the coarse test, not full sun. */
+  expect(source).toContain('if (receiverFade <= 0.0) return mix(1.0, coarse, strength);');
+  expect(source).toContain('return mix(1.0, mix(coarse, lit, receiverFade), strength);');
+  /* And which side of the probe grid a surface faces is also the surface's own. */
+  expect(source).toContain('probeGridOutside(surfaceN, vWorldPos)');
+  /* Never for a single probe, which lights the whole scene from where it stands. */
+  expect(source).toContain('beyond *= step(vec3(1.5), uProbeGridCounts);');
+});
+
+/*
+ * A point light's shadow is blended toward none as the light falls off (`shaded = mix(1, occl,
+ * weight)`), so where its weight is a few per cent the lookup changes a few per cent of an already
+ * faint light. Measured on a lantern-lit courtyard, those lookups were most of a night's frame: 14 ms
+ * of 26 at 1440p. So they are skipped under the floor, and the floor is what the picture can lose.
+ */
+test('A POINT SHADOW IS NOT LOOKED UP WHERE ITS LIGHT HAS ALL BUT FADED, and the blend is the same', () => {
+  const source = flatFrag({
+    pointShadows: true,
+    directionalShadows: false,
+    environmentProbe: false,
+    nightEmissive: false,
+  });
+  expect(source).toContain('float shadowWeight = clamp(falloff * 2.0, 0.0, 1.0);');
+  expect(source).toContain('if (layer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {');
+  expect(source).toContain('if (liveLayer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {');
+  expect(source).toContain('float shaded = mix(1.0, occl, shadowWeight);');
+  expect(source).toContain('const float POINT_SHADOW_MIN_WEIGHT = 0.03;');
 });

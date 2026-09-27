@@ -5,6 +5,7 @@ import {
   GLOBAL_FIELD_BLEND,
   composeGlobalField,
   createGlobalField,
+  distanceToInstances,
   sampleGlobalField,
 } from './globalField.ts';
 
@@ -583,3 +584,28 @@ function albedoAt(field: GlobalField, x: number, y: number, z: number): Float32A
     3;
   return cascade.albedo.slice(at, at + 3);
 }
+
+/**
+ * The same distance, read at any point rather than composed onto a grid, for a caller that traces
+ * through the scene once: DriftLight's occlusion bake.
+ */
+describe('the distance to a set of placed fields, at a point', () => {
+  /* A metre cube of field reading 0.5 everywhere, placed ten metres along x. */
+  const source = {
+    field: new Float32Array(8).fill(0.5),
+    dims: [2, 2, 2] as const,
+    bounds: new Float32Array([0, 0, 0, 1, 1, 1]),
+  };
+  const placed = { source, transform: mat4.fromTranslation(mat4.create(), [10, 0, 0]) };
+
+  test('READS THE FIELD INSIDE ITS BOX, AND THE DISTANCE TO THE BOX OUTSIDE IT', () => {
+    const distance = distanceToInstances([placed]);
+    expect(distance(10.5, 0.5, 0.5)).toBeCloseTo(0.5, 6);
+    /* Two metres past x = 10, one past the box's far face: the box is nearer than its surface. */
+    expect(distance(12, 0.5, 0.5)).toBeCloseTo(1, 6);
+  });
+
+  test('with nothing placed, everywhere is open', () => {
+    expect(distanceToInstances([])(0, 0, 0)).toBeGreaterThan(1e6);
+  });
+});

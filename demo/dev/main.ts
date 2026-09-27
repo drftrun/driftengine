@@ -59,6 +59,14 @@ const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const picker = document.getElementById('picker') as HTMLElement;
 const stats = document.getElementById('stats') as HTMLElement;
 const scrub = document.getElementById('scrub') as HTMLInputElement;
+const stage = document.getElementById('stage') as HTMLElement;
+const transport = document.getElementById('transport') as HTMLElement;
+const playButton = document.getElementById('play') as HTMLButtonElement;
+const haltButton = document.getElementById('halt') as HTMLButtonElement;
+const timeline = document.getElementById('timeline') as HTMLInputElement;
+const clockLabel = document.getElementById('clock') as HTMLElement;
+/** Whether a person is holding the playhead, so the frame does not pull it out of their hand. */
+let holdingPlayhead = false;
 const errorBox = document.getElementById('error') as HTMLElement;
 
 let handle: DemoHandle | null = null;
@@ -74,6 +82,37 @@ function stop(): void {
   handle = null;
   scrub.classList.remove('on');
   scrub.max = '1';
+  transport.classList.remove('on');
+  stage.classList.remove('clocked');
+}
+
+/**
+ * Show the transport for a scene with a clock and follow it: the playhead, the play button's
+ * state, the moment's name. Written only when a value changes, so a paused scene touches nothing.
+ */
+function updateTransport(): void {
+  const clock = handle?.clock;
+  if (clock === undefined || !clock.ready) {
+    if (transport.classList.contains('on')) {
+      transport.classList.remove('on');
+      stage.classList.remove('clocked');
+    }
+    return;
+  }
+  if (!transport.classList.contains('on')) {
+    transport.classList.add('on');
+    stage.classList.add('clocked');
+  }
+  if (!holdingPlayhead) {
+    const at = String(Math.round((clock.atSec / clock.lengthSec) * 1000));
+    if (timeline.value !== at) timeline.value = at;
+  }
+  const glyph = clock.playing ? '❚❚' : '▶';
+  if (playButton.textContent !== glyph) {
+    playButton.textContent = glyph;
+    playButton.setAttribute('aria-label', clock.playing ? 'Pause' : 'Play');
+  }
+  if (clockLabel.textContent !== clock.label) clockLabel.textContent = clock.label;
 }
 
 /**
@@ -151,7 +190,30 @@ async function run(index: number): Promise<void> {
   /* The shared binder, so this harness and the website cannot disagree about a drag. */
   const view = handle.view;
   if (view !== undefined) unbind = bindOrbitControls(canvas, view, { captureWheel: true });
-  canvas.ondblclick = () => view?.release();
+  /*
+   * The view a viewer let go of goes into the address bar, as `?eye=&at=&fov=`, so the page can be
+   * sent and the next person stands where they stood; double clicking hands the camera back and
+   * takes it out again. On letting go rather than every frame, and a wheel once it has settled.
+   */
+  const rememberView = (): void => {
+    const described = view?.describe() ?? null;
+    if (described === null) return;
+    const url = new URL(location.href);
+    for (const key of ['eye', 'at', 'fov'] as const) url.searchParams.set(key, described[key]);
+    history.replaceState(null, '', url);
+  };
+  let wheelSettle = 0;
+  canvas.onpointerup = rememberView;
+  canvas.onwheel = () => {
+    clearTimeout(wheelSettle);
+    wheelSettle = window.setTimeout(rememberView, 300);
+  };
+  canvas.ondblclick = () => {
+    view?.release();
+    const url = new URL(location.href);
+    for (const key of ['eye', 'at', 'fov']) url.searchParams.delete(key);
+    history.replaceState(null, '', url);
+  };
 
   let last = performance.now();
   let smoothed = 60;
@@ -160,6 +222,7 @@ async function run(index: number): Promise<void> {
     last = now;
     try {
       updateScrub();
+      updateTransport();
       const began = performance.now();
       const measured = handle?.frame(dt);
       const spent = performance.now() - began;
@@ -218,6 +281,26 @@ scrub.addEventListener('input', () => {
   handle?.reveal?.set(Number(scrub.value));
 });
 
+/* The transport, bound once for the same reason. The playhead seeks as it is dragged, like a
+   song's, and is left alone by the frame until it is let go. */
+playButton.addEventListener('click', () => {
+  const clock = handle?.clock;
+  if (clock === undefined) return;
+  if (clock.playing) clock.pause();
+  else clock.play();
+});
+haltButton.addEventListener('click', () => handle?.clock?.stop());
+timeline.addEventListener('pointerdown', () => {
+  holdingPlayhead = true;
+});
+addEventListener('pointerup', () => {
+  holdingPlayhead = false;
+});
+timeline.addEventListener('input', () => {
+  const clock = handle?.clock;
+  if (clock !== undefined) clock.seek((Number(timeline.value) / 1000) * clock.lengthSec);
+});
+
 addEventListener('beforeunload', stop);
 
 /**
@@ -244,10 +327,17 @@ if (import.meta.hot) {
   import.meta.hot.accept();
 }
 
+/**
+ * `?scene=` by index or by id. **An id survives publishing**, which renumbers every draft behind the
+ * scene that moved, so an address kept from last week opens what it opened then; the index stays
+ * because every capture already written names scenes that way. An id nobody has is scene zero, as a
+ * number that is not an index always was.
+ */
+function askedScene(): number {
+  const asked = new URLSearchParams(location.search).get('scene') ?? '0';
+  const byId = ALL.findIndex((scene) => scene.id === asked);
+  return byId >= 0 ? byId : Number(asked) || 0;
+}
+
 const restored = import.meta.hot?.data?.['scene'];
-run(
-  typeof restored === 'number'
-    ? restored
-    : Number(new URLSearchParams(location.search).get('scene') ?? 0) || 0,
-);
-export {};
+run(typeof restored === 'number' ? restored : askedScene());

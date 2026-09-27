@@ -2,28 +2,34 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "c631608d:164878",
-  "directionalShadows+environmentProbe": "24da799e:187864",
-  "directionalShadows+environmentProbe+nightEmissive": "11d41c2e:190350",
-  "directionalShadows+nightEmissive": "575daecd:167364",
-  "environmentProbe": "925b5f48:175048",
-  "environmentProbe+nightEmissive": "7a6cd1e2:177534",
-  "nightEmissive": "879047d1:154548",
-  "none": "e7ed4d47:152062",
-  "pointShadows": "f3305e38:182884",
-  "pointShadows+directionalShadows": "65404aaa:195700",
-  "pointShadows+directionalShadows+environmentProbe": "ba393a81:218686",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "02678aa9:221172",
-  "pointShadows+directionalShadows+nightEmissive": "2bf0649e:198186",
-  "pointShadows+environmentProbe": "9490e6ab:205870",
-  "pointShadows+environmentProbe+nightEmissive": "ecde1925:208356",
-  "pointShadows+nightEmissive": "ec2dbba6:185370",
+  "directionalShadows": "aa7fff49:175177",
+  "directionalShadows+environmentProbe": "c452db96:201190",
+  "directionalShadows+environmentProbe+nightEmissive": "e6968b82:203676",
+  "directionalShadows+nightEmissive": "c788a5b7:177663",
+  "environmentProbe": "4e3f16f0:186302",
+  "environmentProbe+nightEmissive": "7ea05a96:188788",
+  "nightEmissive": "0d43c931:162775",
+  "none": "416b1fa9:160289",
+  "pointShadows": "d6b77c78:191195",
+  "pointShadows+directionalShadows": "a697e990:206083",
+  "pointShadows+directionalShadows+environmentProbe": "f2f71b73:232096",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "622db103:234582",
+  "pointShadows+directionalShadows+nightEmissive": "a1697802:208569",
+  "pointShadows+environmentProbe": "e7504231:217208",
+  "pointShadows+environmentProbe+nightEmissive": "968b1dfb:219694",
+  "pointShadows+nightEmissive": "6224cbfc:193681",
 }
 `;
 
 exports[`the fragment source with every feature on is stable 1`] = `
 "#version 300 es
 precision highp float;
+/*
+ * highp int as well: a clustered light is decoded with uintBitsToFloat from texels that arrive as
+ * uvec4, and its texel index passes 32767 in a big world. The fragment default for int and uint is
+ * mediump, which a sixteen-bit driver truncates, and every clustered light then lights nothing.
+ */
+precision highp int;
 
 in vec3 vNormal;
 in vec3 vColor;
@@ -125,6 +131,12 @@ uniform int uAlbedoEnabled;
  * else changes.
  */
 uniform float uAlbedoCutout;
+
+/**
+ * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
+ * nothing, and a back face is lit as a front, with the shading normal turned toward the viewer.
+ */
+uniform int uDoubleSided;
 
 /**
  * A normal map, in the surface's own space.
@@ -592,6 +604,12 @@ uniform vec3 uProbeGridCounts;
  * exactly as it did before any probe existed.
  */
 uniform float uProbeGridAmbient;
+/**
+ * Which sets of layers the shading reads, and how far between them: the last whole sweep's layer
+ * offset, the newest whole sweep's, and the blend from the first toward the second. \`(0, 0, 0)\`
+ * for a grid that does not crossfade. See \`probeSweeps.ts\`.
+ */
+uniform vec3 uProbeGridSets;
 /** A world-space box that lights up regardless of time of day (run finished). */
 uniform vec3 uHighlightMin;
 uniform vec3 uHighlightMax;
@@ -623,8 +641,8 @@ uniform float uHighlightGain;
 #define CLUSTER_X 16
 #define CLUSTER_Y 9
 #define CLUSTER_Z 24
-#define CLUSTER_TEXELS 5
-#define MAX_LIGHTS_PER_CLUSTER 16
+#define CLUSTER_TEXELS 20
+#define MAX_LIGHTS_PER_CLUSTER 76
 #define LIGHT_TEXELS 5
 #define LIGHT_REGION_TEXELS 1600
 #define CLUSTER_TABLE_WIDTH 320
@@ -678,12 +696,12 @@ uvec4 clusterTexel(int texel) {
  * both numbers sit beside the budgets they come from.
  */
 /*
- * **Both arms have the same bound, and that equality is deliberate.** There is one loop, so a
- * larger clustered cap would raise the bound for the fixed path too, and a scene that never asks
- * for froxels would carry a loop of 28 where it carries 16 today. \`MAX_LIGHTS_PER_CLUSTER\` is
- * pinned equal to \`MAX_LIGHTS\` for that reason; a test in \`textureUnitBudget.test.ts\` asserts it.
+ * **The bound is the froxel's cap, and the fixed arm leaves long before it.** The two were equal
+ * until a candlelit interior needed more than sixteen lights in a froxel; see
+ * \`MAX_LIGHTS_PER_CLUSTER\`. The fixed arm breaks at \`uLightCount\` and at \`MAX_LIGHTS\`, so it
+ * iterates exactly what it did and never indexes its uniform arrays past their end.
  */
-#define LIGHT_LOOP_MAX MAX_LIGHTS
+#define LIGHT_LOOP_MAX MAX_LIGHTS_PER_CLUSTER
 uniform int uLightCount;
 /** 0 keeps the radius-shaped falloff; 1 is physical inverse-square with a soft cutoff. */
 uniform int uLightFalloff;
@@ -1074,6 +1092,19 @@ const float PENUMBRA_FADE = 1.6;
  * the number comes from the arithmetic above rather than from a stopwatch.
  */
 const float MAX_FILTER_RADIUS = 0.25;
+
+/**
+ * The weight below which a point light's shadow is not looked up at all.
+ *
+ * A light's shadow is blended toward none as the light falls off, \`mix(1, occl, weight)\` with the
+ * weight twice the falloff, so a shadow looked up under this floor changes at most three per cent
+ * of a light that has already all but faded: with the inverse-square falloff, past about eight
+ * metres from it. Measured on a lantern-lit courtyard, the lookups the floor skips were most of a
+ * night's frame: 14 ms of 26 at 1440p, a blocker tap and twelve filter taps for every light in every
+ * froxel. What it gives up is the last three per cent of a distant light's shadow, which the blend
+ * was already taking away; what would make it wrong is a falloff that stays strong far out.
+ */
+const float POINT_SHADOW_MIN_WEIGHT = 0.03;
 
 /**
  * How much of a self-lit surface's glow a lamp's shadow may take.
@@ -1907,10 +1938,13 @@ float shadowFactor(float directionalNdl) {
   // Near a surface's own light terminator its direct-light term is already
   // approaching zero, while the orthographic projection of that surface
   // collapses toward a line. No finite contact-safe bias can represent that
-  // slope reliably. Fade only the shadow modulation through this narrow band;
-  // the Lambert term still supplies the physically dominant falloff.
+  // slope reliably, so through this band the fine filter below hands over to the
+  // coarse test after it. \`directionalNdl\` is the surface's own, before any normal
+  // map: the band is about the receiving plane, and a map's tilt says nothing about it.
   float receiverFade = smoothstep(0.08, 0.20, directionalNdl);
-  if (receiverFade <= 0.0) return 1.0;
+  /* A surface turned from the light takes none of it, so there is nothing to shadow; what reads
+     this there is the emissive share, which has always seen such a surface as unshadowed. */
+  if (directionalNdl <= 0.0) return 1.0;
 
   // The receiver stays at its real position, computed above. A normal offset changes
   // direction at a hard mesh edge and tears one continuous shadow where it crosses from
@@ -1942,6 +1976,34 @@ float shadowFactor(float directionalNdl) {
     shadowSlope
   );
   if (lowElevationFade <= 0.0) return 1.0;
+
+  /*
+   * **The coarse test: is there anything a metre or more between this point and the sun.**
+   *
+   * One tap at the receiver's own texel, with a metre of tolerance where the filter below allows
+   * fourteen centimetres. It cannot see a contact shadow, and it does not need the plane's slope:
+   * a grazing plane's own depth moves about a centimetre times the tangent of its angle to the
+   * light across a texel, which stays under a metre down to a hundredth of n·l on a map with
+   * centimetre texels. What it does see is a roof.
+   *
+   * **This band used to return fully lit**, on the argument that the Lambert term was already
+   * near zero there. Under a high sun that is every vertical wall: at 70° of elevation a wall's
+   * n·l is at most 0.34, and one turned from the sun's bearing sits inside the band. A gallery's
+   * back wall under its vault took the sun through the vault, and so did the faces of its
+   * columns, which read as lit stone in shade; with a normal map carrying that n·l per texel it
+   * was a field of white specks. What would make this wrong is a map whose texels are tens of
+   * centimetres, where a grazing plane's own depth moves more than the tolerance and the band
+   * draws the acne it exists to avoid.
+   */
+  float coarseCompare = p.z - 1.0 / uShadowDepthSpan;
+  float coarse =
+    directionalVisibility(p.z, coarseCompare, textureLod(uStaticShadowMap, p.xy, 0.0).r) *
+    directionalVisibility(p.z, coarseCompare, textureLod(uDynamicShadowMap, p.xy, 0.0).r);
+  if (uPeeledShadowEnabled != 0) {
+    coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uPeeledShadowMap, p.xy, 0.0).r);
+  }
+  float strength = uShadowStrength * edgeFade * lowElevationFade;
+  if (receiverFade <= 0.0) return mix(1.0, coarse, strength);
 
   float texel = 1.35 / uShadowMapSize;
   /*
@@ -2021,7 +2083,7 @@ float shadowFactor(float directionalNdl) {
   // conventional one-depth map would discard; movers remain independent too.
   float lit = staticLit * peeledLit * dynamicLit;
 
-  return mix(1.0, lit, uShadowStrength * edgeFade * lowElevationFade * receiverFade);
+  return mix(1.0, mix(coarse, lit, receiverFade), strength);
 }
 
 /**
@@ -2113,10 +2175,19 @@ void probeCell(vec3 worldPos, out vec3 base, out vec3 frac) {
   frac *= step(vec3(1.5), uProbeGridCounts);
 }
 
-/** One probe's diffuse light: the cosine convolution, at its own level, in one fetch. */
+/**
+ * One probe's diffuse light: the cosine convolution, at its own level, in one fetch, or two where a
+ * crossfading grid is between sweeps. See \`probeSweeps.ts\`: the last whole sweep blended toward
+ * the newest, so a grid re-baked a probe a frame changes a little every frame rather than a probe's
+ * worth at once. The second fetch is behind a branch on a uniform, so a grid that is not blending
+ * pays for one.
+ */
 vec3 probeIrradiance(vec3 dir, float layer) {
   float level = uEnvironmentIrradianceLevel;
-  return textureLod(uEnvironment, probeCoord(dir, level, layer), level).rgb;
+  vec3 last = textureLod(uEnvironment, probeCoord(dir, level, layer + uProbeGridSets.x), level).rgb;
+  if (uProbeGridSets.z <= 0.0) return last;
+  vec3 newest = textureLod(uEnvironment, probeCoord(dir, level, layer + uProbeGridSets.y), level).rgb;
+  return mix(last, newest, uProbeGridSets.z);
 }
 
 /**
@@ -2125,8 +2196,12 @@ vec3 probeIrradiance(vec3 dir, float layer) {
  * textureLod rather than texture throughout, per the 2026-08-07 rule and for a second reason on
  * top of it: the level is wanted here, and the fetches sit inside a loop that no compiler can
  * prove uniform.
+ *
+ * **From the newest whole sweep alone**, where a crossfading grid holds two: a reflection is a
+ * picture of the room, and the blend that smooths the diffuse light would be two pictures at once.
  */
-vec3 probeRadiance(vec3 dir, float lod, float layer) {
+vec3 probeRadiance(vec3 dir, float lod, float layerIndex) {
+  float layer = layerIndex + uProbeGridSets.y;
   float lo = clamp(floor(lod), 0.0, uEnvironmentMaxLod);
   float hi = min(lo + 1.0, uEnvironmentMaxLod);
   vec3 coarse = textureLod(uEnvironment, probeCoord(dir, hi, layer), hi).rgb;
@@ -2167,6 +2242,36 @@ float probeVisible(vec3 fromProbe, float distanceM, float layer) {
   float beyond = distanceM - moments.x;
   float chebyshev = variance / (variance + beyond * beyond);
   return pow(chebyshev, 3.0);
+}
+
+/**
+ * How far a surface outside the grid faces away from it, 0 to 1: how much of its diffuse light the
+ * grid cannot know.
+ *
+ * **Outside the box the grid clamps to its edge probes**, which is right for a floor below the
+ * lowest layer or a vault above the highest, where the surface faces back into the grid and sees
+ * what those probes see. It is wrong for a face turned away: a building's outer wall read its edge
+ * probe's light in the direction of that wall's normal, which from inside the courtyard is the
+ * shaded back of the same wall, and drew black under a noon sun. So a surface takes the open sky's
+ * hemisphere as it leaves the box facing out, from a metre past it to two and a half, and keeps the
+ * grid facing in. What it gives up is the grid's bounce on the outside of a model whose grid does
+ * not reach it, which the grid never had.
+ *
+ * **The normal is the surface's own, never a mapped one.** Read from the mapped normal, the back of a
+ * gallery floor a metre past the grid's last row took the sky on every texel its map tilted toward
+ * the wall: white glints over paving in shade. Which side of the grid a surface faces is a fact
+ * about the surface.
+ */
+float probeGridOutside(vec3 n, vec3 worldPos) {
+  vec3 top = max(uProbeGridCounts - 1.0, vec3(0.0));
+  vec3 local = (worldPos - uProbeGridOrigin) * uProbeGridInvSpacing;
+  /* Only along an axis the grid spans: a grid one probe wide on an axis has no side there, and a
+     single probe, which lights a whole scene from one place, has none at all. */
+  vec3 beyond = (local - clamp(local, vec3(0.0), top)) / max(uProbeGridInvSpacing, vec3(1e-6));
+  beyond *= step(vec3(1.5), uProbeGridCounts);
+  float distanceM = length(beyond);
+  if (distanceM <= 0.0) return 0.0;
+  return smoothstep(1.0, 2.5, distanceM) * smoothstep(0.0, 0.5, dot(n, beyond / distanceM));
 }
 
 /**
@@ -2306,7 +2411,9 @@ mat3 tangentFrame(vec3 n, vec3 worldPos, vec2 uv, vec4 tangent, int hasTangents)
    * generateTangents does the same per vertex and says why: dropping it is a normal map that
    * shears wherever the geometry curves.
    */
-  vec3 attrT = normalize(tangent.xyz - n * dot(n, tangent.xyz));
+  vec3 along = tangent.xyz - n * dot(n, tangent.xyz);
+  float alongSq = dot(along, along);
+  vec3 attrT = along * inversesqrt(max(alongSq, 1e-12));
   /*
    * The bitangent's sign, which is the whole reason w is stored. An artist mapping the left and
    * right of a model onto one patch of texture gives one side a mirrored frame, and a bitangent
@@ -2314,10 +2421,75 @@ mat3 tangentFrame(vec3 n, vec3 worldPos, vec2 uv, vec4 tangent, int hasTangents)
    */
   vec3 attrB = cross(n, attrT) * tangent.w;
 
-  vec3 t = hasTangents != 0 ? attrT : derivedT;
-  vec3 b = hasTangents != 0 ? attrB : derivedB;
+  /*
+   * **And only where there is a frame to keep.** A tangent parallel to its normal, or two that
+   * nearly cancel across one triangle at a mirrored seam, leaves nothing after the subtraction,
+   * and a normalised nothing is NaN. One such pixel in one probe face was a whole courtyard drawn
+   * black: a probe convolves its faces into every direction, and the bounce carries that into
+   * every other probe. So where nothing is left, the derived frame stands in. What it gives up is a
+   * direction on a pixel that had none; what would make it wrong is a threshold large enough to
+   * catch a frame that is merely short, and a unit tangent interpolated is nowhere near 1e-4.
+   */
+  bool framed = hasTangents != 0 && alongSq > 1e-8;
+  vec3 t = framed ? attrT : derivedT;
+  vec3 b = framed ? attrB : derivedB;
   return mat3(t, b, n);
 }
+
+float cutoutAlpha(float alpha, vec2 texels) {
+  vec2 dx = dFdx(texels);
+  vec2 dy = dFdy(texels);
+  float level = max(0.0, 0.5 * log2(max(dot(dx, dx), dot(dy, dy))));
+  return alpha * (1.0 + level * 0.25);
+}
+
+
+/** x how much of the summed light is in the frame (0 off), y the radius, z the band, w the scale. */
+uniform vec4 uDriftLight;
+/** xyz the first brick's first sample; w metres between samples, a third of a brick. */
+uniform vec4 uDriftLightOrigin;
+uniform highp usampler3D uDriftLightIndex;  // wgsl:share shadow
+uniform highp sampler3D uDriftLightAtlas;
+
+/** The share of this pixel's field light the volume stands in for: 0 inside the radius, 1 past it. */
+float driftLightShare(vec3 world) {
+  if (uDriftLight.x <= 0.0) return 0.0;
+  float away = distance(world, uCameraPos);
+  return smoothstep(uDriftLight.y - uDriftLight.z, uDriftLight.y, away) * uDriftLight.x;
+}
+
+/** The summed light arriving on a surface at \`world\` facing \`n\`. */
+vec3 driftLightIrradiance(vec3 world, vec3 n) {
+  float spacing = uDriftLightOrigin.w;
+  vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / (3.0 * spacing);
+  ivec3 cell = ivec3(floor(at));
+  if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, textureSize(uDriftLightIndex, 0)))) {
+    return vec3(0.0);
+  }
+  uint id = texelFetch(uDriftLightIndex, cell, 0).r;
+  if (id == 0u) return vec3(0.0);
+  /* A brick is eight texels across (its light block, then its direction block) and four up and deep. */
+  ivec3 size = textureSize(uDriftLightAtlas, 0);
+  int brick = int(id) - 1;
+  int across = size.x / 8;
+  int down = size.y / 4;
+  vec3 corner = vec3(
+    float((brick % across) * 8),
+    float(((brick / across) % down) * 4),
+    float((brick / (across * down)) * 4)
+  );
+  vec3 texel = 1.0 / vec3(size);
+  vec3 inside = (at - vec3(cell)) * 3.0 + 0.5;
+  vec4 light = textureLod(uDriftLightAtlas, (corner + inside) * texel, 0.0);
+  if (light.a < 1e-3) return vec3(0.0);
+  vec4 toward = textureLod(uDriftLightAtlas, (corner + vec3(4.0, 0.0, 0.0) + inside) * texel, 0.0);
+  vec3 arriving = light.rgb / light.a;
+  vec3 from = toward.xyz / light.a;
+  /* Lambert for a single light, a quarter for light arriving from everywhere: see \`bake.ts\`. */
+  float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;
+  return arriving * facing;
+}
+
 void main() {
   if (uClipEnabled != 0 && dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
 
@@ -2355,8 +2527,13 @@ void main() {
   if (uAlbedoEnabled != 0) {
     vec4 texel = texture(uAlbedo, vUv);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
-    // for the lighting it will never contribute to.
-    if (texel.a < uAlbedoCutout) discard;
+    // for the lighting it will never contribute to. The test credits alpha for the mip level
+    // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
+    // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
+    if (uAlbedoCutout > 0.0) {
+      float tested = cutoutAlpha(texel.a, vUv * vec2(textureSize(uAlbedo, 0)));
+      if (tested < uAlbedoCutout) discard;
+    }
     albedo *= texel.rgb;
     coverage = texel.a;
   }
@@ -2399,6 +2576,15 @@ void main() {
 
   if (uLightingEnabled != 0) {
     vec3 n = normalize(vNormal);
+    /*
+     * **Which face of a two-sided surface this is, from the normal and not from the rasteriser.**
+     * The rasteriser's own facing flag would say it exactly, and it is one more input to the stage: the flat
+     * shader already carries sixteen, WebGPU's ceiling, and the seventeenth made every pipeline
+     * invalid and every mesh draw nothing. A face whose own normal points away from the eye is the
+     * back of the sheet; what that gives up is a sliver at a curved silhouette, where a front face's
+     * interpolated normal already leans away and is lit as the back.
+     */
+    bool backFace = uDoubleSided != 0 && dot(n, uCameraPos - vWorldPos) < 0.0;
     /*
      * The authored normal, before either relief perturbs it.
      *
@@ -2579,6 +2765,15 @@ void main() {
     }
 
     /*
+     * **The back face of a two-sided surface is lit as its front**, which is glTF's rule for
+     * \`doubleSided\`: the whole shading normal turned toward the viewer, after the map and the
+     * relief have perturbed it, as three.js turns its normal, tangent and bitangent together.
+     * Turning only the interpolated normal would leave a normal map's tilt pointing the wrong way
+     * across the fold of every curtain.
+     */
+    if (backFace) n = -n;
+
+    /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
      * Shared rather than issued twice because it is the same number and one is cheaper, and not
      * because it fixes anything. It was tried as a fix and measured: it does not. See the night
@@ -2591,7 +2786,22 @@ void main() {
      * term below needs it too. The sun and the moon are the only sources whose shadow
      * used to stop at a glowing surface.
      */
-    float sunShade = shadowFactor(ndl);
+    /*
+     * **The surface's own n·l, before any map tilted it: the side of the surface the sun is on.**
+     *
+     * A normal map says which way each texel faces within its surface; it cannot put a texel on the
+     * other side of that surface from the sun. Read from the mapped normal alone, the texels of a
+     * column's face turned from a high sun that leaned into the light were lit as though the column
+     * were not in the way: a field of white specks over stone in shade. So the shadow's band is
+     * chosen by this, and the sun is taken away as it reaches zero, over the last two hundredths of
+     * n·l, where an unmapped surface's own Lambert term is already under 0.02. Over a tenth it moved
+     * every smooth column's terminator in the published scenes. What it gives up is the bump-lit
+     * relief of a surface barely facing the sun, where the light was already grazing.
+     */
+    vec3 surfaceN = normalize(vNormal);
+    if (backFace) surfaceN = -surfaceN;
+    float surfaceNdl = dot(surfaceN, uDirectionalDir);
+    float sunShade = shadowFactor(max(surfaceNdl, 0.0));
     /*
      * **How much sky this vertex can see, applied to the sun and to nothing else.**
      *
@@ -2612,7 +2822,13 @@ void main() {
      * that shipped before it.
      */
     sunShade *= vSkyDirect;
-    float direct = ndl * sunShade;
+    /*
+     * And the sun gone from a surface turned from it, whatever its map says. See \`surfaceNdl\`.
+     * Its own factor rather than folded into sunShade, which the emissive share reads as the sun's
+     * shadow: a lamp's pane turned from the moon is not in shadow, it is only unlit.
+     */
+    float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);
+    float direct = ndl * sunShade * sunFacing;
 
     /*
      * Hemispheric: sky above, ground below, mixed by which way the surface looks. An
@@ -2641,6 +2857,7 @@ void main() {
      * set, which is the guarantee that option was added to give.
      */
     vec3 irradiance = gridIrradiance(n, vWorldPos);
+    irradiance = mix(irradiance, ambient, probeGridOutside(surfaceN, vWorldPos));
     ambient = mix(ambient, irradiance, uProbeGridAmbient * uEnvironmentEnabled);
     /*
      * A metal keeps its ambient and loses its direct diffuse.
@@ -2718,7 +2935,7 @@ void main() {
      * before: \`sunSpec\` is \`vec3(vSpecular)\` at metal 0 and \`vSpecular\` defaults to 0.
      */
     vec3 sunHighlight =
-      uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade;
+      uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
      * below dims it by exactly the reflectance it always dimmed it by. The metal's share is added
@@ -3119,6 +3336,7 @@ void main() {
      */
     vec3 lampOpen = vec3(0.0);
     vec3 lampShadowed = vec3(0.0);
+    float driftShare = driftLightShare(vWorldPos);
 
     /*
      * Which froxel this fragment is in.
@@ -3218,7 +3436,7 @@ void main() {
       cookie = uintBitsToFloat(rec4.w);
       } else {
       i = slot;
-      if (i >= uLightCount) break;
+      if (i >= uLightCount || i >= MAX_LIGHTS) break;
       lightPos = uLightPos[i];
       lightRadius = uLightRadius[i];
       lightColor = uLightColor[i];
@@ -3231,6 +3449,9 @@ void main() {
       iesAxis = uLightIesAxis[i];
       cookie = uLightCookie[i];
       }
+      /* A DriftLight field's own light carries a negative weight, and is shaded exactly only for the
+         share of this pixel the field does not stand in for. See \`driftLight.ts\`. */
+      if (lightWeight < 0.0) lightWeight = -lightWeight * (1.0 - driftShare);
       /*
        * **The cone, and a point light's is one that admits every direction.**
        *
@@ -3293,6 +3514,8 @@ void main() {
        * grazing the angle is. Without it the cubemap's face seams show as a
        * diagonal cross and the whole plane bands.
        */
+      /* How present this light's shadow is. See \`POINT_SHADOW_MIN_WEIGHT\`. */
+      float shadowWeight = clamp(falloff * 2.0, 0.0, 1.0);
       float grazing = 1.0 - ndl;
       float normalOffset = (0.06 + dist * 0.05) * grazing * grazing + 0.02;
       vec3 receiverPoint = vWorldPos + n * normalOffset;
@@ -3330,7 +3553,7 @@ void main() {
        */
       int shadowRead = clamp(shadowSlot, 0, MAX_LIGHTS - 1);
       int layer = shadowSlot >= 0 && shadowSlot < MAX_LIGHTS ? uPointShadowLayer[shadowRead] : -1;
-      if (layer >= 0) {
+      if (layer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {
         occl = mix(
           1.0,
           pointShadow(
@@ -3359,7 +3582,7 @@ void main() {
       float liveWeight = 0.0;
       int liveLayer =
         shadowSlot >= 0 && shadowSlot < MAX_LIGHTS ? uLivePointShadowLayer[shadowRead] : -1;
-      if (liveLayer >= 0) {
+      if (liveLayer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {
         liveOccl = pointShadow(
           uPointShadows,
           float(liveLayer),
@@ -3376,7 +3599,7 @@ void main() {
       // Blend occlusion out as the light fades, so a shadow can never be more
       // present than the light casting it — and slot changes at the edge of
       // range become invisible rather than a pop.
-      float shaded = mix(1.0, occl, clamp(falloff * 2.0, 0.0, 1.0));
+      float shaded = mix(1.0, occl, shadowWeight);
       /*
        * The cone multiplies the distance falloff rather than replacing it, which is what makes a
        * spot a point light with a direction rather than a second kind of light. It is exactly 1
@@ -3792,6 +4015,14 @@ void main() {
       1.0
     );
     lit += lampOpenFloor * lampShade;
+    /*
+     * DriftLight: every fixed light past the frame's choice, summed and occluded, for the share of
+     * this pixel the exact lights above no longer cover. Diffuse only, and so no metal term: see
+     * \`driftLight.ts\`.
+     */
+    if (driftShare > 0.0) {
+      lit += albedo * driftLightIrradiance(vWorldPos, n) * (driftShare * uDriftLight.w) * (1.0 - metal);
+    }
 
     /*
      * Self-illuminated geometry, dimmed where a lamp's shadow crosses it.

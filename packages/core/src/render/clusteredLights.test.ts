@@ -28,9 +28,9 @@ describe("the cluster table's shape", () => {
   it('holds every cluster, and a cluster never straddles a row', () => {
     expect(CLUSTER_COUNT).toBe(CLUSTER_X * CLUSTER_Y * CLUSTER_Z);
     /*
-     * Eight texels a cluster into a 256-texel row is 32 clusters a row, exactly. A straddle would
-     * mean the shader's texel address needed a divide, and the whole point of choosing 256 was
-     * that it does not.
+     * Twenty texels a cluster into a 320-texel row is 16 clusters a row, exactly. A straddle would
+     * mean the shader's texel address had to carry the wrap, and getting that wrong reads as
+     * lights belonging to the froxel next door.
      */
     expect(TABLE_WIDTH % CLUSTER_TEXELS).toBe(0);
     expect(LIGHT_REGION_TEXELS % TABLE_WIDTH).toBe(0);
@@ -43,7 +43,12 @@ describe("the cluster table's shape", () => {
 
   it('allocates the table once, at the size the shape implies', () => {
     /*
-     * 320 x 59 texels of RGBA32UI: 75,520 uints, 295 KB.
+     * 320 x 221 texels of RGBA32UI: 282,880 uints, 1.1 MB.
+     *
+     * **It was 59 rows until 2026-09-25, when a froxel's run went from five texels to twenty**:
+     * sixteen lights a froxel to seventy-six, because a candlelit interior asked up to fifty of one
+     * and the froxels that overflowed drew as rectangles. The froxel region went from 270 KB to
+     * 1.05 MB and the light region is unchanged at five rows.
      *
      * **It was 57 rows, then 58, and is 59 as of 2026-08-27** — each step is one more texel in a
      * light's record, and 320 lights times one texel is 320 texels, which is exactly one row. The
@@ -54,7 +59,7 @@ describe("the cluster table's shape", () => {
      * which is a quarter of the smaller half.
      */
     expect(createClusterTable()).toHaveLength(TABLE_WIDTH * TABLE_HEIGHT * 4);
-    expect(TABLE_HEIGHT).toBe(59);
+    expect(TABLE_HEIGHT).toBe(221);
   });
 
   it('lays the last cluster inside the table rather than one texel past it', () => {
@@ -281,14 +286,14 @@ describe('binning lights into froxels', () => {
   it('reports a count that never exceeds the cap, and keeps the list sorted through overflow', () => {
     const table = createClusterTable();
     /*
-     * Forty lights stacked in one froxel against a cap of 28. Spread across the tile's own
+     * A hundred lights stacked in one froxel against a cap of 76. Spread across the tile's own
      * height so they are genuinely at different distances from its centre, which is what the
      * overflow rule ranks on.
      */
     const positions: number[] = [];
     const radii: number[] = [];
-    for (let n = 0; n < 40; n++) {
-      positions.push(0.7698, -0.35 + (0.7 * n) / 39, -12);
+    for (let n = 0; n < 100; n++) {
+      positions.push(0.7698, -0.35 + (0.7 * n) / 99, -12);
       radii.push(0.2);
     }
     bin(lightSet(positions, radii), table);
@@ -305,14 +310,14 @@ describe('binning lights into froxels', () => {
   it('keeps the nearest when a cluster overflows', () => {
     const table = createClusterTable();
     /*
-     * The cluster's centre in y is zero. Twenty-eight lights close to it and one far out at the
+     * The cluster's centre in y is zero. Seventy-six lights close to it and one far out at the
      * edge, supplied first, so the far one is in the list before the cap is reached and must be
      * the one evicted rather than the last arrival.
      */
     const positions: number[] = [0.7698, 0.74, -12];
     const radii: number[] = [0.2];
-    for (let n = 0; n < 28; n++) {
-      positions.push(0.7698, -0.05 + (0.1 * n) / 27, -12);
+    for (let n = 0; n < 76; n++) {
+      positions.push(0.7698, -0.05 + (0.1 * n) / 75, -12);
       radii.push(0.2);
     }
     bin(lightSet(positions, radii), table);
@@ -320,6 +325,54 @@ describe('binning lights into froxels', () => {
     const here = occupied(table).find(([c]) => c === CLUSTER_8_4_8);
     expect(here?.[1], 'the light at the edge is the one dropped').not.toContain(0);
     expect(here?.[1]).toHaveLength(MAX_LIGHTS_PER_CLUSTER);
+  });
+
+  it('A FULL CLUSTER ENDS HOLDING THE SEVENTY-SIX NEAREST ITS CENTRE, WHATEVER ORDER THEY ARRIVE IN', () => {
+    /*
+     * Ninety-six lights in the froxel's plane, all at one x and one depth, so their distance from
+     * the centre is their |y|: rank r stands 0.02 + 0.0075·r from it, alternately above and below,
+     * the farthest at 0.73 inside a tile 0.77 each side. Light n has rank 7n mod 96, which visits
+     * every rank once, so near and far arrive mixed and the rule has to evict repeatedly. The
+     * twenty evicted are the lights ranked 76 to 95, which is n = 55·r mod 96 since 7·55 ≡ 1:
+     *   r:  76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95
+     *   n:  52 11 66 25 80 39 94 53 12 67 26 81 40 95 54 13 68 27 82 41
+     */
+    const table = createClusterTable();
+    const positions: number[] = [];
+    const radii: number[] = [];
+    for (let n = 0; n < 96; n++) {
+      const rank = (7 * n) % 96;
+      positions.push(0.7698, (rank % 2 === 0 ? 1 : -1) * (0.02 + 0.0075 * rank), -12);
+      radii.push(0.2);
+    }
+    bin(lightSet(positions, radii), table);
+    const here = occupied(table).find(([c]) => c === CLUSTER_8_4_8);
+    const evicted = [
+      11, 12, 13, 25, 26, 27, 39, 40, 41, 52, 53, 54, 66, 67, 68, 80, 81, 82, 94, 95,
+    ];
+    const held = here?.[1] ?? [];
+    expect(held).toHaveLength(76);
+    for (const n of evicted)
+      expect(held, `light ${n} is one of the twenty farthest`).not.toContain(n);
+  });
+
+  it('A FROXEL ASKED FOR FIFTY LIGHTS SHADES ALL FIFTY', () => {
+    /*
+     * **The number a candlelit interior asked of one froxel, measured.** Candles, lanterns and
+     * braziers asked 461 of 3,456 froxels for more than sixteen and one for fifty. At a cap of
+     * sixteen each of those kept its nearest and its neighbour kept a different set, and the step
+     * between two froxels drew as a hard rectangle on the vault.
+     */
+    const table = createClusterTable();
+    const positions: number[] = [];
+    const radii: number[] = [];
+    for (let n = 0; n < 50; n++) {
+      positions.push(0.7698, -0.35 + (0.7 * n) / 49, -12);
+      radii.push(0.2);
+    }
+    bin(lightSet(positions, radii), table);
+    const here = occupied(table).find(([c]) => c === CLUSTER_8_4_8);
+    expect(here?.[1]).toHaveLength(50);
   });
 
   it('finds an off-axis light in the tiles it covers at depth, not just at its near edge', () => {

@@ -165,18 +165,18 @@ export function createScatterBindGroupLayout(device: GPUDevice): GPUBindGroupLay
     label: 'scatter.layout',
     entries: [
       /*
-       * **The vertex block is per draw and the fragment block is not.**
+       * **Both blocks are per draw.**
        *
        * The vertex block carries the gust and the trample field, and both arrive as arguments
        * to `drawScatter` — so a scene bending its grass by one press field and its canopy by
        * another gets whichever was written last for both, from a single buffer. That is not
        * hypothetical elsewhere: the plume pass had exactly this and drew a flame bent by the
-       * smoke's wind response. The demo that exercises this today happens to pass both
-       * batches the same wind and no trample, which is luck rather than a guarantee.
+       * smoke's wind response.
        *
-       * The fragment block holds the camera, the sun, the point lights and the medium, which
-       * are settled per pass rather than per batch. It stops being safe the day something
-       * per-batch is added to it, and that is what would make this a ring too.
+       * The fragment block holds the camera, the sun, the point lights and the medium. It was one
+       * buffer on the argument that those are settled per pass, and a pass is not an encoder: a
+       * probe records six passes in one, a mirror shares the frame's, and queue writes land before
+       * either runs. So every pass drew its blades from the last camera, and it is a ring too.
        */
       {
         binding: VERT_BINDING,
@@ -186,7 +186,7 @@ export function createScatterBindGroupLayout(device: GPUDevice): GPUBindGroupLay
       {
         binding: FRAG_BINDING,
         visibility: VISIBILITY_FRAGMENT,
-        buffer: { type: 'uniform', minBindingSize: SCATTER_FRAG_SIZE },
+        buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SCATTER_FRAG_SIZE },
       },
     ],
   });

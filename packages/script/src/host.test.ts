@@ -327,7 +327,7 @@ describe('every binding, as a set', () => {
    * **`drift/render` is bound, and it binds the dials rather than the profile.**
    *
    * `RenderQuality` has fifty fields and none of them are reachable from a script. What is
-   * here is the seven per-frame presentation dials — the split `renderQuality.ts` already argues for
+   * here is the eight per-frame presentation dials — the split `renderQuality.ts` already argues for
    * depth of field, where a ceiling says what a pass may cost and a dial says how much of it this
    * frame takes. A profile is chosen once from what a device can afford and is clamped against what
    * the adapter reports; a dial is what a game drives, and only the second is a script's business.
@@ -343,6 +343,7 @@ describe('every binding, as a set', () => {
     const dials = registry.forModule('drift/render');
     expect([...dials].map((c) => c.name).sort()).toEqual([
       'bloom',
+      'bloomAbove',
       'exposure',
       'focus',
       'medium',
@@ -354,6 +355,31 @@ describe('every binding, as a set', () => {
       expect(dial.effects, `${dial.name} declares more than the view`).toEqual(['scene.write']);
       expect(dial.deterministic, `${dial.name} claims determinism`).toBe(false);
     }
+  });
+
+  /**
+   * **`bloomAbove` hands the renderer its threshold as well as its scale**, and both are required.
+   * A threshold is compared before exposure, so a script driving exposure through a day has to move
+   * the threshold with it or its lamps stop blooming at night; the engine's own setter takes the two
+   * together, and a binding that defaulted either would be a number a script author has to look up.
+   */
+  it('BLOOMABOVE SETS THE SCALE AND THE THRESHOLD TOGETHER', async () => {
+    const { renderImplementation } = await import('./bindings/render.ts');
+    const calls: unknown[][] = [];
+    const renderer = { setBloom: (...args: unknown[]) => calls.push(args) };
+    const bloomAbove = renderImplementation()['bloomAbove'] as (
+      r: unknown,
+      s: number,
+      t: number,
+    ) => void;
+    bloomAbove(renderer, 0.8, 0.3);
+    expect(calls).toEqual([[0.8, 0.3]]);
+    const byName = new Map([...registry.forModule('drift/render')].map((c) => [c.name, c]));
+    expect(byName.get('bloomAbove')?.params.map((p) => p.name)).toEqual([
+      'renderer',
+      'scale',
+      'threshold',
+    ]);
   });
 
   /**

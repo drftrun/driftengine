@@ -309,6 +309,45 @@ function insideBy(cascade: GlobalFieldCascade, x: number, y: number, z: number):
 }
 
 /**
+ * The world distance to the nearest of `instances` at any point, rather than composed onto a grid
+ * around the camera: for a caller that traces through the scene once instead of every frame, such
+ * as DriftLight's occlusion bake. The same sampling `composeGlobalField` does, under the same
+ * refusals of a non-uniform scale and non-cubic voxels, so the two cannot disagree about a surface.
+ * Nothing placed answers a very large distance: open space everywhere.
+ */
+export function distanceToInstances(
+  instances: readonly GlobalFieldInstance[],
+): (x: number, y: number, z: number) => number {
+  const inverses: Float32Array[] = [];
+  const scales: number[] = [];
+  const kept: GlobalFieldInstance[] = [];
+  for (const instance of instances) {
+    assertUniformScale(instance.transform);
+    assertCubicVoxels(instance.source);
+    const inverse = new Float32Array(16);
+    if (mat4.invert(inverse, instance.transform) === null) continue;
+    inverses.push(inverse);
+    scales.push(uniformScaleOf(instance.transform));
+    kept.push(instance);
+  }
+  return (x, y, z) => {
+    let nearest = 1e9;
+    for (let at = 0; at < kept.length; at++) {
+      const distance = sampleInstance(
+        kept[at] as GlobalFieldInstance,
+        inverses[at] as Float32Array,
+        scales[at] as number,
+        x,
+        y,
+        z,
+      );
+      if (distance < nearest) nearest = distance;
+    }
+    return nearest;
+  };
+}
+
+/**
  * The distance one instance reports at a world point.
  *
  * **The world point is carried into object space through the inverse**, which is the transform

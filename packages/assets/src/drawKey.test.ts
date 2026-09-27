@@ -88,6 +88,8 @@ describe('resolveDrawGrouping', () => {
       metallicScale: 1,
       occlusionStrength: 0,
       cutout: 0.5,
+      blend: false,
+      doubleSided: false,
     });
   });
 
@@ -103,6 +105,42 @@ describe('resolveDrawGrouping', () => {
       metallicScale: 1,
       occlusionStrength: 0,
       cutout: 0,
+      blend: false,
+      doubleSided: false,
     });
   });
+});
+
+it('A BLENDED SURFACE IS NEVER MERGED WITH AN OPAQUE ONE THAT SHARES ITS MAPS', () => {
+  /*
+   * A leaf and the bark it grows from can wear one atlas. Merged, one of them would take the other's
+   * draw: the leaf drawn opaque and its shape lost, or the bark drawn blended and sorted with glass.
+   */
+  const leaf = material({ albedo: 1, blend: true });
+  const bark = material({ albedo: 1 });
+  expect(resolveDrawGrouping(leaf).blend).toBe(true);
+  expect(drawKeyOf(leaf)).not.toBe(drawKeyOf(bark));
+});
+
+it('A TWO-SIDED SURFACE IS NEVER MERGED WITH A ONE-SIDED ONE THAT SHARES ITS MAPS', () => {
+  /*
+   * A curtain and the stone behind it can wear one atlas. Merged, one draw culls both or neither:
+   * the curtain a hole from behind, or the wall drawn with its inside faces showing.
+   */
+  const curtain = material({ albedo: 1, doubleSided: true });
+  const wall = material({ albedo: 1 });
+  expect(resolveDrawGrouping(curtain).doubleSided).toBe(true);
+  expect(drawKeyOf(curtain)).not.toBe(drawKeyOf(wall));
+});
+
+it('AN OVERRIDE MAY SAY A SURFACE IS NOT METAL, whatever its map says', () => {
+  /*
+   * A bought courtyard's stone maps carry up to 0.37 in the metallic channel, on the clean stone:
+   * shaded, each such patch swapped its diffuse light for a reflection of a dark gallery and read
+   * as a black blotch. Stone is a dielectric; a consumer who can name the material says so here.
+   */
+  const stone = material({ albedo: 1, metallicScale: 1 });
+  expect(resolveDrawGrouping(stone, { metallicScale: 0 }).metallicScale).toBe(0);
+  expect(resolveDrawGrouping(stone).metallicScale).toBe(1);
+  expect(drawKeyOf(stone, { metallicScale: 0 })).not.toBe(drawKeyOf(stone));
 });

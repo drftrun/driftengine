@@ -107,6 +107,48 @@
  * code-splitting requirement placed on every consumer's bundler — a worse trade than 5.3 KB for a
  * renderer that can light a scene with no baked lighting.
  */
+/**
+ * **The core entries re-measured 2026-09-26, the 4.4.0 renderer work, and split by where it landed.**
+ *
+ * | `core-only` | |
+ * | --- | --- |
+ * | Floor as recorded | 738,499 |
+ * | 4.3.0, measured | 741,604: 3,105 bytes of drift from before |
+ * | 4.4.0's first half | 748,810: 7,206 bytes, the courtyard's loader, stream pacing and film look |
+ * | This | **762,355**: 13,545 bytes |
+ *
+ * **The 13.5 KB is four features a scene turns on and the shader text they add to every variant**:
+ * horizon-based occlusion in place of the neighbour sum, eye adaptation's meter and its two passes
+ * on each backend, two-sided surfaces through the mesh and depth pipelines, and the cutout's mip
+ * credit. The shader part is paid twenty-one times, once per generated flat variant, because a
+ * variant is larger than deflate's window and nothing dedupes across them.
+ *
+ * **AgX was built in the same work and taken out**: 11,912 bytes on every core entry for a curve no
+ * scene chose once a bought courtyard was measured against its maker's renders, where ACES matched
+ * them. The small packages moved by nothing, which says the cost is the renderer's.
+ */
+/**
+ * **Every entry re-measured 2026-09-28, for DriftLight and DriftRay's lamps, written to the byte.**
+ *
+ * | `core-only` | |
+ * | --- | --- |
+ * | Floor as recorded | 762,355 |
+ * | 4.4.0 before DriftLight, measured | 781,249: 18,894 bytes of drift since the last sweep |
+ * | DriftLight | 807,023: 25,774 bytes |
+ * | This, with DriftRay lighting a hit with the frame's lamps | **808,253**: 1,230 bytes more |
+ *
+ * **DriftLight is 25.4 to 25.8 KB on every core entry and nothing on any other**, which says the
+ * cost is the renderer's. About 19.5 KB of it is the volume lookup in the generated flat WGSL, paid
+ * once per variant for the reason the entry above gives; the rest is the field's CPU half (the
+ * sparse layout, the occluded bake and its soft-visibility march) and the two backends' binding of
+ * it. It is paid whether or not a scene makes a field, for the reason 2026-09-18 gives about the
+ * composer: a method on the renderer keeps its module reachable. What would change that is the
+ * field moving to a package of its own that registers with the renderer, which the lit shader's
+ * lookup would still be paid for.
+ *
+ * The 18,894 bytes before it were the rest of 4.4.0's renderer work after the 2026-09-26 sweep and
+ * are not apportioned here. The small packages moved by at most 254 bytes, none of it this change.
+ */
 export const FLOORS = {
   /*
    * Raised 2026-08-22 by MATL's four texture indices: three more `setInt32`, three more guarded
@@ -261,7 +303,15 @@ export const FLOORS = {
    * chunk before it about who pays: one entry point, and a separate export path is the fix when
    * somebody minds.
    */
-  'drft-only': 8339,
+  /*
+   * **`MSHQ`, `INST` and `LITE`, 2026-09-25: +1,559 bytes**, from 8,339 to 9,898. The quantised
+   * decoder is most of it: five encodings, the octahedral decode in float64, and a refusal per
+   * header field a file could have made anything of. What it buys is on the other side of the
+   * ledger: a bought courtyard's geometry at a third of its bytes, 1.67 GB to 355 MB for the five
+   * packs. `readDrft` has to decode a quantised mesh to read one, so this is the price of reading
+   * any file a current baker writes, not an opt-in.
+   */
+  'drft-only': 9923,
   /*
    * Raised 2026-08-22 by the normal map, and again the same day by the ORM map. Both splits are
    * measured rather than assumed.
@@ -667,7 +717,7 @@ export const FLOORS = {
    * **What would make it wrong** is the same thing that would make the fix wrong: if the sixteen
    * permutations were ever collapsed, this would collapse with them.
    */
-  'core-only': 738499,
+  'core-only': 808253,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -680,7 +730,7 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 743349,
+  'core-and-gizmo': 812785,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -693,7 +743,7 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 744736,
+  'core-and-audio': 814434,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -715,7 +765,7 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 744797,
+  'core-and-animation': 814264,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -750,7 +800,7 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 776274,
+  'core-and-script': 846248,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -784,7 +834,7 @@ export const FLOORS = {
    */
   'ai-only': 1778,
   'media-only': 11524,
-  'texture-only': 2305,
+  'texture-only': 2304,
   /*
    * **Raised 2026-09-16 to 7,101 by hole support in `buildContours`**, and the step splits three
    * ways.
@@ -814,7 +864,7 @@ export const FLOORS = {
    * pairs inside each bucket. A kilobyte and a quarter for a tenth off every path an agent walks,
    * and the same answer as above about who pays: a separate export path when somebody minds.
    */
-  'nav-only': 8401,
+  'nav-only': 8399,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the
@@ -900,9 +950,12 @@ export const FLOORS = {
    * pays for. It is the second entry in this list where the number is mostly somebody else's, and
    * the same answer applies: one entry point, and a separate export path is the fix when somebody
    * minds.
+   *
+   * **68,567, 2026-09-25**: +2,194, all of it `@driftengine/drft`'s — the `MSHQ` encoder and the
+   * `LITE` writer arriving with `writeDrft`. Nothing in this package moved.
    */
-  'capture-only': 66373,
-  'core-and-splats': 755540,
+  'capture-only': 68821,
+  'core-and-splats': 825233,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -919,7 +972,7 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 739911,
+  'core-and-terrain': 809609,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -945,8 +998,8 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 747470,
-  'core-and-assets': 751527,
+  'core-and-ui2d': 817145,
+  'core-and-assets': 824441,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -957,7 +1010,7 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 746887,
+  'core-audio-spatial': 816598,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *
@@ -1166,8 +1219,8 @@ export const FLOORS = {
    * What a game that never enters a session pays is nothing at all: `@driftengine/xr` is a package
    * and `physics-only` and `core-only` are unmoved by it existing.
    */
-  'xr-only': 10849,
-  'physics-only': 46168,
+  'xr-only': 10850,
+  'physics-only': 46274,
   /**
    * **821 bytes, 2026-09-03, up from 633 when the rewind snapshot landed.**
    *
@@ -1223,7 +1276,7 @@ export const FLOORS = {
    * and a `UiNode` builder. Nothing here touches a shader, so it adds no permutation to the sixteen
    * `flatFrag` already carries at 283.4 KB.
    */
-  'editor-only': 10653,
+  'editor-only': 10652,
   /*
    * **Measured 2026-08-26 on the commit that created the package**, Track P's CH-0: fifteen
    * elements and their atomic weights, the species registry, the species-by-element matrix,

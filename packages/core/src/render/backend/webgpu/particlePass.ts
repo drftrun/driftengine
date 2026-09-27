@@ -118,6 +118,14 @@ export interface GpuParticles {
   readonly fragInts: Int32Array;
   readonly fields: UniformFields;
   readonly bindGroup: GPUBindGroup;
+  /**
+   * The encoder this batch was last drawn into, by the renderer's count, or -1.
+   *
+   * **A second draw into the same encoder is refused**, because this batch's buffers are written
+   * at each draw and every write lands before the encoder runs: both draws would show the second.
+   * WebGL2 has no such limit, and a limit one backend has is said, not left to a wrong picture.
+   */
+  drawnInEncoder: number;
   dispose(): void;
 }
 
@@ -215,6 +223,7 @@ export function createGpuParticles(
   const fragStaging = new ArrayBuffer(fragSize);
 
   return {
+    drawnInEncoder: -1,
     corners: cornerBuffer,
     instances,
     indexBuffer,

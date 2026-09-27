@@ -137,3 +137,79 @@ test('an attribute that varies is kept, whatever its first value', () => {
   const kept = dropDefaultAttributes({ ...pair(), relief: new Float32Array([0, 0.5]) });
   expect(kept.relief).toEqual(new Float32Array([0, 0.5]));
 });
+
+/*
+ * **The weld ran out of heap on a real model.** It built a string key per corner — twenty-odd
+ * quantised numbers joined into one string, held in a `Map` — which is hundreds of bytes of heap a
+ * corner. A photogrammetry-matched scene's five-million-triangle ivy needed 5.9 GB to bake and its
+ * nineteen-million-triangle candle pack could not bake at all, while welding under one percent.
+ */
+test('A MILLION CORNERS WELD WITHOUT A HEAP THE SIZE OF THE MODEL', () => {
+  const corners = 1_000_000;
+  const positions = new Float32Array(corners * 3);
+  /* Every corner distinct, which is the worst case for a key table: nothing merges. */
+  for (let i = 0; i < corners; i++) {
+    positions[i * 3] = i % 1000;
+    positions[i * 3 + 1] = Math.floor(i / 1000);
+  }
+  const mesh: MeshData = {
+    positions,
+    normals: new Float32Array(corners * 3).fill(0.5),
+    colors: new Float32Array(corners * 3).fill(1),
+    emissive: new Float32Array(corners),
+    uvs: new Float32Array(corners * 2).fill(0.25),
+    indices: new Uint32Array(corners).map((_, i) => i),
+  };
+  /* Through `globalThis` rather than by naming `process`: the engine's config carries no Node types. */
+  const heap = (globalThis as unknown as { process: { memoryUsage(): { heapUsed: number } } })
+    .process;
+  const before = heap.memoryUsage().heapUsed;
+  const welded = weldMesh(mesh);
+  const grown = heap.memoryUsage().heapUsed - before;
+  expect(welded).toBe(mesh);
+  /*
+   * 64 MB is a budget of 67 bytes a corner of heap. The string keys spent well over three hundred;
+   * a table of typed arrays spends none, since a typed array's storage is not heap.
+   */
+  expect(grown).toBeLessThan(64 * 1024 * 1024);
+});
+
+test('corners at a large coordinate still merge, and still keep apart one quantum away', () => {
+  /* 3000 units is past what a 32-bit integer holds at a quantum of a millionth. */
+  const mesh: MeshData = {
+    positions: new Float32Array([3000, 0, 0, 3000, 0, 0, 3000.5, 0, 0]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+    colors: new Float32Array(9).fill(1),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const welded = weldMesh(mesh);
+  expect(welded.positions).toHaveLength(6);
+  expect([...welded.indices]).toEqual([0, 0, 1]);
+});
+
+test('a negative zero is the same number as a zero, and NaN is the same as NaN', () => {
+  /*
+   * The string key read both pairs as equal, so a faster key must too or a bake changes.
+   *
+   * **Sixty-four pairs, not one**, because the table compares values once two corners share a
+   * slot: a hash that told -0 from 0 still merged a single pair whenever the two happened to
+   * collide, and one pair in an eight-slot table collided often enough to pass. Across sixty-four
+   * pairs a hash that disagrees with the comparison splits some of them.
+   */
+  const pairs = 64;
+  const positions = new Float32Array(pairs * 4 * 3);
+  for (let k = 0; k < pairs; k++) {
+    positions.set([k, 0, 0, k, -0, 0], k * 6);
+    positions.set([k, NaN, 1, k, NaN, 1], pairs * 6 + k * 6);
+  }
+  const corners = pairs * 4;
+  const mesh: MeshData = {
+    positions,
+    normals: new Float32Array(corners * 3),
+    colors: new Float32Array(corners * 3).fill(1),
+    emissive: new Float32Array(corners),
+    indices: new Uint32Array(corners).map((_, i) => i),
+  };
+  expect(weldMesh(mesh).positions).toHaveLength(pairs * 2 * 3);
+});

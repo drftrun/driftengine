@@ -70,6 +70,52 @@ export interface ProbeBakeOptions {
    * nothing gets the frame it already had.
    */
   readonly irradiance?: boolean;
+  /**
+   * Whether what the probe sees is lit by the grid's last bake, so each bake adds a bounce.
+   *
+   * Defaults to **false**, which is what every bake did before this existed. Then everything a
+   * probe sees is lit by the sun and by the hemispheric ambient, so the grid holds one bounce. An
+   * enclosed space is mostly lit at the second bounce and later. A courtyard's arcades are the
+   * case this was built for: one bounce came out about two stops under a reference render.
+   *
+   * With it on, the surfaces in each face take their ambient from the grid instead. Round-robin
+   * baking then converges on the space's full interreflection, about a bounce each time the grid
+   * is swept, and a scene holding one moment bakes the grid two or three times. It costs no pass
+   * and no memory. The faces are drawn into their own cube and only the resolve writes the array,
+   * so the array is never read and written in one pass.
+   *
+   * **Nothing changes until every probe has been baked once**, because until then the grid is not
+   * readable; the first sweep lights by the ambient as before. What it gives up: light that leaks
+   * through a wall into a probe is bounced again, so a leak grows with each sweep. What would make
+   * it wrong is a space with near-white walls, where a sweep adds almost as much as the last and
+   * convergence takes many sweeps.
+   */
+  readonly bounce?: boolean;
+  /**
+   * Which of the six faces this call draws, as `[first, count]`: all six when absent.
+   *
+   * **A bake is six draws of the scene, and a scene of millions of triangles makes it the most
+   * expensive thing in a frame.** Measured on a bought courtyard of eleven million: 6.4 ms of a
+   * 14 ms frame, on the frames it ran, which is a frame rate no display can hold steady. Spread over
+   * calls, each draws only its faces into the capture, and the convolution into the layer, which
+   * reads all six, runs when the sixth is drawn. Faces in the order a cube numbers them,
+   * `+X, -X, +Y, -Y, +Z, -Z`.
+   *
+   * **The caller finishes one probe before starting the next**, because the capture the faces are
+   * drawn into is one for the whole grid: faces of two probes interleaved make a cube of neither.
+   * What it gives up is a probe whose faces were drawn a few frames apart, under a light that moved
+   * a little between them.
+   */
+  readonly faces?: readonly [first: number, count: number];
+}
+
+/** The faces a bake draws, `[first, end)`, from `ProbeBakeOptions.faces`. All six when absent. */
+export function probeFaceRange(options: ProbeBakeOptions | undefined): [number, number] {
+  const asked = options?.faces;
+  if (asked === undefined) return [0, 6];
+  const first = Math.min(Math.max(Math.trunc(asked[0]), 0), 5);
+  const count = Math.max(Math.trunc(asked[1]), 1);
+  return [first, Math.min(first + count, 6)];
 }
 
 /**
@@ -407,12 +453,17 @@ export class ReflectionProbe {
    * Returns whether the bake happened. A false means the allocation was refused and the caller
    * should carry on without a probe, which is a picture with a gradient in its paint rather
    * than a room.
+   *
+   * `first` and `end` draw only those faces, and the chain the roughness reads is built when the
+   * sixth is drawn. See `ProbeBakeOptions.faces`.
    */
   bake(
     gl: WebGL2RenderingContext,
     origin: Vec3,
     clearColor: Vec3,
     drawFace: (camera: Camera) => void,
+    first = 0,
+    end = FACES.length,
   ): boolean {
     if (this.unusable) return false;
 
@@ -429,7 +480,7 @@ export class ReflectionProbe {
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
     gl.viewport(0, 0, this.size, this.size);
 
-    for (let face = 0; face < FACES.length; face++) {
+    for (let face = first; face < end; face++) {
       const aim = FACES[face];
       if (aim === undefined) continue;
       gl.framebufferTexture2D(
@@ -439,7 +490,7 @@ export class ReflectionProbe {
         this.texture,
         0,
       );
-      if (face === 0 && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      if (face === first && gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
         this.unusable = true;
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         console.warn(
@@ -464,6 +515,7 @@ export class ReflectionProbe {
     }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (end < FACES.length) return true;
     /* The blur the roughness reads. Once per bake, not once per frame. */
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.texture);
     gl.generateMipmap(gl.TEXTURE_CUBE_MAP);

@@ -215,14 +215,14 @@ test('THE GRADIENT HAS UNIT LENGTH AWAY FROM THE SURFACE, which is what makes ma
 
 test('THE SIGN CHANGES EXACTLY WHERE THE SURFACE IS, not a voxel before it or after it', () => {
   /*
-   * **A parity count has to record a crossing at the first grid point *past* it, and recording it
-   * at the one before is a single character.** Either way the field is negative in the middle and
-   * positive outside, every slice through it looks right, and the gradient is untouched — the
-   * whole boundary has simply moved one voxel along `x`. What that costs is the one thing a
-   * distance field exists for: a ray marching toward a wall is told it has arrived a voxel early
-   * on one side and a voxel late on the other, so it starts its next bounce inside the geometry.
+   * **A sign that is off by a voxel is invisible in every slice and costs the one thing a field is
+   * for.** The field is negative in the middle and positive outside either way, and the gradient is
+   * untouched — the boundary has simply moved. A ray marching toward a wall is then told it has
+   * arrived a voxel early on one side and a voxel late on the other, so it starts its next bounce
+   * inside the geometry. Crossing parity got this wrong with a single character once; the walk over
+   * the grid in `surfaceDepth.ts` gets it wrong if it lets a step cross the surface.
    *
-   * With the crossing recorded past, the sign at a grid point is **exact** rather than close, so
+   * So the sign at a grid point is **exact** rather than close, and
    * this asserts equality everywhere except within the tessellation's own sag — `r * (1 - cos(pi /
    * 32))` is 4.8e-3 for this sphere, and the band below is four times that.
    */
@@ -299,6 +299,57 @@ test('A MESH WOUND THE OTHER WAY STILL SIGNS CORRECTLY, because importers disagr
 
   const centre = nearest(outward, 0, 0, 0);
   expect(at(inward, ...centre.index)).toBeLessThan(0);
+});
+
+test('THE AIR OF AN OPEN ROOM BUILT FROM SHEETS IS OUTSIDE, because a bought scene is not closed', () => {
+  /*
+   * **Parity is exact for a closed solid and wrong for a sheet**, and a bought scene is sheets:
+   * single-sided walls, rooms open to the sky, a floor with nothing under it. One sheet in a row
+   * flips every point after it. Measured on a baked courtyard, the open air up its middle read
+   * +2.6 at 4 m, -2.7 from 5 m to 9 m and +2.7 above that — the right distance with the sign
+   * striped by altitude, and light traced through the striped half found black.
+   *
+   * A floor and four walls, no roof: 4 m by 4 m and 2 m tall, centred on the origin. The air at
+   * the centre is 1 m above the floor and 2 m from every wall, so it is +1, and a point 0.5 m
+   * higher is +1.5, nearer the open top than any wall.
+   */
+  const quad = (a: number[], b: number[], c: number[], d: number[]): number[] => [
+    ...a,
+    ...b,
+    ...c,
+    ...a,
+    ...c,
+    ...d,
+  ];
+  const room = soup([
+    ...quad([-2, -1, -2], [2, -1, -2], [2, -1, 2], [-2, -1, 2]),
+    ...quad([-2, -1, -2], [-2, 1, -2], [-2, 1, 2], [-2, -1, 2]),
+    ...quad([2, -1, -2], [2, 1, -2], [2, 1, 2], [2, -1, 2]),
+    ...quad([-2, -1, -2], [2, -1, -2], [2, 1, -2], [-2, 1, -2]),
+    ...quad([-2, -1, 2], [2, -1, 2], [2, 1, 2], [-2, 1, 2]),
+  ]);
+  const baked = bakeObjectSdf(room, 40);
+  expect(at(baked, ...nearest(baked, 0, 0, 0).index)).toBeCloseTo(1, 1);
+  expect(at(baked, ...nearest(baked, 0, 0.5, 0).index)).toBeCloseTo(0.5 + 1, 1);
+  /*
+   * And a ball inside it is still solid. Parity got this one wrong too: a ray along `x` crosses the
+   * room's wall and then the ball, two surfaces, and read the ball's middle as empty.
+   */
+  const both = soup([...Array.from(room.positions), ...Array.from(sphere(0.5).positions)]);
+  const withBall = bakeObjectSdf(both, 40);
+  expect(at(withBall, ...nearest(withBall, 0, 0, 0).index)).toBeCloseTo(-0.5, 1);
+});
+
+test('THE SEALED CAVITY OF A HOLLOW SOLID IS AIR, two surfaces in from the outside', () => {
+  /*
+   * A shell of stone 0.5 thick: a sphere of 1 around a sphere of 0.5. The cavity is reached from
+   * the outside only through the wall, so it is two surfaces deep and empty: +0.5 at its centre.
+   * The middle of the wall, at r = 0.75, is a quarter inside either face.
+   */
+  const shell = soup([...Array.from(sphere(1).positions), ...Array.from(sphere(0.5).positions)]);
+  const baked = bakeObjectSdf(shell, 40);
+  expect(at(baked, ...nearest(baked, 0, 0, 0).index)).toBeCloseTo(0.5, 1);
+  expect(at(baked, ...nearest(baked, 0.75, 0, 0).index)).toBeCloseTo(-0.25, 1);
 });
 
 test('two bakes of one mesh are identical, because a container has to be reproducible', () => {

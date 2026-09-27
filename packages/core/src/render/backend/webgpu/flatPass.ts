@@ -269,7 +269,9 @@ export function createFlatBindGroupLayout(
      * other kind against a `uint` texture, and the shader never samples it — every read is a
      * `texelFetch`, which is why the declaration shares a sampler rather than bringing its own.
      */
-    const integer = texture.type === 'usampler2D';
+    const integer = texture.type === 'usampler2D' || texture.type === 'usampler3D';
+    /* DriftLight's brick index and atlas, the lit pass's only volumes. See `driftLight.ts`. */
+    const volume = texture.type === 'sampler3D' || texture.type === 'usampler3D';
     const isShadow =
       integer || (name !== 'uEnvironment' && (name.endsWith('ShadowMap') || cube || array));
     entries.push({
@@ -279,6 +281,7 @@ export function createFlatBindGroupLayout(
         sampleType: integer ? 'uint' : isShadow ? 'unfilterable-float' : 'float',
         ...(cube ? { viewDimension: 'cube' as const } : {}),
         ...(array ? { viewDimension: '2d-array' as const } : {}),
+        ...(volume ? { viewDimension: '3d' as const } : {}),
       },
     });
     /*
@@ -460,6 +463,8 @@ export function flatPipeline(
   instanced = false,
   /** Which order-independent buffer this pipeline writes, if any. The key must carry it. */
   oit: OitTarget = 'none',
+  /** Culls nothing, for a surface seen from both faces. The key must carry it: `|2s`. */
+  doubleSided = false,
 ): GPURenderPipeline {
   return cache.get(key, () =>
     flatDescriptor(
@@ -476,6 +481,7 @@ export function flatPipeline(
       depthLayer,
       instanced,
       oit,
+      doubleSided,
     ),
   );
 }
@@ -571,6 +577,8 @@ function flatDescriptor(
    * `flatFrag`'s permutation axis, which `scripts/wgsl.ts` measures at about 247 KB gzipped.
    */
   oit: OitTarget = 'none',
+  /** Culls nothing: a surface seen from both faces. */
+  doubleSided = false,
 ): GPURenderPipelineDescriptor {
   const offset = depthOffsetForLayer(depthLayer);
   return {
@@ -612,7 +620,7 @@ function flatDescriptor(
             : { format: cache.format }),
       ],
     },
-    primitive: { topology: 'triangle-list', cullMode: 'back' },
+    primitive: { topology: 'triangle-list', cullMode: doubleSided ? 'none' : 'back' },
     multisample: { count: cache.sampleCount },
     /*
      * `less`, matching the WebGL2 path's `LESS` rather than `LEQUAL`, and for the reason

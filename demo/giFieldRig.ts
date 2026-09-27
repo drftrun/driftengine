@@ -259,6 +259,7 @@ export async function mountGiField(
       return stats;
     },
     backend,
+    renderer,
     dispose(): void {
       if (disposed) return;
       disposed = true;

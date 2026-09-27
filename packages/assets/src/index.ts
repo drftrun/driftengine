@@ -14,6 +14,11 @@
  */
 export { DrftLoader } from './drftLoader.ts';
 /*
+ * A part's whole material in the renderer's shape, so a consumer drawing parts cannot copy half of
+ * it: a copy that left out the occlusion strength drew a bought model black.
+ */
+export { writePartMaterial } from './partMaterial.ts';
+/*
  * **A `DTEX` chunk's tile table as the grid residency asks about.** The other constructor of a
  * `MaterialTileGrid` — `latentTileGrid` cuts one from a latent a baker holds, and this reads one a
  * consumer downloaded. The hashes are the file's, over the bytes a fetch returns, which is what
@@ -28,6 +33,7 @@ export type { DrftFit, DrftLoaderOptions } from './drftLoader.ts';
 export { drawKeyOf, resolveDrawGrouping } from './drawKey.ts';
 export type { DrawGrouping, DrawSurfaceOverride } from './drawKey.ts';
 export type { DrftLoadPhase, DrftLoadProgress, DrftPart } from './loadProgress.ts';
+export type { DrftFieldPlacement } from './fieldPlacement.ts';
 /* Addressing a texture by name, so a consumer never holds an ordinal. */
 export { TextureSet, textureColorSpaces } from './drftTextures.ts';
 export { assetCandidates, basenameOf } from './assetPath.ts';
@@ -105,11 +111,21 @@ export type { AsyncInflate } from './fbxInflate.ts';
  * on a real asset is roughly six times more than the model has.
  */
 export { weldMesh, dropDefaultAttributes } from './weld.ts';
+export { simplifyMesh } from './bake/simplify.ts';
+export type { SimplifyOptions } from './bake/simplify.ts';
+/*
+ * Copies an export merged into one mesh, found again as a prototype and a placement each. The
+ * baker writes them as `INST`; see `repeats.ts` for how strict a copy has to be to count.
+ */
+export { componentCount, findRepeats } from './repeats.ts';
+export type { Repeats } from './repeats.ts';
 /*
  * The frame is derived after the weld and not inside a reader, for the reason `tangentOrder.ts`
  * measures: a soup carrying a frame per corner has nothing left to merge.
  */
 export { deriveTangentsFor } from './tangentOrder.ts';
+/* A decoded image shrunk to a texture cap, which is what the baker's `--max-texture` runs. */
+export { cappedSize, downscaleRgba } from './downscale.ts';
 /*
  * One coarse mesh standing in for a whole asset, so a load can open on an outline rather than on
  * nothing. Baked, because a coarse model has to exist as geometry before it can be drawn, and
@@ -122,7 +138,13 @@ export type { CoarseLevelOptions } from './coarseLevel.ts';
  * than guessed: every rule for measuring it from the geometry is wrong on something ordinary,
  * and guessing is what put a car upside down and reported it as verified.
  */
-export { orientMeshes, parseUpAxis, describeUpAxis } from './orient.ts';
+export {
+  orientMeshes,
+  orientTransforms,
+  orientLights,
+  parseUpAxis,
+  describeUpAxis,
+} from './orient.ts';
 export type { UpAxis } from './orient.ts';
 
 /* Skins and clips out of a glTF document. See the module for why it is not part of `gltf.ts`. */
@@ -199,6 +221,7 @@ export type { ClusterDag, ClusterLevel } from './bake/clusterLod.ts';
  * carries, and a field a consumer cannot bake is a pipeline with no input.
  */
 export { bakeObjectSdf } from './bake/sdf.ts';
+export { bakeSceneField } from './bake/sceneField.ts';
 /*
  * **The third time, and the one that got furthest before anybody noticed.** `bake/hlod.ts` builds
  * the proxies and impostors `docs/CAPABILITIES.md` lists as shipping, it is tested, it is sized and

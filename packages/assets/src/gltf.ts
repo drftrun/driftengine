@@ -17,7 +17,7 @@
  * world matrix on the way through, and the graph does not survive into the engine.
  */
 
-import type { DrftNode, MeshData } from '@driftengine/drft';
+import type { DrftLight, DrftNode, MeshData } from '@driftengine/drft';
 import { DrftError } from '@driftengine/drft';
 import type { DrftMaterial } from '@driftengine/drft';
 import { generateTangents } from '@driftengine/core';
@@ -93,6 +93,7 @@ interface GltfMaterial {
   emissiveFactor?: number[];
   /** `OPAQUE`, `MASK` or `BLEND`. Absent means opaque, which the specification states. */
   alphaMode?: string;
+  doubleSided?: boolean;
   alphaCutoff?: number;
   name?: string;
   /**
@@ -118,6 +119,16 @@ interface GltfImage {
 interface GltfTexture {
   source?: number;
   sampler?: number;
+  /**
+   * Where an image in a newer codec is named. glTF's own `source` is the fallback, and a file that
+   * *requires* the extension usually carries none, so the extension's index is the only route to
+   * the picture.
+   */
+  extensions?: {
+    EXT_texture_webp?: { source?: number };
+    EXT_texture_avif?: { source?: number };
+    KHR_texture_basisu?: { source?: number };
+  };
 }
 interface GltfNode {
   mesh?: number;
@@ -129,6 +140,17 @@ interface GltfNode {
   rotation?: number[];
   scale?: number[];
   name?: string;
+  /** Which of the document's punctual lights hangs on this node. */
+  extensions?: { KHR_lights_punctual?: { light?: number } };
+}
+/** One `KHR_lights_punctual` light, as the extension states it. */
+interface GltfPunctualLight {
+  type?: string;
+  name?: string;
+  color?: number[];
+  intensity?: number;
+  range?: number;
+  spot?: { innerConeAngle?: number; outerConeAngle?: number };
 }
 export interface GltfDocument {
   asset?: { version?: string; generator?: string };
@@ -142,9 +164,14 @@ export interface GltfDocument {
   materials?: GltfMaterial[];
   images?: GltfImage[];
   textures?: GltfTexture[];
+  /** Extensions the file states it cannot be read correctly without. */
+  extensionsRequired?: string[];
+  extensionsUsed?: string[];
   /* Read by `gltfSkin.ts`; ignored entirely by the mesh path, which flattens. */
   skins?: GltfSkinDef[];
   animations?: GltfAnimationDef[];
+  /** The document's own lights, which nodes name by index. */
+  extensions?: { KHR_lights_punctual?: { lights?: GltfPunctualLight[] } };
 }
 
 /** A skin, as glTF declares one. `skeleton` is a hint this reader does not need and ignores. */
@@ -323,6 +350,34 @@ function normalMatrix(m: readonly number[]): number[] {
  * textures may share one image with different samplers. Following the indirection here keeps
  * the material's index meaning what the file said it meant.
  */
+/**
+ * Which image a texture shows: glTF's `source` when there is one, otherwise an image-codec
+ * extension's.
+ *
+ * **The fallback wins when both exist**, because every reader can decode it and the baker
+ * identifies whatever bytes it gets. What that gives up is nothing a bake can use today: a WebP
+ * extension's image is smaller, but nothing here knows the two are the same picture. What would
+ * make it wrong is a baker that decodes AVIF, where the extension's image may be the better source.
+ *
+ * Basis is refused by name: it is a GPU transcoding format, and this engine uploads decoded images.
+ */
+function textureSource(
+  texture: GltfTexture | undefined,
+  index: number,
+  warnings: string[],
+): number | undefined {
+  if (texture?.source !== undefined) return texture.source;
+  const ext = texture?.extensions;
+  if (ext?.KHR_texture_basisu !== undefined) {
+    warnings.push(
+      `texture ${index} is KHR_texture_basisu, which this reader does not transcode; export ` +
+        'the model with PNG, JPEG or WebP images',
+    );
+    return undefined;
+  }
+  return ext?.EXT_texture_webp?.source ?? ext?.EXT_texture_avif?.source;
+}
+
 function readImages(
   doc: GltfDocument,
   buffers: readonly Uint8Array[],
@@ -330,7 +385,7 @@ function readImages(
 ): AssetReference[] {
   const out: AssetReference[] = [];
   for (let i = 0; i < (doc.textures ?? []).length; i++) {
-    const source = doc.textures?.[i]?.source;
+    const source = textureSource(doc.textures?.[i], i, warnings);
     const image = source === undefined ? undefined : doc.images?.[source];
     if (image === undefined) {
       warnings.push(`texture ${i} names no image this reader can find; it will draw untextured`);
@@ -563,6 +618,17 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
   const modulated = ormMap >= 0;
   const metallic = modulated ? 0 : (pbr?.metallicFactor ?? 1);
   const roughness = modulated ? DEFAULT_ROUGHNESS : (pbr?.roughnessFactor ?? 1);
+  /*
+   * **The same trap reached by the other door: a metal whose colour is an image.** `specular` is
+   * this engine's dielectric highlight and it is white, which is a metal's highlight only where the
+   * metal is white. Where the base colour is a texture that colour is per texel, the lane cannot
+   * say it, and the factor alone blew a dirt decal to white: its file names no metallic and no
+   * roughness, so the specification reads a rough metal of dark grime, and every wall it covered
+   * drew white under a low sun with the grime dark between. So the lane keeps the dielectric's
+   * zero there. What it gives up is the sun's glint on a textured metal with no map, which then
+   * shades as the grime or the paint its image says; what would change it is a metallic lane.
+   */
+  const highlight = pbr?.baseColorTexture === undefined ? metallic : 0;
 
   /*
    * **glTF leaves `metallicRoughnessTexture`'s R channel undefined.** The specification assigns G
@@ -583,7 +649,7 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
   return {
     name: material?.name ?? '',
     color: [base[0] ?? 1, base[1] ?? 1, base[2] ?? 1],
-    specular: metallic,
+    specular: highlight,
     roughness,
     emissive,
     emissiveColor:
@@ -591,6 +657,14 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
         ? [emissiveFactor[0] ?? 0, emissiveFactor[1] ?? 0, emissiveFactor[2] ?? 0]
         : [-1, -1, -1],
     opacity: blends ? Math.min(1, Math.max(0, base[3] ?? 1)) : 1,
+    /*
+     * glTF's `BLEND` says alpha is the factor *times the texture*. With a factor of 1 `opacity` alone
+     * cannot say the material blends, and a leaf whose shape is all in its texture's alpha drew as a
+     * solid card. So it is said.
+     */
+    blend: blends,
+    /* Seen from both faces: a curtain, a leaf card. The specification's default is one face. */
+    doubleSided: material?.doubleSided === true,
     /* Only in MASK mode: the specification says `alphaCutoff` has no meaning in the other two. */
     cutout: masked ? Math.min(1, Math.max(0, material?.alphaCutoff ?? 0.5)) : 0,
     /* Metalness is glTF's statement about reflection: a metal mirrors its surroundings and
@@ -627,6 +701,14 @@ export interface GltfReadOptions {
   readonly deriveTangents?: boolean;
 }
 
+/** The required extensions this reader implements, or follows far enough to fail loudly. */
+const KNOWN_REQUIRED = new Set([
+  'KHR_materials_pbrSpecularGlossiness',
+  'EXT_texture_webp',
+  'EXT_texture_avif',
+  'KHR_lights_punctual',
+]);
+
 /**
  * Turn a document into meshes in world space, one per primitive.
  *
@@ -644,6 +726,7 @@ export function gltfToMeshes(
   materials: DrftMaterial[];
   textures: AssetReference[];
   nodes: DrftNode[];
+  lights: DrftLight[];
 } {
   const version = doc.asset?.version ?? '';
   if (!version.startsWith('2')) {
@@ -655,6 +738,15 @@ export function gltfToMeshes(
   /* One per labelled material, by the ordinal `materials` is about to give it. */
   const substances: { material: number; substance: string }[] = [];
   const warnings: string[] = [];
+  /*
+   * A required extension is the file saying it cannot be read correctly without it. One this
+   * reader does not know is said by name, rather than drawing whatever falls out.
+   */
+  for (const name of doc.extensionsRequired ?? []) {
+    if (!KNOWN_REQUIRED.has(name)) {
+      warnings.push(`the file requires ${name}, which this reader does not implement`);
+    }
+  }
   const textures = readImages(doc, buffers, warnings);
   /*
    * Said once per material rather than once per primitive that uses it.
@@ -696,6 +788,9 @@ export function gltfToMeshes(
    * traversal.
    */
   const nodes: DrftNode[] = [];
+  /* The lights, placed by the same world matrix the walk computes for the geometry. */
+  const lights: DrftLight[] = [];
+  const punctual = doc.extensions?.KHR_lights_punctual?.lights ?? [];
 
   const walk = (nodeIndex: number, parent: readonly number[], parentNode: number): void => {
     if (seen.has(nodeIndex)) {
@@ -708,6 +803,18 @@ export function gltfToMeshes(
     if (node === undefined)
       throw new DrftError(`gltf: a scene names node ${nodeIndex}, which is absent`);
     const world = multiply(parent, localMatrix(node));
+    const hung = node.extensions?.KHR_lights_punctual?.light;
+    if (hung !== undefined) {
+      const light = punctual[hung];
+      if (light === undefined) {
+        warnings.push(`node ${nodeIndex} names light ${hung}, and the file has ${punctual.length}`);
+      } else {
+        const placed = placeLight(light, world, node.name ?? light.name ?? '');
+        if (placed === null)
+          warnings.push(`light ${hung}: a type "${light.type}" is not a punctual light`);
+        else lights.push(placed);
+      }
+    }
 
     const entry = nodes.length;
     nodes.push({
@@ -795,7 +902,36 @@ export function gltfToMeshes(
     materials,
     textures,
     nodes,
+    lights,
     ...(substances.length === 0 ? {} : { substances }),
+  };
+}
+
+/**
+ * One punctual light where its node puts it: the node's origin, and its local −z for the way it
+ * points, both through the world matrix. The extension's defaults stand where the file is silent.
+ */
+function placeLight(
+  light: GltfPunctualLight,
+  world: readonly number[],
+  name: string,
+): DrftLight | null {
+  const kind = light.type;
+  if (kind !== 'point' && kind !== 'spot' && kind !== 'directional') return null;
+  const dx = -(world[8] ?? 0);
+  const dy = -(world[9] ?? 0);
+  const dz = -(world[10] ?? 1);
+  const length = Math.hypot(dx, dy, dz) || 1;
+  return {
+    kind,
+    name,
+    position: [world[12] ?? 0, world[13] ?? 0, world[14] ?? 0],
+    direction: [dx / length, dy / length, dz / length],
+    color: [light.color?.[0] ?? 1, light.color?.[1] ?? 1, light.color?.[2] ?? 1],
+    intensity: light.intensity ?? 1,
+    range: light.range ?? 0,
+    innerConeRad: light.spot?.innerConeAngle ?? 0,
+    outerConeRad: light.spot?.outerConeAngle ?? Math.PI / 4,
   };
 }
 

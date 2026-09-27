@@ -22,7 +22,7 @@
  */
 
 import type { MeshData } from '@driftengine/drft';
-import type { AnimationClip, DrftMaterial, DrftNode, DrftSkin } from '@driftengine/drft';
+import type { AnimationClip, DrftLight, DrftMaterial, DrftNode, DrftSkin } from '@driftengine/drft';
 import { DrftError } from '@driftengine/drft';
 import type { AssetReference } from './assetPath.ts';
 import { assetCandidates } from './assetPath.ts';
@@ -150,6 +150,8 @@ export interface ModelImport {
    * reads it calls `localiseNodes` to get parts it can turn.
    */
   nodes?: readonly DrftNode[];
+  /** The lights the file was authored with, in world space. glTF carries them; nothing else here. */
+  lights?: readonly DrftLight[];
   /** Which way round the source's coordinate system was. `orient.ts` is what acts on it. */
   declaredHand?: Handedness;
 }

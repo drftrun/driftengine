@@ -28,6 +28,8 @@ import { FRAME_TURN, GOLDEN_ANGLE, PROBE_DIRECTIONS } from '../../gi/probeTrace.
 import { PROBE_MARCH_WGSL, PROBE_TRACE_CORE_WGSL } from './probeTrace.wgsl.ts';
 import { PROBE_VOLUME_CORE_WGSL, PROBE_VOLUME_STRUCT_WGSL } from './probeVolume.wgsl.ts';
 import { SAMPLE_FIELD_WGSL } from './sampleField.wgsl.ts';
+import { DRIFT_LIGHT_WGSL } from './driftLight.wgsl.ts';
+import { BOUNCE_LIGHT_FLOATS, MAX_BOUNCE_LIGHTS } from '../../gi/bounceLights.ts';
 
 /**
  * Floats in the bake block, and where each field of it starts.
@@ -47,14 +49,40 @@ export const BAKE_COUNTS = 8;
 export const BAKE_EDGE = 11;
 export const BAKE_FRAME = 12;
 export const BAKE_SCHEDULED = 13;
+/** How much of what a layer held a refresh keeps. See `PROBE_HISTORY` and `convolveMain`. */
+export const BAKE_HISTORY = 14;
 /** The sun, which the trace evaluates itself so a light that moves changes the bounce. */
 export const BAKE_SUN_DIR = 16;
 export const BAKE_SUN_COLOUR = 20;
-/** What a ray that left the world finds. The frame's ambient, so nothing rasterised is read. */
+/**
+ * What a ray that left the world finds: the sky's horizon colour where the frame drew a sky, and the
+ * whole of the sky, flat, where it drew none. The flag says which, in the fourth float of the row,
+ * which is where an f32 declared after a vec3 lands. The rest of the sky the frame drew follows.
+ */
 export const BAKE_SKY_COLOUR = 24;
+export const BAKE_SKY_DRAWN = 27;
+export const BAKE_SKY_TOP = 28;
+export const BAKE_SKY_DEEP = 32;
+/** The sky's own sun, which at night is not the key light: the moon is. The sunset reads this. */
+export const BAKE_SKY_SUN = 36;
+/**
+ * DriftLight's field, as `driftLight/uniforms.ts` resolves it for a probe: how much is in and its
+ * scale in `x` and `w`, and where its grid starts with the spacing in `w`. Zero switches it off.
+ */
+export const BAKE_DRIFT_LIGHT = 40;
+export const BAKE_DRIFT_ORIGIN = 44;
+/**
+ * How many of the frame's exact lights `bounceLights` holds, and how the renderer shades a point
+ * light: 1 inverse-square, 0 the shaped falloff. See `gi/bounceLights.ts`.
+ */
+export const BAKE_LIGHT_COUNT = 48;
+export const BAKE_FALLOFF = 49;
 
-/** Rounded up to the struct's own sixteen-byte alignment, with two vec3 rows for the sun. */
-export const PROBE_BAKE_FLOATS = 28;
+/** Rounded up to the struct's own sixteen-byte alignment: the lattice, five vec3 rows, three vec4. */
+export const PROBE_BAKE_FLOATS = 52;
+
+/** Rows of `bounceLights`: three a light. */
+export const BOUNCE_LIGHT_ROWS = (MAX_BOUNCE_LIGHTS * BOUNCE_LIGHT_FLOATS) / 4;
 
 /** Invocations a workgroup, for both entry points. 64 is this backend's default everywhere. */
 export const PROBE_BAKE_WORKGROUP = 64;
@@ -74,17 +102,28 @@ struct ProbeBake {
   counts: vec3<f32>,
   /* Texels across one probe's map, gutter included. */
   edge: f32,
-  /* Which frame this is, which turns the direction set so a probe converges rather than repeats. */
+  /* How far the direction set is turned. The bake holds it at 0; the parity check turns it. */
   frame: f32,
   /* How many probes this dispatch bakes. The schedule says which. */
   scheduled: f32,
-  pad: f32,
+  /* How much of what a layer held each refresh keeps, 0 for a grid not yet traced whole. */
+  history: f32,
   /* Towards the sun, and what colour it is. The trace shades what it hits rather than reading a
      capture, which is what lets a bounce follow a light that moved. */
   sunDir: vec3<f32>,
   sunColour: vec3<f32>,
-  /* And what is outside, for a ray that left. See probeDistantRadiance. */
+  /* And what is outside, for a ray that left. See probeDistantRadiance and probeSkyAlong. */
   skyColour: vec3<f32>,
+  skyDrawn: f32,
+  skyTop: vec3<f32>,
+  skyDeep: vec3<f32>,
+  skySun: vec3<f32>,
+  /* The summed light of a scene's many fixed lights. See driftLight.wgsl.ts. */
+  driftLight: vec4<f32>,
+  driftOrigin: vec4<f32>,
+  /* How many of the frame's exact lights bounceLights holds, and 1 for inverse-square falloff. */
+  lightCount: f32,
+  falloff: f32,
 }
 `;
 
@@ -237,11 +276,18 @@ fn convolveMain(@builtin(global_invocation_id) id: vec3<u32>) {
      zero rather than dividing is what keeps it from being a hole if it ever does. */
   let scale = select(0.0, 1.0 / weights, weights > 0.0);
   let value = max(vec3<f32>(0.0), sum * scale);
+  /*
+   * **Blended into what the layer held, because one refresh is one estimate.** 256 rays over a set
+   * that turns every frame put two refreshes of a probe a few per cent apart, and written as they
+   * landed they were a shimmer about nine times a second. "bake.history" is 0 until the grid has
+   * been traced whole, so a first fill lands at once.
+   */
+  let kept = mix(value, probeHistory(schedule[slot], u, v), bake.history);
 
   let out = id.x * ${String(PROBE_TEXEL_FLOATS)}u;
-  irradiance[out] = value.x;
-  irradiance[out + 1u] = value.y;
-  irradiance[out + 2u] = value.z;
+  irradiance[out] = kept.x;
+  irradiance[out + 1u] = kept.y;
+  irradiance[out + 2u] = kept.z;
 }
 `;
 
@@ -289,6 +335,11 @@ ${SAMPLE_FIELD_WGSL}
 fn probeLayerSample(layer: u32, uv: vec2<f32>) -> vec3<f32> {
   let at = layer * 3u;
   return vec3<f32>(probeValues[at], probeValues[at + 1u], probeValues[at + 2u]);
+}
+
+/* No history: this module's refreshes are checked as single estimates, and "bake.history" is 0. */
+fn probeHistory(layer: u32, u: u32, v: u32) -> vec3<f32> {
+  return vec3<f32>(0.0);
 }
 
 /* The same flat value: this module checks the blend, and what a production texture holds at its
@@ -374,6 +425,10 @@ fn echoMain(@builtin(global_invocation_id) id: vec3<u32>) {
   irradiance[9] = bake.edge;
   irradiance[10] = bake.frame;
   irradiance[11] = bake.scheduled;
+  irradiance[12] = bake.skyDrawn;
+  irradiance[13] = bake.skyTop.x;
+  irradiance[14] = bake.skyDeep.x;
+  irradiance[15] = bake.skySun.x;
 }
 
 /* The encode, which is a different function from the fold "texelMain" checks and needs its own. */
@@ -451,7 +506,19 @@ ${PROBE_VOLUME_STRUCT_WGSL}
 @group(0) @binding(9) var probeSampler: sampler;
 /* The colour of whatever won the union at each sample, three floats, same layout as the field. */
 @group(0) @binding(10) var<storage, read> albedoField: array<f32>;
+/* DriftLight's brick index and atlas, or one-texel stand-ins while driftLight.x is zero. */
+@group(0) @binding(11) var driftIndex: texture_3d<u32>;
+@group(0) @binding(12) var driftAtlas: texture_3d<f32>;
+@group(0) @binding(13) var driftSampler: sampler;
+/* The frame's exact lights, three rows each: see gi/bounceLights.ts for what each row holds. */
+@group(0) @binding(14) var<uniform> bounceLights: array<vec4<f32>, ${String(BOUNCE_LIGHT_ROWS)}>;
 ${SAMPLE_FIELD_WGSL}
+${DRIFT_LIGHT_WGSL}
+
+/* What a layer's irradiance level holds at a texel, which the convolution blends into. */
+fn probeHistory(layer: u32, u: u32, v: u32) -> vec3<f32> {
+  return textureLoad(probeArray, vec2<i32>(i32(u), i32(v)), i32(layer), i32(volume.level)).rgb;
+}
 
 /*
  * The albedo at a world point, from the finest cascade that holds it, by nearest sample.
@@ -564,13 +631,111 @@ fn probeSurfaceRadiance(p: vec3<f32>, towards: vec3<f32>) -> vec3<f32> {
   /*
    * And what has already bounced, which is the level this bake writes — so the loop closes.
    *
-   * **Divided by pi once and not twice.** "convolveProbe" normalises by the cosine weights it
-   * actually used, so what a probe stores is the cosine-weighted *mean radiance*, which is already
-   * the irradiance over pi — the convention a Lambertian's outgoing radiance multiplies directly
-   * by its albedo. Only the sun's own irradiance needs the division.
+   * **Neither term is divided by pi, because the frame divides neither.** "convolveProbe"
+   * normalises by the cosine weights it actually used, so a probe stores the cosine-weighted
+   * *mean radiance*, which a Lambertian's outgoing radiance multiplies directly by its albedo. And
+   * the flat shader lights a surface with "albedo * (ambient + directionalColor * cosine)", so
+   * "directionalColor" is the radiance a white surface facing the sun sends back rather than an
+   * irradiance. This divided the sun by pi until 2026-09-27, and every sunlit wall a probe struck
+   * came back a third as bright as the frame drew it: a room lit through its one open side read
+   * 66 of 255 on its far wall against a path-traced 200 ("scripts/bounce-check.mjs"). What would
+   * make it wrong is a flat shader that divides its own sun by pi; "probeBake.test.ts" reads both.
    */
   let bounced = probeVolumeIrradianceAt(p, n);
-  return albedo * (direct * ${String(1 / Math.PI)} + bounced);
+  /*
+   * And the summed light of the scene's many fixed lights, which is how a candle nobody is near
+   * reaches the bounce: the trace shades a hit with the sun alone otherwise. At the presence and
+   * scale the frame reads it with, and with no share, because a probe sees every fixed light through
+   * the volume (driftLight/uniforms.ts).
+   */
+  let summed = driftLightIrradiance(p, n, bake.driftOrigin) * (bake.driftLight.x * bake.driftLight.w);
+  return albedo * (direct + bounced + summed + probeLampsAt(p, n));
+}
+
+/*
+ * Whether a lamp reaches a point, by marching the field towards it and stopping short.
+ *
+ * **Short of the lamp by its fixture.** A flame stands inside a lantern and a bulb inside a shade,
+ * and a field a quarter of a metre fine draws those as solid: a march that ran all the way would
+ * find the lantern round every lantern and shade every one of them out. So it stops a fixture's
+ * width away, the larger of 30 cm and two of the finest voxels, and what it gives up is an occluder
+ * that close to a lamp.
+ */
+fn probeLampVisible(p: vec3<f32>, n: vec3<f32>, toward: vec3<f32>, span: f32) -> f32 {
+  let lifted = p + n * (PROBE_FIELD_START_VOXELS * march.finestStep);
+  var travelled = 0.0;
+  for (var step = 0u; step < march.steps; step = step + 1u) {
+    if (travelled >= span) { return 1.0; }
+    let at = lifted + toward * travelled;
+    if (probeFieldInside(at) <= 0.0) { return 1.0; }
+    let distance = probeFieldAt(at);
+    if (distance <= march.hitEpsilonM) { return 0.0; }
+    travelled = travelled + max(distance, march.finestStep * 0.25);
+  }
+  return 1.0;
+}
+
+/*
+ * The frame's exact lights on a surface a ray struck: the lit shader's lamp term, line for line
+ * (probeBake.test.ts holds the two together), with the field's own shadow in place of a lamp's
+ * shadow map. Not a photometric profile or a cookie, which the bounce reads as a plain cone.
+ */
+fn probeLampsAt(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+  var sum = vec3<f32>(0.0);
+  let count = u32(bake.lightCount);
+  for (var i = 0u; i < count; i = i + 1u) {
+    let at = bounceLights[i * 3u];
+    let colour = bounceLights[i * 3u + 1u];
+    let aim = bounceLights[i * 3u + 2u];
+    let lightRadius = at.w;
+    let toLight = at.xyz - p;
+    let dist = length(toLight);
+    let coneFalloff = smoothstep(aim.w, colour.w, dot(-toLight / max(dist, 1e-4), aim.xyz));
+    var falloff: f32;
+    if (bake.falloff == 1.0) {
+      let window = clamp(1.0 - pow(dist / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
+      falloff = window * window / max(dist * dist, 0.01);
+    } else {
+      falloff = clamp(1.0 - dist / lightRadius, 0.0, 1.0);
+    }
+    if (falloff <= 0.0) { continue; }
+    let ndl = max(dot(n, toLight / max(dist, 1e-4)), 0.0);
+    if (ndl <= 0.0) { continue; }
+    let shape = select(falloff * falloff, falloff, bake.falloff == 1.0) * coneFalloff;
+    if (shape <= 0.0) { continue; }
+    let fixture = max(0.3, 2.0 * march.finestStep);
+    let seen = probeLampVisible(p, n, toLight / max(dist, 1e-4), dist - fixture);
+    sum = sum + colour.rgb * ndl * shape * seen;
+  }
+  return sum;
+}
+
+/*
+ * The sky the frame drew, along a direction: the sky shader's gradient and its two sunset bands,
+ * transcribed line for line (probeBake.test.ts holds the two together). Not its sun, moon, stars or
+ * clouds: the sun reaches a probe as direct light at what the ray strikes, and the rest is a few
+ * per cent of a sky's light. Where the frame drew no sky, the environment's ambient, flat.
+ */
+fn probeSkyAlong(d: vec3<f32>) -> vec3<f32> {
+  if (bake.skyDrawn < 0.5) { return bake.skyColour; }
+  let t = d.y;
+  var col: vec3<f32>;
+  if (t >= 0.0) {
+    col = mix(bake.skyColour, bake.skyTop, pow(min(t, 1.0), 0.55));
+  } else {
+    col = mix(bake.skyColour, bake.skyDeep, min(-t * 1.8, 1.0));
+  }
+  let sunset = (1.0 - smoothstep(-0.03, 0.30, bake.skySun.y)) * smoothstep(-0.35, -0.05, bake.skySun.y);
+  let ember = vec3<f32>(1.0, 0.36, 0.13);
+  let sunBearing = normalize(bake.skySun.xz + vec2<f32>(1e-5));
+  let viewBearing = normalize(d.xz + vec2<f32>(1e-5));
+  let toward = max(dot(viewBearing, sunBearing), 0.0);
+  let fromHorizon = select(-t * 3.0, t, t >= 0.0);
+  let band = pow(1.0 - min(fromHorizon * 2.2, 1.0), 2.6);
+  col += ember * sunset * band * (0.18 + 0.75 * pow(toward, 2.2));
+  let away = max(-dot(viewBearing, sunBearing), 0.0);
+  col += vec3<f32>(0.42, 0.28, 0.45) * sunset * band * away * 0.22;
+  return col;
 }
 
 /*
@@ -578,15 +743,21 @@ fn probeSurfaceRadiance(p: vec3<f32>, towards: vec3<f32>) -> vec3<f32> {
  *
  * **Not the probe array's own level 0, and that was measured rather than reasoned.** Level 0 is a
  * *rasterised* capture taken once, so a ray reading it gathers the light the room had when the
- * capture was made — and a room whose red wall was repainted blue went on bouncing red, because
- * most of its rays escaped through the opening and read the capture. With the sky here instead,
- * **nothing in the trace reads anything rasterised**, which is what lets the whole solution follow
- * a scene that changes and is the sentence Wave 4's criterion asks for.
+ * capture was made, and a room whose red wall was repainted blue went on bouncing red, because
+ * most of its rays escaped through the opening and read the capture. The sky is the frame's own
+ * numbers, so **nothing in the trace reads anything rasterised** and the solution follows a scene
+ * that changes.
  *
- * No albedo and no sun: nothing was struck, so there is no surface to shade.
+ * **The sky drawn, and not the environment's ambient, since 2026-09-27.** The ambient is a grade's
+ * fill for surfaces the probes do not reach, and a palette sets it apart from the sky: at ten
+ * degrees of sun a courtyard's was five times dimmer than its horizon, and blue where the horizon
+ * was amber, so traced shade at dusk came out cool against the rasterised grid that saw the sky.
+ *
+ * No albedo and no sun: nothing was struck, so there is no surface to shade. "towards" points back
+ * down the ray, so the sky is read along its opposite.
  */
 fn probeDistantRadiance(p: vec3<f32>, towards: vec3<f32>) -> vec3<f32> {
-  return bake.skyColour;
+  return probeSkyAlong(-towards);
 }
 ${PROBE_TRACE_CORE_WGSL}
 ${PROBE_BAKE_CORE_WGSL}

@@ -27,9 +27,11 @@ import type { SurfaceTextureHandle } from './backend/api.ts';
  * enumeration serves the directional cascade and every point-light cubemap.
  *
  * **Every draw may also carry its material, which is what lets one enumeration serve a colour
- * pass as well as a depth one.** A depth pass ignores it, correctly: a material cannot change a
- * depth, which is why this interface was right to carry only a handle, a matrix and a palette for
- * as long as depth was the only thing replaying it. What that cost was measured from outside. A
+ * pass as well as a depth one.** A depth pass reads one thing from it, since 4.4.0: whether the
+ * caster is a cutout (`cutoutOf`), so a leaf card casts the leaf rather than the card. Everything
+ * else a material says cannot change a depth, which is why this interface carried only a handle, a
+ * matrix and a palette for as long as depth was the only thing replaying it — and why, until then,
+ * every alpha-cut surface cast its whole quad. What that cost was measured from outside. A
  * consumer wanting the scene from a second viewpoint — a mirror, a probe face — had one option,
  * which was to run its whole draw path again; the first attempt to avoid it replayed this sink
  * into the mirror and got **every car unpainted**, because the list carries no material. So the

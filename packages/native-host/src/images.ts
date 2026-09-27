@@ -23,7 +23,7 @@ import { createRequire } from 'node:module';
 
 import decodeJpeg, { init as initJpeg } from '@jsquash/jpeg/decode.js';
 
-import { decodePng } from '@driftengine/core/scripts/png.mjs';
+import { decodePng, rgbaOf } from '@driftengine/core/scripts/png.mjs';
 
 /** What a host hands back for an image: its size and four bytes a pixel, top row first. */
 export interface HostBitmap {
@@ -63,22 +63,6 @@ function bitmap(
   } as HostBitmap;
 }
 
-/** Four bytes a pixel out of three or four. */
-function rgba(pixels: Uint8Array, channels: number, count: number): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(count * 4);
-  if (channels === 4) {
-    out.set(pixels.subarray(0, count * 4));
-    return out;
-  }
-  for (let at = 0; at < count; at += 1) {
-    out[at * 4] = pixels[at * channels] as number;
-    out[at * 4 + 1] = pixels[at * channels + 1] as number;
-    out[at * 4 + 2] = pixels[at * channels + 2] as number;
-    out[at * 4 + 3] = 255;
-  }
-  return out;
-}
-
 let jpegReady: Promise<void> | null = null;
 
 /** MozJPEG's module, compiled once from the file its package ships. */
@@ -112,8 +96,8 @@ export async function hostCreateImageBitmap(
   }
   const bytes = new Uint8Array(await source.arrayBuffer());
   if (source.type === 'image/png') {
-    const png = decodePng(Buffer.from(bytes));
-    const pixels = rgba(png.pixels, png.channels, png.width * png.height);
+    const png = rgbaOf(decodePng(Buffer.from(bytes)));
+    const pixels = new Uint8ClampedArray(png.rgba.buffer, png.rgba.byteOffset, png.rgba.length);
     return bitmap(png.width, png.height, pixels, premultiplied);
   }
   if (source.type === 'image/jpeg') {

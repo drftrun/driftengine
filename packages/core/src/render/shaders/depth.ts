@@ -1,4 +1,5 @@
 import { resolveConditionals } from './conditionals.ts';
+import { CUTOUT_COVERAGE_GLSL } from './cutoutCoverage.ts';
 import { SKINNING_GLSL } from './skinning.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from './vertexChannel.ts';
 
@@ -56,7 +57,22 @@ ${CHANNEL_ATTRIBUTE}
 ${CHANNEL_BEND}
 #endif
 
+#if CUTOUT
+/*
+ * **What a cutout caster adds, and where.** The UV at location 5, where every mesh carries it; two
+ * uniforms declared after every other, so no field of the plain variant moves and a binder written
+ * against it stays right for this one; and two outputs after vLightPosition, which keeps location 0.
+ */
+layout(location = 5) in vec2 aUv;
+uniform vec2 uUvScale;
+uniform float uAlphaCutout;
+#endif
+
 out vec4 vLightPosition;
+#if CUTOUT
+out vec2 vUv;
+flat out float vAlphaCutout;
+#endif
 
 void main() {
 #if SKINNED
@@ -80,20 +96,24 @@ void main() {
 #endif
   vLightPosition = uLightViewProj * vec4(bent, world.w);
   gl_Position = vLightPosition;
+#if CUTOUT
+  vUv = aUv * uUvScale;
+  vAlphaCutout = uAlphaCutout;
+#endif
 }
 `;
 
 /** The rigid variant: the world, a prop, a mesh with no rig behind it. */
 export const DEPTH_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false },
+  { SKINNED: false, INSTANCED: false, CUTOUT: false },
   'depth',
 );
 
 /** The skinned variant, which reads a joint palette and moves the vertex by it. */
 export const DEPTH_SKINNED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: true, INSTANCED: false },
+  { SKINNED: true, INSTANCED: false, CUTOUT: false },
   'depth-skinned',
 );
 
@@ -107,8 +127,30 @@ export const DEPTH_SKINNED_VERT = resolveConditionals(
  */
 export const DEPTH_INSTANCED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true },
+  { SKINNED: false, INSTANCED: true, CUTOUT: false },
   'depth-instanced',
+);
+
+/**
+ * The variants a cutout caster casts through: a leaf card, a chain link, a fence, whose shape is in
+ * its texture's alpha rather than in its geometry.
+ *
+ * **Variants, not a uniform gate on the plain program**, for this file's own reason: a gate would
+ * need the UV, a varying and a bound texture on every opaque caster, and a branch on a varying is
+ * not provably uniform, which forbids the implicit derivative the sample below wants. A variant
+ * leaves every opaque caster byte for byte as it was. What it costs is one more program each, and
+ * a skinned cutout, which nothing has asked for, is not among them.
+ */
+export const DEPTH_CUTOUT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: false, CUTOUT: true },
+  'depth-cutout',
+);
+
+export const DEPTH_INSTANCED_CUTOUT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: true, CUTOUT: true },
+  'depth-instanced-cutout',
 );
 
 export const DEPTH_FRAG = `#version 300 es
@@ -127,5 +169,40 @@ void main() {
     // ordinary depth test then stores the next independently fading occluder.
     if (gl_FragCoord.z <= previousDepth + 0.00001) discard;
   }
+}
+`;
+
+/**
+ * The cutout caster's depth: the plain pass, and a texel of alpha under the cutoff writes nothing.
+ *
+ * **The sample is the first statement, in uniform control flow**, so its implicit derivative picks
+ * the mip the shadow map's texel footprint wants; inside a branch it would be undefined (AGENTS.md,
+ * 2026-08-07). The peel's own sample becomes an explicit-level fetch for the same reason, and is
+ * bit for bit what it was: that map has one level and a nearest sampler. The discard is last, so
+ * nothing samples after it.
+ *
+ * `uCutoutMap` is declared after `uPreviousShadowMap`, so the peel keeps its bindings and the cutout
+ * map takes the next.
+ */
+export const DEPTH_CUTOUT_FRAG = `#version 300 es
+precision highp float;
+in vec4 vLightPosition;
+in vec2 vUv;
+flat in float vAlphaCutout;
+
+uniform highp sampler2D uPreviousShadowMap;
+uniform int uPeelShadowLayer;
+uniform highp sampler2D uCutoutMap;
+${CUTOUT_COVERAGE_GLSL}
+void main() {
+  /* Credited for its mip level as the surface's own test is, so a leaf casts the shape it draws. */
+  float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));
+  if (uPeelShadowLayer != 0) {
+    vec3 p = vLightPosition.xyz / vLightPosition.w;
+    vec2 uv = p.xy * 0.5 + 0.5;
+    float previousDepth = textureLod(uPreviousShadowMap, uv, 0.0).r;
+    if (gl_FragCoord.z <= previousDepth + 0.00001) discard;
+  }
+  if (alpha < vAlphaCutout) discard;
 }
 `;

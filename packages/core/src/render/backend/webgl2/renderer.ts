@@ -2,7 +2,6 @@ import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
 import { mat4 } from 'gl-matrix';
 import {
-  DEPTH_OFFSET_SIGN,
   GL_DEPTH_REMAP,
   MAX_DEPTH_LAYER,
   depthClearFor,
@@ -81,12 +80,17 @@ import {
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
 import { SceneTarget } from '../../sceneTarget.ts';
 import type { ColourGradeLut } from '../../colourGrade.ts';
-import { bloomProfileWarning } from '../../bloomChain.ts';
+import { FILM_LOOK_WITHOUT_COMPOSITE } from '../../shaders/filmLook.ts';
+import { bloomProfileWarning, bloomThresholdOf } from '../../bloomChain.ts';
 import {
   createEmptyTexture2D,
   createEmptyTexture2DArray,
+  createEmptyTexture3D,
   createEmptyTextureCube,
 } from '../../emptyTexture.ts';
+import { LightField } from '../../driftLight/lightField.ts';
+import type { LightFieldOptions, LightFieldSource } from '../../driftLight/lightField.ts';
+import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/uniforms.ts';
 
 /**
  * How far the rush's outermost tap reaches at full strength, in UV.
@@ -113,11 +117,12 @@ import { SkinPaletteTexture } from './skinPaletteTexture.ts';
 /* The codes the shader reads, stated once in `vertexDefaults.ts` for both backends. */
 import { LIGHT_VOLUME_VERT, lightVolumeFrag } from '../../shaders/lightVolume.ts';
 import { PANEL_FRAG, PANEL_VERT } from '../../shaders/panel.ts';
-import { ReflectionProbe, cubeFaceProjection } from '../../reflectionProbe.ts';
+import { ReflectionProbe, cubeFaceProjection, probeFaceRange } from '../../reflectionProbe.ts';
 import type { ProbeBakeOptions } from '../../reflectionProbe.ts';
 import { EnvProbeArray } from '../../envProbeArray.ts';
 import { ProbeGrid, SINGLE_PROBE, UNIT_STEP, WORLD_ORIGIN, sameGrid } from '../../probeGrid.ts';
 import type { ProbeGridOptions } from '../../probeGrid.ts';
+import { ProbeSweeps } from '../../probeSweeps.ts';
 import { octahedralEdgeFor } from '../../prefilterEnvMap.ts';
 import { EnvironmentPrefilterPass } from '../../prefilterPass.ts';
 import { packIesAtlas } from '../../iesProfile.ts';
@@ -135,7 +140,10 @@ import { equirectToCubeFaces } from '../../equirectToCube.ts';
 
 import { SKY_FRAG, skyVertFor } from '../../shaders/sky.ts';
 import {
+  DEPTH_CUTOUT_FRAG,
+  DEPTH_CUTOUT_VERT,
   DEPTH_FRAG,
+  DEPTH_INSTANCED_CUTOUT_VERT,
   DEPTH_INSTANCED_VERT,
   DEPTH_SKINNED_VERT,
   DEPTH_VERT,
@@ -167,6 +175,8 @@ import {
   bindPointLights,
   COOKIE_ATLAS_TEXTURE_UNIT,
   REFRACT_SCENE_TEXTURE_UNIT,
+  DRIFT_LIGHT_ATLAS_TEXTURE_UNIT,
+  DRIFT_LIGHT_INDEX_TEXTURE_UNIT,
   COOKIE_TILE,
   IES_ATLAS_TEXTURE_UNIT,
   bindAreaLights,
@@ -226,6 +236,9 @@ import type { WindField } from '../../windField.ts';
 import type { FlockParams } from '../../flockRenderer.ts';
 import { InstancedBatch } from './instanced.ts';
 import type { MeshInstances } from '../../instances.ts';
+import { cutoutOf } from '../../cutoutCaster.ts';
+import type { CutoutCaster } from '../../cutoutCaster.ts';
+import type { SurfaceTextureHandle } from '../api.ts';
 
 /**
  * How many frames `firstFrameSettled` will ask before it stops asking.
@@ -789,6 +802,14 @@ export interface TranslucentMeshOptions {
    * that two surfaces overlapping in view blend in submission order. And a surface that writes no
    * depth cannot occlude the sky. A caller wanting both wants the pieces sorted and this left
    * alone.
+   *
+   * **And depth a blended surface writes is where the frame's depth-reading passes stop.** The
+   * global medium marches to it on both backends, and on WebGPU ambient occlusion, the temporal
+   * resolve and motion blur take it for the surface too. Right for a pane that is most of a pixel's
+   * colour; wrong for a faint sheet. A bought courtyard's dirt decals stand a centimetre off their
+   * stone and overhang every corner they wrap, and the haze stopped at each overhang, a clear band
+   * down a pier's whole height. A decal lying on an opaque surface needs no depth to hold the sky
+   * off, since the surface under it already does, so `false` costs it only an order among decals.
    */
   readonly depthWrite?: boolean;
   /**
@@ -1060,6 +1081,8 @@ export class WebGL2Renderer implements RendererApi {
   private readonly panelProgram: WebGLProgram;
   private readonly panelUniforms: Record<string, WebGLUniformLocation>;
   private readonly panelVao: WebGLVertexArrayObject;
+  /** The unit quad behind `panelVao`, held so `dispose` can release it. */
+  private readonly panelBuffer: WebGLBuffer | null;
   private readonly filmProgram: WebGLProgram;
   /**
    * The off-screen colour target, when screen effects are on. Null is not a failure —
@@ -1091,6 +1114,14 @@ export class WebGL2Renderer implements RendererApi {
   private skinPaletteSet = false;
 
   private readonly emptyTexture2D: WebGLTexture;
+  /** DriftLight's stand-ins while no field is whole: no brick anywhere, and no light. */
+  private readonly emptyDriftIndex: WebGLTexture;
+  private readonly emptyDriftAtlas: WebGLTexture;
+  /** The scene's DriftLight field, and its two volumes once it is whole. See `createLightField`. */
+  private lightField: LightField | null = null;
+  private driftIndex: WebGLTexture | null = null;
+  private driftAtlas: WebGLTexture | null = null;
+  private readonly driftUniforms = createDriftLightUniforms();
   private readonly emptyTexture2DArray: WebGLTexture;
   private readonly emptyTextureCube: WebGLTexture;
   /** How hard the rush blurs this frame, and how far its outermost tap reaches. */
@@ -1170,6 +1201,8 @@ export class WebGL2Renderer implements RendererApi {
   private motionBlurScale = 1;
   /** How much of the bloom ceiling this frame takes. See `setBloom`. */
   private bloomScale = 1;
+  /** In scene units, once `setBloom` has moved it; null reads the profile's. */
+  private bloomThresholdSet: number | null = null;
   /**
    * This frame's exposure into the tone curve. See `setOutputExposure`.
    *
@@ -1277,6 +1310,15 @@ export class WebGL2Renderer implements RendererApi {
   private readonly depthUniforms: Record<string, WebGLUniformLocation>;
   private readonly depthInstancedProgram: WebGLProgram;
   private readonly depthInstancedUniforms: Record<string, WebGLUniformLocation>;
+  /**
+   * The cutout casters' depth programs, rigid and instanced: a leaf or a chain link casts the shape
+   * in its texture's alpha, not its whole card. See `DEPTH_CUTOUT_FRAG`. Chosen per draw by
+   * `cutoutOf`, so an opaque caster never touches them.
+   */
+  private readonly depthCutoutProgram: WebGLProgram;
+  private readonly depthCutoutUniforms: Record<string, WebGLUniformLocation>;
+  private readonly depthInstancedCutoutProgram: WebGLProgram;
+  private readonly depthInstancedCutoutUniforms: Record<string, WebGLUniformLocation>;
   private readonly scatterDepthProgram: WebGLProgram;
   private readonly scatterDepthUniforms: Record<string, WebGLUniformLocation>;
   private readonly shadowMap: ShadowMap | null;
@@ -1335,6 +1377,10 @@ export class WebGL2Renderer implements RendererApi {
   private readonly probeCapture: ReflectionProbe | null;
   /** Every probe of the grid, as one array texture. Allocated when a grid is declared. */
   private probeArray: EnvProbeArray | null = null;
+  /** Which layers a bake writes and the shading reads. See `probeSweeps.ts`. */
+  private probeSweeps: ProbeSweeps | null = null;
+  /** `uProbeGridSets`, rewritten in place. */
+  private readonly probeSets = new Float32Array(3);
   /**
    * Where those probes stand. A single baked probe is a grid of one at that probe's own origin.
    *
@@ -1360,6 +1406,8 @@ export class WebGL2Renderer implements RendererApi {
   private warnedEnvironmentAmbient = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
   private probePassActive = false;
+  /** Whether the bake under way lights its faces by the grid. `ProbeBakeOptions.bounce`. */
+  private probeBounce = false;
   /** The clip-control extension, or null where this context does not offer it. */
   private clipControl: ClipControlExtension | null = null;
   /**
@@ -1519,6 +1567,17 @@ export class WebGL2Renderer implements RendererApi {
   private activeDepthViewProj: ReadonlyMat4 = IDENTITY_MAT4;
   private activeDepthPeel = false;
   /**
+   * Whether a peel pass has filled the second layer since the first one last opened, which is
+   * what the frame samples it on: the rule the other backend's `peelFilled` states, held here too.
+   *
+   * **Not whether the map exists.** That was the test here, on the belief that a GL texture is
+   * born reading as the far plane; it is born zeroed, and a scene that built the layer and never
+   * peeled it sampled an occluder at the light. `ShadowMap` now clears itself at birth, so an
+   * unfilled layer would read as lit either way — this is what keeps the two backends one
+   * decision, and a frame that does not peel from paying a fetch per tap for nothing.
+   */
+  private peelFilled = false;
+  /**
    * Whether the depth pass this scatter draw interrupts wants back-face culling.
    *
    * Foliage is two-sided, so a scatter batch must be rasterised with culling off or
@@ -1528,6 +1587,11 @@ export class WebGL2Renderer implements RendererApi {
    * cubemap — so the pass states what it wants and this restores that.
    */
   private depthPassCullsFaces = true;
+  /**
+   * Whether the bound material is seen from both faces, so its draws cull nothing. Toggled around
+   * each such draw and handed back, where the other backend bakes it into a pipeline.
+   */
+  private materialDoubleSided = false;
 
   /**
    * The one sink handed to every caster enumeration.
@@ -1536,16 +1600,34 @@ export class WebGL2Renderer implements RendererApi {
    * per pass would allocate six objects per light per frame.
    */
   private readonly casterSink: ShadowCasterSink = {
-    mesh: (mesh, model) => {
+    mesh: (mesh, model, material) => {
       this.shadowDrawBudget.ask();
       const { gl } = this;
+      /* A two-sided caster casts from whichever face the light sees: nothing culled. */
+      const twoSided = material?.doubleSided === true;
+      const cutout = cutoutOf(material);
+      if (cutout !== null) {
+        const u = this.depthCutoutUniforms;
+        gl.useProgram(this.depthCutoutProgram);
+        this.bindCutoutDepth(u, cutout);
+        gl.uniformMatrix4fv(u['uModel'] ?? null, false, model);
+        if (twoSided) gl.disable(gl.CULL_FACE);
+        (mesh as Mesh).draw(gl);
+        if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
+        /* Hand the pass back as it was found: the next caster may be rigid and opaque. */
+        gl.useProgram(this.depthProgram);
+        this.restoreSurfaceTextureUnit();
+        return;
+      }
       gl.uniformMatrix4fv(this.depthUniforms['uModel'] ?? null, false, model);
       /*
        * The sink takes the opaque handle both backends share, and this renderer only ever
        * handed out its own `Mesh`. Narrowing is safe here for that reason and nowhere else:
        * a handle from the other backend would have to have crossed renderers to arrive.
        */
+      if (twoSided) gl.disable(gl.CULL_FACE);
       (mesh as Mesh).draw(gl);
+      if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
     },
     /**
      * A batch into the depth map, placed by the same matrices the visible draw uses.
@@ -1553,18 +1635,31 @@ export class WebGL2Renderer implements RendererApi {
      * No `uModel`: the instanced depth program has none, its placement being the four attribute
      * columns the batch's own buffer supplies.
      */
-    instanced: (batch, data) => {
+    instanced: (batch, data, material) => {
       const { gl } = this;
       const gpuBatch = batch as InstancedBatch;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
       this.shadowDrawBudget.ask();
+      const twoSided = material?.doubleSided === true;
+      if (twoSided) gl.disable(gl.CULL_FACE);
+      const cutout = cutoutOf(material);
+      if (cutout !== null) {
+        gl.useProgram(this.depthInstancedCutoutProgram);
+        this.bindCutoutDepth(this.depthInstancedCutoutUniforms, cutout);
+        gpuBatch.mesh.drawInstances(gl, count);
+        if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
+        gl.useProgram(this.depthProgram);
+        this.restoreSurfaceTextureUnit();
+        return;
+      }
       const u = this.depthInstancedUniforms;
       gl.useProgram(this.depthInstancedProgram);
       gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
       gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
       if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
       gpuBatch.mesh.drawInstances(gl, count);
+      if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       gl.useProgram(this.depthProgram);
     },
     skinnedMesh: (mesh, model, palette) => {
@@ -1611,6 +1706,24 @@ export class WebGL2Renderer implements RendererApi {
       gl.useProgram(this.depthProgram);
     },
   };
+
+  /**
+   * What a cutout depth draw needs beyond the plain one: the pass's matrix and peel, the material's
+   * cutoff and UV scale, and its albedo on the surface unit, which the caller gives back after.
+   */
+  private bindCutoutDepth(
+    u: Record<string, WebGLUniformLocation>,
+    cutout: CutoutCaster<SurfaceTextureHandle>,
+  ): void {
+    const { gl } = this;
+    gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
+    gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
+    if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
+    gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
+    gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
+    /* Narrowed for the reason the sink's own `mesh` gives: this renderer only hands out its own. */
+    (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
+  }
 
   private readonly drawPointShadowFace = (viewProj: ReadonlyMat4): void => {
     const casters = this.pointShadowCasters;
@@ -2262,6 +2375,8 @@ export class WebGL2Renderer implements RendererApi {
      * "unbound". Two 1x1 uploads for the life of the renderer.
      */
     this.emptyTexture2D = createEmptyTexture2D(gl);
+    this.emptyDriftIndex = createEmptyTexture3D(gl, true);
+    this.emptyDriftAtlas = createEmptyTexture3D(gl, false);
     this.emptyTexture2DArray = createEmptyTexture2DArray(gl);
     this.emptyTextureCube = createEmptyTextureCube(gl);
     this.gpuTimer = new GpuTimer(gl);
@@ -2483,6 +2598,7 @@ export class WebGL2Renderer implements RendererApi {
     this.panelVao = panelVao;
     gl.bindVertexArray(panelVao);
     const panelBuffer = gl.createBuffer();
+    this.panelBuffer = panelBuffer;
     gl.bindBuffer(gl.ARRAY_BUFFER, panelBuffer);
     // A unit quad. The rectangle it becomes is a uniform, so this is uploaded once
     // for the life of the renderer however many panels are drawn.
@@ -2570,6 +2686,33 @@ export class WebGL2Renderer implements RendererApi {
      */
     this.scatterDepthProgram = compileProgram(gl, SCATTER_DEPTH_VERT, DEPTH_FRAG, 'scatterDepth');
     this.scatterDepthUniforms = uniformLocations(gl, this.scatterDepthProgram, 'scatterDepth');
+    this.depthCutoutProgram = compileProgram(
+      gl,
+      DEPTH_CUTOUT_VERT,
+      DEPTH_CUTOUT_FRAG,
+      'depth-cutout',
+    );
+    this.depthCutoutUniforms = uniformLocations(gl, this.depthCutoutProgram, 'depth-cutout');
+    this.depthInstancedCutoutProgram = compileProgram(
+      gl,
+      DEPTH_INSTANCED_CUTOUT_VERT,
+      DEPTH_CUTOUT_FRAG,
+      'depth-instanced-cutout',
+    );
+    this.depthInstancedCutoutUniforms = uniformLocations(
+      gl,
+      this.depthInstancedCutoutProgram,
+      'depth-instanced-cutout',
+    );
+    /* The cutout map is always read from the surface unit, which the draw borrows and gives back. */
+    for (const [program, uniforms] of [
+      [this.depthCutoutProgram, this.depthCutoutUniforms],
+      [this.depthInstancedCutoutProgram, this.depthInstancedCutoutUniforms],
+    ] as const) {
+      gl.useProgram(program);
+      gl.uniform1i(uniforms['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
+    }
+    gl.useProgram(null);
     this.shadowMap = this.quality.directionalShadows
       ? new ShadowMap(gl, this.quality.directionalShadowMapSize)
       : null;
@@ -2736,6 +2879,7 @@ export class WebGL2Renderer implements RendererApi {
         this.flatSkinnedProgram,
         this.flatMorphedProgram,
         this.flatBothProgram,
+        this.flatInstancedProgram,
       ]) {
         if (extra !== null) gl.deleteProgram(extra);
       }
@@ -2746,12 +2890,20 @@ export class WebGL2Renderer implements RendererApi {
         this.skyProgram,
         this.scatterProgram,
         this.depthProgram,
+        this.depthSkinnedProgram,
+        this.depthInstancedProgram,
         this.scatterDepthProgram,
+        this.lightVolumeProgram,
+        this.depthCutoutProgram,
+        this.depthInstancedCutoutProgram,
       ]) {
         gl.deleteProgram(program);
       }
       this.skinPalette.dispose(gl);
       gl.deleteTexture(this.emptyTexture2D);
+      gl.deleteTexture(this.emptyDriftIndex);
+      gl.deleteTexture(this.emptyDriftAtlas);
+      this.forgetLightFieldVolumes();
       gl.deleteTexture(this.emptyTexture2DArray);
       gl.deleteTexture(this.emptyTextureCube);
       /* A cubemap and its whole mip chain, which is the largest single thing this
@@ -2759,6 +2911,24 @@ export class WebGL2Renderer implements RendererApi {
       this.probeCapture?.dispose(gl);
       this.probeArray?.dispose(gl);
       this.environmentPrefilter?.dispose(gl);
+      /*
+       * **Everything else the constructor made, which this method never released.** The screen
+       * chain and its bloom and occlusion, three sun maps, the mirror, the point-shadow array, two
+       * vertex arrays, a quad and three textures made on first use. A page swapping renderers kept
+       * every one of them, per renderer, for as long as it lived; `renderer.test.ts` counts them.
+       */
+      this.sceneTarget?.dispose();
+      this.shadowMap?.dispose(gl);
+      this.peeledShadowMap?.dispose(gl);
+      this.dynamicShadowMap?.dispose(gl);
+      this.planarReflection?.dispose(gl);
+      this.pointShadows?.dispose();
+      gl.deleteVertexArray(this.panelVao);
+      gl.deleteVertexArray(this.skyVao);
+      if (this.panelBuffer !== null) gl.deleteBuffer(this.panelBuffer);
+      if (this.cookieTexture !== null) gl.deleteTexture(this.cookieTexture);
+      if (this.iesTexture !== null) gl.deleteTexture(this.iesTexture);
+      if (this.clusterTexture !== null) gl.deleteTexture(this.clusterTexture);
     }
 
     if (options.releaseContext === true) {
@@ -2987,6 +3157,7 @@ export class WebGL2Renderer implements RendererApi {
     if (this.contextLost) return;
     this.materials.dirty();
     this.currentSurfaceTexture = material?.albedo ?? null;
+    this.materialDoubleSided = material?.doubleSided === true;
     /*
      * Written to every flat program, because material state persists across draws and a skinned
      * draw is entitled to the material the caller set before it. A second program holding none of
@@ -3066,10 +3237,11 @@ export class WebGL2Renderer implements RendererApi {
      * The emissive map, on exactly the terms the two maps above it are bound: before the albedo
      * early return, and the stand-in rather than `null`.
      *
-     * **White is the right stand-in here and black would be a bug.** The shader multiplies by this
-     * map, so the placeholder has to be the multiplicative identity; `emptyTexture2D` is white,
-     * which is what makes an unbound material collapse to the arithmetic it had before. A black
-     * placeholder would switch every glow in the scene off the moment the gate was ever wrong.
+     * **The stand-in is black, so the gate is what keeps a glow on.** The shader multiplies by
+     * this map, and `emptyTexture2D` is opaque black rather than the multiplicative identity, so an
+     * unbound material keeps the arithmetic it had before only because `uEmissiveMapEnabled` is 0
+     * and the read never happens. What would make that wrong is a read taken outside that branch:
+     * every glow on a material without a map would go out.
      */
     const emissiveMap = material?.emissive ?? null;
     gl.activeTexture(gl.TEXTURE0 + EMISSIVE_TEXTURE_UNIT);
@@ -3093,6 +3265,7 @@ export class WebGL2Renderer implements RendererApi {
      * how big a dome was — WebGPU writes it before its own early return and WebGL2 did not.
      */
     gl.uniform2f(u['uUvScale'] ?? null, material?.uScale ?? 1, material?.vScale ?? 1);
+    gl.uniform1i(u['uDoubleSided'] ?? null, material?.doubleSided === true ? 1 : 0);
 
     if (albedo === null) {
       gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
@@ -3889,7 +4062,9 @@ export class WebGL2Renderer implements RendererApi {
       this.reflectionPassActive ? this.reflectionAtmosphereY : (camera.position[1] ?? 0),
       this.quality.underwaterAtmosphere,
     );
+    if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     batch.drawTo(gl, data.count);
+    if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
   }
 
   /** Build a batch for electrical arcs. `capacity` is in segments, not arcs. */
@@ -4563,6 +4738,8 @@ export class WebGL2Renderer implements RendererApi {
     this.gpuTimer.begin('shadows');
     this.shadowPassActive = true;
     this.activeShadowMap = shadowMap;
+    /* The static layer opens first, so a frame's peel counts from here. See `peelFilled`. */
+    if (layer === 'static') this.peelFilled = false;
     /*
      * **Range-corrected but not reversed.** `EXT_clip_control` is context state, so a light matrix
      * that still emits OpenGL's `[-1, 1]` loses everything below zero the moment it is on. See
@@ -4620,6 +4797,8 @@ export class WebGL2Renderer implements RendererApi {
     this.uploadWind(this.depthUniforms, this.frameWind);
     gl.useProgram(this.depthSkinnedProgram);
     this.uploadWind(this.depthSkinnedUniforms, this.frameWind);
+    gl.useProgram(this.depthCutoutProgram);
+    this.uploadWind(this.depthCutoutUniforms, this.frameWind);
     gl.useProgram(this.depthProgram);
   }
 
@@ -4711,6 +4890,7 @@ export class WebGL2Renderer implements RendererApi {
     const shadowMap = this.activeShadowMap;
     if (!this.shadowPassActive || shadowMap === null) return;
     shadowMap.end(this.gl);
+    if (shadowMap === this.peeledShadowMap) this.peelFilled = true;
     /* Back to the frame's sense; see `beginShadowPass` for why it left it. */
     this.gl.depthFunc(glDepthFuncEqual(this.gl));
     this.gl.clearDepth(this.depthClear);
@@ -5442,6 +5622,73 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * The camera has cut: this frame is a new shot, not the next moment of the last one.
+   *
+   * **Everything temporal reprojects through the previous frame's view**: the motion blur measures
+   * its smear against it, and the temporal resolve reads its history through it. A cut is a jump
+   * the renderer cannot tell from a fast camera, so without this a transport that seeks, a respawn
+   * or an edit smears its first frame along the whole jump and blends in a picture of somewhere
+   * else. The caller knows it cut; this is how it says so, before the frame's `beginFrame`.
+   *
+   * What it gives up is one frame of history: the frame after a cut has no blur and no temporal
+   * blend, as the first frame of a session has none. Nothing else is reset.
+   */
+  cameraCut(): void {
+    this.hasPreviousView = false;
+    this.temporalHistory.invalidate();
+    /* The eye was adapted to the last shot. */
+    this.sceneTarget?.cutExposure();
+  }
+
+  /**
+   * **Eye adaptation**: how far the frame's exposure follows its own brightness, 0 to 1, and the
+   * seconds since the last frame. 0 is off and the default, and at 0 nothing is metered or allocated.
+   *
+   * The finished scene is metered on the GPU each frame — the log-mean of its luminance — and a
+   * held brightness moves toward it at a fixed rate, about 78% of the way in a second; the composite
+   * then scales scene light toward middle grey by \`strength\` of the stops between them, at most six
+   * either way. So a shaded courtyard floor opens up the way a camera or an eye would, and
+   * \`setOutputExposure\` becomes a bias on top: a night kept darker than a day is a bias under one.
+   * **The time is the caller's**, because the engine takes time from its caller; a held capture
+   * passes 0 and holds. \`cameraCut\` snaps it, so a new shot is metered rather than eased into.
+   *
+   * What it gives up is regional metering: every pixel counts the same. Needs \`screenEffects\` and
+   * \`hdrScene\`, and says so once rather than doing nothing. See \`shaders/exposure.ts\`.
+   */
+  setAutoExposure(strength: number, dtSec: number): void {
+    if (this.sceneTarget === null || !this.quality.hdrScene) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.sceneTarget.setAutoExposure(strength, dtSec);
+  }
+
+  /**
+   * **Local exposure**: how far each region of the frame is brought toward the frame's own
+   * brightness, 0 to 1. 0 is off and the default, and at 0 nothing more is measured or allocated.
+   *
+   * A tone curve maps one range, and a sunlit courtyard is two: its shaded arcades hold a fiftieth
+   * of the light on its sunlit paving, so exposed for either the other is black or white. This moves
+   * each region `strength` of the stops between it and the frame's held brightness, at most three,
+   * read from a bilateral grid over the exposure meter's tiles, so shade beside sun is lifted as
+   * shade rather than as the average of the two. The eye's held brightness is what regions move
+   * toward, so it is measured whether or not `setAutoExposure` is on; with adaptation off the frame
+   * as a whole keeps the exposure it was given. About 0.5 is a photograph's latitude, and 1 is a
+   * frame with no light and shade left in it.
+   *
+   * What it gives up is contrast between regions, which is the point, and a halo a tile wide where
+   * two regions of one brightness band differ. Needs `screenEffects` and `hdrScene`, and says so
+   * once rather than doing nothing. See `shaders/localExposure.ts`.
+   */
+  setLocalExposure(strength: number): void {
+    if (this.sceneTarget === null || !this.quality.hdrScene) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.sceneTarget.setLocalExposure(strength);
+  }
+
+  /**
    * Where this frame's lens is focused, how deep the sharp zone is, and how much of the ceiling
    * to take.
    *
@@ -5495,9 +5742,17 @@ export class WebGL2Renderer implements RendererApi {
    *
    * Set before `beginFrame` and held until changed. Ignored entirely when `bloom` is 0, since
    * the chain is never built.
+   *
+   * **`threshold` moves `bloomThreshold` for this frame and every one after**, in the same scene
+   * units. A threshold is compared before exposure is applied, so one fixed at construction means a
+   * different brightness on screen at every exposure. That is harmless while exposure stands still
+   * and wrong for a day whose exposure spans 2.5 to 14: a courtyard blooming at noon, or candles
+   * never blooming at night. A caller whose exposure moves passes what it wants on screen over the
+   * exposure. Omitted leaves it where it was, so a caller that never passes one keeps the profile's.
    */
-  setBloom(scale: number): void {
+  setBloom(scale: number, threshold?: number): void {
     this.bloomScale = Math.min(Math.max(scale, 0), 1);
+    if (threshold !== undefined) this.bloomThresholdSet = bloomThresholdOf(threshold);
   }
 
   /**
@@ -5642,6 +5897,41 @@ export class WebGL2Renderer implements RendererApi {
       return;
     }
     this.sceneTarget.setColourGrade(lut, strength);
+  }
+
+  /**
+   * How strongly the lens darkens the frame's corners, held until changed: 0 is none, 0.5 is about
+   * 1.2 stops at the corner. Applied to scene light before the tone curve, as a lens loses light;
+   * see `filmLook.ts`. Needs `screenEffects`, and says so once rather than doing nothing.
+   */
+  setVignette(strength: number): void {
+    if (this.sceneTarget === null) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.sceneTarget.setVignette(strength);
+  }
+
+  /**
+   * Film grain, held until changed: an amplitude in display values (0 is none, 0.03 is a fine
+   * grain) and this frame's seed. **The seed is the caller's**, because the engine takes time from
+   * its caller: pass a new one each frame for grain that moves, and the same one for a still that
+   * is identical run to run. Applied last, after the grade and the veil; see `filmLook.ts`.
+   */
+  setFilmGrain(strength: number, seed: number): void {
+    if (this.sceneTarget === null) {
+      this.warnLookWithoutComposite(strength);
+      return;
+    }
+    this.sceneTarget.setFilmGrain(strength, seed);
+  }
+
+  private warnedLookWithoutComposite = false;
+  private warnLookWithoutComposite(strength: number): void {
+    if (strength > 0 && !this.warnedLookWithoutComposite) {
+      this.warnedLookWithoutComposite = true;
+      console.warn(FILM_LOOK_WITHOUT_COMPOSITE);
+    }
   }
 
   /**
@@ -5982,7 +6272,10 @@ export class WebGL2Renderer implements RendererApi {
     const bloomStrength = this.quality.bloom * this.bloomScale;
     const bloom =
       bloomStrength > 0
-        ? { strength: bloomStrength, threshold: this.quality.bloomThreshold }
+        ? {
+            strength: bloomStrength,
+            threshold: this.bloomThresholdSet ?? this.quality.bloomThreshold,
+          }
         : undefined;
 
     /* The grade travels to the resolve only where the mesh pass gave it up. See `bindMeshPass`. */
@@ -6189,11 +6482,12 @@ export class WebGL2Renderer implements RendererApi {
             sunShadow,
             lightViewProj: env?.lightViewProj ?? IDENTITY_MAT4,
             /* The placeholder rather than null where a map is merely absent, for the reason
-               `emptyTexture.ts` gives: white is depth 1, the far plane, nothing in the way. */
+               `emptyTexture.ts` gives. It is black, which as a depth is an occluder at the light,
+               so it is safe only because `sunShadow` is 0 whenever these maps do not exist. */
             staticShadowMap: this.shadowMap?.texture ?? this.emptyTexture2D,
             peeledShadowMap: this.peeledShadowMap?.texture ?? this.emptyTexture2D,
             dynamicShadowMap: this.dynamicShadowMap?.texture ?? this.emptyTexture2D,
-            peeledEnabled: this.peeledShadowMap !== null,
+            peeledEnabled: this.peelFilled,
           },
         );
         if (marched) {
@@ -6416,6 +6710,100 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Sum a scene's many fixed lights into a DriftLight field, which stands in for each of them
+   * wherever the frame's choice of exact lights does not reach. See `driftLight/lightField.ts`.
+   *
+   * Replaces any field made before. The scene then paces `field.bake(bricks)` and calls
+   * `field.follow(buffer.complete, ...)` each frame with the selection that chose its exact lights;
+   * the volume is summed into the frame once every brick has landed.
+   */
+  createLightField(
+    lights: readonly LightFieldSource[],
+    options: Omit<LightFieldOptions, 'falloff'> = {},
+  ): LightField {
+    this.forgetLightFieldVolumes();
+    const field = new LightField(lights, { ...options, falloff: this.quality.pointLightFalloff });
+    this.lightField = field;
+    return field;
+  }
+
+  /** Let go of the field and its volumes; the scene's lights are all exact again. */
+  disposeLightField(): void {
+    this.forgetLightFieldVolumes();
+    this.lightField = null;
+  }
+
+  private forgetLightFieldVolumes(): void {
+    if (this.driftIndex !== null) this.gl.deleteTexture(this.driftIndex);
+    if (this.driftAtlas !== null) this.gl.deleteTexture(this.driftAtlas);
+    this.driftIndex = null;
+    this.driftAtlas = null;
+  }
+
+  /**
+   * Upload the field's two volumes, once, when its last brick has baked: nothing samples them
+   * before that, so uploading as bricks land would be work for no picture.
+   */
+  private uploadLightField(): void {
+    const field = this.lightField;
+    if (field === null || this.driftAtlas !== null || !field.ready || field.layout.count === 0) {
+      return;
+    }
+    const { gl } = this;
+    const [ix, iy, iz] = field.layout.dims;
+    const index = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, index);
+    gl.texImage3D(
+      gl.TEXTURE_3D,
+      0,
+      gl.R32UI,
+      ix,
+      iy,
+      iz,
+      0,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_INT,
+      field.layout.index,
+    );
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const [aw, ah, ad] = field.atlasSize;
+    const atlas = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, atlas);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, aw, ah, ad, 0, gl.RGBA, gl.HALF_FLOAT, field.atlas);
+    /* Filtered, because a brick's samples share their faces: the lookup is seamless inside one. */
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    for (const wrap of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
+      gl.texParameteri(gl.TEXTURE_3D, wrap, gl.CLAMP_TO_EDGE);
+    }
+    gl.bindTexture(gl.TEXTURE_3D, null);
+    this.driftIndex = index;
+    this.driftAtlas = atlas;
+  }
+
+  /** The field's uniforms and volumes for this pass, or the stand-ins that switch it off. */
+  private bindDriftLight(u: Record<string, WebGLUniformLocation>, eye: ArrayLike<number>): void {
+    const { gl } = this;
+    this.uploadLightField();
+    const d = this.driftUniforms;
+    resolveDriftLight(
+      this.driftAtlas === null ? null : this.lightField,
+      this.probePassActive,
+      eye,
+      d,
+    );
+    gl.uniform4fv(u['uDriftLight'] ?? null, d.light);
+    gl.uniform4fv(u['uDriftLightOrigin'] ?? null, d.origin);
+    gl.activeTexture(gl.TEXTURE0 + DRIFT_LIGHT_INDEX_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_3D, this.driftIndex ?? this.emptyDriftIndex);
+    gl.uniform1i(u['uDriftLightIndex'] ?? null, DRIFT_LIGHT_INDEX_TEXTURE_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + DRIFT_LIGHT_ATLAS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_3D, this.driftAtlas ?? this.emptyDriftAtlas);
+    gl.uniform1i(u['uDriftLightAtlas'] ?? null, DRIFT_LIGHT_ATLAS_TEXTURE_UNIT);
+  }
+
+  /**
    * Everything one flat program needs to know about this frame.
    *
    * Split out of `bindMeshPass` so it can be run against each program rather than only the one
@@ -6553,7 +6941,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uShadowMapSize'] ?? null, this.quality.directionalShadowMapSize);
     gl.uniform1f(u['uShadowDepthSpan'] ?? null, env.shadowDepthSpan);
     gl.uniform1f(u['uShadowMaxDistance'] ?? null, this.quality.directionalShadowMaxDistance);
-    gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peeledShadowMap === null ? 0 : 1);
+    gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
     gl.uniform1f(u['uShadowMaxSlope'] ?? null, this.quality.directionalShadowMaxSlope);
     gl.uniform1i(u['uShadowFilterTaps'] ?? null, this.quality.shadowFilterTaps);
     gl.uniform3fv(u['uHighlightMin'] ?? null, env.highlightMin);
@@ -6633,11 +7021,20 @@ export class WebGL2Renderer implements RendererApi {
      * zero would not be enough on its own — a driver may fetch a sampler's descriptor before it
      * evaluates the arithmetic that discards the result, which is the same reason
      * `emptyTexture.ts` exists.
+     *
+     * **Except a bounce bake, which reads it on purpose.** Its faces are drawn into the capture
+     * cube, and the array is attached only by the convolution after them, so no pass both samples
+     * and attaches it.
      */
     if (this.probeCapture !== null) {
       const array = this.probeArray;
       const grid = this.probes;
-      const usable = array !== null && grid !== null && array.ready && !this.probePassActive;
+      const usable =
+        array !== null &&
+        grid !== null &&
+        array.usable &&
+        this.probeSweeps?.ready === true &&
+        (!this.probePassActive || this.probeBounce);
       gl.activeTexture(gl.TEXTURE0 + ENVIRONMENT_TEXTURE_UNIT);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, usable ? array.texture : this.emptyTexture2DArray);
       gl.uniform1i(u['uEnvironment'] ?? null, ENVIRONMENT_TEXTURE_UNIT);
@@ -6678,7 +7075,12 @@ export class WebGL2Renderer implements RendererApi {
        * times over two days as four different bugs before it could be asked for.
        */
       gl.uniform1f(u['uProbeGridAmbient'] ?? null, usable && this.probeAmbient ? 1 : 0);
+      /* Which sets the shading reads, and how far between them. See `probeSweeps.ts`. */
+      const sets = this.probeSweeps?.uniforms(this.probeSets) ?? this.probeSets.fill(0);
+      gl.uniform3f(u['uProbeGridSets'] ?? null, sets[0] ?? 0, sets[1] ?? 0, sets[2] ?? 0);
     }
+
+    this.bindDriftLight(u, camera.position);
 
     gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
@@ -6686,6 +7088,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
     gl.uniform2f(u['uUvScale'] ?? null, 1, 1);
     gl.uniform1f(u['uAlbedoCutout'] ?? null, 0);
+    gl.uniform1i(u['uDoubleSided'] ?? null, 0);
+    this.materialDoubleSided = false;
     this.currentSurfaceTexture = null;
 
     /*
@@ -6918,7 +7322,9 @@ export class WebGL2Renderer implements RendererApi {
      */
     gl.depthFunc(this.reversedDepth ? gl.GREATER : gl.LESS);
     if (layer === 0) {
+      if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
       mesh.draw(gl);
+      if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
       gl.depthFunc(this.reversedDepth ? gl.GEQUAL : gl.LEQUAL);
       if (tint !== null) gl.uniform3fv(u['uTint'] ?? null, WHITE_TINT);
       if (program !== null) this.useFlatProgram();
@@ -6937,7 +7343,9 @@ export class WebGL2Renderer implements RendererApi {
      */
     const offset = depthOffsetForLayer(layer, this.reversedDepth);
     gl.polygonOffset(offset.slope, offset.units);
+    if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     mesh.draw(gl);
+    if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
     gl.polygonOffset(0, 0);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     if (program !== null) this.useFlatProgram();
@@ -7090,7 +7498,9 @@ export class WebGL2Renderer implements RendererApi {
       gl.enable(gl.POLYGON_OFFSET_FILL);
       gl.polygonOffset(offset.slope, offset.units);
     }
+    if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     mesh.draw(gl);
+    if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
     if (offset.units !== 0) {
       gl.polygonOffset(0, 0);
       gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -7163,10 +7573,11 @@ export class WebGL2Renderer implements RendererApi {
 
     this.probeArray?.dispose(this.gl);
     this.probes = grid;
+    this.probeSweeps = new ProbeSweeps(grid.layers, grid.crossfade);
     this.probeArray = new EnvProbeArray(
       this.gl,
       octahedralEdgeFor(this.quality.reflectionProbeSize),
-      grid.layers,
+      grid.layers * this.probeSweeps.sets,
       this.quality.hdrScene,
     );
     return this.probeArray.usable;
@@ -7193,12 +7604,14 @@ export class WebGL2Renderer implements RendererApi {
     const probe = this.probeCapture;
     const array = this.probeArray;
     const grid = this.probes;
-    if (probe === null || array === null || grid === null) return false;
+    const sweeps = this.probeSweeps;
+    if (probe === null || array === null || grid === null || sweeps === null) return false;
     if (layer < 0 || layer >= grid.layers) return false;
 
     this.probeAmbient = options?.irradiance ?? true;
     grid.positionOf(layer, this.probeOrigin);
 
+    this.probeBounce = options?.bounce ?? false;
     this.probePassActive = true;
     /*
      * **A probe stores radiance, not display pixels.**
@@ -7236,7 +7649,10 @@ export class WebGL2Renderer implements RendererApi {
     this.gl.frontFace(this.gl.CW);
     let baked = false;
     try {
-      baked = probe.bake(this.gl, this.probeOrigin, clearColor, drawFace);
+      const [first, end] = probeFaceRange(options);
+      baked = probe.bake(this.gl, this.probeOrigin, clearColor, drawFace, first, end);
+      /* A bake that has not reached its sixth face has nothing whole to convolve yet. */
+      if (end < 6) return baked;
       /*
        * The convolution, immediately after the faces and inside the same guard, because it reads
        * the chain `bake` has just generated. A bake that failed leaves the layer untouched rather
@@ -7247,11 +7663,12 @@ export class WebGL2Renderer implements RendererApi {
           this.gl,
           probe,
           array,
-          layer,
+          sweeps.writeLayer(layer),
           ENVIRONMENT_TEXTURE_UNIT,
           this.quality.environmentPrefilterSamples,
           this.quality.environmentPrefilter,
         );
+        sweeps.baked(layer);
       }
     } finally {
       this.gl.frontFace(this.gl.CCW);
@@ -7264,6 +7681,7 @@ export class WebGL2Renderer implements RendererApi {
        * later frame reading the placeholder and quietly reflecting nothing.
        */
       this.probePassActive = false;
+      this.probeBounce = false;
       /* Back to the canvas, or to the frame's own target if one is bound. See `SceneTarget`. */
       if (this.sceneTarget !== null && !this.framePresented) this.sceneTarget.bind();
       else {
@@ -7337,6 +7755,7 @@ export class WebGL2Renderer implements RendererApi {
       this.quality.environmentPrefilterSamples,
       this.quality.environmentPrefilter,
     );
+    this.probeSweeps?.baked(0);
     return true;
   }
 
@@ -7474,7 +7893,7 @@ export class WebGL2Renderer implements RendererApi {
            lookup does its own `* 0.5 + 0.5` and correcting the matrix as well doubles it. */
         gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, env.lightViewProj);
         gl.uniform1f(u['uShadowMapSize'] ?? null, this.quality.directionalShadowMapSize);
-        gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peeledShadowMap === null ? 0 : 1);
+        gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.shadowMap?.texture ?? this.emptyTexture2D);

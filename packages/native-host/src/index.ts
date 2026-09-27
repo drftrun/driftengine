@@ -22,3 +22,4 @@ export type { GameEntry, GameOptions } from './game.ts';
 export { configDirectory, startHost } from './runtime.ts';
 export type { FrameCall, HostOptions, NativeHost, RunOptions } from './runtime.ts';
 export { tileFiles } from './tileFiles.ts';
+export type { PresentMode } from './window.ts';

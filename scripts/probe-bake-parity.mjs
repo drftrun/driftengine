@@ -82,7 +82,12 @@ const {
   BAKE_SCHEDULED,
   BAKE_SPACING,
   PROBE_BAKE_FLOATS,
+  BOUNCE_LIGHT_ROWS,
   BAKE_SKY_COLOUR,
+  BAKE_SKY_DEEP,
+  BAKE_SKY_DRAWN,
+  BAKE_SKY_SUN,
+  BAKE_SKY_TOP,
   BAKE_SUN_COLOUR,
   BAKE_SUN_DIR,
   PROBE_BAKE_WORKGROUP,
@@ -241,6 +246,16 @@ try {
   bake[BAKE_EDGE] = EDGE;
   bake[BAKE_FRAME] = FRAME;
   bake[BAKE_SCHEDULED] = scheduled;
+  /*
+   * The sky's fields, each a value no other field holds, so the echo says the device found every
+   * one where the offsets put it. They follow a vec3 with an f32 in its fourth float, which is the
+   * layout a count of rows gets wrong. The parity module reads none of them.
+   */
+  const SKY_ECHO = [0.25, 0.5, 0.75, 0.125];
+  bake[BAKE_SKY_DRAWN] = SKY_ECHO[0];
+  bake[BAKE_SKY_TOP] = SKY_ECHO[1];
+  bake[BAKE_SKY_DEEP] = SKY_ECHO[2];
+  bake[BAKE_SKY_SUN] = SKY_ECHO[3];
 
   const RAY_COUNT = scheduled * PROBE_DIRECTIONS;
   const TEXELS = EDGE * EDGE;
@@ -325,10 +340,13 @@ try {
   console.log(
     'uniform as the device unpacked it:',
     echo[6]
-      .slice(0, 12)
+      .slice(0, 16)
       .map((v) => Number(v.toFixed(4)))
       .join(' '),
   );
+  for (let i = 0; i < SKY_ECHO.length; i += 1) {
+    check('the sky block', `field ${i}`, SKY_ECHO[i], echo[6][12 + i], 0);
+  }
 
   /* ---- 1. The direction set, on its own. ---- */
   const directionRun = await dispatch(
@@ -622,6 +640,11 @@ try {
       { kind: 'texture2dArray', size: EDGE, layers: grid.layers, levels: [level0, level1] },
       { kind: 'sampler' },
       { type: 'f32', values: whiteAlbedo, readOnly: true },
+      /* No DriftLight field and no lamps: the shading is the bounce alone. */
+      { kind: 'emptyVolume', format: 'r32uint' },
+      { kind: 'emptyVolume', format: 'rgba16float' },
+      { kind: 'sampler' },
+      { kind: 'uniform', type: 'f32', values: new Array(BOUNCE_LIGHT_ROWS * 4).fill(0) },
     ],
   });
   const productionRays = productionRun[5];

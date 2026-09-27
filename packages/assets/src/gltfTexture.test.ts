@@ -213,3 +213,59 @@ test('a normal and an emissive map are carried even though nothing binds them ye
   expect(material?.emissiveMap).toBe(0);
   expect(material?.ormMap, 'and a material with no metallicRoughness map names none').toBe(-1);
 });
+
+/** `documentWith`, with one PNG as image 0 in a data URI and `textures` as given. */
+function withTextures(textures: unknown[], extra: Partial<GltfDocument> = {}) {
+  const { doc, buffers } = documentWith(
+    { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+    {
+      textures: textures as never,
+      images: [{ uri: `data:image/png;base64,${btoa(String.fromCharCode(...PNG))}`, name: 'wall' }],
+      ...extra,
+    },
+  );
+  return gltfToMeshes(doc, buffers);
+}
+
+test('A TEXTURE WHOSE ONLY IMAGE IS IN AN EXTENSION IS FOLLOWED THERE', () => {
+  for (const name of ['EXT_texture_webp', 'EXT_texture_avif']) {
+    const { textures, warnings } = withTextures([{ extensions: { [name]: { source: 0 } } }]);
+    expect([...(textures[0]?.bytes ?? [])]).toEqual([...PNG]);
+    expect(warnings.some((w) => w.includes('names no image'))).toBe(false);
+  }
+});
+
+test('a fallback source is preferred over the extension it falls back from', () => {
+  /*
+   * The extension names image 1, which does not exist: a reader preferring the extension warns and
+   * draws untextured, and one preferring the fallback reads image 0.
+   */
+  const { textures } = withTextures([
+    { source: 0, extensions: { EXT_texture_webp: { source: 1 } } },
+  ]);
+  expect([...(textures[0]?.bytes ?? [])]).toEqual([...PNG]);
+});
+
+test('a basis texture is refused by name rather than drawn untextured in silence', () => {
+  const { warnings } = withTextures([{ extensions: { KHR_texture_basisu: { source: 0 } } }]);
+  expect(warnings.some((w) => w.includes('KHR_texture_basisu'))).toBe(true);
+});
+
+test('an extension the file requires and this reader does not know is named', () => {
+  const { warnings } = withTextures([{ source: 0 }], {
+    extensionsRequired: ['KHR_draco_mesh_compression'],
+  });
+  expect(warnings.some((w) => w.includes('KHR_draco_mesh_compression'))).toBe(true);
+});
+
+test('A BLENDED MATERIAL SAYS IT BLENDS EVEN AT FULL OPACITY, because its texture carries the alpha', () => {
+  const [blended, opaque] = [
+    { alphaMode: 'BLEND', pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+    { pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+  ].map((material) =>
+    gltfToMeshes(...(Object.values(documentWith(material)) as [GltfDocument, Uint8Array[]])),
+  );
+  expect(blended?.materials[0]?.opacity).toBe(1);
+  expect(blended?.materials[0]?.blend).toBe(true);
+  expect(opaque?.materials[0]?.blend).toBe(false);
+});

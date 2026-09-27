@@ -4,6 +4,8 @@ import {
   convertHandedness,
   mirrorNodes,
   orientMeshes,
+  orientTransforms,
+  orientLights,
   orientNodes,
   parseUpAxis,
 } from './orient.ts';
@@ -303,4 +305,62 @@ test('mirroring a hierarchy twice is the identity', () => {
   const [node] = mirrorNodes(mirrorNodes(turned()));
   expect(node!.translation).toEqual([1, 2, 3]);
   expect(node!.rotation[1]).toBeCloseTo(HALF_ROOT_2, 6);
+});
+
+/*
+ * **Standing an asset up turned its positions and normals and left its tangents behind.** The baker
+ * derives tangents before it orients, so every normal-mapped model baked with `--up` carried its
+ * tangent frame in the file's axes and the engine's normals in its own, and its normal maps lit it
+ * from the wrong side. `+x` is a quarter turn about Z in the turn table: +x goes to +y.
+ */
+test('ORIENTING TURNS THE TANGENT FRAME WITH THE NORMALS, and keeps its handedness', () => {
+  const [turned] = orientMeshes(
+    [
+      {
+        positions: new Float32Array([1, 0, 0]),
+        normals: new Float32Array([0, 0, 1]),
+        colors: new Float32Array([1, 1, 1]),
+        emissive: new Float32Array([0]),
+        tangents: new Float32Array([1, 0, 0, -1]),
+        indices: new Uint32Array([0]),
+      },
+    ],
+    '+x',
+  );
+  expect([...(turned?.positions ?? [])]).toEqual([0, 1, 0]);
+  expect([...(turned?.tangents ?? [])]).toEqual([0, 1, 0, -1]);
+});
+
+test('a placement is turned into the engine frame by conjugation, so it moves what it moved', () => {
+  /* `+z` sends the file's +z to the engine's +y. A copy moved 5 along the file's +z is moved 5 up. */
+  const moved = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 5, 1]);
+  const [x, y, z] = [...orientTransforms(moved, '+z').subarray(12, 15)];
+  expect([x, y, z]).toEqual([0, 5, 0]);
+  /* And a pure rotation stays a rotation of the same angle: the identity stays the identity. */
+  const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  expect([...orientTransforms(identity, '+z')]).toEqual([...identity]);
+});
+
+test('A LIGHT TURNS WITH THE GEOMETRY: its place and where it points, never its colour', () => {
+  /* `+z` sends the file's +z to the engine's +y: a lamp 5 up the file's z hangs 5 up, and one
+     pointing down the file's −z points at the engine's floor. */
+  const [lamp] = orientLights(
+    [
+      {
+        kind: 'spot',
+        name: 'lamp',
+        position: [1, 0, 5],
+        direction: [0, 0, -1],
+        color: [1, 0.5, 0.25],
+        intensity: 40,
+        range: 0,
+        innerConeRad: 0,
+        outerConeRad: 1,
+      },
+    ],
+    '+z',
+  );
+  expect(lamp?.position).toEqual([1, 5, 0]);
+  expect(lamp?.direction).toEqual([0, -1, 0]);
+  expect(lamp?.color).toEqual([1, 0.5, 0.25]);
 });

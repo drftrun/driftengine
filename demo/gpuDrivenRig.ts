@@ -1121,7 +1121,7 @@ function decodedImage(encoded: EncodedMaterial): ImageData {
 }
 
 class GpuDrivenHandle implements DemoHandle {
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly canvas: HTMLCanvasElement;
   private readonly camera = new Camera();
   readonly view: OrbitView;

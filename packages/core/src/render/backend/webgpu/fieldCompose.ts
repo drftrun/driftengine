@@ -71,6 +71,16 @@ export const DEFAULT_FIELD_COMPOSE: FieldComposeOptions = {
   radius: 4,
 };
 
+/**
+ * The most cascades a field is given to reach a probe grid, which is `cascadesForGrid`'s ceiling.
+ *
+ * Six from the 4 m default reach 128 m, and each is the same 49 cubed samples, about half a
+ * megabyte, so the bound is on memory rather than on distance. What would make it wrong is a scene
+ * whose probe grid is longer than about a hundred metres, whose far probes are then left untraced
+ * rather than traced against a field that is not there.
+ */
+export const MAX_FIELD_CASCADES = 6;
+
 export interface FieldComposeOptions {
   /** Samples a side, every cascade. */
   readonly resolution: number;
@@ -146,6 +156,11 @@ export class FieldComposer {
   private queryMapping = false;
   private timed = false;
   private composeMsValue = 0;
+
+  /** How many cascades this composer was built with. */
+  get cascadeCount(): number {
+    return this.options.cascades;
+  }
 
   constructor(device: GPUDevice, options: FieldComposeOptions) {
     if (!(Math.trunc(options.resolution) >= 2)) {

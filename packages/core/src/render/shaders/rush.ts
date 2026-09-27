@@ -22,9 +22,17 @@
 /* The vertex stage is `FULLSCREEN_VERT`, shared with the occlusion pass and its blur. */
 import { glslSceneDepthToNdc } from '../depthConvention.ts';
 import { DEPTH_OF_FIELD_GLSL } from './depthOfField.ts';
+import { AUTO_EXPOSURE_GLSL } from './exposure.ts';
+import { LOCAL_EXPOSURE_GLSL } from './localExposure.ts';
+import { FILM_LOOK_GLSL } from './filmLook.ts';
 
 export const RUSH_FRAG = `#version 300 es
 precision highp float;
+/*
+ * highp int as well, for the film grain's hash, which multiplies and shifts uints. The fragment
+ * default is mediump, and a sixteen-bit driver would hand back a hash of sixteen bits.
+ */
+precision highp int;
 
 in vec2 vUv;
 
@@ -135,6 +143,11 @@ uniform float uBloomStrength;
  */
 uniform vec3 uVeilColor;
 uniform float uVeilAlpha;
+${FILM_LOOK_GLSL}
+
+/* Eye adaptation's held brightness and the gain it asks for. See exposure.ts. */
+${AUTO_EXPOSURE_GLSL}
+${LOCAL_EXPOSURE_GLSL}
 
 /**
  * The colour grade: a lookup table over display values, sampled after the tone map.
@@ -293,6 +306,24 @@ vec3 cameraBlur(vec3 scene) {
   return sum / 9.0;
 }
 
+/**
+ * Everything after the light is complete, in the order the header of each step argues: the lens
+ * darkens its corners in scene light, the curve and the grade turn light into a picture, the veil
+ * fades it, and the print's grain sits on what is left. One function, so the two exits of \`main\`
+ * cannot finish a frame differently.
+ */
+vec3 finish(vec3 light) {
+  /*
+   * The eye's adaptation, in scene light and before the lens, as a camera's exposure would be; and
+   * each region's share of it, read from the light before either scales it, because that is the
+   * light the grid measured.
+   */
+  float local = localExposureGain(vUv, light);
+  light *= autoExposureGain() * local;
+  vec3 lensed = withVignette(light, vUv, vec2(textureSize(uScene, 0)));
+  return withGrain(withVeil(applyColourGrade(grade(lensed))), gl_FragCoord.xy);
+}
+
 void main() {
   vec3 scene = textureLod(uScene, vUv, 0.0).rgb;
   if (uMotionStrength > 0.0) scene = cameraBlur(scene);
@@ -330,7 +361,7 @@ void main() {
   float edge = smoothstep(inner, 1.0, radius);
   float amount = edge * uStrength;
   if (amount <= 0.0) {
-    fragColor = vec4(withVeil(applyColourGrade(grade(withBloom(scene * ao)))), 1.0);
+    fragColor = vec4(finish(withBloom(scene * ao)), 1.0);
     return;
   }
 
@@ -349,9 +380,6 @@ void main() {
   }
   vec3 blurred = sum / 7.0;
 
-  fragColor = vec4(
-    withVeil(applyColourGrade(grade(withBloom(mix(scene, blurred, amount) * ao)))),
-    1.0
-  );
+  fragColor = vec4(finish(withBloom(mix(scene, blurred, amount) * ao)), 1.0);
 }
 `;

@@ -14,6 +14,7 @@
  * is reached.
  */
 export type {
+  ClockControl,
   DemoBudget,
   DemoPipeline,
   DemoScene,
@@ -45,6 +46,7 @@ import { hierarchy } from './hierarchy';
 import { instancing } from './instancing';
 import { dayClock } from './dayClock';
 import { showroom } from './showroom';
+import { sponza } from './sponza';
 import { gildedChamber } from './gildedChamber';
 import { nightCourt } from './nightCourt';
 import { nightStreet } from './nightStreet';
@@ -157,6 +159,11 @@ export { setUniformStrictMode } from '../packages/core/src/index';
  * rather than something that happens by writing the file.
  */
 export const DRAFT_SCENES: readonly DemoScene[] = [
+  /*
+   * A time-of-day scene being built a milestone at a time. It is published once its bakes are
+   * hosted, it has been held to frame budget, and its CC BY line is on screen, and not before.
+   */
+  sponza,
   /*
    * Track A, composed. It stays a draft until it has been held to frame budget on a mid-range
    * phone, which is the bar `AGENTS.md` sets and which nobody has measured yet — publishing it

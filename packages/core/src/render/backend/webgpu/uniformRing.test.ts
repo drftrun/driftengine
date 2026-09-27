@@ -5,14 +5,18 @@ import { UniformRing } from './uniformRing.ts';
 
 function fakeDevice() {
   const writes: { offset: number; size: number }[] = [];
+  /* Where each upload read from, beside where it wrote: they must be the same byte. */
+  const reads: number[] = [];
   return {
     writes,
+    reads,
     device: {
       createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
       queue: {
         writeBuffer: vi.fn(
-          (_b: GPUBuffer, offset: number, data: ArrayBuffer, _o: number, size: number) => {
+          (_b: GPUBuffer, offset: number, data: ArrayBuffer, from: number, size: number) => {
             writes.push({ offset, size });
+            reads.push(from);
           },
         ),
       },
@@ -93,6 +97,84 @@ describe('the uniform ring', () => {
     ring.flush();
 
     expect(writes).toEqual([{ offset: 0, size: 512 }]);
+  });
+
+  /*
+   * **A frame flushes more than once, and a flush sent everything taken so far.** Every submit in
+   * the middle of a frame flushes first — a probe face binning its lights, a planar reflection, a
+   * bake — so a bake of forty probes drawing a whole courtyard into each of six faces sent the
+   * ring's first slots two hundred times over. Measured on one load: 2.3 GB of uniform uploads in
+   * the two seconds of a grid bake, a second of main thread, and every byte already on the device.
+   */
+  it('A SECOND FLUSH SENDS ONLY WHAT WAS TAKEN SINCE THE FIRST', () => {
+    const { device, writes, reads } = fakeDevice();
+    const ring = new UniformRing(device, 256, 8, 0);
+
+    ring.allocate();
+    ring.allocate();
+    ring.flush();
+    ring.allocate();
+    ring.flush();
+    ring.flush();
+
+    expect(writes).toEqual([
+      { offset: 0, size: 512 },
+      { offset: 512, size: 256 },
+    ]);
+    expect(reads, 'each upload reads the bytes it writes').toEqual([0, 512]);
+  });
+
+  /*
+   * The guard on the saving: a slot written after it was sent is sent again, so a caller that
+   * rewrites an open slot between two flushes loses nothing to the watermark.
+   */
+  it('a slot rewritten after it was sent is sent again, with everything after it', () => {
+    const { device, writes } = fakeDevice();
+    const ring = new UniformRing(device, 256, 8, 0);
+    const first = ring.allocate() as number;
+    ring.allocate();
+    ring.allocate();
+    ring.flush();
+
+    ring.writeFloat(first + 256, 0, 5);
+    ring.flush();
+
+    expect(writes).toEqual([
+      { offset: 0, size: 768 },
+      { offset: 256, size: 512 },
+    ]);
+  });
+
+  it('a new frame, a rewind or a grown ring sends its slots again from where they restart', () => {
+    const { device, writes } = fakeDevice();
+    const ring = new UniformRing(device, 256, 8, 0);
+    ring.allocate();
+    ring.allocate();
+    ring.flush();
+    ring.reset();
+    ring.allocate();
+    ring.flush();
+    expect(writes.at(-1), 'a new frame').toEqual({ offset: 0, size: 256 });
+
+    const mark = ring.mark();
+    ring.allocate();
+    ring.allocate();
+    ring.flush();
+    ring.rewind(mark);
+    ring.allocate();
+    ring.flush();
+    expect(writes.at(-1), 'a rewound slot').toEqual({ offset: 256, size: 256 });
+
+    ring.reset();
+    ring.allocate();
+    ring.flush();
+    ring.growTo(16);
+    ring.allocate();
+    ring.flush();
+    expect(writes.at(-1), 'a grown ring is a new buffer, so it is sent all it holds').toEqual({
+      offset: 0,
+      size: 512,
+    });
   });
 
   it('uploads nothing when no draw took a slot', () => {

@@ -1,5 +1,14 @@
 /**
- * A published scene, on a native window: `npm run native:scene -- <id>`.
+ * A scene, on a native window: `npm run native:scene -- <id>`.
+ *
+ * **Published or draft, by id**, because the harness page offers both and a scene being built is
+ * the one most in need of a second host. `DRAFT_SCENES` stays off the website, not off this
+ * window. An id that names neither prints both lists, so the one to type can be read off.
+ *
+ * **With the browser harness's controls, drawn by the engine** (`hud/`): the scene menu, the player,
+ * the reveal scrubber and the readout, since the window has nothing but its canvas to put them in.
+ * A scene picked from the menu is mounted into the same window. Off for a held capture, which
+ * photographs the scene alone for the pixel gate, and off with `--hud=0`.
  *
  * **Mounted as the dev harness mounts it**: the scene is handed a canvas and the full budget, asked
  * for a frame each tick, and its camera bound to the mouse as the harness binds it. The host is
@@ -12,9 +21,12 @@
  * - `--query=radius=8&at=29.7` for the address a browser capture would have opened the scene at;
  * - `--size=1280x608` for the canvas, which is the dev harness's stage at a 1280 by 720 capture;
  * - `--click=x,y` to replay a click on the canvas, the gesture a scene waits for before it starts
- *   its audio, and `--drag=x0,y0,x1,y1` a drag across it, which turns a scene's camera;
+ *   its audio (`x,y;x,y` for several, in order: a menu opened, then an entry picked), and
+ *   `--drag=x0,y0,x1,y1` a drag across it, which turns a scene's camera;
  * - `--audio-rate=` and `--audio-latency=` for the sample rate and buffer the host asks for;
- * - `--store=` for where the shell's store lives.
+ * - `--store=` for where the shell's store lives;
+ * - `--present=mailbox` (or `immediate`, `fifoRelaxed`) for how frames reach the screen, which is
+ *   `fifo` by default, paced by the compositor: see `HostWindowOptions.presentMode`.
  *
  * **Held, for the pixel gate**: `--hold=N --out=frame.png` runs the held clock the dev harness runs
  * (`demo/dev/heldFrame.ts`): N steps of a sixtieth of a second with `performance.now` moving with
@@ -30,6 +42,11 @@ import { encodePng } from '../../packages/core/scripts/png.mjs';
 import type { AudioDefaults } from '../../packages/native-host/src/audio.ts';
 import { readFrame } from '../../packages/native-host/src/readback.ts';
 import { startHost } from '../../packages/native-host/src/runtime.ts';
+import type { PresentMode } from '../../packages/native-host/src/window.ts';
+import { demoQualityFor, readDemoDeviceHints } from '../deviceBudget.ts';
+import { askedQuality } from '../dev/askedQuality.ts';
+import type { DemoHandle } from '../types.ts';
+import { NativeHud } from './hud/nativeHud.ts';
 import { bindSceneControls } from './sceneControls.ts';
 
 const args = process.argv.slice(2);
@@ -72,18 +89,25 @@ const host = startHost({
   publicDir: fileURLToPath(new URL('../dev/public', import.meta.url)),
   audio,
   ...(store === undefined ? {} : { storePath: store }),
+  ...(flag('present') === undefined ? {} : { presentMode: flag('present') as PresentMode }),
 });
 
-const { SCENES } = await import('../index.ts');
+const { SCENES, DRAFT_SCENES } = await import('../index.ts');
+const ALL = [...SCENES, ...DRAFT_SCENES];
 const id = args.find((arg) => !arg.startsWith('--')) ?? SCENES[0]?.id;
-const scene = SCENES.find((candidate) => candidate.id === id);
-if (scene === undefined) {
+const first = ALL.findIndex((candidate) => candidate.id === id);
+if (first < 0) {
+  const ids = (list: readonly { id: string }[]): string => list.map((s) => s.id).join(', ');
   console.error(
-    `no published scene is called ${String(id)}: ${SCENES.map((s) => s.id).join(', ')}`,
+    `no scene is called ${String(id)}.\n  published: ${ids(SCENES)}\n  draft:     ${ids(DRAFT_SCENES)}`,
   );
   process.exit(1);
 }
-host.window.setTitle(`${scene.title} — DriftEngine`);
+/* As the browser's picker names them. */
+const titleOf = (index: number): string => {
+  const title = ALL[index]?.title ?? '';
+  return index >= SCENES.length ? `${title} (draft)` : title;
+};
 
 /*
  * **The held clock**, as the harness holds it: `performance.now` is virtual and moves only while the
@@ -94,10 +118,75 @@ let virtualMs = 0;
 if (hold !== null) performance.now = () => virtualMs;
 
 const canvas = host.canvas as unknown as HTMLCanvasElement;
-const handle = await scene.mount(canvas, 'full', {});
-console.log(`${scene.title}: mounted on ${handle.backend}`);
-/* The camera the dev harness gives a scene: a drag, the wheel, a pinch, a double click to let go. */
-bindSceneControls(host.canvas, handle.view);
+/*
+ * **What the browser harness mounts a scene with**: the device's own trims under whatever the
+ * address asks for, `--query` being this window's address. Mounted with nothing, every quality flag
+ * the harness documents — `gputiming=1`, `samples=`, `bloom=` — was silently ignored here, and the
+ * readout said `0.00 ms gpu` whatever was asked.
+ */
+const quality = { ...demoQualityFor(readDemoDeviceHints()), ...askedQuality() };
+/*
+ * **Before any scene binds its camera**, so it sees every pointer first: see `hud/hudInput.ts`.
+ */
+const hud =
+  hold === null && flag('hud') !== '0'
+    ? new NativeHud(
+        host.canvas,
+        ALL.map((_, index) => titleOf(index)),
+        (index) => void switchTo(index),
+      )
+    : null;
+
+/* Asserted rather than annotated, so the checker does not narrow it to the `null` it starts as:
+   `show` is what assigns it, and a narrowing cannot see into a call. */
+let handle = null as DemoHandle | null;
+let current = first;
+let unbind = (): void => undefined;
+/* Counts mounts, so a scene picked while another is still mounting wins over it. */
+let mounts = 0;
+/* The mount under way, which a frame hands the loop to wait on: nothing draws until it lands. */
+let mounting: Promise<void> | null = null;
+
+/** Put scene `index` in the window, in place of whatever was there. */
+async function show(index: number): Promise<void> {
+  const scene = ALL[index];
+  if (scene === undefined) return;
+  const mine = ++mounts;
+  hud?.detach();
+  unbind();
+  unbind = () => undefined;
+  handle?.dispose();
+  handle = null;
+  host.window.setTitle(`${scene.title} — DriftEngine`);
+  let mounted: DemoHandle;
+  try {
+    mounted = await scene.mount(canvas, 'full', quality);
+  } catch (error) {
+    console.error(`${scene.title} failed to mount: ${String(error)}`);
+    return;
+  }
+  if (mine !== mounts) {
+    mounted.dispose();
+    return;
+  }
+  console.log(`${scene.title}: mounted on ${mounted.backend}`);
+  handle = mounted;
+  current = index;
+  /* The camera the dev harness gives a scene: a drag, the wheel, a pinch, a double click to let go. */
+  unbind = bindSceneControls(host.canvas, mounted.view);
+  hud?.attach(mounted, index, scene.title);
+}
+
+/** `show`, remembered while it runs so the frame loop can wait for it. */
+function switchTo(index: number): Promise<void> {
+  const running: Promise<void> = show(index).finally(() => {
+    if (mounting === running) mounting = null;
+  });
+  mounting = running;
+  return running;
+}
+
+await switchTo(first);
 
 /*
  * `--click=x,y` replays a click on the canvas, the gesture a scene waits for before it starts
@@ -106,9 +195,8 @@ bindSceneControls(host.canvas, handle.view);
  * (`HostWindow.replay`), so they take the path a person's input takes and count as one's gesture.
  */
 const pointerAt = (x: number, y: number, button?: number) => ({ x, y, button, touch: false });
-const click = flag('click')?.split(',').map(Number);
-if (click !== undefined) {
-  const [x = 0, y = 0] = click;
+for (const point of flag('click')?.split(';') ?? []) {
+  const [x = 0, y = 0] = point.split(',').map(Number);
   host.window.replay('mouseMove', pointerAt(x, y));
   host.window.replay('mouseButtonDown', pointerAt(x, y, 1));
   host.window.replay('mouseButtonUp', pointerAt(x, y, 1));
@@ -158,7 +246,19 @@ const drawn = await host.run({
   frame: ({ now }) => {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
-    handle.frame(dt);
+    const showing = handle;
+    if (showing === null) return mounting ?? undefined;
+    try {
+      /* Drawn first and on its own line: inside `hud?.frame(…)` an absent HUD skipped the scene too. */
+      const stats = showing.frame(dt);
+      hud?.frame(dt, stats);
+    } catch (error) {
+      /* As the browser harness does: say so, and stop drawing a scene that has thrown. */
+      const message = `${titleOf(current)} threw while drawing: ${String(error)}`;
+      console.error(message);
+      hud?.failed(message);
+      handle = null;
+    }
   },
 });
 
@@ -169,7 +269,8 @@ if (out !== undefined) {
   console.log(`wrote ${out}, ${frame.width}x${frame.height}, after ${drawn} frames`);
 }
 
-handle.dispose();
+hud?.dispose();
+handle?.dispose();
 await host.close();
 /*
  * **Ended here rather than left to end by itself.** A natural exit runs Dawn's finalizers over the

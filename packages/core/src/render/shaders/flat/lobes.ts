@@ -75,6 +75,19 @@ const float PENUMBRA_FADE = 1.6;
 const float MAX_FILTER_RADIUS = 0.25;
 
 /**
+ * The weight below which a point light's shadow is not looked up at all.
+ *
+ * A light's shadow is blended toward none as the light falls off, \`mix(1, occl, weight)\` with the
+ * weight twice the falloff, so a shadow looked up under this floor changes at most three per cent
+ * of a light that has already all but faded: with the inverse-square falloff, past about eight
+ * metres from it. Measured on a lantern-lit courtyard, the lookups the floor skips were most of a
+ * night's frame: 14 ms of 26 at 1440p, a blocker tap and twelve filter taps for every light in every
+ * froxel. What it gives up is the last three per cent of a distant light's shadow, which the blend
+ * was already taking away; what would make it wrong is a falloff that stays strong far out.
+ */
+const float POINT_SHADOW_MIN_WEIGHT = 0.03;
+
+/**
  * How much of a self-lit surface's glow a lamp's shadow may take.
  *
  * Zero is the old behaviour — emission entirely unshadowed, and bands that float free of

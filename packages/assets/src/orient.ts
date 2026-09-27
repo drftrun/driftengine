@@ -26,7 +26,7 @@
  * untouched.
  */
 
-import type { DrftNode, MeshData } from '@driftengine/drft';
+import type { DrftLight, DrftNode, MeshData } from '@driftengine/drft';
 import { DrftError } from '@driftengine/drft';
 
 /** Which way is up in the asset, as a signed axis of the engine's own frame. */
@@ -71,7 +71,11 @@ export function describeUpAxis(up: UpAxis): string {
   return (TURNS[up] as { says: string }).says;
 }
 
-function turnTriples(source: Float32Array, m: readonly number[]): Float32Array {
+/**
+ * Turn the first three of every `stride` values, and copy the rest. Three for a position or a
+ * normal; four for a tangent, whose fourth is the bitangent's handedness and is not a direction.
+ */
+function turnTriples(source: Float32Array, m: readonly number[], stride = 3): Float32Array {
   const out = new Float32Array(source.length);
   const m0 = m[0] as number;
   const m1 = m[1] as number;
@@ -82,13 +86,14 @@ function turnTriples(source: Float32Array, m: readonly number[]): Float32Array {
   const m6 = m[6] as number;
   const m7 = m[7] as number;
   const m8 = m[8] as number;
-  for (let i = 0; i + 2 < source.length; i += 3) {
+  for (let i = 0; i + 2 < source.length; i += stride) {
     const x = source[i] as number;
     const y = source[i + 1] as number;
     const z = source[i + 2] as number;
     out[i] = m0 * x + m1 * y + m2 * z;
     out[i + 1] = m3 * x + m4 * y + m5 * z;
     out[i + 2] = m6 * x + m7 * y + m8 * z;
+    for (let k = 3; k < stride; k++) out[i + k] = source[i + k] as number;
   }
   return out;
 }
@@ -106,6 +111,60 @@ export function orientMeshes(meshes: readonly MeshData[], assetUp: UpAxis): Mesh
     ...mesh,
     positions: turnTriples(mesh.positions, m),
     normals: turnTriples(mesh.normals, m),
+    /*
+     * **The tangent frame turns with the normals**, and it did not until 2026-09-25: the baker
+     * derives tangents before it orients, so a normal-mapped model baked with `--up` kept its
+     * tangents in the file's axes and lit its normal maps from the wrong side.
+     */
+    ...(mesh.tangents === undefined ? {} : { tangents: turnTriples(mesh.tangents, m, 4) }),
+  }));
+}
+
+/**
+ * Column-major 4×4 placements, turned into the engine's frame: `O · M · Oᵀ` for each, with `O` the
+ * same turn `orientMeshes` gives the geometry. A copy the file moved along its own +z is then moved
+ * along the engine's +y, and a placement that was a rotation stays one of the same angle.
+ */
+export function orientTransforms(transforms: Float32Array, assetUp: UpAxis): Float32Array {
+  const o = TURNS[assetUp].m;
+  const out = new Float32Array(transforms.length);
+  for (let at = 0; at + 15 < transforms.length; at += 16) {
+    /* Row-major 3×3 of the placement, read out of its column-major block. */
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            /* (O M Oᵀ)[r][c] = Σ O[r][i] M[i][j] O[c][j] */
+            sum +=
+              (o[r * 3 + i] as number) *
+              (transforms[at + j * 4 + i] as number) *
+              (o[c * 3 + j] as number);
+          }
+        }
+        out[at + c * 4 + r] = sum;
+      }
+      let t = 0;
+      for (let i = 0; i < 3; i++)
+        t += (o[r * 3 + i] as number) * (transforms[at + 12 + i] as number);
+      out[at + 12 + r] = t;
+    }
+    out[at + 15] = 1;
+  }
+  return out;
+}
+
+/** Authored lights, turned into the engine's frame by the turn `orientMeshes` gives the geometry. */
+export function orientLights(lights: readonly DrftLight[], assetUp: UpAxis): DrftLight[] {
+  const { m } = TURNS[assetUp];
+  const turn = (v: readonly [number, number, number]): [number, number, number] => {
+    const t = turnTriples(new Float32Array(v), m);
+    return [t[0] as number, t[1] as number, t[2] as number];
+  };
+  return lights.map((light) => ({
+    ...light,
+    position: turn(light.position),
+    direction: turn(light.direction),
   }));
 }
 

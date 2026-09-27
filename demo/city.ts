@@ -242,6 +242,7 @@ async function mountCity(
 
   return {
     backend,
+    renderer,
     /*
      * **Read every time rather than latched, because the answer arrives after the mount.** The
      * device settles its error scopes on a microtask or two, so a host asking once at mount asks

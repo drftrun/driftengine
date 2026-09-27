@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { demoQualityFor, isHandheld, readDemoDeviceHints } from './deviceBudget';
+import { demoQualityFor, isHandheld, isHighTier, readDemoDeviceHints } from './deviceBudget';
 
 const PHONE = { coarsePointer: true, devicePixelRatio: 3.5 };
 const DESKTOP = { coarsePointer: false, devicePixelRatio: 1 };
@@ -71,5 +71,19 @@ describe('what a demo costs on a handheld', () => {
     const hints = readDemoDeviceHints();
     expect(typeof hints.coarsePointer).toBe('boolean');
     expect(hints.devicePixelRatio).toBeGreaterThan(0);
+  });
+});
+
+describe('the high tier, which is where DriftRay traces the bounce', () => {
+  it('IS A DESKTOP-CLASS PART DRAWING ON WEBGPU, and nothing else', () => {
+    /*
+     * DriftRay is a compute dispatch, so WebGL2 cannot run it at all; a handheld pays for it in the
+     * bandwidth this module exists to save; and a family the engine knows is weak is where a
+     * frame is already short. Each of the three takes a device out of the tier on its own.
+     */
+    expect(isHighTier(DESKTOP, 'webgpu', false)).toBe(true);
+    expect(isHighTier(DESKTOP, 'webgl2', false)).toBe(false);
+    expect(isHighTier(PHONE, 'webgpu', false)).toBe(false);
+    expect(isHighTier(DESKTOP, 'webgpu', true)).toBe(false);
   });
 });

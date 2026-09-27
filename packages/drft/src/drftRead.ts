@@ -54,6 +54,9 @@ import {
   fourCCName,
   CHUNK_ANIM,
   CHUNK_NODE,
+  CHUNK_INST,
+  CHUNK_LITE,
+  CHUNK_MSHQ,
   CHUNK_SKIN,
   CHUNK_MORP,
   CHUNK_NNET,
@@ -71,6 +74,11 @@ import { type NavPolyMesh, readNavm } from './navm.ts';
 import { type DrftNetwork, type DrftNnet, readNnet } from './nnet.ts';
 import { type DrftGraph, readNgrf } from './ngrf.ts';
 import { readColliders } from './drftColliders.ts';
+import { readInstances } from './drftInstances.ts';
+import type { DrftInstanceGroup } from './drftInstances.ts';
+import { readLights } from './drftLights.ts';
+import type { DrftLight } from './drftLights.ts';
+import { decodeQuantisedMesh } from './drftQuantised.ts';
 
 /** An embedded image, still compressed. Decoding is the consumer's, through `createImageBitmap`. */
 export interface DrftTexture {
@@ -145,6 +153,13 @@ export interface DrftAsset {
    * behaves identically against a file with a hierarchy it ignores.
    */
   readonly nodes: readonly DrftNode[];
+  /**
+   * Meshes drawn many times, each group naming the mesh that holds one copy and a matrix a copy.
+   * Empty for a file that instances nothing, which is every file before 1.18.
+   */
+  readonly instances: readonly DrftInstanceGroup[];
+  /** The lights the scene was authored with, or empty. `LITE`, defined at 1.18. */
+  readonly lights: readonly DrftLight[];
   /** Skins, in the order their chunks appear. Empty for a file that deforms nothing. */
   readonly skins: readonly DrftSkin[];
   /** Clips, in the order their chunks appear. Empty for a file that animates nothing. */
@@ -365,6 +380,9 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
   let nnet: DrftNnet | null = null;
   let graphs: DrftGraph[] = [];
   let colliders: readonly Float32Array[] = [];
+  /* Read once every mesh is counted, because a group is checked against the mesh count. */
+  let instanceChunk: { offset: number; byteLength: number } | null = null;
+  let lights: DrftLight[] = [];
   const skipped: string[] = [];
   let head: DrftHead | null = null;
 
@@ -406,6 +424,9 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
 
     if (chunk.code === CHUNK_HEAD) head = readHead(buffer, chunk);
     else if (chunk.code === CHUNK_MESH) meshes.push(readMesh(buffer, chunk));
+    /* A mesh like any other, in the same ordinal sequence: see `drftQuantised.ts`. */
+    else if (chunk.code === CHUNK_MSHQ)
+      meshes.push(decodeQuantisedMesh(buffer, chunk.offset, chunk.byteLength));
     /* A level of detail is a mesh payload under another code, so it takes the same reader. */
     else if (chunk.code === CHUNK_LODM)
       levels.push({ level: chunk.index, mesh: readMesh(buffer, chunk) });
@@ -421,6 +442,8 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
       navigation = readNavm(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_ENTS) entities = readEnts(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_NODE) nodes = readNodes(buffer, chunk.offset, chunk.byteLength);
+    else if (chunk.code === CHUNK_INST) instanceChunk = chunk;
+    else if (chunk.code === CHUNK_LITE) lights = readLights(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_SKIN)
       skins.push(readSkin(buffer, chunk.offset, chunk.byteLength));
     else if (chunk.code === CHUNK_ANIM)
@@ -517,6 +540,11 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     lods,
     levels: discreteLevels,
     nodes,
+    instances:
+      instanceChunk === null
+        ? []
+        : readInstances(buffer, instanceChunk.offset, instanceChunk.byteLength, meshes.length),
+    lights,
     skins,
     clips,
     materials,
@@ -726,6 +754,10 @@ export function readMaterials(buffer: ArrayBuffer, chunk: DrftChunk): DrftMateri
       occlusionStrength: has(68, 4) ? view.getFloat32(at + 68, true) : 0,
       /* Discard nothing, which is exactly what a file written before this field meant. */
       cutout: has(72, 4) ? view.getFloat32(at + 72, true) : 0,
+      /* Opaque unless its opacity says otherwise, which is what a file before 1.18 meant. */
+      blend: has(76, 4) ? (view.getUint32(at + 76, true) & 1) !== 0 : false,
+      /* One-sided unless it says otherwise, which is how every file before the bit was drawn. */
+      doubleSided: has(76, 4) ? (view.getUint32(at + 76, true) & 2) !== 0 : false,
     });
   }
   return out;

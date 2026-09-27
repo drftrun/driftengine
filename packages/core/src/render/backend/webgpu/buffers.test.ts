@@ -146,6 +146,41 @@ describe('a gpu mesh', () => {
     expect(located).not.toContain(4);
   });
 
+  /*
+   * The interleave, byte for byte, against a vertex written out by hand. Every other test here
+   * compares one path of the upload against the other, and both walk the same loop, so a mistake in
+   * the loop is a mistake they agree on.
+   */
+  it('A VERTEX IS ITS ATTRIBUTES IN LAYOUT ORDER, each at the width the shader reads', () => {
+    const { device, memory } = fakeDevice();
+    const data: MeshData = {
+      ...triangle(),
+      positions: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      emissive: new Float32Array([0.5, 0.25, 0.125]),
+      uvs: new Float32Array([10, 11, 12, 13, 14, 15]),
+      tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 0, 0, 1, -1]),
+    };
+    const mesh = createGpuMesh(device, data);
+    const bytes = memory.get(mesh.vertexBuffers[0] as object) as Uint8Array;
+    const floats = [...new Float32Array(bytes.buffer, 0, bytes.byteLength / 4)];
+
+    /* position, normal, colour, emissive, uv, tangent: sixteen floats a vertex. */
+    expect(floats.slice(16, 32)).toEqual([4, 5, 6, 0, 0, 1, 1, 1, 1, 0.25, 12, 13, 0, 1, 0, 1]);
+    expect(floats.slice(32, 48)).toEqual([7, 8, 9, 0, 0, 1, 1, 1, 1, 0.125, 14, 15, 0, 0, 1, -1]);
+  });
+
+  /*
+   * **The other backend refused a short attribute and this one drew zeroes for its tail.** WebGL2's
+   * mesh has run `validateMeshData` since the validator existed; this path never called it, so a
+   * uv array one vertex short was an error on one backend and a stretched texture on the other.
+   */
+  it('REFUSES A SHORT ATTRIBUTE, as the other backend does', () => {
+    const { device } = fakeDevice();
+    const short = { ...triangle(), uvs: new Float32Array([0, 0, 1, 0]) };
+    expect(() => createGpuMesh(device, short)).toThrow(/uvs has 4 floats for 3 vertices/);
+    expect(() => createGpuMeshIncremental(device, short)).toThrow(/uvs has 4 floats/);
+  });
+
   it('uploads a real buffer when the optional attribute is supplied', () => {
     const { device } = fakeDevice();
     const data = { ...triangle(), uvs: new Float32Array([0, 0, 1, 0, 0, 1]) };

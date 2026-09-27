@@ -91,6 +91,43 @@
   #scrub.on {
     display: block;
   }
+  /* The transport, shown only for a scene with a clock: play or pause, stop, and a playhead that
+     can be dragged anywhere in the loop. Over the canvas's foot, above the readout. */
+  #transport {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 2.2rem;
+    width: min(40rem, 86%);
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    background: rgba(11, 13, 16, 0.72);
+    border: 1px solid #232b34;
+    border-radius: 6px;
+  }
+  #transport.on {
+    display: flex;
+  }
+  #transport button {
+    width: 2.1rem;
+    padding: 0.2rem 0;
+  }
+  #timeline {
+    flex: 1;
+    accent-color: #6ee7a8;
+    cursor: ew-resize;
+  }
+  #clock {
+    min-width: 3.2rem;
+    text-align: right;
+    color: #c9d4df;
+  }
+  /* The reveal scrubber steps up out of the transport's way where a scene has both. */
+  #stage.clocked #scrub {
+    bottom: 5.2rem;
+  }
   #error {
     padding: 0.7rem;
     color: #ff9b9b;
@@ -101,6 +138,12 @@
 <div id="stage">
   <canvas id="canvas"></canvas
   ><input id="scrub" type="range" min="0" max="1" step="1" value="1" aria-label="Load progress" />
+  <div id="transport" role="group" aria-label="Playback">
+    <button id="play" type="button" aria-label="Play">▶</button>
+    <button id="halt" type="button" aria-label="Stop">■</button>
+    <input id="timeline" type="range" min="0" max="1000" step="1" value="0" aria-label="Position" />
+    <span id="clock"></span>
+  </div>
   <div id="stats"></div>
 </div>
 <div id="error"></div>

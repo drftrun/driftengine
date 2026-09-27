@@ -259,7 +259,7 @@ class CharacterHandle implements DemoHandle {
   private disposed = false;
 
   constructor(
-    private readonly renderer: RendererApi,
+    readonly renderer: RendererApi,
     private readonly canvas: HTMLCanvasElement,
   ) {
     this.renderer.resize();

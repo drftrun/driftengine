@@ -62,6 +62,7 @@ const {
   BAKE_SUN_COLOUR,
   BAKE_SUN_DIR,
   PROBE_BAKE_FLOATS,
+  BOUNCE_LIGHT_ROWS,
   PROBE_BAKE_WORKGROUP,
   probeBakeWgsl,
 } = await import(`${ROOT}packages/core/src/render/shaders/gi/probeBake.wgsl.ts`);
@@ -234,7 +235,7 @@ const FRAME = 0;
  */
 const CENSUS_FLOATS = 8;
 const WGSL = `${probeBakeWgsl()}
-@group(0) @binding(11) var<storage, read_write> census: array<f32>;
+@group(0) @binding(15) var<storage, read_write> census: array<f32>;
 
 @compute @workgroup_size(${String(PROBE_BAKE_WORKGROUP)})
 fn censusMain(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -352,10 +353,16 @@ try {
         { kind: 'sampler' },
         /* The albedo, which `censusMain` never reads: it counts rays rather than colouring them. */
         { type: 'f32', values: [1, 1, 1], readOnly: true },
+        /* And the DriftLight field, which it never reads either: the census counts the sun's rays. */
+        { kind: 'emptyVolume', format: 'r32uint' },
+        { kind: 'emptyVolume', format: 'rgba16float' },
+        { kind: 'sampler' },
+        /* And the frame's exact lights, none: the bake block's count is zero. */
+        { kind: 'uniform', type: 'f32', values: new Array(BOUNCE_LIGHT_ROWS * 4).fill(0) },
         { type: 'f32', length: rays * CENSUS_FLOATS, read: true },
       ],
     });
-    report(entry.label, grid, rays, run[11]);
+    report(entry.label, grid, rays, run[15]);
   }
 } finally {
   await gpu.close();

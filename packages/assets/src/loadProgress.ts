@@ -1,4 +1,4 @@
-import type { MeshHandle } from '@driftengine/core';
+import type { MeshHandle, InstancedHandle, MeshInstances } from '@driftengine/core';
 
 /**
  * The vocabulary of a load in flight: which phase it is in, how far it has got, and what a
@@ -73,6 +73,12 @@ export interface DrftLoadProgress {
 }
 
 /** One drawable piece of a loaded model. */
+/** A part's copies: the instanced batch over its mesh, and the placements already uploaded to it. */
+export interface DrftPartInstances {
+  readonly batch: InstancedHandle;
+  readonly data: MeshInstances;
+}
+
 export interface DrftPart {
   readonly mesh: MeshHandle;
   /** Which of the asset's images this surface wears, or -1 for none. */
@@ -121,6 +127,22 @@ export interface DrftPart {
    * nothing at all.
    */
   readonly cutout: number;
+  /**
+   * Whether the part blends: its texture's alpha is coverage, so it is drawn translucent whatever its
+   * `opacity` says. glTF's `BLEND` with a factor of 1 is the case: a leaf's shape is in its alpha.
+   */
+  readonly blend: boolean;
+  /** Whether both faces are seen: glTF's `doubleSided`. Drawn without culling, each face lit as the front. */
+  readonly doubleSided: boolean;
+  /**
+   * The copies this part is drawn as, or null for a part drawn once.
+   *
+   * A mesh the file places many times (`INST`, 1.18) is uploaded once and drawn through the
+   * engine's instanced path: `drawInstanced(batch, data)`, and `sink.instanced` for a shadow. The
+   * placements are uploaded when the part is made and carry the fit, so a caller passes them as
+   * they are. Null for every part of a file with no instances, which is every file before 1.18.
+   */
+  readonly instances: DrftPartInstances | null;
   /**
    * 0 to 1 as this part arrives, for a caller that would rather it faded in than appeared.
    *

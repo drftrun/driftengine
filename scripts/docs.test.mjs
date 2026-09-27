@@ -64,10 +64,12 @@ const FROZEN = null;
 /**
  * Directories whose whole subject is work not yet done. See `namesFuture`.
  *
- * The plan and spec directories that filled this are gone. What remains is matched by name
- * instead, which is the more durable half of the rule anyway.
+ * Emptied when one programme's plans left the tree, which also emptied the exemption the import
+ * check below still described in its comment, so the next plan written could not be committed
+ * green. A programme's specs and plans live here while it runs and leave with it; the entry stays,
+ * because an empty directory costs nothing and a missing exemption costs the next programme.
  */
-const FUTURE_DIRS = [];
+const FUTURE_DIRS = ['docs/superpowers/'];
 
 /** Strategy documents, matched by name so the rule survives them being moved. */
 const FUTURE_NAMES = new Set(['PRIORITY.md', 'ASSESSMENT.md', 'ROADMAP.md']);
@@ -127,7 +129,8 @@ export function outsideFences(text) {
  * a broken path whatever the document is.
  */
 function namesFuture(file) {
-  return FUTURE_DIRS.some((dir) => file.startsWith(dir)) || FUTURE_NAMES.has(path.basename(file));
+  const rel = path.relative(ROOT, file);
+  return FUTURE_DIRS.some((dir) => rel.startsWith(dir)) || FUTURE_NAMES.has(path.basename(file));
 }
 
 /** Documents that exist and may be named from anywhere. */
@@ -832,7 +835,7 @@ test('every import the docs print names something the package exports', () => {
 
   const missing = [];
   for (const file of walk(ROOT, (f) => /\.md$/.test(f))) {
-    if (path.basename(file) === 'PORTING.md') continue;
+    if (path.basename(file) === 'PORTING.md' || namesFuture(file)) continue;
     for (const statement of readFileSync(file, 'utf8').matchAll(
       /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*'@driftengine\/([a-z]+)'/g,
     )) {

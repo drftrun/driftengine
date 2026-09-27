@@ -12,7 +12,7 @@
  * picture, and a picture is the one thing this engine's case does not rest on.
  */
 
-import type { RenderBackend, RenderQualityOptions } from '../packages/core/src/index';
+import type { RenderBackend, RenderQualityOptions, RendererApi } from '../packages/core/src/index';
 import type { OrbitView } from './orbit';
 
 /** What a single rendered frame cost. */
@@ -77,6 +77,19 @@ export interface DemoHandle {
    * Optional because a consumer's own handle need not have one; the demo scenes all do.
    */
   readonly backend?: RenderBackend;
+  /**
+   * The renderer drawing this scene, for a host that draws its own interface over it.
+   *
+   * **For a host with no page to put one in.** The browser harness lays its readout and player out
+   * in HTML beside the canvas; the native window has nothing but the canvas, so its harness paints
+   * the same controls with the engine after the scene's `endFrame`, in the overlay pass, and that
+   * needs the scene's own renderer: a canvas has one context, and a second renderer on it would
+   * take it from the first. A host may draw over the frame with it and must not do anything else.
+   *
+   * Optional, as `backend` is, so a handle written before this existed still satisfies the
+   * contract; a host that finds none draws no interface.
+   */
+  readonly renderer?: RendererApi;
   /**
    * Whether the device this scene was built on has gone.
    *
@@ -171,6 +184,38 @@ export interface DemoHandle {
    * say about this. A host that finds it absent is in exactly the position it was in before.
    */
   readonly resolution?: ResolutionControl;
+  /**
+   * A clock a viewer can play, pause, stop and scrub, where a scene runs on one.
+   *
+   * **The same split as `reveal`**: the caller owns the buttons and the bar, the scene owns what a
+   * moment in its loop *is* — an hour of a day, a beat of a song. Optional, because a scene with no
+   * timeline has nothing to put under a playhead.
+   */
+  readonly clock?: ClockControl;
+}
+
+/** A looped timeline: where it is, whether it runs, and the four things a transport does to it. */
+export interface ClockControl {
+  /** How long one pass of the loop is, in seconds. */
+  readonly lengthSec: number;
+  /** Where the playhead is, 0 to `lengthSec`. */
+  readonly atSec: number;
+  /** Whether the loop is advancing. */
+  readonly playing: boolean;
+  /** What the playhead's moment is called, for the readout: `19:30`, `bar 12`. */
+  readonly label: string;
+  /**
+   * Whether there is anything to play yet. False while the scene is still loading, and the harness
+   * shows no transport until it is true: a play bar over a load screen offers a timeline nobody can
+   * see.
+   */
+  readonly ready: boolean;
+  play(): void;
+  pause(): void;
+  /** Back to the start, paused. */
+  stop(): void;
+  /** Move the playhead, in seconds; wrapped into the loop. Leaves playing or paused as it was. */
+  seek(atSec: number): void;
 }
 
 /**

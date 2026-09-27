@@ -20,7 +20,7 @@
  *
  * `lean` keeps its meaning as the diagnostic it was written to be, reachable at `?budget=lean`.
  */
-import type { RenderQualityOptions } from '../packages/core/src/index';
+import type { RenderBackend, RenderQualityOptions } from '../packages/core/src/index';
 
 /** What the first mount needs to know about the device, and nothing more. */
 export interface DemoDeviceHints {
@@ -44,6 +44,26 @@ export interface DemoDeviceHints {
  */
 export function isHandheld(hints: DemoDeviceHints): boolean {
   return hints.coarsePointer && hints.devicePixelRatio >= 2;
+}
+
+/**
+ * **The high tier: a desktop-class part drawing on WebGPU.** It is where a scene that declares the
+ * distance fields DriftRay traces against gets the traced bounce, and every other device keeps the
+ * rasterised probe grid the scene has always had.
+ *
+ * Three things take a device out, each on its own: WebGL2, which has no compute stage and refuses
+ * the option in words; a handheld, which pays for a dispatch in the memory bandwidth this module
+ * exists to save; and a GPU family the engine knows is weak (`describeGpu().weak`), where the frame
+ * is already short. What it costs is a phone on WebGPU with bandwidth to spare, which is left out
+ * by its panel and its input rather than measured, as the trims below are; `?indirect=1` puts it
+ * back for a look.
+ */
+export function isHighTier(
+  hints: DemoDeviceHints,
+  backend: RenderBackend,
+  weakGpu: boolean,
+): boolean {
+  return backend === 'webgpu' && !isHandheld(hints) && !weakGpu;
 }
 
 /**

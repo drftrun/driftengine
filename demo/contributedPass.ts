@@ -211,7 +211,7 @@ const ENV = createEnvironment({
 });
 
 class ContributedPassHandle implements DemoHandle {
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly camera = new Camera();
   readonly view = new OrbitView(6, 60, 1.1);
   private readonly bars = new BarsPass();

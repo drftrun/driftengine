@@ -293,6 +293,10 @@ void main() {
  */
 export const MEDIUM_UPSAMPLE_FRAG = `#version 300 es
 precision highp float;
+/* highp int, by the rule every fragment stage doing bit arithmetic keeps: the footprint below is
+   picked with a mask and a shift. At four values it would survive sixteen bits, and a gate that
+   has to judge which masks are small is a gate nobody can hold. */
+precision highp int;
 
 in vec2 vUv;
 

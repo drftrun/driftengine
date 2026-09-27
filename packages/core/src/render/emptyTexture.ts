@@ -128,3 +128,44 @@ export function createEmptyTextureCube(gl: WebGL2RenderingContext): WebGLTexture
   gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
   return texture;
 }
+
+/**
+ * The same for DriftLight's two volumes while a scene has no field: one texel of an unsigned
+ * integer, reading "no brick here", or of zero light. GLSL ES gives a 3D sampler no default and a
+ * lookup through an unbound one is the undefined read this file exists to prevent.
+ */
+export function createEmptyTexture3D(gl: WebGL2RenderingContext, integer: boolean): WebGLTexture {
+  const texture = allocate(gl, 'emptyTexture3D');
+  gl.bindTexture(gl.TEXTURE_3D, texture);
+  if (integer) {
+    gl.texImage3D(
+      gl.TEXTURE_3D,
+      0,
+      gl.R32UI,
+      1,
+      1,
+      1,
+      0,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_INT,
+      new Uint32Array(1),
+    );
+  } else {
+    gl.texImage3D(
+      gl.TEXTURE_3D,
+      0,
+      gl.RGBA8,
+      1,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array(4),
+    );
+  }
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindTexture(gl.TEXTURE_3D, null);
+  return texture;
+}

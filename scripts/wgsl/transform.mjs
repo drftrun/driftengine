@@ -41,6 +41,9 @@ const SAMPLER_TYPES = {
    * alone in both languages.
    */
   usampler2D: 'utexture2D',
+  /* The same for DriftLight's brick index, a 3D grid of integers, and above `sampler3D` for the
+     same offset reason. */
+  usampler3D: 'utexture3D',
   sampler2D: 'texture2D',
   samplerCube: 'textureCube',
   sampler3D: 'texture3D',

@@ -68,6 +68,12 @@ failed to load. `loader.placement` reports what was decided either way.
 
 `npm run bake -- <model> --no-lod` writes no coarse version. `--up -y` stands up a model whose
 file declares the wrong axis, which the baker now warns about rather than detects.
+`--max-texture 1024` halves every image over 1024 on its longer side until it fits, re-encoded in
+the codec it arrived in; on a bought 4K scene it took the textures from 1.94 GB to 128 MB. The
+geometry, which is the larger half once the textures are capped, is what the next three are for:
+since 1.18 a mesh is written quantised, a mesh the source merged from copies is written once with
+its placements, and the scene's lights travel with it. The same bought scene went from 1.67 GB to
+355 MB, 231 MB gzipped.
 
 `npm run bake:check` bakes `scripts/fixtures/tetra.obj` twice and diffs the two, which is the
 baker's end-to-end check and the only one that catches what a type cannot: it runs on every
@@ -76,11 +82,20 @@ push. `scripts/` has its own `tsconfig.scripts.json` because those files need `@
 
 ### Bake flags
 
-| Flag                  | Does                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| `-o <path>`           | Output. Defaults to the input name with `.drft`.                                        |
-| `--up x -x y -y z -z` | Which axis the _file_ thinks is up. Beats what the file declared, and both are printed. |
-| `--from <ext>`        | Force a reader when handing over a folder.                                              |
+| Flag                   | Does                                                                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `-o <path>`            | Output. Defaults to the input name with `.drft`.                                                                                 |
+| `--up x -x y -y z -z`  | Which axis the _file_ thinks is up. Beats what the file declared, and both are printed.                                          |
+| `--from <ext>`         | Force a reader when handing over a folder.                                                                                       |
+| `--max-texture <px>`   | Halve every image over this until its longer side fits.                                                                          |
+| `--texture-codec jpeg` | Re-encode opaque colour maps as JPEG; normal and alpha maps stay lossless. `jpeg-all` takes those too.                           |
+| `--blend-as-cutout`    | Draw blended materials as cutouts at 0.5. Foliage exported as `BLEND` wants this; glass does not. Each one converted is printed. |
+| `--sdf <m>`            | Bake one distance field over the static geometry at `m` metres a voxel, for traced indirect light. 0.25 m is ~5 MB a courtyard.  |
+| `--normals-directx`    | Turn every normal map's green over: for maps written DirectX's way, green down. See _Normal maps_ for the tell.                  |
+| `--simplify <m>`       | Take out the triangles the shape does not need: the surface moves no more than `m`, a texture no more than a texel of 1,024.     |
+| `--no-instances`       | Write merged copies as one mesh, as every bake before 1.18 did.                                                                  |
+| `--no-quantise`        | Write `MESH` rather than `MSHQ`: floats, for a reader before 1.18.                                                               |
+| `--no-lod`             | No coarse level ahead of the parts.                                                                                              |
 
 ### Formats
 
@@ -173,6 +188,13 @@ call `generateTangents` yourself, or bake with the map declared.
 A normal map **composes** with `setSurfaceTextureRelief` and the geometry's own `relief` rather
 than replacing them: the map is applied first and relief perturbs its result.
 
+**glTF wants the OpenGL convention, green up, and bought maps are often DirectX's, green down.**
+Nothing in a file says which. The tell is in the image itself: find a horizontal joint, a dark line
+in the base colour, and read the normal map's green just above it and just below. glTF puts the
+rows above under the middle, because they face down into the joint; a DirectX map puts them over
+it. Lit wrong, every joint under a high sun wears a dark line along its upper lip rather than shade
+under its lower one, which reads as dirt. `bake --normals-directx` turns the green over.
+
 ### Loading a .drft
 
 ```ts
@@ -222,6 +244,32 @@ about: the focus distance starts at zero metres, which is behind the camera, so 
 full blur. Set the plane in the same place you set the camera.
 
 `bloom` without `hdrScene` finds nothing at a threshold of 1 and warns once saying so.
+
+### Many lights: DriftLight
+
+A frame shades the lights `selectPointLights` chooses, nearest first, and nothing else. For a scene
+of hundreds or thousands of fixed lights, sum them once into a field and every one of them lights:
+
+```ts
+const field = renderer.createLightField(candles, { fields: placedDistanceFields, fadeSec: 0 });
+
+// each frame: a few bricks while loading, then the choice the field stands in past
+if (!field.ready) field.bake(24);
+selectPointLights(candles, eye[0], eye[1], eye[2], buffer, timeSec, viewRange);
+field.follow(buffer.complete, eye[0], eye[1], eye[2], dtSec);
+field.scale = nightLevel; // dims what was summed; the lights themselves may dim too
+```
+
+- **The lights are summed as they stand when the field is made.** Make it with every light at full
+  strength, and dim the sum with `scale`, not by rewriting the lights and expecting a re-bake.
+- **Only fixed lights.** A light that moves stays out of the list and stays exact. The field is
+  occluded by the `fields` it was given and by nothing that moves.
+- **Select from the same objects the field was given.** It marks them (`inLightField`), and that
+  mark is how the selection splits each light between exact and summed per pixel.
+- **`fadeSec: 0` behind a loading screen.** The default fades the sum in over half a second so a
+  field that completes in view does not pop, and a held capture steps a stopped clock by zero.
+- `demo/dev/driftlight.html` is the instrument: `?driftlight=0` is the control, and `?occlude=0`
+  with `?only=far` is the positive control for occlusion.
 
 ### Looking at a rendering change
 
@@ -350,7 +398,17 @@ Three things to check, in this order, because they fail differently:
    all**, so a reader that knows only the core model finds no base colour map to bind. Re-bake and
    it is fixed; see §4 for the half of such a file that is still not carried.
 
+5. **Does a dark surface come out white wherever the sun reaches it?** A material that names a
+   base-colour image and no metallic or roughness factor is, by the specification's defaults, a
+   rough metal whose reflectance is that image. Before 4.4.0 the reader gave such a metal a white
+   highlight at full strength, and a bought courtyard's dirt decal drew every wall it covered white
+   with the grime dark between. Re-bake it.
+
 ### It has holes in it, or parts are missing
+
+**A curtain or a leaf card that vanishes from behind is a one-sided draw of a two-sided surface.**
+glTF's `doubleSided` is read and carried since 4.4.0; a file baked before that reads one-sided, and
+re-baking it is the fix.
 
 A tier 2 reader refuses rather than half-imports, so a missing part is not the reader giving
 up quietly. Check the warnings the baker printed. Then check whether the welder collapsed
@@ -761,6 +819,13 @@ the group is the wrong unit and the sort wants finer pieces.
 exact arithmetic, so which one survives is decided per pixel by which way the rounding fell. A
 higher layer wins wherever they coincide, up to `MAX_DEPTH_LAYER`.
 
+**A decal that stands off its surface wants `depthWrite: false` too.** A bought scene's dirt decals
+are often sheets a centimetre or two off the stone, wrapped round piers and columns, and where a
+sheet passes a corner it hangs in the air. Depth it writes there is where every pass that reads the
+frame's depth stops: the global medium marched to the sheet rather than the gallery behind it, and
+a pier seen edge-on wore a clear band down its whole height that read as a gap in the building. The
+surface under a decal already holds the sky off, so the decal gives up nothing it needs.
+
 **Before reaching for either, check whether the surface is a mask.** A great many surfaces that
 declare a blend are decals whose shape lives in their image's alpha, with no partial transparency
 anywhere in them. Those want `cutout` and the opaque path: the fragment stage runs
@@ -807,6 +872,35 @@ solid is correct, the model was never hollow, and the result is a car with an op
 turn it on for a shell and leave it off for anything modelled inside. `?fill=1` is the switch in
 the demo, `DemoSceneOptions.fill` is the same answer from a host that knows its own model, and the
 cost is two extra draws — measured at 13 to 15 on the car.
+
+**10. A baked scene can light its own bounce with DriftRay.** DriftRay is this engine's ray
+tracing, run in GPU compute on WebGPU: probes trace rays through a distance field of the scene and
+the shading reads them as it reads any probe. It needs three things from a consumer, and the third
+is the one to get right.
+
+- **A field**, baked with the model: `bake --sdf 0.25` writes one over the static geometry, and
+  `DrftLoader.fields` hands it on placed at the loader's fit.
+- **Declared every frame**, between `beginFrame` and `endFrame`, since the queue empties at every
+  frame so a field that stops being declared stops lighting. The albedo is one colour for the whole
+  field: pass the scene's mean, not white.
+- **Asked for only where it runs well.** WebGL2 has no compute stage and refuses the option in words,
+  and a phone pays for the dispatch in bandwidth it does not have, so ask through quality as a
+  function of the backend `createRenderer` chose, with `describeGpu()` for the part:
+
+```ts
+const gpu = await describeGpu();
+const { renderer } = await createRenderer(canvas, (backend) => ({
+  reflectionProbeSize: 64,
+  indirectLight: backend === 'webgpu' && !gpu.weak && !isHandheld(),
+}));
+/* Every frame: */
+for (const placed of loader.fields) renderer.addDistanceField(placed.source, placed.model, albedo);
+```
+
+`isHandheld` is yours to define; the demos take a coarse pointer at a density of two or more
+(`demo/deviceBudget.ts`, `isHighTier`). A device outside that keeps the rasterised probe grid, which
+is what it would have had anyway. On an RX 9070 XT it costs 0.1 to 0.2 ms a frame, and the probe grid
+it fills is either the one `setProbeGrid` declared or one fitted to the fields.
 
 ## 8. Things that have gone wrong here, so they need not go wrong again
 

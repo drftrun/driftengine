@@ -23,7 +23,7 @@ export const DRFT_VERSION_MAJOR = 1;
  * Additive revisions within a generation: new optional chunks, new attribute bits, new
  * enum values with a defined fallback. Never a changed meaning.
  */
-export const DRFT_VERSION_MINOR = 17;
+export const DRFT_VERSION_MINOR = 18;
 
 /** Bytes before the chunk table. */
 export const HEADER_BYTES = 32;
@@ -259,6 +259,19 @@ export const CHUNK_NAVM = fourCC('NAVM');
  */
 export const CHUNK_ENTS = fourCC('ENTS');
 
+/**
+ * Meshes drawn many times, one matrix a copy. **Required**: see `drftInstances.ts` for why a reader
+ * that skipped it would be worse than one that refused. Added in 1.18.
+ */
+export const CHUNK_INST = fourCC('INST');
+
+/**
+ * A mesh in the bytes its data needs: constants, 16-bit ranges and octahedral directions, decoded on
+ * read into the `MeshData` a `MESH` gives. **Required**, and counted as a mesh in every ordinal.
+ * See `drftQuantised.ts`. Added in 1.18.
+ */
+export const CHUNK_MSHQ = fourCC('MSHQ');
+
 /** Bytes before the records in a `SPLT` payload. See `DrftSplatBlock` for the fields. */
 export const SPLAT_BLOCK_PREFIX = 40;
 
@@ -291,6 +304,8 @@ export const KNOWN_CHUNKS: ReadonlySet<number> = new Set([
   CHUNK_NGRF,
   CHUNK_NAVM,
   CHUNK_ENTS,
+  CHUNK_INST,
+  CHUNK_MSHQ,
 ]);
 
 /** Chunk flags. */
@@ -550,6 +565,23 @@ export interface DrftMaterial {
    * tested.
    */
   readonly cutout: number;
+  /**
+   * Whether the surface blends: its texture's alpha is coverage, times `opacity`. 1.18.
+   *
+   * **A flag, because `opacity` could not say it.** glTF's `BLEND` makes alpha the factor times the
+   * texture, and a factor of 1 left `opacity` at 1: every loader drew the material opaque and a
+   * leaf's shape, which is all in its texture's alpha, was never read. Absent means false, which is
+   * what every file before 1.18 meant.
+   */
+  readonly blend?: boolean;
+  /**
+   * Whether both faces of the surface are seen: bit 1 of the flags word, 1.18.
+   *
+   * glTF's `doubleSided`, and what a curtain, a flag and a leaf card are. A one-sided surface is
+   * culled from behind, so a curtain seen from the other side of its arch is a hole, and half a
+   * tree's cards are not drawn. Absent means false, which is how every surface before it was drawn.
+   */
+  readonly doubleSided?: boolean;
 }
 
 /** Floats in a `MATL` entry, then the signed texture indices that follow them. */
@@ -564,7 +596,9 @@ export const MATERIAL_FLOATS = 15;
  * them is speculative — only unbound, and the plans that bind them need no second stride bump.
  */
 export const MATERIAL_INDICES = 4;
-export const MATERIAL_ENTRY_BYTES = MATERIAL_FLOATS * 4 + MATERIAL_INDICES * 4;
+/** A `u32` of flags after them, since 1.18: bit 0 is `blend`, bit 1 is `doubleSided`. */
+export const MATERIAL_FLAGS = 1;
+export const MATERIAL_ENTRY_BYTES = MATERIAL_FLOATS * 4 + MATERIAL_INDICES * 4 + MATERIAL_FLAGS * 4;
 
 /** What `HEAD` says about the asset as a whole. */
 export interface DrftHead {

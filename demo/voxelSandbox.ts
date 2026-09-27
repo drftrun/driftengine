@@ -160,7 +160,7 @@ interface TerrainView {
 class VoxelSandboxHandle implements DemoHandle {
   readonly backend: RenderBackend;
 
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly canvas: HTMLCanvasElement;
   private readonly world: World;
   private readonly chunks: ChunkRenderer;

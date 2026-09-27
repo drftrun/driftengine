@@ -2,9 +2,10 @@
  * Enough of a PNG reader to compare two frames, with no dependency.
  *
  * A screenshot arrives as 8-bit RGBA, filter method 0, not interlaced, which is what every
- * browser produces and is exactly what this handles. Anything else is refused by name rather
- * than guessed at, because a reader that quietly mis-decodes produces pixel differences that
- * look like a rendering change.
+ * browser produces. A bought model's maps also arrive as 8-bit grey, grey with alpha and RGB, and
+ * the baker and the native host read those through here too. Anything else — a palette, sixteen
+ * bits, interlacing — is refused by name rather than guessed at, because a reader that quietly
+ * mis-decodes produces pixel differences that look like a rendering change.
  *
  * `zlib` is Node's own, so this costs nothing to have.
  */
@@ -35,8 +36,15 @@ export function decodePng(bytes) {
       const interlace = body[12];
       if (depth !== 8) throw new Error(`bit depth ${depth}, only 8 is handled`);
       if (interlace !== 0) throw new Error('interlaced PNG, not handled');
-      channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
-      if (channels === 0) throw new Error(`colour type ${colorType}, only 2 and 6 are handled`);
+      /*
+       * Grey, grey with alpha, RGB and RGBA — every 8-bit type but a palette. A bought model's
+       * single-channel maps are greyscale, and refusing them left a baker's texture cap unable to
+       * shrink a third of one scene's maps. A palette needs `PLTE` read, and nothing has asked.
+       */
+      channels = { 0: 1, 4: 2, 2: 3, 6: 4 }[colorType] ?? 0;
+      if (channels === 0) {
+        throw new Error(`colour type ${colorType}, only 0, 2, 4 and 6 are handled`);
+      }
     } else if (type === 'IDAT') {
       parts.push(body);
     } else if (type === 'IEND') {
@@ -200,17 +208,20 @@ function chunk(type, body) {
   return out;
 }
 
-/** A decoded PNG as four bytes a pixel, whether it was written with three channels or four. */
+/** A decoded PNG as four bytes a pixel, whatever channels it was written with. The one widening. */
 export function rgbaOf(decoded) {
   const count = decoded.width * decoded.height;
-  if (decoded.channels === 4)
-    return { width: decoded.width, height: decoded.height, rgba: decoded.pixels };
+  const channels = decoded.channels;
+  if (channels === 4) return { width: decoded.width, height: decoded.height, rgba: decoded.pixels };
   const rgba = new Uint8Array(count * 4);
   for (let at = 0; at < count; at += 1) {
-    rgba[at * 4] = decoded.pixels[at * decoded.channels];
-    rgba[at * 4 + 1] = decoded.pixels[at * decoded.channels + 1];
-    rgba[at * 4 + 2] = decoded.pixels[at * decoded.channels + 2];
-    rgba[at * 4 + 3] = 255;
+    const from = at * channels;
+    /* Grey fills all three colour channels; RGB keeps its own. */
+    const grey = channels < 3;
+    rgba[at * 4] = decoded.pixels[from];
+    rgba[at * 4 + 1] = decoded.pixels[grey ? from : from + 1];
+    rgba[at * 4 + 2] = decoded.pixels[grey ? from : from + 2];
+    rgba[at * 4 + 3] = channels === 2 ? decoded.pixels[from + 1] : 255;
   }
   return { width: decoded.width, height: decoded.height, rgba };
 }

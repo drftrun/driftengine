@@ -24,27 +24,35 @@ export const CLUSTER_Z = 24;
 export const CLUSTER_COUNT = CLUSTER_X * CLUSTER_Y * CLUSTER_Z;
 
 /**
- * Texels a cluster occupies: one for its count, seven holding four light indices each.
+ * Texels a cluster occupies: one for its count, nineteen holding four light indices each.
  *
  * **Fixed rather than packed, and that is what removes the atomics.** One invocation owns one
  * cluster and writes only its own run, so nothing is appended to a shared list, there is no
  * counter to increment atomically and no compaction pass. That is also what lets the GPU binner
  * write through a *write-only* storage texture, which is all core WGSL gives.
  */
-export const CLUSTER_TEXELS = 5;
+export const CLUSTER_TEXELS = 20;
 
 /**
- * How many lights one cluster can hold. Four index texels at four indices each.
+ * How many lights one cluster can hold: nineteen index texels at four indices each, 76.
  *
- * **Sixteen because that is `MAX_POINT_LIGHTS`, and the equality is the point.** The light loop's
- * bound has to be a constant and there is only one loop, so a larger cap here would raise it for
- * the fixed path too — a scene that never asks for froxels would carry a loop bound of 28 where it
- * carries 16 today, which on the driver that faulted under the full shader is precisely the sort
- * of change nobody would attribute to clustering. Equal bounds mean the fixed path is untouched.
+ * **Sixteen until a candlelit interior drew its froxels as rectangles.** The cap was pinned to
+ * `MAX_POINT_LIGHTS` so the one light loop kept one bound. Then a courtyard of candles, lanterns
+ * and braziers asked 461 of its 3,456 froxels for more than sixteen, and up to fifty. A full froxel
+ * keeps its nearest and drops the rest, and its neighbour keeps a different set, so the step
+ * between them drew as hard-edged, screen-aligned rectangles on every vault, on both backends.
+ *
+ * Seventy-six because it is the next cap the table's shape allows above what was measured: a run
+ * must divide the 320-texel row, and the two regions must end on one. What it costs is the table,
+ * 292 KB to 1.1 MB, and the loop's bound. The bound is the clustered arm's alone in effect: the
+ * fixed arm still leaves at its own count and never passes `MAX_LIGHTS`, so a consumer that does
+ * not cluster iterates what it did. What would make 76 wrong is content that asks more of one
+ * froxel, and the answer then is the next cap rather than a softer overflow: any overflow rule
+ * draws the cluster's edge.
  *
  * **It is not the old limit wearing a new hat.** Sixteen was a budget for the *whole scene*, chosen
- * by distance with a contention band because somebody always had to be last. Sixteen per froxel is
- * a different sixteen in every froxel, out of `MAX_CLUSTERED_LIGHTS` in the scene.
+ * by distance with a contention band because somebody always had to be last. This is a different
+ * set in every froxel, out of `MAX_CLUSTERED_LIGHTS` in the scene.
  */
 export const MAX_LIGHTS_PER_CLUSTER = (CLUSTER_TEXELS - 1) * 4;
 
@@ -162,7 +170,7 @@ export const LIGHT_REGION_TEXELS = MAX_CLUSTERED_LIGHTS * LIGHT_TEXELS;
  */
 export const TABLE_WIDTH = 320;
 
-/** Rows: three of light records and 54 of cluster runs. 292 KB of `RGBA32UI`, allocated once. */
+/** Rows: five of light records and 216 of cluster runs. 1.1 MB of `RGBA32UI`, allocated once. */
 export const TABLE_HEIGHT = (LIGHT_REGION_TEXELS + CLUSTER_COUNT * CLUSTER_TEXELS) / TABLE_WIDTH;
 
 /** The table, as the `Uint32Array` both a texture upload and a readback comparison want. */
@@ -247,6 +255,33 @@ export function clusterViewBounds(
   out[5] = zFar;
 }
 
+/**
+ * `clusterViewBounds` for a slice whose depths and half extents the caller already has. The same
+ * arithmetic in the same order, so the same box to the bit; the binner's inner loop uses this.
+ */
+function sliceBounds(
+  i: number,
+  j: number,
+  zNear: number,
+  zFar: number,
+  halfWNear: number,
+  halfWFar: number,
+  halfHNear: number,
+  halfHFar: number,
+  out: Float32Array,
+): void {
+  const xLo = -1 + (2 * i) / CLUSTER_X;
+  const xHi = -1 + (2 * (i + 1)) / CLUSTER_X;
+  const yLo = -1 + (2 * j) / CLUSTER_Y;
+  const yHi = -1 + (2 * (j + 1)) / CLUSTER_Y;
+  out[0] = Math.min(xLo * halfWNear, xLo * halfWFar, xHi * halfWNear, xHi * halfWFar);
+  out[3] = Math.max(xLo * halfWNear, xLo * halfWFar, xHi * halfWNear, xHi * halfWFar);
+  out[1] = Math.min(yLo * halfHNear, yLo * halfHFar, yHi * halfHNear, yHi * halfHFar);
+  out[4] = Math.max(yLo * halfHNear, yLo * halfHFar, yHi * halfHNear, yHi * halfHFar);
+  out[2] = zNear;
+  out[5] = zFar;
+}
+
 /** The light arrays the binner reads, in the shape `Environment` already carries them. */
 export interface ClusterLightSet {
   readonly count: number;
@@ -282,6 +317,16 @@ export interface ClusterLightSet {
  * rule forbids allocating there.
  */
 const bounds = new Float32Array(6);
+/**
+ * Where each slice begins, for the frame being binned: `sliceNearDepth` for every slice and the
+ * far plane, computed once. The same expression as a call per cluster, so the same numbers.
+ *
+ * **Once a binning rather than once a cluster**, which was two `pow` for every light and every
+ * cluster it might touch. A courtyard of candles within a few metres of the camera is 640,000 of
+ * those pairs, and the binning took 47 ms of a frame. On WebGL2 it runs every `bindMeshPass`, so a
+ * probe grid baked at night binned for a minute.
+ */
+const sliceDepths = new Float64Array(CLUSTER_Z + 1);
 /** View-space light centres, kept for the overflow rule, which needs them after the fact. */
 const viewX = new Float32Array(MAX_CLUSTERED_LIGHTS);
 const viewY = new Float32Array(MAX_CLUSTERED_LIGHTS);
@@ -310,19 +355,6 @@ function distanceSqToBounds(x: number, y: number, z: number, b: Float32Array): n
   const dy = y < (b[1] ?? 0) ? (b[1] ?? 0) - y : y > (b[4] ?? 0) ? y - (b[4] ?? 0) : 0;
   const dz = z < (b[2] ?? 0) ? (b[2] ?? 0) - z : z > (b[5] ?? 0) ? z - (b[5] ?? 0) : 0;
   return dx * dx + dy * dy + dz * dz;
-}
-
-/** Insertion sort over a cluster's index slots. At most 28 integers, so this is not a hot loop. */
-function sortIndices(table: Uint32Array, base: number, count: number): void {
-  for (let n = 1; n < count; n++) {
-    const value = table[base + 4 + n] ?? 0;
-    let m = n - 1;
-    while (m >= 0 && (table[base + 4 + m] ?? 0) > value) {
-      table[base + 4 + m + 1] = table[base + 4 + m] ?? 0;
-      m--;
-    }
-    table[base + 4 + m + 1] = value;
-  }
 }
 
 /**
@@ -393,6 +425,7 @@ export function buildLightClusters(
    * replaces; agreeing about the invisible bytes is what keeps the comparison exact.
    */
   table.fill(0, LIGHT_REGION_TEXELS * 4);
+  for (let k = 0; k <= CLUSTER_Z; k++) sliceDepths[k] = sliceNearDepth(k, near, far);
 
   for (let light = 0; light < count; light++) {
     const x = lights.positions[light * 3] ?? 0;
@@ -492,8 +525,10 @@ export function buildLightClusters(
     const radiusSq = radius * radius;
     for (let k = kLo; k <= kHi; k++) {
       /* The same two depths `clusterViewBounds` builds this slice's box from. */
-      const halfHNear = sliceNearDepth(k, near, far) * tanHalfFovY;
-      const halfHFar = sliceNearDepth(k + 1, near, far) * tanHalfFovY;
+      const zNear = sliceDepths[k] ?? 0;
+      const zFar = sliceDepths[k + 1] ?? 0;
+      const halfHNear = zNear * tanHalfFovY;
+      const halfHFar = zFar * tanHalfFovY;
       const halfWNear = halfHNear * aspect;
       const halfWFar = halfHFar * aspect;
       const iLo = tileOf(
@@ -514,17 +549,9 @@ export function buildLightClusters(
       );
       for (let j = jLo; j <= jHi; j++) {
         for (let i = iLo; i <= iHi; i++) {
-          clusterViewBounds(i, j, k, near, far, tanHalfFovY, aspect, bounds);
+          sliceBounds(i, j, zNear, zFar, halfWNear, halfWFar, halfHNear, halfHFar, bounds);
           if (distanceSqToBounds(vx, vy, depth, bounds) > radiusSq) continue;
-          insert(
-            table,
-            i + j * CLUSTER_X + k * CLUSTER_X * CLUSTER_Y,
-            light,
-            near,
-            far,
-            tanHalfFovY,
-            aspect,
-          );
+          insert(table, i + j * CLUSTER_X + k * CLUSTER_X * CLUSTER_Y, light, bounds);
         }
       }
     }
@@ -539,47 +566,45 @@ function tileOf(ndc: number, tiles: number): number {
 }
 
 /**
- * Put a light into a cluster, applying the overflow rule.
+ * Each member's squared distance from its cluster's centre, slot for slot with the table, for the
+ * frame being binned. Allocated on the first binning, so a consumer that never clusters pays nothing.
+ *
+ * **Measured rather than assumed rare.** The overflow rule used to recompute the cluster's box and
+ * all sixteen members' distances on every insert into a full cluster, on the argument that full
+ * clusters are rare. Three hundred candles within a few metres of the camera fill 2,152 of the
+ * 3,456, and the binning spent 47 ms a frame there. Each distance is the same number whenever it is
+ * computed, so it is computed once, at the insert that placed the member.
+ */
+let memberDistance: Float64Array | null = null;
+
+/**
+ * Put a light into a cluster, applying the overflow rule. `box` is the cluster's bounds, which the
+ * caller has just tested the light against.
  *
  * Lights arrive in increasing index, so the common path appends and the list is already sorted.
  * The sort only runs on the rare path where a replacement broke that order.
  */
-function insert(
-  table: Uint32Array,
-  cluster: number,
-  light: number,
-  near: number,
-  far: number,
-  tanHalfFovY: number,
-  aspect: number,
-): void {
+function insert(table: Uint32Array, cluster: number, light: number, box: Float32Array): void {
   const base = clusterBase(cluster);
   const count = table[base] ?? 0;
+  const distances = (memberDistance ??= new Float64Array(CLUSTER_COUNT * MAX_LIGHTS_PER_CLUSTER));
+  const at = cluster * MAX_LIGHTS_PER_CLUSTER;
+  const cx = ((box[0] ?? 0) + (box[3] ?? 0)) * 0.5;
+  const cy = ((box[1] ?? 0) + (box[4] ?? 0)) * 0.5;
+  const cz = ((box[2] ?? 0) + (box[5] ?? 0)) * 0.5;
+  const mine = centreDistanceSq(light, cx, cy, cz);
   if (count < MAX_LIGHTS_PER_CLUSTER) {
     table[base + 4 + count] = light;
+    distances[at + count] = mine;
     table[base] = count + 1;
     return;
   }
 
-  /*
-   * Full. Drop the farthest member if this one is nearer, measured from the cluster's own centre.
-   * Rare enough that recomputing the members' distances beats carrying 96,768 floats of scratch
-   * for a case most frames never reach.
-   */
-  const k = Math.floor(cluster / (CLUSTER_X * CLUSTER_Y));
-  const j = Math.floor((cluster - k * CLUSTER_X * CLUSTER_Y) / CLUSTER_X);
-  const i = cluster - k * CLUSTER_X * CLUSTER_Y - j * CLUSTER_X;
-  clusterViewBounds(i, j, k, near, far, tanHalfFovY, aspect, bounds);
-  const cx = ((bounds[0] ?? 0) + (bounds[3] ?? 0)) * 0.5;
-  const cy = ((bounds[1] ?? 0) + (bounds[4] ?? 0)) * 0.5;
-  const cz = ((bounds[2] ?? 0) + (bounds[5] ?? 0)) * 0.5;
-
-  const mine = centreDistanceSq(light, cx, cy, cz);
+  /* Full. Drop the farthest member if this one is nearer, measured from the cluster's own centre. */
   let worstSlot = -1;
   let worst = mine;
   for (let n = 0; n < MAX_LIGHTS_PER_CLUSTER; n++) {
-    const held = table[base + 4 + n] ?? 0;
-    const d = centreDistanceSq(held, cx, cy, cz);
+    const d = distances[at + n] ?? 0;
     if (d > worst) {
       worst = d;
       worstSlot = n;
@@ -587,7 +612,27 @@ function insert(
   }
   if (worstSlot < 0) return;
   table[base + 4 + worstSlot] = light;
-  sortIndices(table, base, MAX_LIGHTS_PER_CLUSTER);
+  distances[at + worstSlot] = mine;
+  sortMembers(table, base, distances, at);
+}
+
+/**
+ * Sort a full cluster's index slots ascending, carrying each member's distance with it. An insertion
+ * sort: sixteen integers, so this is not a hot loop.
+ */
+function sortMembers(table: Uint32Array, base: number, distances: Float64Array, at: number): void {
+  for (let n = 1; n < MAX_LIGHTS_PER_CLUSTER; n++) {
+    const value = table[base + 4 + n] ?? 0;
+    const distance = distances[at + n] ?? 0;
+    let m = n - 1;
+    while (m >= 0 && (table[base + 4 + m] ?? 0) > value) {
+      table[base + 4 + m + 1] = table[base + 4 + m] ?? 0;
+      distances[at + m + 1] = distances[at + m] ?? 0;
+      m--;
+    }
+    table[base + 4 + m + 1] = value;
+    distances[at + m + 1] = distance;
+  }
 }
 
 function centreDistanceSq(light: number, cx: number, cy: number, cz: number): number {

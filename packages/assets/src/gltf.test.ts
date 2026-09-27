@@ -691,7 +691,8 @@ test('a file that states both models is read as the metallic-roughness one it al
     }),
   });
   expect(read.materials[0]?.albedo).toBe(0);
-  expect(read.materials[0]?.specular).toBeCloseTo(0.3, 6);
+  /* The metallic factor, read where it lands for a metal coloured by an image: the reflection. */
+  expect(read.materials[0]?.reflectivity).toBeCloseTo(0.3, 6);
   expect(read.materials[0]?.roughness).toBeCloseTo(0.6, 6);
 });
 
@@ -734,4 +735,32 @@ test('a glb carrying the extension imports it, because the model is chosen on th
   const read = gltfToMeshes(split.json, [split.binary as Uint8Array]);
   expect(read.materials[0]?.albedo).toBe(0);
   expect(read.materials[0]?.roughness).toBeCloseTo(0.5, 6);
+});
+
+test("A DOUBLE-SIDED MATERIAL IS READ AS ONE, and the specification's default is one-sided", () => {
+  /*
+   * `doubleSided` defaults to false in glTF 2.0 §3.9.2, and it was dropped here entirely: a bought
+   * courtyard's curtains, ivy and leaf cards are all double-sided, and each was drawn one-sided.
+   */
+  expect(readMaterial({ name: 'curtain', doubleSided: true }).materials[0]?.doubleSided).toBe(true);
+  expect(readMaterial({ name: 'wall' }).materials[0]?.doubleSided).toBe(false);
+});
+
+test('A METAL WHOSE COLOUR IS IN A TEXTURE IS GIVEN NO WHITE HIGHLIGHT, which drew a dark decal white', () => {
+  /*
+   * A bought courtyard's dirt decal names a base-colour image, a factor of 0.35 opacity and no
+   * metallic or roughness at all, so the specification reads it as metallic 1 and roughness 1: a
+   * rough metal whose colour, dark grime, is its reflectance. With no metallic-roughness map the
+   * factor had nowhere to go but `specular`, which is a white highlight, and under a low sun every
+   * wall the decal covered drew white with the grime left dark between. The highlight of a metal
+   * is its own colour, and that colour is per texel here, so the lane holds the dielectric's zero.
+   */
+  const read = readMaterial({
+    name: 'dirt_decal',
+    alphaMode: 'BLEND',
+    pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 0.35], baseColorTexture: { index: 0 } },
+  });
+  expect(read.materials[0]?.specular, 'the material').toBe(0);
+  expect((read.meshes[0] as MeshData).specular?.[0], 'and the lane the shader reads').toBe(0);
+  expect(read.materials[0]?.roughness, "the specification's roughness is kept").toBe(1);
 });

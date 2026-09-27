@@ -73,10 +73,19 @@ void probeCell(vec3 worldPos, out vec3 base, out vec3 frac) {
   frac *= step(vec3(1.5), uProbeGridCounts);
 }
 
-/** One probe's diffuse light: the cosine convolution, at its own level, in one fetch. */
+/**
+ * One probe's diffuse light: the cosine convolution, at its own level, in one fetch, or two where a
+ * crossfading grid is between sweeps. See \`probeSweeps.ts\`: the last whole sweep blended toward
+ * the newest, so a grid re-baked a probe a frame changes a little every frame rather than a probe's
+ * worth at once. The second fetch is behind a branch on a uniform, so a grid that is not blending
+ * pays for one.
+ */
 vec3 probeIrradiance(vec3 dir, float layer) {
   float level = uEnvironmentIrradianceLevel;
-  return textureLod(uEnvironment, probeCoord(dir, level, layer), level).rgb;
+  vec3 last = textureLod(uEnvironment, probeCoord(dir, level, layer + uProbeGridSets.x), level).rgb;
+  if (uProbeGridSets.z <= 0.0) return last;
+  vec3 newest = textureLod(uEnvironment, probeCoord(dir, level, layer + uProbeGridSets.y), level).rgb;
+  return mix(last, newest, uProbeGridSets.z);
 }
 
 /**
@@ -85,8 +94,12 @@ vec3 probeIrradiance(vec3 dir, float layer) {
  * textureLod rather than texture throughout, per the 2026-08-07 rule and for a second reason on
  * top of it: the level is wanted here, and the fetches sit inside a loop that no compiler can
  * prove uniform.
+ *
+ * **From the newest whole sweep alone**, where a crossfading grid holds two: a reflection is a
+ * picture of the room, and the blend that smooths the diffuse light would be two pictures at once.
  */
-vec3 probeRadiance(vec3 dir, float lod, float layer) {
+vec3 probeRadiance(vec3 dir, float lod, float layerIndex) {
+  float layer = layerIndex + uProbeGridSets.y;
   float lo = clamp(floor(lod), 0.0, uEnvironmentMaxLod);
   float hi = min(lo + 1.0, uEnvironmentMaxLod);
   vec3 coarse = textureLod(uEnvironment, probeCoord(dir, hi, layer), hi).rgb;
@@ -127,6 +140,36 @@ float probeVisible(vec3 fromProbe, float distanceM, float layer) {
   float beyond = distanceM - moments.x;
   float chebyshev = variance / (variance + beyond * beyond);
   return pow(chebyshev, ${glslFloat(PROBE_VISIBILITY_SHARPNESS)});
+}
+
+/**
+ * How far a surface outside the grid faces away from it, 0 to 1: how much of its diffuse light the
+ * grid cannot know.
+ *
+ * **Outside the box the grid clamps to its edge probes**, which is right for a floor below the
+ * lowest layer or a vault above the highest, where the surface faces back into the grid and sees
+ * what those probes see. It is wrong for a face turned away: a building's outer wall read its edge
+ * probe's light in the direction of that wall's normal, which from inside the courtyard is the
+ * shaded back of the same wall, and drew black under a noon sun. So a surface takes the open sky's
+ * hemisphere as it leaves the box facing out, from a metre past it to two and a half, and keeps the
+ * grid facing in. What it gives up is the grid's bounce on the outside of a model whose grid does
+ * not reach it, which the grid never had.
+ *
+ * **The normal is the surface's own, never a mapped one.** Read from the mapped normal, the back of a
+ * gallery floor a metre past the grid's last row took the sky on every texel its map tilted toward
+ * the wall: white glints over paving in shade. Which side of the grid a surface faces is a fact
+ * about the surface.
+ */
+float probeGridOutside(vec3 n, vec3 worldPos) {
+  vec3 top = max(uProbeGridCounts - 1.0, vec3(0.0));
+  vec3 local = (worldPos - uProbeGridOrigin) * uProbeGridInvSpacing;
+  /* Only along an axis the grid spans: a grid one probe wide on an axis has no side there, and a
+     single probe, which lights a whole scene from one place, has none at all. */
+  vec3 beyond = (local - clamp(local, vec3(0.0), top)) / max(uProbeGridInvSpacing, vec3(1e-6));
+  beyond *= step(vec3(1.5), uProbeGridCounts);
+  float distanceM = length(beyond);
+  if (distanceM <= 0.0) return 0.0;
+  return smoothstep(1.0, 2.5, distanceM) * smoothstep(0.0, 0.5, dot(n, beyond / distanceM));
 }
 
 /**

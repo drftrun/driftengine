@@ -166,7 +166,7 @@ const SMOKE_PLUMES: readonly PlumePlacement[] = Array.from({ length: 96 }, (_, i
 const PARTICLE_COUNT = 900;
 
 class SmokeRoomHandle implements DemoHandle {
-  private readonly renderer: RendererApi;
+  readonly renderer: RendererApi;
   private readonly canvas: HTMLCanvasElement;
   private readonly camera = new Camera();
   readonly view = new OrbitView(20, 90, 6);

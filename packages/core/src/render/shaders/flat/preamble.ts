@@ -38,6 +38,12 @@ import { FOG_GLSL } from '../fog.ts';
 export function preambleGlsl({ maxLights, maxAreaLights }: LightBudget): string {
   return `#version 300 es
 precision highp float;
+/*
+ * highp int as well: a clustered light is decoded with uintBitsToFloat from texels that arrive as
+ * uvec4, and its texel index passes 32767 in a big world. The fragment default for int and uint is
+ * mediump, which a sixteen-bit driver truncates, and every clustered light then lights nothing.
+ */
+precision highp int;
 
 in vec3 vNormal;
 in vec3 vColor;
@@ -139,6 +145,12 @@ uniform int uAlbedoEnabled;
  * else changes.
  */
 uniform float uAlbedoCutout;
+
+/**
+ * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
+ * nothing, and a back face is lit as a front, with the shading normal turned toward the viewer.
+ */
+uniform int uDoubleSided;
 
 /**
  * A normal map, in the surface's own space.
@@ -550,6 +562,12 @@ uniform vec3 uProbeGridCounts;
  * exactly as it did before any probe existed.
  */
 uniform float uProbeGridAmbient;
+/**
+ * Which sets of layers the shading reads, and how far between them: the last whole sweep's layer
+ * offset, the newest whole sweep's, and the blend from the first toward the second. \`(0, 0, 0)\`
+ * for a grid that does not crossfade. See \`probeSweeps.ts\`.
+ */
+uniform vec3 uProbeGridSets;
 #endif
 /** A world-space box that lights up regardless of time of day (run finished). */
 uniform vec3 uHighlightMin;
@@ -637,12 +655,12 @@ uvec4 clusterTexel(int texel) {
  * both numbers sit beside the budgets they come from.
  */
 /*
- * **Both arms have the same bound, and that equality is deliberate.** There is one loop, so a
- * larger clustered cap would raise the bound for the fixed path too, and a scene that never asks
- * for froxels would carry a loop of 28 where it carries 16 today. \`MAX_LIGHTS_PER_CLUSTER\` is
- * pinned equal to \`MAX_LIGHTS\` for that reason; a test in \`textureUnitBudget.test.ts\` asserts it.
+ * **The bound is the froxel's cap, and the fixed arm leaves long before it.** The two were equal
+ * until a candlelit interior needed more than sixteen lights in a froxel; see
+ * \`MAX_LIGHTS_PER_CLUSTER\`. The fixed arm breaks at \`uLightCount\` and at \`MAX_LIGHTS\`, so it
+ * iterates exactly what it did and never indexes its uniform arrays past their end.
  */
-#define LIGHT_LOOP_MAX MAX_LIGHTS
+#define LIGHT_LOOP_MAX MAX_LIGHTS_PER_CLUSTER
 uniform int uLightCount;
 /** 0 keeps the radius-shaped falloff; 1 is physical inverse-square with a soft cutoff. */
 uniform int uLightFalloff;

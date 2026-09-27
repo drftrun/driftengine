@@ -19,15 +19,28 @@
 
 import { readFileSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { MODEL_FORMATS, readModel, readerFor } from '@driftengine/assets';
+import { MODEL_FORMATS, bakeSceneField, readModel, readerFor } from '@driftengine/assets';
 import type { ModelImport } from '@driftengine/assets';
 import { describeRecognised, recognise } from '@driftengine/assets';
 import { inflateRawSync, inflateSync } from 'node:zlib';
 import { writeDrft } from '@driftengine/drft';
-import { deriveTangentsFor, dropDefaultAttributes, weldMesh } from '@driftengine/assets';
+import {
+  deriveTangentsFor,
+  dropDefaultAttributes,
+  simplifyMesh,
+  weldMesh,
+} from '@driftengine/assets';
 import { buildCoarseLevel, isOutlineWorthWriting, DEFAULT_COARSE_CELLS } from '@driftengine/assets';
-import { describeUpAxis, orientMeshes, orientNodes, parseUpAxis } from '@driftengine/assets';
-import type { UpAxis } from '@driftengine/assets';
+import {
+  describeUpAxis,
+  orientMeshes,
+  orientNodes,
+  orientTransforms,
+  orientLights,
+  parseUpAxis,
+} from '@driftengine/assets';
+import { componentCount, findRepeats } from '@driftengine/assets';
+import type { Repeats } from '@driftengine/assets';
 import { CODEC_PNG, CODEC_RAW, DrftError, codecName } from '@driftengine/drft';
 import { MAX_COLLIDER_HULLS } from '@driftengine/drft';
 import { decomposeConvex } from '@driftengine/physics';
@@ -40,6 +53,7 @@ import { describeImage } from '@driftengine/assets';
 import { ddsToRgba, isDds } from '@driftengine/assets';
 /* The Node-side PNG encoder, which is why a decoded surface is not embedded uncompressed. */
 import { encodePng } from '../packages/core/scripts/png.mjs';
+import { processTextures } from './bakeTextureCap.ts';
 import { colliderBeside, levelsBeside } from '@driftengine/assets';
 import type { MeshData } from '@driftengine/drft';
 
@@ -499,7 +513,9 @@ async function main(): Promise<void> {
   if (input === undefined || input.startsWith('-')) {
     console.error(
       'usage: bake <file-or-folder> [-o out.drft] [--from glb|gltf|obj|stl] [--up x|-x|y|-y|z|-z]' +
-        ' [--lod cells] [--no-lod] [--no-levels]',
+        ' [--lod cells] [--no-lod] [--no-levels] [--max-texture px] [--texture-codec jpeg|jpeg-all] [--sdf m]' +
+        ' [--normals-directx] [--simplify m]' +
+        ' [--no-instances] [--no-quantise] [--blend-as-cutout]',
     );
     process.exit(1);
   }
@@ -550,6 +566,21 @@ async function main(): Promise<void> {
       : Number(lodArg);
   if (lodCells !== undefined && !Number.isFinite(lodCells)) {
     console.error(`--lod wants a number of cells, got "${lodArg ?? ''}"`);
+    process.exit(1);
+  }
+
+  /*
+   * `--max-texture px`: no image's longer side over `px`, halved until it fits. Absent means no
+   * cap, which is every bake before the flag existed, and those keep their bytes exactly.
+   */
+  const capIndex = args.indexOf('--max-texture');
+  const capArg = capIndex === -1 ? undefined : args[capIndex + 1];
+  const maxTexture = capArg === undefined ? undefined : Number(capArg);
+  if (
+    capIndex !== -1 &&
+    (maxTexture === undefined || !Number.isInteger(maxTexture) || maxTexture < 1)
+  ) {
+    console.error(`--max-texture wants a whole number of texels, got "${capArg ?? ''}"`);
     process.exit(1);
   }
 
@@ -618,17 +649,73 @@ async function main(): Promise<void> {
     warnings,
     notes,
     declaredUp,
-    materials,
+    materials: readMaterials,
     substances,
     textures: textureRefs,
     unitScale,
     skins,
     clips,
     nodes,
+    lights,
   } = await loadModel(chosen);
+  /*
+   * `--blend-as-cutout`: every blended material becomes a cutout at glTF's own default of 0.5.
+   * Foliage is authored `BLEND` as often as `MASK`, and a leaf drawn blended is sorted, soft-edged
+   * and writes no depth; nothing in the file says which the author meant, so the bake is told. Each
+   * one converted is printed, so a pane of glass converted by mistake is seen.
+   */
+  const materials = args.includes('--blend-as-cutout')
+    ? readMaterials?.map((material) => {
+        if (material.blend !== true) return material;
+        console.log(
+          `  material "${material.name}": blended, baked as a cutout at 0.5 (--blend-as-cutout)`,
+        );
+        return { ...material, blend: false, cutout: 0.5 };
+      })
+    : readMaterials;
   for (const note of notes) console.log(`  ${note}`);
   for (const warning of warnings) console.warn(`  warning: ${warning}`);
   const warned = warnings.length;
+  /*
+   * `--texture-codec jpeg`: opaque PNGs become JPEG, normal maps excepted; `jpeg-all` takes the normal
+   * maps too. See `bakeTextureCap.ts` for what each gives up.
+   */
+  const codecIndex = args.indexOf('--texture-codec');
+  const codecArg = codecIndex === -1 ? undefined : args[codecIndex + 1];
+  if (codecArg !== undefined && codecArg !== 'jpeg' && codecArg !== 'jpeg-all') {
+    console.error(`--texture-codec wants jpeg or jpeg-all, got "${codecArg}"`);
+    process.exit(1);
+  }
+  const jpeg = codecArg === 'jpeg' ? 'opaque' : codecArg === 'jpeg-all' ? 'all' : undefined;
+  /*
+   * `--normals-directx`: the file's normal maps point green down, DirectX's way, where glTF points
+   * it up, so each is turned over on the way in. Nothing in a file says which it wrote; the tell is
+   * a horizontal joint whose rows above read green over the middle, which glTF would put under it.
+   */
+  const directxNormals = args.includes('--normals-directx');
+  const textured = (
+    textures: DrftTextureSource[],
+    materialList: readonly DrftMaterial[] | undefined,
+  ): Promise<DrftTextureSource[]> => {
+    if (maxTexture === undefined && jpeg === undefined && !directxNormals) {
+      return Promise.resolve(textures);
+    }
+    const normalMaps = new Set<number>();
+    for (const material of materialList ?? [])
+      if (material.normalMap >= 0) normalMaps.add(material.normalMap);
+    return processTextures(
+      textures,
+      {
+        ...(maxTexture === undefined ? {} : { maxSide: maxTexture }),
+        ...(jpeg === undefined ? {} : { jpeg }),
+        normalMaps,
+        flipNormalGreen: directxNormals,
+      },
+      warnings,
+    );
+  };
+  /* `MSHQ` rather than `MESH` unless declined: about a third of the geometry, within stated bounds. */
+  const quantise = !args.includes('--no-quantise');
 
   /*
    * Weld, then drop what never varies. Importers emit one vertex per triangle corner
@@ -640,6 +727,30 @@ async function main(): Promise<void> {
   const welded = raw.map((mesh, at) =>
     dropDefaultAttributes(withTangentsIfMapped(weldMesh(mesh), materials?.[at])),
   );
+  /*
+   * **Copies an export merged into one mesh, found again.** A scene that shipped ten thousand
+   * candles as one mesh of nineteen million triangles is one candle and ten thousand matrices, and
+   * `findRepeats` says so only when every copy is a rigid move of the first, attribute for
+   * attribute. The candidate counts are the meshes' own connected pieces. Found here, on the welded
+   * meshes, and written at the end: the outline, the colliders and the hierarchy below are all
+   * measured from every copy, and only what is written is the prototype.
+   */
+  const repeats: (Repeats | null)[] = args.includes('--no-instances')
+    ? []
+    : (() => {
+        const counts = welded.map((mesh) => componentCount(mesh));
+        return welded.map((mesh, at) => {
+          const found = findRepeats(mesh, counts);
+          if (found !== null) {
+            const saved = mesh.positions.length / 3 - found.prototype.positions.length / 3;
+            console.log(
+              `  mesh ${at}: ${found.count} copies of one ${found.prototype.indices.length / 3}-triangle ` +
+                `shape, written once with ${found.count} placements (${saved} vertices fewer)`,
+            );
+          }
+          return found;
+        });
+      })();
   const after = welded.reduce((sum, mesh) => sum + mesh.positions.length / 3, 0);
   if (after < before) {
     console.log(
@@ -683,7 +794,7 @@ async function main(): Promise<void> {
      it have survived the read. */
   const reached = reachableTextures(textureRefs ?? [], materials);
   reportDropped(reached.dropped);
-  const embedded =
+  const embedded = await textured(
     reached.refs.length === 0
       ? []
       : embedTextures(
@@ -691,7 +802,9 @@ async function main(): Promise<void> {
           chosen,
           stat.isDirectory() ? input : path.dirname(chosen),
           warnings,
-        );
+        ),
+    reached.materials,
+  );
   for (const warning of warnings.slice(warned)) console.warn(`  warning: ${warning}`);
 
   /*
@@ -757,14 +870,17 @@ async function main(): Promise<void> {
      */
     const levelReached = reachableTextures(level.textures ?? [], level.materials);
     reportDropped(levelReached.dropped);
-    const levelTextures =
+    const levelTextures = await textured(
       levelReached.refs.length === 0
         ? []
-        : embedTextures(levelReached.refs, full, path.dirname(full), warnings);
+        : embedTextures(levelReached.refs, full, path.dirname(full), warnings),
+      levelReached.materials,
+    );
     levels.push(
       new Uint8Array(
         writeDrft({
           meshes: oriented,
+          quantise,
           head: { name: path.basename(name, path.extname(name)), generator: 'drft bake' },
           ...(levelTextures.length === 0 ? {} : { textures: levelTextures }),
           ...(levelReached.materials === undefined
@@ -833,8 +949,85 @@ async function main(): Promise<void> {
     outIndex === -1
       ? `${path.basename(chosen, path.extname(chosen))}.drft`
       : (args[outIndex + 1] as string);
+  /*
+   * What is written: the prototype in place of each mesh found to be copies, welded again (a
+   * prototype found through its triangles is one vertex a corner) and stood up like the rest, and
+   * its placements turned into the same frame.
+   */
+  const instances: { mesh: number; transforms: Float32Array }[] = [];
+  const placed = meshes.map((mesh, at) => {
+    const found = repeats[at];
+    if (found === undefined || found === null) return mesh;
+    const prototype = dropDefaultAttributes(weldMesh(found.prototype));
+    const turned =
+      up === null || up === '+y' ? prototype : (orientMeshes([prototype], up)[0] as MeshData);
+    instances.push({
+      mesh: at,
+      transforms:
+        up === null || up === '+y' ? found.transforms : orientTransforms(found.transforms, up),
+    });
+    return turned;
+  });
+  /*
+   * `--simplify m`: every mesh written brought down to the triangles its shape needs, the surface
+   * moving no further than `m` and its textures no further than a texel of a 1,024 map. A bought
+   * scene modelled for an offline renderer is mostly triangles smaller than a pixel. After the
+   * copies are found, so a prototype is simplified once for all its placements, and after the
+   * outline, the colliders and the field above, which are measured from what the author made.
+   * Absent writes the bytes it always did.
+   */
+  const simplifyIndex = args.indexOf('--simplify');
+  const simplifyError = simplifyIndex === -1 ? undefined : Number(args[simplifyIndex + 1]);
+  if (simplifyIndex !== -1 && (simplifyError === undefined || !(simplifyError > 0))) {
+    console.error(`--simplify wants a distance in metres, got "${args[simplifyIndex + 1] ?? ''}"`);
+    process.exit(1);
+  }
+  const written =
+    simplifyError === undefined
+      ? placed
+      : placed.map((mesh, at) => {
+          const simpler = simplifyMesh(mesh, { maxError: simplifyError });
+          const from = mesh.indices.length / 3;
+          const to = simpler.indices.length / 3;
+          if (to < from) {
+            const name = materials?.[at]?.name ?? `mesh ${at}`;
+            console.log(
+              `  simplified ${name}: ${from} triangles to ${to} (${Math.round((100 * to) / from)}%)`,
+            );
+          }
+          return simpler;
+        });
+  /*
+   * `--sdf m`: one distance field over the static geometry at `m` metres a voxel, for tracing
+   * indirect light. Static means drawn once and neither blended nor cut out: walls and floors, not
+   * foliage, cloth or the copies of a candle. Absent writes the bytes it always did.
+   */
+  const sdfIndex = args.indexOf('--sdf');
+  const sdfVoxel = sdfIndex === -1 ? undefined : Number(args[sdfIndex + 1]);
+  if (sdfIndex !== -1 && (sdfVoxel === undefined || !(sdfVoxel > 0))) {
+    console.error(`--sdf wants a voxel size in metres, got "${args[sdfIndex + 1] ?? ''}"`);
+    process.exit(1);
+  }
+  const copied = new Set(instances.map((group) => group.mesh));
+  const sceneField =
+    sdfVoxel === undefined
+      ? null
+      : bakeSceneField(placed, sdfVoxel, (at) => {
+          if (copied.has(at)) return false;
+          const material = reached.materials?.[at];
+          return material === undefined || (material.cutout <= 0 && material.blend !== true);
+        });
+  if (sceneField !== null) {
+    const [nx, ny, nz] = sceneField.dims;
+    console.log(
+      `  field: ${nx}x${ny}x${nz} at ${String(sdfVoxel)} m, ${((nx * ny * nz * 4) / 1e6).toFixed(1)} MB`,
+    );
+  }
   const buffer = writeDrft({
-    meshes,
+    meshes: written,
+    quantise,
+    ...(sceneField === null ? {} : { fields: [sceneField] }),
+    ...(instances.length === 0 ? {} : { instances }),
     ...(lod === null ? {} : { lods: [lod] }),
     head: {
       name: path.basename(chosen, path.extname(chosen)),
@@ -869,17 +1062,24 @@ async function main(): Promise<void> {
      * format carrying no hierarchy writes exactly the bytes it always did.
      */
     ...(turnedNodes === undefined || turnedNodes.length === 0 ? {} : { nodes: turnedNodes }),
+    /* The authored lamps, turned with the geometry, as `LITE`. */
+    ...(lights === undefined || lights.length === 0
+      ? {}
+      : { lights: up === null || up === '+y' ? lights : orientLights(lights, up) }),
     ...(levels.length === 0 ? {} : { levels }),
     ...(embedded.length === 0 ? {} : { textures: embedded }),
   });
   writeFileSync(output, Buffer.from(buffer));
 
-  const vertices = meshes.reduce((sum, mesh) => sum + mesh.positions.length / 3, 0);
-  const triangles = meshes.reduce((sum, mesh) => sum + mesh.indices.length / 3, 0);
+  const vertices = written.reduce((sum, mesh) => sum + mesh.positions.length / 3, 0);
+  const triangles = written.reduce((sum, mesh) => sum + mesh.indices.length / 3, 0);
   console.log(
     `${meshes.length} mesh${meshes.length === 1 ? '' : 'es'}, ${vertices} vertices, ` +
       `${triangles} triangles → ${output} (${(buffer.byteLength / 1024).toFixed(1)} KB)`,
   );
+  if (lights !== undefined && lights.length > 0) {
+    console.log(`  ${lights.length} light${lights.length === 1 ? '' : 's'} carried as LITE`);
+  }
 }
 
 main().catch((error: unknown) => {
