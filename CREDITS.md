@@ -106,6 +106,41 @@ What it follows is public history rather than anybody's expression: the block an
 the Commissioners' Plan of 1811, the setback rule of the 1916 Zoning Resolution, and the look of the
 city's buildings at blue hour. No street, building or place in it is a real one.
 
+## The Sponza courtyard in the README's pictures
+
+The five `docs/images/sponza-*.jpg` images are renders of **Intel Sponza (2022)**, a scene
+commissioned by **Frank Meinl** and sponsored by **Anton Kaplanyan**, from the
+[Intel Sample Library](https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-processing-research/samples.html),
+with its add-on packs (curtains, ivy, trees and candles) by the Sponza Addon Package Crew:
+**Katica Putica, Cristiano Siqueira, Timothy Heath, Justin Prazen, Sebastian Herholz, Bruce
+Cherniak and Anton Kaplanyan**. Reference photographs by **Katica Putica** and **Princino.photo**,
+Dubrovnik, Croatia. It is licensed under the
+[Creative Commons Attribution 4.0 International licence](https://creativecommons.org/licenses/by/4.0/),
+and is provided as is, without warranties, as that licence states.
+
+**What was changed.** The images are this engine's renders of the scene, not copies of it. The packs
+were baked to `.drft` with quantised meshes, instanced copies, textures capped at 1,024 pixels and
+simplified geometry; a fifth of the candles were kept and those in the camera's path moved; the
+stone was declared dielectric where its maps said otherwise; and everything is lit by this engine's
+sun, sky, fires and grade. **What is in this tree.** Those five images and nothing else of the
+scene: its model, textures and baked packs are neither committed nor published, and
+`demo/sponza.ts` loads packs a developer bakes from their own download. Intel does not endorse this
+engine, and nothing here says it does.
+
+Its authors ask that a publication using the scene cite it:
+
+```bibtex
+@misc{sponza22,
+  Author = {Frank Meinl and Anton Kaplanyan},
+  Year = {2022},
+  Note = {https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-processing-research/samples.html},
+  Title = {Intel Sample Library}
+}
+```
+
+The other three images in `docs/images/` are of this repository's own procedural scenes and owe
+nothing to anybody.
+
 ## The models DriftCapture runs
 
 A capture turns video into a scene with six published models, each chosen because its code **and**
