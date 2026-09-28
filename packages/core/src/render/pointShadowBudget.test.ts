@@ -127,8 +127,9 @@ test('a light that declines to cast gets no slot, even while it is being shaded'
 
   const written = selectCastingLights(lights, shaded, 3, out);
 
-  expect(written).toBe(2);
-  expect(Array.from(out.subarray(0, written)), 'kept in the shaded order').toEqual([1, 2]);
+  /* Its place is left empty rather than closed, because the place is the shader's index. */
+  expect(written).toBe(3);
+  expect(Array.from(out.subarray(0, written)), 'each at its shaded place').toEqual([-1, 1, 2]);
 });
 
 test('an empty slot in the shaded set is skipped rather than baked', () => {
@@ -136,8 +137,8 @@ test('an empty slot in the shaded set is skipped rather than baked', () => {
   // would read past the array rather than skip.
   const out = new Int32Array(4).fill(-1);
   const written = selectCastingLights([{}, {}], new Int32Array([-1, 1, -1]), 3, out);
-  expect(written).toBe(1);
-  expect(out[0]).toBe(1);
+  expect(written).toBe(3);
+  expect(Array.from(out.subarray(0, written))).toEqual([-1, 1, -1]);
 });
 
 /**

@@ -181,6 +181,7 @@ import { reflectionTargetSize, type ReflectionSize } from '../../planarReflectio
 import { drawingBufferSize } from '../../drawingBuffer.ts';
 import { MOTION_BLUR_MAX_UV, OUTPUT_TRANSFORM_CODE, RUSH_REACH_UV } from '../../vertexDefaults.ts';
 import { ExposurePass } from './exposurePass.ts';
+import { AO_STORE } from '../../shaders/ambientOcclusion.ts';
 import { clampAutoExposure } from '../../shaders/exposure.ts';
 import { clampLocalExposure } from '../../shaders/localExposure.ts';
 import type { UniformFields } from './scatterPass.ts';
@@ -11045,12 +11046,15 @@ export class WebGPURenderer implements RendererApi {
        otherwise halve the blur and leave half the pattern standing. */
     const width = Math.max(1, this.aoTarget?.width ?? 1);
     const height = Math.max(1, this.aoTarget?.height ?? 1);
-    for (const [index, step] of [
-      [0, [1 / width, 0]],
-      [1, [0, 1 / height]],
+    /* Across at the estimate's own scale, which the second axis needs whole; down decoded, so the
+       composite reads open sky as one. The same two `ambientOcclusionPass.ts` writes. */
+    for (const [index, step, scale] of [
+      [0, [1 / width, 0], 1],
+      [1, [0, 1 / height], 1 / AO_STORE],
     ] as const) {
       f[slot(index) + at('uStep')] = step[0];
       f[slot(index) + at('uStep') + 1] = step[1];
+      f[slot(index) + at('uAoScale')] = scale;
       f[slot(index) + at('uDepthToViewZ')] = inv[10] ?? 0;
       f[slot(index) + at('uDepthToViewZ') + 1] = inv[14] ?? 0;
       f[slot(index) + at('uDepthToViewZ') + 2] = inv[11] ?? 0;

@@ -1,5 +1,26 @@
 [
  {
+  "version": "4.4.1",
+  "date": "2026-09-28",
+  "entries": [
+   {
+    "kind": "fixed",
+    "short": "Ambient occlusion no longer lays stripes across a surface seen edge on, or darkens one with nothing on it: a far floor or a ramp reads smooth and open.",
+    "text": "**The blur refused every neighbour of a surface seen edge on**, because it compared each tap's depth with the centre's: a floor forty metres out changes its depth by four percent a row, twice the tolerance, so the pass down the frame kept the centre alone and the estimate's rotation pattern stayed on screen as four-pixel stripes across every ramp and far floor. A tap is now compared with the depth this pixel's own plane predicts there, which is exact because 1/z is affine across a plane, so it is refused only for leaving the surface. Measured on a game's ramp at night, the row-to-row ripple fell from 0.028 to 0.0017, and silhouettes are unchanged.\n\n**And the estimate is stored at half scale.** On a plane turned from the eye one of a pixel's two lines sees more than the whole sky and the other less, and only the average over every turn is exactly one; an eight-bit target clipped each turn above one before the blur could average it, so an open plane seen at 80° came back 3.6% shaded. Scenes with occlusion on change where they have surfaces seen edge on."
+   },
+   {
+    "kind": "fixed",
+    "short": "A light that declines to cast no longer moves every lamp after it onto its neighbour's shadow, so street lamps keep their own shadows while a car's headlights are on.",
+    "text": "**`updatePointShadows` published each shadow at the wrong place after a light that declines to cast.** The shader reads a light's shadow at the light's own place in the shaded list; the lights that cast were gathered into a shorter list first, and each shadow was published at its place in that one. So a light with `castsShadow: false` moved every casting light after it one place down: the first lamp's shadow landed on the declining light and each lamp after it wore the next one's. A light riding a camera or a car is exactly the light that declines, and it is nearly always shaded first. The place is now kept, and left empty.\n\nA consumer that worked around this by handing over only the lights before the first one that declines can hand over the whole count. That cap is what switched lamps' shadows on and off as a car moved, because which lamps rank ahead of its headlights changes with every metre."
+   },
+   {
+    "kind": "fixed",
+    "short": "The published packages carry only what the engine is: no local build caches in the packager, and no compiled leftovers of modules since deleted.",
+    "text": "**`@driftengine/package` had shipped the packager's local Gradle caches and a build report since at least 4.2.0.** Its `files` names `android` whole, and the ignore rules for that directory's build output live in the repository's `.gitignore`, which npm does not read for a package. Nineteen files, none of them the engine's and none carrying a path or a name from the machine that built them, checked; they are excluded now, with the rest of what an Android build writes.\n\n**And 4.4.0 shipped two modules whose sources had been deleted**, `core`'s `render/shaders/agx.js` and `texture`'s `tensor/reuse.js`, because the build wrote into `dist` and never emptied it. It empties it first now, and `npm run cleanroom` refuses a tarball holding any file that is neither tracked nor built from a source that exists."
+   }
+  ]
+ },
+ {
   "version": "4.4.0",
   "date": "2026-09-28",
   "entries": [

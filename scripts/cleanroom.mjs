@@ -112,11 +112,55 @@ for (const p of manifests) {
 }
 
 /*
+ * **Nothing in a tarball that nobody wrote.** Every file must be tracked, or be `dist` output of a
+ * source that still exists. 4.2.0 to 4.4.0 published the packager's local Gradle caches and a build
+ * report, because `files` names `android` whole and the ignore rules for its output live in the
+ * repository's `.gitignore`, which npm does not read for a package; and 4.4.0 published two
+ * compiled modules whose sources had been deleted, because the build wrote into `dist` and never
+ * emptied it. Both were found by reading a tarball by hand, which is the step this replaces.
+ *
+ * What it gives up is a package that ships a generated file on purpose; it would have to be tracked
+ * or come out of `src`, and naming it here as an exception is the change that would make this wrong.
+ */
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.mjs', '.js', '.cjs'];
+const unexplained = (p) => {
+  const tracked = new Set(
+    execFileSync('git', ['ls-files', '--', `packages/${p.dir}`], { cwd: ROOT, encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean)
+      .map((file) => file.slice(`packages/${p.dir}/`.length)),
+  );
+  const out = [];
+  const walk = (dir, rel) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const at = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), at);
+      else if (!tracked.has(at) && !builtFromSource(p.dir, at)) out.push(at);
+    }
+  };
+  walk(path.join(modules, p.manifest.name.split('/')[1]), '');
+  return out;
+};
+const builtFromSource = (dir, file) => {
+  if (!file.startsWith('dist/')) return false;
+  const stem = file.slice('dist/'.length).replace(/(\.d)?\.(m?js|m?ts)$/, '');
+  return SOURCE_EXTENSIONS.some((ext) =>
+    existsSync(path.join(ROOT, 'packages', dir, 'src', stem + ext)),
+  );
+};
+let failed = 0;
+for (const p of manifests) {
+  for (const file of unexplained(p)) {
+    console.log(`  ${p.manifest.name}: ${file} is in the tarball and is neither tracked nor built`);
+    failed++;
+  }
+}
+
+/*
  * **Every module a package starts by URL, in the tarball.** A worker is not an import, so importing
  * each entry point below never reaches one, and a `dist` naming a worker it does not hold imports
  * cleanly. `emitModules.mjs` has the history.
  */
-let failed = 0;
 for (const p of manifests) {
   const missing = missingModules(path.join(modules, p.manifest.name.split('/')[1], 'dist'));
   for (const line of missing) console.log(`  ${p.manifest.name}: ${line}`);

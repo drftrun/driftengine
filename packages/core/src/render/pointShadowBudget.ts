@@ -86,7 +86,8 @@ export function planPointShadowBakes(
 }
 
 /**
- * The shaded lights that also cast, in the order they were shaded.
+ * The shaded lights that also cast, each at its own place in the shaded list, and −1 at the place
+ * of a light that does not.
  *
  * `castsShadow: false` says a light is not worth a cubemap. `selectPointLights` honours
  * that when it builds the *eligible* list, and that was taken for the whole promise — but
@@ -98,7 +99,16 @@ export function planPointShadowBakes(
  * It showed up as a shadow with nothing to throw it — a lamp that rides the camera
  * declines to cast for exactly that reason, and cast anyway.
  *
- * Writes into `out` and returns how many it wrote; allocation-free, because this runs
+ * **The place is kept rather than the gap closed, because the place is the shader's index.** The
+ * pool publishes each map under its light's position in this list, and the shader reads a light's
+ * shadow at the light's position in the shaded one. Closing the gap made the two numberings
+ * disagree after the first light that declined: every lamp shaded after it was published one
+ * place down, the first on the declining light and each of the rest on its neighbour. A consumer
+ * whose headlights decline, and are nearly always shaded first, could only keep its lamps honest by
+ * dropping the shadows of every lamp ranked after them, and which lamps those were changed as the
+ * car moved.
+ *
+ * Writes into `out` and returns how many places it wrote; allocation-free, because this runs
  * every frame.
  */
 export function selectCastingLights(
@@ -107,14 +117,12 @@ export function selectCastingLights(
   activeCount: number,
   out: Int32Array,
 ): number {
-  let written = 0;
-  for (let i = 0; i < activeCount && written < out.length; i++) {
+  const count = Math.min(activeCount, out.length);
+  for (let i = 0; i < count; i++) {
     const worldIndex = activeWorldIndices[i] ?? -1;
-    if (worldIndex < 0) continue;
-    if (lights[worldIndex]?.castsShadow === false) continue;
-    out[written++] = worldIndex;
+    out[i] = worldIndex >= 0 && lights[worldIndex]?.castsShadow !== false ? worldIndex : -1;
   }
-  return written;
+  return count;
 }
 
 /**

@@ -22,6 +22,8 @@ tools/recon-train/.data/
 # build, and it churned on every commit made from a machine that had ever built the host.
 packages/package/android/.gradle/
 packages/package/android/build/
+packages/package/android/app/build/
+packages/package/android/local.properties
 
 # Vite's dependency cache for the harness, written beside its root. Machine-local, regenerated.
 demo/dev/.vite/

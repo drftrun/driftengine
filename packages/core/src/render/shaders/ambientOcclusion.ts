@@ -26,7 +26,8 @@ import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
  */
 
 /**
- * The estimate. Writes one channel: 1 is open sky, 0 is fully enclosed.
+ * The estimate. Writes one channel at `AO_STORE`: that is open sky, 0 is fully enclosed, and the
+ * second axis of the blur decodes it.
  *
  * **Horizons, not neighbours: ground-truth ambient occlusion (Jimenez et al. 2016).** Each pixel
  * walks two lines across the screen, both ways, and keeps the highest thing it can see along each
@@ -118,6 +119,8 @@ const float AO_EDGE_RATIO = 8.0;
  * and far below the step at any edge worth shading — a kerb against a deck is metres of it.
  */
 const float AO_EDGE_FLOOR = 0.05;
+/** Stored at half, so a turn the closed form credits past one reaches the blur whole. See AO_STORE in the module. */
+const float AO_STORE = 0.5;
 
 /** View-space position of whatever is at this pixel, from its depth alone. */
 vec3 viewPosition(vec2 uv, float depth) {
@@ -305,7 +308,7 @@ void main() {
     visible += projectedLength * gtaoArc(h0, h1, normalAngle);
   }
 
-  fragColor = clamp(visible / float(AO_SLICES), 0.0, 1.0);
+  fragColor = clamp(visible / float(AO_SLICES) * AO_STORE, 0.0, 1.0);
 }
 `;
 
@@ -335,12 +338,14 @@ uniform vec2 uStep;
  * asks that question five times per pixel.
  */
 uniform vec4 uDepthToViewZ;
+/** One across, carrying the estimate's AO_STORE scale; its inverse down, decoding it. */
+uniform float uAoScale;
 
 out float fragColor;
 
 /**
- * How far apart two pixels may be, as a fraction of their distance from the eye, before they
- * stop being the same surface.
+ * How far a neighbour may sit from the depth this pixel's own surface predicts there, as a
+ * fraction of that depth, before it stops being the same surface.
  *
  * Relative rather than absolute, because the same 5 cm step is a cliff on a dashboard and
  * nothing at all on a far wall.
@@ -353,8 +358,19 @@ float viewZ(float depth) {
 }
 
 void main() {
-  float centre = viewZ(textureLod(uDepth, vUv, 0.0).r);
-  float tolerance = AO_BLUR_DEPTH_TOLERANCE * abs(centre) + 1e-4;
+  float depth = textureLod(uDepth, vUv, 0.0).r;
+  float own = textureLod(uAo, vUv, 0.0).r;
+  /* Nothing to average over the sky, and no surface to predict one from. */
+  if (${glslIsFarDepth('depth')}) {
+    fragColor = min(own * uAoScale, 1.0);
+    return;
+  }
+  float centre = viewZ(depth);
+  /* Each tap is compared with this pixel's plane, not with its depth. See blurWeight in the module. */
+  float inverse = 1.0 / centre;
+  float stepAfter = 1.0 / viewZ(textureLod(uDepth, vUv + uStep, 0.0).r) - inverse;
+  float stepBefore = inverse - 1.0 / viewZ(textureLod(uDepth, vUv - uStep, 0.0).r);
+  float slope = abs(stepAfter) < abs(stepBefore) ? stepAfter : stepBefore;
   float sum = 0.0;
   float weight = 0.0;
   /*
@@ -382,14 +398,15 @@ void main() {
   for (int i = -3; i <= 4; i++) {
     vec2 uv = vUv + uStep * float(i);
     float z = viewZ(textureLod(uDepth, uv, 0.0).r);
-    /* One if this neighbour is on the same surface, falling to zero across an edge. */
-    float w = max(0.0, 1.0 - abs(z - centre) / tolerance);
+    /* One if this neighbour is on this pixel's surface, falling to zero as it leaves it. */
+    float w = max(0.0, 1.0 - abs(z * (inverse + slope * float(i)) - 1.0) / AO_BLUR_DEPTH_TOLERANCE);
     sum += textureLod(uAo, uv, 0.0).r * w;
     weight += w;
   }
   /* An isolated pixel — a thin rail against a far wall — keeps its own estimate rather than
      dividing by nothing. */
-  fragColor = weight > 0.0 ? sum / weight : textureLod(uAo, vUv, 0.0).r;
+  float blurred = weight > 0.0 ? sum / weight : own;
+  fragColor = min(blurred * uAoScale, 1.0);
 }
 `;
 
@@ -414,3 +431,58 @@ export function nextHorizon(horizon: number, cosine: number): number {
 
 /** The shader's thickness heuristic. See `AO_THIN` inside `AO_FRAG`. */
 export const AO_THIN = 0.2;
+
+/**
+ * What the estimate is multiplied by before it is stored, and divided by once the blur is done.
+ *
+ * **Half, because an unblurred estimate is allowed past one.** A pixel's two lines see a plane
+ * turned away from the eye from two directions, and the closed form credits one of them more than
+ * the whole sky and the other less: it is the average over every turn that is exactly one, and the
+ * average is what the blur is for. Stored as it came, an eight-bit target clipped every turn above
+ * one before the blur could average it, and every surface seen edge on came back a few percent
+ * shaded with nothing on it. A line reaches π/2 at most, so half fits the whole range.
+ *
+ * What it gives up is one bit of the intermediate: steps of 1/128 rather than 1/256 until the
+ * second axis decodes, which the eight taps a pixel averages carry below what a frame can show.
+ */
+export const AO_STORE = 0.5;
+
+/** How far a neighbour may sit from this pixel's surface, as a fraction of its distance. */
+export const AO_BLUR_DEPTH_TOLERANCE = 0.02;
+
+/**
+ * The blur's weight for a neighbour `offset` pixels along the axis, from view depths: this pixel's
+ * own, the two either side of it, and the neighbour's. The shader's lines written out again.
+ *
+ * **The neighbour is compared with this pixel's plane, not with this pixel's depth.** Comparing
+ * depths refused every neighbour of a surface seen edge on: a floor forty metres out changes its
+ * depth by four percent a row, twice the tolerance, so the pass down the frame kept the centre alone
+ * and left the rotation tile's rows standing — four-pixel stripes across every ramp and far floor,
+ * reported as strips on a track. On a plane 1/z is affine in the screen, so one step of it predicts
+ * the plane's depth at every tap exactly, and a tap is refused only for leaving the plane.
+ *
+ * The step is taken from whichever neighbour is closer to the centre in 1/z. At a silhouette that is
+ * the one on this pixel's own side, so the far surface cannot bend the prediction toward it; on a
+ * plane the two agree to a quantisation step, which moves a weight by nothing a frame shows. What it
+ * gives up is a crease: past the fold between a floor and a wall the prediction runs on along the
+ * floor, so the wall's taps fade out over the tolerance rather than being kept.
+ *
+ * **Written here rather than in the shader**, because a comment inside the GLSL is part of the string
+ * a consumer ships.
+ */
+export function blurWeight(
+  centre: number,
+  before: number,
+  after: number,
+  neighbour: number,
+  offset: number,
+): number {
+  const inverse = 1 / centre;
+  const stepAfter = 1 / after - inverse;
+  const stepBefore = inverse - 1 / before;
+  const slope = Math.abs(stepAfter) < Math.abs(stepBefore) ? stepAfter : stepBefore;
+  return Math.max(
+    0,
+    1 - Math.abs(neighbour * (inverse + slope * offset) - 1) / AO_BLUR_DEPTH_TOLERANCE,
+  );
+}

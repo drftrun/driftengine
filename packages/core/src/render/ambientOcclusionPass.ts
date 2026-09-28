@@ -1,4 +1,4 @@
-import { AO_BLUR_FRAG, AO_FRAG } from './shaders/ambientOcclusion.ts';
+import { AO_BLUR_FRAG, AO_FRAG, AO_STORE } from './shaders/ambientOcclusion.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 
@@ -168,6 +168,8 @@ export class AmbientOcclusionPass {
     this.step[0] = 1 / width;
     this.step[1] = 0;
     gl.uniform2fv(this.blurUniforms['uStep'] ?? null, this.step);
+    /* Still at the estimate's scale, which the second axis needs whole. */
+    gl.uniform1f(this.blurUniforms['uAoScale'] ?? null, 1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     /* And down, back into the estimate, which is the texture handed out. */
@@ -176,6 +178,8 @@ export class AmbientOcclusionPass {
     this.step[0] = 0;
     this.step[1] = 1 / height;
     gl.uniform2fv(this.blurUniforms['uStep'] ?? null, this.step);
+    /* And decoded, so the composite reads open sky as one. */
+    gl.uniform1f(this.blurUniforms['uAoScale'] ?? null, 1 / AO_STORE);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.bindVertexArray(null);

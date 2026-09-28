@@ -151,6 +151,14 @@ let failed = 0;
 for (const entry of selected) {
   const config = path.join(ROOT, 'packages', entry.dir, 'tsconfig.build.json');
   process.stdout.write(`  ${entry.name.padEnd(26)}`);
+  /*
+   * **Emptied first, because `tsc` writes and never removes.** A module deleted from `src` kept
+   * its compiled twin in `dist` for as long as that directory lived, and `dist` is what ships:
+   * 4.4.0 published `core`'s `render/shaders/agx.js`, a curve taken out of the source before the
+   * release, and `texture`'s `tensor/reuse.js` beside it. What it costs is a whole package's emit
+   * on every build, which is what a build that is not incremental was paying anyway.
+   */
+  rmSync(path.join(ROOT, 'packages', entry.dir, 'dist'), { recursive: true, force: true });
   try {
     execFileSync(TSC, ['-p', config], { cwd: ROOT, stdio: 'pipe' });
     /* What `tsc` does not see: the modules a package starts by URL. See `emitModules.mjs`. */

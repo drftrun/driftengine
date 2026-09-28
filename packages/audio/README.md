@@ -4,7 +4,7 @@ Layered stems, synthesis, rhythm and kick detection, distance and stereo placeme
 sources, reverb zones a **source** can be inside as well as the listener, and first-order
 ambisonic soundfields decoded through six virtual speakers.
 
-**Cost: 6.0 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it drifts more than
+**Cost: 6.1 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it drifts more than
 3% — the number is a fact about the build rather than a claim in a document.
 
 Part of [DriftEngine](../../README.md). See [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)

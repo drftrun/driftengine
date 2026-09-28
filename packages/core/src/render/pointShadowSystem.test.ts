@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { LIVE_POINT_SHADOW_MAPS, MAX_POINT_LIGHTS, POINT_SHADOW_POOL } from './lightBudget.ts';
 import type { PointShadowTarget } from './pointShadowArray.ts';
 import { PointShadowMap } from './pointShadowMap.ts';
+import { selectCastingLights } from './pointShadowBudget.ts';
 import { createResolvedPointShadows } from './pointShadowImage.ts';
 import { PointShadowSystem } from './pointShadowSystem.ts';
 import type { ShadowLight } from './pointShadowSystem.ts';
@@ -480,4 +481,41 @@ test('a map publishes the origin it was baked at, not the light that drifted awa
   expect(out.projections[2], 'z').toBe(10);
   /* The far plane rides in the same row; see `uPointShadowProjection`. */
   expect(out.projections[3], 'far').toBe(18);
+});
+
+/**
+ * **The shader reads a light's shadow at the light's own place in the shaded list**, so a light
+ * that declines to cast has to leave its place empty rather than close the gap.
+ *
+ * Closing it moved every lamp shaded after the declining light one place down: the first lamp's
+ * shadow was published at the declining light's place and each lamp after it wore the next one's.
+ * A consumer whose headlights decline — they ride the camera, so they are nearly always shaded
+ * first — could only keep its lamps' shadows honest by dropping every one ranked after them, and
+ * which lamps those were changed as the car moved: street lamps' shadows switching on and off.
+ */
+test('A LIGHT THAT DECLINES TO CAST KEEPS ITS PLACE, so every lamp after it wears its own shadow', () => {
+  const { gl } = fakeGl();
+  const system = makeSystem(gl);
+  /* Shaded in this order: a headlight that declines, then two street lamps. */
+  const lights: { castsShadow?: boolean }[] = [{ castsShadow: false }, {}, {}];
+  system.prepareStaticMaps(lights.length);
+  const casting = new Int32Array(POINT_SHADOW_POOL).fill(-1);
+  const count = selectCastingLights(lights, new Int32Array([0, 1, 2]), 3, casting);
+  system.sync(casting, count);
+
+  expect(system.mapForLight(0), 'the headlight borrows no map').toBeUndefined();
+  for (const lamp of [1, 2]) {
+    const map = system.mapForLight(lamp);
+    expect(map, `lamp ${lamp} holds a map`).toBeDefined();
+    /* Each baked where its lamp stands, 10 m apart, so a map's place says whose it is. */
+    map?.bake(gl, lamp * 10, 4, 0, 12, () => {}, 0.1, 0.02);
+  }
+
+  const out = createResolvedPointShadows(MAX_POINT_LIGHTS);
+  system.resolve(out);
+  expect(out.layers[0], 'the headlight samples nothing').toBe(-1);
+  expect(out.layers[1], 'lamp 1 at its own place').toBe(system.mapForLight(1)?.layer);
+  expect(out.layers[2], 'lamp 2 at its own place').toBe(system.mapForLight(2)?.layer);
+  expect(out.projections[4], 'lamp 1 baked at x = 10').toBe(10);
+  expect(out.projections[8], 'lamp 2 baked at x = 20').toBe(20);
 });
