@@ -12,10 +12,15 @@
  * a different part of a texel than the one it stands for, which at a grazing angle is a different
  * depth; the tolerance grows with the motion's length.
  *
+ * **And in proportion to the surface's own slope.** A new jitter samples a surface somewhere else, so
+ * on one turned from the eye two frames' samples of it differ by up to a texel's worth of its depth
+ * with nothing moved. `surfaceSlope` measures that step on the surface's own side of any silhouette.
+ *
  * **Normals, for the case depth cannot see.** A leaf's two sides are at one depth, and the history of
  * the front is not the back. The forward frame has no normal buffer, so both normals come from their
  * frame's depth — `worldPositionFromDepth` and `normalFromPositions` — in world space, where the two
- * frames agree.
+ * frames agree. **A normal differenced across an edge is not a normal**, so the caller weighs each by
+ * `planarity`: at an edge, a sliver, or anything finer than a texel the depth test decides alone.
  *
  * **Continuous in every input**, because a step is a line on screen along which the history is kept on
  * one frame and dropped on the next: every threshold is a smoothstep, never a comparison.
@@ -52,11 +57,56 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
+ * The band over which three texels stop being one plane: how far their two steps in inverse depth
+ * fail to cancel, as a share of the two together. None of it is a plane at any angle; all of it is an
+ * edge — one side steps, the other does not — or a sliver, both stepping the same way.
+ *
+ * **A share and not a size**, which is the lesson of the rods in `resolve.test.ts`: a part a
+ * hundredth of the depth in front of a wall passes the depth test, and a normal differenced across it
+ * still leans by its height over a texel's width — nearly edge-on where texels are small. What would
+ * make this wrong is a curved surface judged at its apex, where both steps lean one way and the
+ * normal is sound; there it only gives the normals less say, which the depth test does not need.
+ */
+export const PLANAR_FROM = 0.25;
+export const PLANAR_TO = 0.5;
+
+/**
+ * How sure it is that `centre` and its neighbours either side along one axis lie on one plane, one to
+ * zero. Inverse depth is affine across a plane on screen, so a plane's two steps cancel whatever its
+ * angle. One where a neighbour is missing — zero, off the picture or undrawn — or where there is no
+ * step to compare: nothing to judge by, so a normal keeps the say it always had.
+ */
+export function planarity(before: number, centre: number, after: number): number {
+  if (!(before > 0) || !(centre > 0) || !(after > 0)) return 1;
+  const a = 1 / after - 1 / centre;
+  const b = 1 / before - 1 / centre;
+  const spread = Math.abs(a) + Math.abs(b);
+  if (!(spread > 0)) return 1;
+  return 1 - smoothstep(PLANAR_FROM, PLANAR_TO, Math.abs(a + b) / spread);
+}
+
+/**
+ * How far a surface's depth moves across one texel along an axis, relative to the depth: the smaller
+ * of the steps to its two neighbours, because beside a silhouette one of them is the surface behind.
+ * Zero at a sliver — nearer or farther than both, so each step is to another surface — and one
+ * neighbour's step where only one is there.
+ */
+export function surfaceSlope(before: number, centre: number, after: number): number {
+  const a = after > 0 ? after - centre : Number.NaN;
+  const b = before > 0 ? before - centre : Number.NaN;
+  if (Number.isNaN(a)) return Number.isNaN(b) ? 0 : Math.abs(b) / centre;
+  if (Number.isNaN(b)) return Math.abs(a) / centre;
+  if (a * b > 0) return 0;
+  return Math.min(Math.abs(a), Math.abs(b)) / centre;
+}
+
+/**
  * One where the history is trustworthy, zero where it is not, and continuous between.
  *
  * `currDepth` is the view depth this surface should have had last frame; `histDepth` the view depth
  * last frame held where it lands, or zero where it landed off the screen; `motionLength` the motion's
- * length in uv; `normalDot` the cosine between the two frames' world normals there.
+ * length in uv; `normalDot` the cosine between the two frames' world normals there; `slope` the
+ * surface's `surfaceSlope`, which widens the tolerance one for one.
  */
 export function disocclusionWeight(
   currDepth: number,
@@ -64,12 +114,13 @@ export function disocclusionWeight(
   motionLength: number,
   normalDot: number,
   params: DisocclusionParams,
+  slope = 0,
 ): number {
   if (!(currDepth > 0) || !(histDepth > 0) || !(motionLength >= 0) || Number.isNaN(normalDot)) {
     return 0;
   }
   const disagreement = Math.abs(currDepth - histDepth) / currDepth;
-  const tolerance = params.depthTolerance + params.motionScale * motionLength;
+  const tolerance = params.depthTolerance + params.motionScale * motionLength + slope;
   const depth = 1 - smoothstep(tolerance, 2 * tolerance, disagreement);
   const normal = smoothstep(params.normalFloor, params.normalCeiling, normalDot);
   return depth * normal;

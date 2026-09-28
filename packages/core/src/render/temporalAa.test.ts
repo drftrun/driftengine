@@ -2,12 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { mat4, vec4 } from 'gl-matrix';
 
 import {
+  FLICKER_BLEND,
   JITTER_PERIOD,
+  TEMPORAL_HISTORY_BLEND,
   TemporalHistory,
   clipToNeighbourhood,
+  flickerBlend,
+  flickerWidening,
+  freshFlicker,
   jitterOffset,
   jitterProjection,
+  missedBy,
+  nextDepthSwing,
+  nextFlicker,
+  sameSurface,
+  stillness,
 } from './temporalAa.ts';
+import type { Flicker } from './temporalAa.ts';
 
 /**
  * A perspective projection to jitter, at a shape a camera actually takes.
@@ -284,5 +295,266 @@ describe('clipping the history into the neighbourhood', () => {
     expect(out[0]).toBeCloseTo(0.25, 12);
     expect(out[1]).toBeCloseTo(0.25, 12);
     expect(out[2]).toBeCloseTo(0.25, 12);
+  });
+});
+
+/**
+ * One grey pixel through the resolve, frame after frame: the box widened by its record, the history
+ * clipped to it, the record carried on, the two blended. Grey, so luma is the value itself — the
+ * weights sum to one — and what goes in is a box of this frame's neighbourhood and its sample. The
+ * frame count carries on across calls, so the jitter's period does.
+ */
+interface Pixel {
+  history: number;
+  record: Flicker;
+  frame: number;
+}
+
+/** A calm wall, with a whole period of it already gathered: nothing to widen by, and nothing owed. */
+const FRESH: Pixel = {
+  history: 0.1,
+  record: { spread: 0, sum: 0.1, mean: 0.1, repeated: 0 },
+  frame: 0,
+};
+
+function resolveGrey(
+  frames: readonly { sample: number; low: number; high: number; motion?: number; same?: boolean }[],
+  antiFlicker = true,
+  start: Pixel = FRESH,
+): Pixel & { shown: number[] } {
+  let history = start.history;
+  let frame = start.frame;
+  const record: Flicker = { ...start.record };
+  const bounded: [number, number, number] = [0, 0, 0];
+  const shown: number[] = [];
+  for (const each of frames) {
+    const still = stillness(each.motion ?? 0);
+    if (each.same === false) freshFlicker(record, each.sample);
+    const widen = antiFlicker ? flickerWidening(record, each.sample, still) : 0;
+    clipToNeighbourhood(
+      bounded,
+      [history, history, history],
+      [each.low - widen, each.low - widen, each.low - widen],
+      [each.high + widen, each.high + widen, each.high + widen],
+    );
+    const blend = antiFlicker
+      ? flickerBlend(TEMPORAL_HISTORY_BLEND, record, each.sample, still)
+      : TEMPORAL_HISTORY_BLEND;
+    nextFlicker(record, record, each.sample, still, frame % JITTER_PERIOD === 0);
+    history = each.sample + (bounded[0] - each.sample) * blend;
+    shown.push(history);
+    frame += 1;
+  }
+  return { shown, history, record, frame };
+}
+
+/**
+ * A bright thread on a dark wall, finer than a pixel: the jitter catches it in the phases given, and
+ * in the others every tap round the pixel misses it, so the box is the wall alone.
+ */
+const THREAD = 10;
+const WALL = 0.1;
+function aliased(
+  frames: number,
+  caught = [0, 3, 5],
+): { sample: number; low: number; high: number }[] {
+  const out = [];
+  for (let i = 0; i < frames; i++) {
+    out.push(
+      caught.includes(i % JITTER_PERIOD)
+        ? { sample: THREAD, low: WALL, high: THREAD }
+        : { sample: WALL, low: WALL, high: WALL },
+    );
+  }
+  return out;
+}
+
+const mean = (values: readonly number[]): number =>
+  values.reduce((sum, v) => sum + v, 0) / values.length;
+
+describe('the anti-flicker', () => {
+  it('A STILL THREAD FINER THAN A PIXEL SETTLES ON ITS SHARE OF IT instead of flashing', () => {
+    /*
+     * Settled, nothing is clipped, so the history moves a tenth of the way to each sample and over a
+     * period those moves cancel: the mean shown is the mean sampled, (3 × 10 + 5 × 0.1) / 8. And
+     * the brightest frame is within half as much again of the darkest.
+     */
+    const last = resolveGrey(aliased(100 * JITTER_PERIOD)).shown.slice(-JITTER_PERIOD);
+    expect(mean(last)).toBeCloseTo((3 * THREAD + 5 * WALL) / 8, 6);
+    expect(Math.max(...last) / Math.min(...last)).toBeLessThan(1.5);
+  });
+
+  it('A THREAD CAUGHT IN ONE PHASE OF EIGHT IS HELD THROUGH THE SEVEN THAT MISS IT', () => {
+    /*
+     * It settles on (10 + 7 × 0.1) / 8 and is never cut back to the wall between catches — only
+     * faded, as the blend fades anything, and a proven pixel keeps `FLICKER_BLEND` of its history.
+     * Its excess over the wall just before a catch is the x with x = b⁷ (b x + (1 − b) 9.9): a catch
+     * adds its share of the 9.9 it lacks, seven misses fade it. At the base blend that minimum would
+     * be 0.93; kept longer it is 1.21, and the thread breathes a third as much.
+     */
+    const last = resolveGrey(aliased(100 * JITTER_PERIOD, [0])).shown.slice(-JITTER_PERIOD);
+    expect(mean(last)).toBeCloseTo((THREAD + 7 * WALL) / 8, 6);
+    const b = FLICKER_BLEND;
+    const excess = (b ** 7 * (1 - b) * 9.9) / (1 - b ** 8);
+    expect(Math.min(...last)).toBeCloseTo(WALL + excess, 6);
+  });
+
+  it('A THREAD MISSED IN ONE PHASE OF EIGHT IS HELD THROUGH THAT ONE', () => {
+    /*
+     * The hardest share, and the one `FLICKER_WIDTH` is derived from: settled, it shows exactly the
+     * mean it samples, (7 × 10 + 0.1) / 8 — the single miss is never allowed to cut it back.
+     */
+    const last = resolveGrey(aliased(100 * JITTER_PERIOD, [0, 1, 2, 3, 4, 5, 6])).shown.slice(
+      -JITTER_PERIOD,
+    );
+    expect(mean(last)).toBeCloseTo((7 * THREAD + WALL) / 8, 6);
+  });
+
+  it('WITHOUT IT, THE SAME THREAD IS CUT BACK TO THE WALL AND FLASHES', () => {
+    /*
+     * Each missed phase clips the history to the wall, so that frame shows the wall exactly; each
+     * caught phase shows at least a tenth of the thread over it — 1.09 against 0.1.
+     */
+    const last = resolveGrey(aliased(100 * JITTER_PERIOD), false).shown.slice(-JITTER_PERIOD);
+    expect(Math.min(...last)).toBeCloseTo(WALL, 9);
+    expect(Math.max(...last) / Math.min(...last)).toBeGreaterThan(10);
+  });
+
+  it('A SURFACE SLIDING ACROSS A STILL PIXEL IS RESOLVED EXACTLY AS IT WAS WITHOUT IT', () => {
+    /*
+     * The case a record of change alone gets wrong: stripes five pixels wide sliding a pixel a frame
+     * change a pixel's sample as often as a thread does, and inside a stripe the nine taps all see it,
+     * so the box is that stripe alone and anything widened keeps the last one. Two rules stop it.
+     * Arriving at a calm pixel, the first stripe lands farther from the wall's mean than a box with
+     * no spread reaches, so the count of repeats starts again on that frame. And the stripes repeat
+     * every ten frames against a period of eight, so the periods hold 5, 5, 4 and 3 bright frames:
+     * the first two repeat by coincidence, once, and a single repeat widens nothing. The stripes
+     * leave just after it, and from the first stripe to the wall after them the pixel is resolved
+     * exactly as it is without the anti-flicker.
+     */
+    const crossing = Array.from({ length: 20 }, (_, i) => {
+      const bright = i % 10 < 5;
+      const edge = i % 5 === 0 || i % 5 === 4;
+      const sample = bright ? THREAD : WALL;
+      return { sample, low: edge ? WALL : sample, high: edge ? THREAD : sample };
+    });
+    const after = Array.from({ length: 4 }, () => ({ sample: WALL, low: WALL, high: WALL }));
+    const calm = resolveGrey(aliased(4 * JITTER_PERIOD, []));
+    const withIt = resolveGrey([...crossing, ...after], true, calm);
+    const without = resolveGrey([...crossing, ...after], false, calm);
+    expect(withIt.shown).toEqual(without.shown);
+    expect(withIt.shown[20]).toBe(WALL);
+  });
+
+  it('A SURFACE LANDING BEYOND A FLICKERING PIXEL’S REACH IS THERE ON ITS FIRST FRAME, moving or still', () => {
+    /*
+     * The thread swings a spread of 4.66 about a mean of 3.81, so its box reaches six spreads, 28,
+     * either side. A surface at 60 lands beyond that: nothing the pixel has shown explains it, so
+     * the record does not vouch for this frame and the box is the surface's alone at once.
+     */
+    for (const motion of [0, 1]) {
+      const flickering = resolveGrey(
+        aliased(40 * JITTER_PERIOD).map((frame) => ({ ...frame, motion })),
+      );
+      const arrived = resolveGrey([{ sample: 60, low: 60, high: 60, motion }], true, flickering);
+      expect(arrived.shown[0], `motion ${String(motion)}`).toBe(60);
+    }
+  });
+
+  it('A SURFACE ARRIVING AT A CALM PIXEL IS THERE ON ITS FIRST FRAME, as it was without it', () => {
+    /* The wall has sat still for a hundred frames: no change, nothing to widen by. */
+    const calm = resolveGrey(aliased(100, []));
+    const arrived = resolveGrey([{ sample: 5, low: 5, high: 5 }], true, calm);
+    expect(arrived.shown[0]).toBe(5);
+  });
+
+  it('a surface arriving over a flickering pixel is held back only until the next period starts', () => {
+    /*
+     * The cost, bounded, and at its worst: the surface arrives on the frame after a period started,
+     * so the pixel's record says it repeats for seven more. The next start compares the surface with
+     * the thread, finds no repeat, and from the frame after that the box is the surface's alone.
+     */
+    const flickering = resolveGrey(aliased(40 * JITTER_PERIOD + 1));
+    const arrived = resolveGrey(
+      Array.from({ length: 16 }, () => ({ sample: 2, low: 2, high: 2 })),
+      true,
+      flickering,
+    );
+    expect(arrived.shown[0]).toBeGreaterThan(2.5);
+    expect(arrived.shown[JITTER_PERIOD]).toBeCloseTo(2, 9);
+  });
+
+  it('A THREAD UNDER A MOVING CAMERA IS RESOLVED EXACTLY AS IT WAS WITHOUT IT', () => {
+    /*
+     * Under a moving camera nothing repeats: the thread is caught on an irregular five frames in
+     * thirteen as the pixel grid slides across it, so no period proves anything and the box is this
+     * frame's neighbourhood alone. A proof for motion existed — the record vouching while its samples
+     * swung both ways — and was taken out: it broke a shadow line on a moving floor into dashes. See
+     * the anti-flicker's header in temporalAa.ts.
+     */
+    const moving = Array.from({ length: 52 * 13 }, (_, i) => {
+      const caught = (i * 5) % 13 < 5;
+      return caught
+        ? { sample: THREAD, low: WALL, high: THREAD, motion: 1 }
+        : { sample: WALL, low: WALL, high: WALL, motion: 1 };
+    });
+    expect(resolveGrey(moving).shown).toEqual(resolveGrey(moving, false).shown);
+  });
+
+  it('A RECORD FOLLOWS ITS SURFACE WHILE LAST FRAME HELD IT WITHIN TWO PERCENT, beside or at', () => {
+    /*
+     * Ten metres expected and no swing: 10.1 is the same surface, a metre off is another one — and
+     * the nearest of five texels counts, which is what lets a sample that straddles an edge keep its
+     * record.
+     */
+    expect(sameSurface(10, [10.1], 0)).toBe(true);
+    expect(sameSurface(10, [11], 0)).toBe(false);
+    expect(sameSurface(10, [12, 8, 13, 10.15, 7], 0)).toBe(true);
+    expect(sameSurface(10, [12, 8, 13, 10.3, 7], 0)).toBe(false);
+    /* A swing of five metres lets 30 m pass for 10 — six swings and two percent — and not 60. */
+    expect(sameSurface(10, [30], 5)).toBe(true);
+    expect(sameSurface(10, [60], 5)).toBe(false);
+  });
+
+  it('A CRACK OF LIGHT KEEPS ITS RECORD ONCE ITS DEPTH HAS BEEN SEEN TO SWING, and a reveal does not', () => {
+    /*
+     * A pixel whose sample lands on a door five metres away in five phases of eight and on the yard
+     * fifty metres behind it in three: its first jumps are refused, its swing grows on every one of
+     * them whatever the test said, and once it has grown the jumps are that pixel's own and nothing
+     * is refused. A flat wall at ten metres that the camera suddenly sees past, to fifty, is refused.
+     */
+    let last = 5;
+    let swing = 0;
+    const refused: number[] = [];
+    for (let i = 0; i < 40 * JITTER_PERIOD; i++) {
+      const expected = [0, 3, 5].includes(i % JITTER_PERIOD) ? 50 : 5;
+      if (!sameSurface(expected, [last], swing)) refused.push(i);
+      swing = nextDepthSwing(swing, missedBy(expected, [last]));
+      last = expected;
+    }
+    expect(refused[0]).toBe(0);
+    expect(refused.filter((i) => i >= 4 * JITTER_PERIOD)).toEqual([]);
+    expect(sameSurface(50, [10], 0)).toBe(false);
+    /* Nothing recorded — the frame after a cut — is no surface to follow, and teaches no swing. */
+    expect(sameSurface(10, [0, 0, 0], 5)).toBe(false);
+    expect(nextDepthSwing(3, missedBy(10, [0, 0]))).toBe(0);
+  });
+
+  it('A SURFACE THAT IS NOT THE ONE THE RECORD FOLLOWED IS CLIPPED AS IT WAS WITHOUT IT, for its first period', () => {
+    /*
+     * Last frame's depth says when a still pixel shows another surface — something has moved across
+     * it — and that record is no record: nothing widens by it, and the new surface, a flickering
+     * thread of its own so its spread grows at once, is resolved exactly as it is without the
+     * anti-flicker until its new record has seen a period of it. Kept, the old record would have
+     * widened the box by the first thread's swing from the first frame.
+     */
+    const flickering = resolveGrey(aliased(20 * JITTER_PERIOD));
+    const revealed = aliased(JITTER_PERIOD, [1, 4, 6]).map((frame, i) => ({
+      ...frame,
+      same: i === 0 ? false : undefined,
+    }));
+    const withIt = resolveGrey(revealed, true, flickering);
+    const without = resolveGrey(revealed, false, flickering);
+    expect(withIt.shown).toEqual(without.shown);
   });
 });

@@ -21,8 +21,10 @@
  *    previous view depth in its third channel; otherwise it is the camera's, through the surface's
  *    world position.
  * 4. Where the surface was is read from the history — its colour and the weight it had gathered — and
- *    last frame's depth there says whether it is the same surface; the two frames' normals, from their
- *    depths, catch thin geometry. The disocclusion scales the history's weight.
+ *    last frame's depth says whether it is the same surface: the nearest of the nine texels around
+ *    where the dilated texel was, forgiven its own slope across a texel. The two frames' normals, from
+ *    their depths, catch thin geometry, each with the say its planarity gives it. The disocclusion
+ *    scales the history's weight.
  * 5. The history is clipped to the box, its weight capped so a tenth of each frame is always new, and
  *    the two are mixed by their weights. Where the pixel has gathered less than one sample's worth,
  *    the render read bicubically fills the gap. The history keeps colour and weight; the picture shown
@@ -33,7 +35,13 @@
  * buffer before a sample reaches this arithmetic, as the temporal resolve already does.
  */
 import { clipToBox, rgbToYCoCg, varianceBox, yCoCgToRgb } from './clamp.ts';
-import { disocclusionWeight, normalFromPositions, worldPositionFromDepth } from './disocclusion.ts';
+import {
+  disocclusionWeight,
+  normalFromPositions,
+  planarity,
+  surfaceSlope,
+  worldPositionFromDepth,
+} from './disocclusion.ts';
 import type { DisocclusionParams } from './disocclusion.ts';
 import { sampleBilinear, sampleHistoryBicubic5 } from './reproject.ts';
 
@@ -209,6 +217,59 @@ function worldAt(
   return 1 / w;
 }
 
+/**
+ * A texel's view depth at its unjittered uv, or 0 — `worldAt` without the position, which is all a
+ * search over depths needs: one row of the inverse rather than four. Zero off the picture, where
+ * `worldAt` would clamp, because a neighbour that is not there is not a step.
+ */
+function viewDepthAt(
+  depths: ArrayLike<number>,
+  inverse: ArrayLike<number>,
+  jitter: ArrayLike<number>,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+): number {
+  if (x < 0 || y < 0 || x >= width || y >= height) return 0;
+  const u = (x + 0.5 - (jitter[0] as number)) / width;
+  const v = (y + 0.5 - (jitter[1] as number)) / height;
+  const m = inverse;
+  const w =
+    (m[3] as number) * (u * 2 - 1) +
+    (m[7] as number) * (v * 2 - 1) +
+    (m[11] as number) * (depths[y * width + x] as number) +
+    (m[15] as number);
+  return Math.abs(w) > 1e-12 ? 1 / w : 0;
+}
+
+/** What a texel's four neighbours say about its surface: see `planarity` and `surfaceSlope`. */
+const SURFACE = { planar: 1, slope: 0 };
+
+function surfaceAt(
+  depths: ArrayLike<number>,
+  inverse: ArrayLike<number>,
+  jitter: ArrayLike<number>,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  centre: number,
+): void {
+  let planar = 1;
+  let slope = 0;
+  for (let axis = 0; axis < 2; axis += 1) {
+    const ax = 1 - axis;
+    const ay = axis;
+    const after = viewDepthAt(depths, inverse, jitter, width, height, x + ax, y + ay);
+    const before = viewDepthAt(depths, inverse, jitter, width, height, x - ax, y - ay);
+    planar *= planarity(before, centre, after);
+    slope = Math.max(slope, surfaceSlope(before, centre, after));
+  }
+  SURFACE.planar = planar;
+  SURFACE.slope = slope;
+}
+
 /** The world normal at a texel, from its depth and its right and upper neighbours'. */
 function normalAt(
   depths: ArrayLike<number>,
@@ -282,20 +343,84 @@ function historyWeight(frame: ResolveFrame, u: number, v: number, dx: number, dy
     4,
     HISTORY,
   );
-  const px = clampTexel(Math.round(pu * rw + (frame.previousJitter[0] as number) - 0.5), rw);
-  const py = clampTexel(Math.round(pv * rh + (frame.previousJitter[1] as number) - 0.5), rh);
-  const held = worldAt(
+  /*
+   * **Last frame's depth is searched for this surface, around where the dilated texel was.** The
+   * surface being judged is the dilated texel's, which beside an edge is a neighbour's, so judging
+   * it by the texel under the pixel compares two surfaces: the side of every silhouette away from the
+   * eye dropped its history on every frame of a still picture. And a new jitter samples a surface
+   * somewhere else, so the nearest of last frame's nine is taken rather than the one the rounding
+   * picks. What it gives up is a disocclusion narrower than a texel, which keeps a history that the
+   * neighbourhood clip then bounds.
+   */
+  const su = (dx + 0.5 - (frame.jitter[0] as number)) / rw + mu;
+  const sv = (dy + 0.5 - (frame.jitter[1] as number)) / rh + mv;
+  const cx = clampTexel(Math.round(su * rw + (frame.previousJitter[0] as number) - 0.5), rw);
+  const cy = clampTexel(Math.round(sv * rh + (frame.previousJitter[1] as number) - 0.5), rh);
+  /*
+   * The first texel looked at answers alone when it agrees within the tolerance, which it does
+   * everywhere but at an edge: the depth test trusts it fully whichever texel would have won, so
+   * only an edge pays for the other eight.
+   */
+  let held = viewDepthAt(
     frame.previousDepth,
     frame.previousInverseViewProj,
     frame.previousJitter,
     rw,
     rh,
-    px,
-    py,
-    RIGHT,
+    cx,
+    cy,
   );
+  let px = cx;
+  let py = cy;
+  if (!(held > 0 && Math.abs(held - expected) <= frame.disocclusion.depthTolerance * expected)) {
+    held = 0;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let j = -1; j <= 1; j += 1) {
+      for (let i = -1; i <= 1; i += 1) {
+        const tx = clampTexel(cx + i, rw);
+        const ty = clampTexel(cy + j, rh);
+        const depth = viewDepthAt(
+          frame.previousDepth,
+          frame.previousInverseViewProj,
+          frame.previousJitter,
+          rw,
+          rh,
+          tx,
+          ty,
+        );
+        if (!(depth > 0)) continue;
+        const off = Math.abs(depth - expected);
+        if (off < nearest) {
+          nearest = off;
+          held = depth;
+          px = tx;
+          py = ty;
+        }
+      }
+    }
+  }
+
+  const here = viewDepthAt(frame.depth, frame.inverseViewProj, frame.jitter, rw, rh, dx, dy);
+  surfaceAt(frame.depth, frame.inverseViewProj, frame.jitter, rw, rh, dx, dy, here);
+  const slope = SURFACE.slope;
+  let planar = SURFACE.planar;
+  if (planar > 0) {
+    surfaceAt(
+      frame.previousDepth,
+      frame.previousInverseViewProj,
+      frame.previousJitter,
+      rw,
+      rh,
+      px,
+      py,
+      held,
+    );
+    planar *= SURFACE.planar;
+  }
+  /* A normal has the say its planarity gives it; at an edge or a sliver, none, and none is computed. */
   let normalDot = 1;
   if (
+    planar > 0 &&
     normalAt(frame.depth, frame.inverseViewProj, frame.jitter, frame.eye, rw, rh, dx, dy, NORMAL) &&
     normalAt(
       frame.previousDepth,
@@ -309,10 +434,11 @@ function historyWeight(frame: ResolveFrame, u: number, v: number, dx: number, dy
       PREVIOUS_NORMAL,
     )
   ) {
-    normalDot =
+    const cosine =
       (NORMAL[0] as number) * (PREVIOUS_NORMAL[0] as number) +
       (NORMAL[1] as number) * (PREVIOUS_NORMAL[1] as number) +
       (NORMAL[2] as number) * (PREVIOUS_NORMAL[2] as number);
+    normalDot = 1 - planar * (1 - cosine);
   }
   const trust = disocclusionWeight(
     expected,
@@ -320,6 +446,7 @@ function historyWeight(frame: ResolveFrame, u: number, v: number, dx: number, dy
     Math.hypot(mu, mv),
     normalDot,
     frame.disocclusion,
+    slope,
   );
   return (HISTORY[3] as number) * trust;
 }

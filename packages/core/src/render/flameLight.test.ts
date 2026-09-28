@@ -75,6 +75,27 @@ test('the light stands a third of the way up the flame and sways a few per cent 
   expect(flame.light.flicker).toBe(0);
 });
 
+test("A FLAME'S NEAR PLANE CLEARS WHAT IT BURNS FROM BY THE SAME MARGIN WHEREVER IT HAS WANDERED", () => {
+  /*
+   * A 40 cm bowl: the light stands 1/3 m over the coals, so a near plane of 0.4 m keeps everything
+   * within 0.4 − 1/3 = 0.0667 m under the coals out of the shadow map when the flame is still. The
+   * map is baked from wherever the light stood, so the sway carries the cut with it: 6 cm of rise
+   * left 0.0067 m, and a bowl's rim inside that band went in and out of the map as the flame moved,
+   * which drew its shadow on the floor under the brazier on some bakes and not on others.
+   */
+  const flame = createFlame({ x: 3, y: 1, z: -2, diameterM: 0.4, color: [1, 1, 1], radius: 6 });
+  let closest = Infinity;
+  let highest = 0;
+  for (let i = 0; i < 5000; i++) {
+    updateFlame(flame, i / 500);
+    const aboveCoals = flame.light.y - 1;
+    highest = Math.max(highest, aboveCoals);
+    closest = Math.min(closest, (flame.light.shadowNear ?? 0) - aboveCoals);
+  }
+  expect(highest, 'the flame did rise to the top of its sway').toBeGreaterThan(1 / 3 + 0.059);
+  expect(closest).toBeGreaterThanOrEqual(0.4 - 1 / 3 - 1e-9);
+});
+
 test('two flames of one size with different seeds are out of step', () => {
   const a = brightness(0.1, 1, 1);
   const b = brightness(0.1, 1, 2);

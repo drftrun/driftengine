@@ -1,5 +1,31 @@
 [
  {
+  "version": "4.4.2",
+  "date": "2026-09-28",
+  "entries": [
+   {
+    "kind": "fixed",
+    "short": "A reconstructed frame no longer flickers or softens along the edges of still objects: the far side of every silhouette keeps its history.",
+    "text": "**The disocclusion test compared two different surfaces at every edge.** The reconstruction reprojects each output pixel by the nearest of its nine samples, the usual dilation, and then asked whether last frame held the same surface by reading last frame's depth under the output pixel rather than where the dilated sample had stood. At a silhouette those are the object and what is behind it, so the far side of every edge, every surface turned away from the eye and every part thinner than a sample dropped its history on a still frame: a paused picture flashed white along its outlines and read softer than a single frame of it.\n\nThe test now searches last frame's three by three around where the dilated sample stood, allows for how steeply the surface recedes, and weights the normal test by how planar the surface really is, so a thin rod no longer fails it. Measured on a consumer reconstructing at 1.5: a paused frame went from 3,269 flickering pixels to 338, and a still panel from up to 1,787 to 7, with no added ghosting in motion. The cost is 0.065 ms of GPU time at 2280 by 1291."
+   },
+   {
+    "kind": "fixed",
+    "short": "Temporal antialiasing no longer flashes on detail finer than a pixel while the camera is still: a paused grille, lace or crack of light holds steady.",
+    "text": "**A still pixel's neighbourhood now widens by its own proven flicker.** A thread finer than a pixel is caught by the jitter in some phases and missed in others, and in a phase that misses it the nine taps round the pixel miss it too: the box collapses onto the background, the settled history is clipped away, and a paused frame flashed at every fine edge. A still camera over a still scene samples every pixel the same way in every period of the jitter, so each pixel now keeps a small record of its own samples, and once two periods running have repeated, its box widens by the spread it has shown and it keeps more of its history. A surface that moves, a flame, or anything arriving breaks the repetition, and a sample beyond what the pixel has shown disqualifies the frame it lands in.\n\nMeasured on a scene of fine ironwork and fabric: a held frame went from 839 flickering pixels to 3 on WebGPU and from 1,802 to 14 on WebGL2, and the device check's edge figures are unchanged. It costs two half-float record targets beside the history. A moving camera is resolved exactly as before, and so is WebGL2 without float colour targets."
+   },
+   {
+    "kind": "fixed",
+    "short": "A point light's shadow no longer shows a straight-edged patch of wrong shadow while its map is redrawn: a map being sampled is re-baked whole or not at all.",
+    "text": "**A re-bake spread across frames was sampled half done.** Faces land in the layer the shader reads as they are drawn, and the origin they were drawn from is published only with the last one, so a map re-baked two faces a frame was read from its old origin with part of it drawn from the new one. A cube face is a 90 degree frustum, so the wrong part was a straight-edged quadrilateral of shadow on the ground under the lamp, and with the face budget spent elsewhere it could hold for over a second.\n\nA map that already holds an image is now re-baked whole or not at all, and a light being shaded may take one whole cube a frame outside `pointShadowFacesPerFrame`, the allowance a wandering light already had. A map with no image yet still fills a few faces a frame, since nothing samples it until it is complete. What it costs is six faces in the frame a shaded light goes stale, rather than two in each of three."
+   },
+   {
+    "kind": "fixed",
+    "short": "A flame's shadow no longer switches its own fixture in and out as the flame sways: the default near plane clears what the fire burns from at every point of the sway.",
+    "text": "**The near plane moved with the flame, and the fixture under it did not.** `createFlame` puts the light a third of the way up the flame, 0.83 of its width above what it burns from, with a near plane of one width, and sways it by 0.15 of a width on each axis. At the top of the sway the cut sat 7 mm under a 40 cm brazier's coals and at the bottom 13 cm, so the bowl beneath went in and out of the shadow map depending on where the flame stood when the map was last drawn, and the floor under the brazier took a dark disc on some re-bakes and none on others.\n\nThe default `shadowNear` now adds the sway, so it clears the same margin under the fire wherever the flame has wandered. A fixture reaching further below the flame than a sixth of its width sets its own `shadowNear` from its own depth."
+   }
+  ]
+ },
+ {
   "version": "4.4.1",
   "date": "2026-09-28",
   "entries": [

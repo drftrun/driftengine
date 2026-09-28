@@ -66,7 +66,7 @@ export function releaseHeldClock(): void {
  * with the history the frames before it built. `tools/recon-train/pairs.mjs` is what asks for it.
  */
 export function holdFrames(frames: number, stop = false): void {
-  const wanted = Math.max(1, Math.floor(frames));
+  let wanted = Math.max(1, Math.floor(frames));
   let virtualMs = 0;
   let advanced = 0;
   released = false;
@@ -134,6 +134,20 @@ export function holdFrames(frames: number, stop = false): void {
     'color:#0f0;background:#000;font:12px monospace';
   document.body.append(badge);
   setTimeout(pump, 0);
+  /*
+   * **One more frame, on request, for a capture of motion.** A stopped hold is frame N with its real
+   * history, and a second page asked for frame N + 1 is not the frame after it: a scene whose own
+   * clock starts once its load completes reaches frame N at a different point of its story on every
+   * load, and two neighbouring captures taken that way were a jump rather than a step. Stepping the
+   * one page makes the sequence consecutive. `__heldFrame` moves with it, so a caller waits the same
+   * way.
+   */
+  if (stop) {
+    (window as unknown as { __stepHeld?: (count: number) => void }).__stepHeld = (count) => {
+      wanted += Math.max(1, Math.floor(count));
+      setTimeout(pump, 0);
+    };
+  }
 }
 
 /** `&holdstop=1` beside `?hold=N`: draw the held frame and stop. See `holdFrames`. */

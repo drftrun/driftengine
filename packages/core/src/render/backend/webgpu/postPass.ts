@@ -331,7 +331,37 @@ export function postPipeline(
   format: GPUTextureFormat,
   blend?: GPUBlendState,
 ): GPURenderPipeline {
-  return cache.get(key, () => ({
+  return cache.get(key, () =>
+    describePost(device, layout, key, fragment, [
+      blend === undefined ? { format } : { format, blend },
+    ]),
+  );
+}
+
+/**
+ * The same over several colour targets, in the fragment's output order: the temporal resolve
+ * writes its picture and each pixel's flicker record in one pass. `targets` is the caller's, held
+ * rather than built per call, since this is asked for every frame.
+ */
+export function postPipelineTargets(
+  cache: PipelineCache,
+  device: GPUDevice,
+  layout: GPUBindGroupLayout,
+  key: string,
+  fragment: string,
+  targets: GPUColorTargetState[],
+): GPURenderPipeline {
+  return cache.get(key, () => describePost(device, layout, key, fragment, targets));
+}
+
+function describePost(
+  device: GPUDevice,
+  layout: GPUBindGroupLayout,
+  key: string,
+  fragment: string,
+  targets: GPUColorTargetState[],
+): GPURenderPipelineDescriptor {
+  return {
     label: key,
     layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
     vertex: {
@@ -341,7 +371,7 @@ export function postPipeline(
     fragment: {
       module: shaderModule(device, { label: key, code: fragment }),
       entryPoint: 'main',
-      targets: [blend === undefined ? { format } : { format, blend }],
+      targets,
     },
     /*
      * No depth at all, which is what makes this different from every other pipeline here: the
@@ -349,11 +379,11 @@ export function postPipeline(
      * disables the test, the write and culling by hand for the same draw.
      */
     primitive: { topology: 'triangle-list' as const, cullMode: 'none' as const },
-  }));
+  };
 }
 
 /**
- * The temporal resolve's block and its three inputs.
+ * The temporal resolve's block and its four inputs.
  *
  * Named like the occlusion's beside it, and for the same reason `BLOOM_DOWNSAMPLE_FIELDS` is: a
  * block read by assumption rather than by name is a uniform written to the wrong offset, which

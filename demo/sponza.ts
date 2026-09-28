@@ -457,13 +457,15 @@ export const sponza: DemoScene = {
         pointLightFalloff: 'inverseSquare',
         /*
          * **A flame's shadow is baked where the flame stands, once.** A flame's light sways a few
-         * centimetres, a brazier's up to ten, and at the default millimetre every sway made its map
-         * stale, so each flame re-drew six faces of eleven million triangles every frame: 21 ms of a
-         * night's 26 at 1440p. At fifteen centimetres the maps are drawn once and the lookups use the
-         * place they were drawn from; the light still flickers and sways, and its shadow, under a
-         * brazier's penumbra half a metre wide, holds still.
+         * centimetres, and at the default millimetre every sway made its map stale, so each flame
+         * re-drew six faces of eleven million triangles every frame: 21 ms of a night's 26 at 1440p.
+         * A brazier sways up to 6 cm on each axis, so two places it stands are at most
+         * 2 × 6 × √3 = 21 cm apart; a quarter of a metre clears that, and the maps are drawn once
+         * and the lookups use the place they were drawn from. At fifteen centimetres they were not:
+         * a brazier crossed it every second or so and re-drew its whole cube in one frame. The light
+         * still flickers and sways, and its shadow, under a penumbra half a metre wide, holds still.
          */
-        pointShadowRebakeDistance: 0.15,
+        pointShadowRebakeDistance: 0.25,
         ...(linear ? { outputTransform: 'none' as const, bloom: 0 } : {}),
         ...(tracedOn(drawing) ? { indirectLight: true } : {}),
         ...overrides,

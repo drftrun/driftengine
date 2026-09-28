@@ -728,8 +728,15 @@ export const FLOORS = {
    *
    * **What would make it wrong** is the same thing that would make the fix wrong: if the sixteen
    * permutations were ever collapsed, this would collapse with them.
+   *
+   * **Raised 2026-09-28 by 6,088, and every `core-and-*` entry by 6,054 to 6,201 the same way**,
+   * for 4.4.2. Most of it is the temporal resolve's anti-flicker, written once in GLSL and once as
+   * the WGSL generated from it, with the GLSL's comments shipping because a shader source is a
+   * string; the rest is the reconstruction's disocclusion search in its TypeScript reference and
+   * its hand-written WGSL twin. Measured against floors that were exact at 4.4.1, so none of it is
+   * older drift.
    */
-  'core-only': 808828,
+  'core-only': 814916,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -742,7 +749,7 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 813577,
+  'core-and-gizmo': 819778,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -755,7 +762,7 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 815085,
+  'core-and-audio': 821193,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -777,7 +784,7 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 815018,
+  'core-and-animation': 821182,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -812,7 +819,7 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 847040,
+  'core-and-script': 852825,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -967,7 +974,7 @@ export const FLOORS = {
    * `LITE` writer arriving with `writeDrft`. Nothing in this package moved.
    */
   'capture-only': 68821,
-  'core-and-splats': 825838,
+  'core-and-splats': 831920,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -984,7 +991,7 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 810207,
+  'core-and-terrain': 816304,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1010,8 +1017,8 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 817789,
-  'core-and-assets': 824772,
+  'core-and-ui2d': 823853,
+  'core-and-assets': 830967,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1022,7 +1029,7 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 817259,
+  'core-audio-spatial': 823320,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

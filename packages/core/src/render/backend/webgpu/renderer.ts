@@ -190,6 +190,7 @@ import {
   createPostStageLayout,
   depthResolvePipeline,
   postPipeline,
+  postPipelineTargets,
   sceneColorFormat,
   AO_BLUR_FIELDS,
   AO_BLUR_FRAG_WGSL,
@@ -1926,6 +1927,16 @@ export class WebGPURenderer implements RendererApi {
   private taaUniforms!: GPUBuffer;
   private taaTextures: (GPUTexture | null)[] = [null, null];
   private taaViews: (GPUTextureView | null)[] = [null, null];
+  /** Each pixel's flicker record, paired with the history and swapped with it: see `temporalAa.ts`. */
+  private taaRecords: (GPUTexture | null)[] = [null, null];
+  private taaRecordViews: (GPUTextureView | null)[] = [null, null];
+  /** The rest of each pixel's record — depth, pull and recent swing — beside the first. */
+  private taaMotions: (GPUTexture | null)[] = [null, null];
+  private taaMotionViews: (GPUTextureView | null)[] = [null, null];
+  /** The resolve's depth-to-metres row, from the inverse of `frameProjection`. */
+  private readonly taaInvProjection = new Float32Array(16);
+  /** The resolve's two targets, the picture and the record, held for the pipeline cache's sake. */
+  private taaTargets: GPUColorTargetState[] = [];
   /** Group `i` reads history `i` and the pass writes into the other one. */
   private taaBindGroups: (GPUBindGroup | null)[] = [null, null];
   private taaWrite = 0;
@@ -6395,6 +6406,8 @@ export class WebGPURenderer implements RendererApi {
     this.taaLayout = createPostStageLayout(device, TAA_UNIFORMS, TAA_FRAG_SIZE, [
       { binding: TAA_TEXTURES.uScene },
       { binding: TAA_TEXTURES.uHistory },
+      { binding: TAA_TEXTURES.uFlicker },
+      { binding: TAA_TEXTURES.uFlickerMotion },
       { binding: TAA_TEXTURES.uDepth, filterable: false },
     ]);
     this.taaUniforms = device.createBuffer({
@@ -10468,8 +10481,10 @@ export class WebGPURenderer implements RendererApi {
     if (!this.temporalJittering) return;
     const write = this.taaWrite;
     const target = this.taaViews[write];
+    const record = this.taaRecordViews[write];
+    const motion = this.taaMotionViews[write];
     const group = this.taaBindGroups[1 - write];
-    if (target === null || group === null) return;
+    if (target === null || record === null || motion === null || group === null) return;
     const { device } = this.surface;
 
     const f = this.taaFloats;
@@ -10478,6 +10493,22 @@ export class WebGPURenderer implements RendererApi {
     f[at('uTexel')] = 1 / this.renderWidth;
     f[at('uTexel') + 1] = 1 / this.renderHeight;
     f[at('uHistoryBlend')] = this.temporalHistoryUsable ? TEMPORAL_HISTORY_BLEND : 0;
+    f[at('uPeriodStart')] = this.temporalHistory.periodStart ? 1 : 0;
+    /* The anti-flicker's same-surface test reads depths in metres, as the occlusion does. */
+    const depthRow = at('uDepthToViewZ');
+    if (this.frameProjection !== null) {
+      mat4.invert(this.taaInvProjection, this.frameProjection);
+      f[depthRow] = this.taaInvProjection[10] ?? 0;
+      f[depthRow + 1] = this.taaInvProjection[14] ?? 0;
+      f[depthRow + 2] = this.taaInvProjection[11] ?? 0;
+      f[depthRow + 3] = this.taaInvProjection[15] ?? 1;
+    } else {
+      f[depthRow] = 0;
+      f[depthRow + 1] = 0;
+      f[depthRow + 2] = 0;
+      f[depthRow + 3] = 1;
+    }
+    f[at('uAntiFlicker')] = 1;
     device.queue.writeBuffer(this.taaUniforms, 0, this.taaStaging);
 
     const pass = encoder.beginRenderPass({
@@ -10485,16 +10516,18 @@ export class WebGPURenderer implements RendererApi {
       timestampWrites: this.gpuTimer.writesFor(),
       colorAttachments: [
         { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] },
+        { view: record, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+        { view: motion, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
       ],
     });
     pass.setPipeline(
-      postPipeline(
+      postPipelineTargets(
         this.pipelines,
         device,
         this.taaLayout,
         'post.taa',
         TEMPORAL_RESOLVE_FRAG_WGSL,
-        sceneColorFormat(this.quality.hdrScene),
+        this.taaTargets,
       ),
     );
     pass.setBindGroup(0, group, [0]);
@@ -14551,7 +14584,28 @@ export class WebGPURenderer implements RendererApi {
       });
       this.taaTextures[i] = texture;
       this.taaViews[i] = texture.createView();
+      /* The records in half float, whatever the picture's format: one of them holds metres. */
+      this.taaRecords[i]?.destroy();
+      const record = device.createTexture({
+        label: `post.taaRecord${i}`,
+        size: [width, height],
+        format: 'rgba16float',
+        usage: USAGE,
+      });
+      this.taaRecords[i] = record;
+      this.taaRecordViews[i] = record.createView();
+      this.taaMotions[i]?.destroy();
+      /* Two numbers a pixel: the depth its sample stood at, in metres, and how far that swings. */
+      const motion = device.createTexture({
+        label: `post.taaMotion${i}`,
+        size: [width, height],
+        format: 'rg16float',
+        usage: USAGE,
+      });
+      this.taaMotions[i] = motion;
+      this.taaMotionViews[i] = motion.createView();
     }
+    this.taaTargets = [{ format }, { format: 'rgba16float' }, { format: 'rg16float' }];
     this.taaWrite = 0;
     /* A resized target is a new texture, so whatever the history held is gone. */
     this.temporalHistory.invalidate();
@@ -14747,7 +14801,17 @@ export class WebGPURenderer implements RendererApi {
       const scene = this.sceneColorView;
       const history = this.taaViews[i];
       const resolved = this.taaViews[1 - i];
-      if (scene === null || history === null || resolved === null) continue;
+      const record = this.taaRecordViews[i];
+      const motion = this.taaMotionViews[i];
+      if (
+        scene === null ||
+        history === null ||
+        resolved === null ||
+        record === null ||
+        motion === null
+      ) {
+        continue;
+      }
       this.taaBindGroups[i] = device.createBindGroup({
         label: `post.taaBindGroup${i}`,
         layout: this.taaLayout,
@@ -14755,6 +14819,8 @@ export class WebGPURenderer implements RendererApi {
           { binding: TAA_UNIFORMS, resource: { buffer: this.taaUniforms, size: TAA_FRAG_SIZE } },
           ...entry(TAA_TEXTURES.uScene, scene),
           ...entry(TAA_TEXTURES.uHistory, history),
+          ...entry(TAA_TEXTURES.uFlicker, record),
+          ...entry(TAA_TEXTURES.uFlickerMotion, motion),
           ...entry(TAA_TEXTURES.uDepth, this.resolvedDepthView, true),
         ],
       });

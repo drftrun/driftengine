@@ -39,6 +39,7 @@
  * and the uniform `recon: ReconParams`, whose struct this module declares.
  */
 import { wgslSceneDepthToNdc } from '../../depthConvention.ts';
+import { PLANAR_FROM, PLANAR_TO } from '../../recon/disocclusion.ts';
 
 /**
  * The parameters one resolve reads, as `ResolveFrame` minus its images.
@@ -97,6 +98,8 @@ export const RECON_HISTORY_FORMAT: GPUTextureFormat = 'rgba16float';
 export const RECON_RESOLVE_CORE_WGSL = /* wgsl */ `
 const RECON_SAMPLE_SPREAD: f32 = ${RECON_SAMPLE_SPREAD};
 const RECON_CONFIDENT_WEIGHT: f32 = ${RECON_CONFIDENT_WEIGHT}.0;
+const RECON_PLANAR_FROM: f32 = ${PLANAR_FROM};
+const RECON_PLANAR_TO: f32 = ${PLANAR_TO};
 
 fn reconClampTexel(value: i32, size: i32) -> i32 {
   return clamp(value, 0, size - 1);
@@ -328,10 +331,11 @@ fn reconDisocclusion(
   histDepth: f32,
   motionLength: f32,
   normalDot: f32,
+  slope: f32,
 ) -> f32 {
   if (!(currDepth > 0.0) || !(histDepth > 0.0) || !(motionLength >= 0.0)) { return 0.0; }
   let disagreement = abs(currDepth - histDepth) / currDepth;
-  let tolerance = recon.depthTolerance + recon.motionScale * motionLength;
+  let tolerance = recon.depthTolerance + recon.motionScale * motionLength + slope;
   let depth = 1.0 - reconSmoothstep(tolerance, 2.0 * tolerance, disagreement);
   let normal = reconSmoothstep(recon.normalFloor, recon.normalCeiling, normalDot);
   return depth * normal;
@@ -392,6 +396,74 @@ fn reconNormalAt(previous: bool, x: i32, y: i32) -> ReconNormal {
   return reconNormalFrom(centre.position, right.position, up.position, eye);
 }
 
+/* resolve.ts's viewDepthAt. */
+fn reconViewDepthAt(previous: bool, x: i32, y: i32) -> f32 {
+  let w = i32(recon.renderSize.x);
+  let h = i32(recon.renderSize.y);
+  if (x < 0 || y < 0 || x >= w || y >= h) { return 0.0; }
+  var jitter = recon.jitter;
+  var m = recon.inverseViewProj;
+  var z = 0.0;
+  if (previous) {
+    jitter = recon.previousJitter;
+    m = recon.previousInverseViewProj;
+    z = reconPreviousDepth(x, y);
+  } else {
+    z = reconDepth(x, y);
+  }
+  let u = (f32(x) + 0.5 - jitter.x) / f32(w);
+  let v = (f32(y) + 0.5 - jitter.y) / f32(h);
+  let cw = m[0][3] * (u * 2.0 - 1.0) + m[1][3] * (v * 2.0 - 1.0) + m[2][3] * z + m[3][3];
+  if (!(abs(cw) > 1e-12)) { return 0.0; }
+  return 1.0 / cw;
+}
+
+/* disocclusion.ts's planarity. */
+fn reconPlanarity(before: f32, centre: f32, after: f32) -> f32 {
+  if (!(before > 0.0) || !(centre > 0.0) || !(after > 0.0)) { return 1.0; }
+  let a = 1.0 / after - 1.0 / centre;
+  let b = 1.0 / before - 1.0 / centre;
+  let spread = abs(a) + abs(b);
+  if (!(spread > 0.0)) { return 1.0; }
+  return 1.0 - reconSmoothstep(RECON_PLANAR_FROM, RECON_PLANAR_TO, abs(a + b) / spread);
+}
+
+/* disocclusion.ts's surfaceSlope. */
+fn reconSurfaceSlope(before: f32, centre: f32, after: f32) -> f32 {
+  let hasAfter = after > 0.0;
+  let hasBefore = before > 0.0;
+  if (!hasAfter) {
+    if (!hasBefore) { return 0.0; }
+    return abs(before - centre) / centre;
+  }
+  if (!hasBefore) { return abs(after - centre) / centre; }
+  let a = after - centre;
+  let b = before - centre;
+  if (a * b > 0.0) { return 0.0; }
+  return min(abs(a), abs(b)) / centre;
+}
+
+struct ReconSurface {
+  planar: f32,
+  slope: f32,
+}
+
+/* resolve.ts's surfaceAt. */
+fn reconSurfaceAt(previous: bool, x: i32, y: i32, centre: f32) -> ReconSurface {
+  var out: ReconSurface;
+  out.planar = 1.0;
+  out.slope = 0.0;
+  for (var axis = 0; axis < 2; axis = axis + 1) {
+    let ax = 1 - axis;
+    let ay = axis;
+    let after = reconViewDepthAt(previous, x + ax, y + ay);
+    let before = reconViewDepthAt(previous, x - ax, y - ay);
+    out.planar = out.planar * reconPlanarity(before, centre, after);
+    out.slope = max(out.slope, reconSurfaceSlope(before, centre, after));
+  }
+  return out;
+}
+
 struct ReconHistory {
   weight: f32,
   colour: vec4<f32>,
@@ -439,14 +511,46 @@ fn reconHistoryWeight(u: f32, v: f32, dx: i32, dy: i32) -> ReconHistory {
     pu * f32(recon.outputSize.x) - 0.5,
     pv * f32(recon.outputSize.y) - 0.5,
   );
-  let px = reconClampTexel(i32(reconRound(pu * rw + recon.previousJitter.x - 0.5)), i32(rw));
-  let py = reconClampTexel(i32(reconRound(pv * rh + recon.previousJitter.y - 0.5)), i32(rh));
-  let held = reconWorldAt(true, px, py).depth;
+  /* Last frame's depth, searched around where the dilated texel was: see resolve.ts. */
+  let su = (f32(dx) + 0.5 - recon.jitter.x) / rw + mu;
+  let sv = (f32(dy) + 0.5 - recon.jitter.y) / rh + mv;
+  let cx = reconClampTexel(i32(reconRound(su * rw + recon.previousJitter.x - 0.5)), i32(rw));
+  let cy = reconClampTexel(i32(reconRound(sv * rh + recon.previousJitter.y - 0.5)), i32(rh));
+  var held = reconViewDepthAt(true, cx, cy);
+  var px = cx;
+  var py = cy;
+  if (!(held > 0.0 && abs(held - expected) <= recon.depthTolerance * expected)) {
+    held = 0.0;
+    var nearest = 3.4e38;
+    for (var j = -1; j <= 1; j = j + 1) {
+      for (var i = -1; i <= 1; i = i + 1) {
+        let tx = reconClampTexel(cx + i, i32(rw));
+        let ty = reconClampTexel(cy + j, i32(rh));
+        let depth = reconViewDepthAt(true, tx, ty);
+        if (!(depth > 0.0)) { continue; }
+        let off = abs(depth - expected);
+        if (off < nearest) {
+          nearest = off;
+          held = depth;
+          px = tx;
+          py = ty;
+        }
+      }
+    }
+  }
+
+  let here = reconSurfaceAt(false, dx, dy, reconViewDepthAt(false, dx, dy));
+  var planar = here.planar;
+  if (planar > 0.0) { planar = planar * reconSurfaceAt(true, px, py, held).planar; }
   var normalDot = 1.0;
-  let here = reconNormalAt(false, dx, dy);
-  let there = reconNormalAt(true, px, py);
-  if (here.ok && there.ok) { normalDot = dot(here.normal, there.normal); }
-  let trust = reconDisocclusion(expected, held, length(vec2<f32>(mu, mv)), normalDot);
+  if (planar > 0.0) {
+    let hereNormal = reconNormalAt(false, dx, dy);
+    let thereNormal = reconNormalAt(true, px, py);
+    if (hereNormal.ok && thereNormal.ok) {
+      normalDot = 1.0 - planar * (1.0 - dot(hereNormal.normal, thereNormal.normal));
+    }
+  }
+  let trust = reconDisocclusion(expected, held, length(vec2<f32>(mu, mv)), normalDot, here.slope);
   out.weight = out.colour.w * trust;
   return out;
 }

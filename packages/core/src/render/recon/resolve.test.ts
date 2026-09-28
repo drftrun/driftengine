@@ -83,9 +83,13 @@ interface Camera {
   eye: [number, number, number];
 }
 
-function camera(eye: [number, number, number], target: [number, number, number]): Camera {
+function camera(
+  eye: [number, number, number],
+  target: [number, number, number],
+  lens: Float64Array = LENS,
+): Camera {
   const view = mat4.lookAt(new Float64Array(16), eye, target, [0, 1, 0]);
-  const viewProj = mat4.multiply(new Float64Array(16), LENS, view) as Float64Array;
+  const viewProj = mat4.multiply(new Float64Array(16), lens, view) as Float64Array;
   return { viewProj, inverse: mat4.invert(new Float64Array(16), viewProj) as Float64Array, eye };
 }
 
@@ -165,6 +169,32 @@ function render(
       const value = pattern(p[0], p[1]);
       scene.fill(value, (y * width + x) * 3, (y * width + x + 1) * 3);
       depth[y * width + x] = clipDepth(cam, p);
+    }
+  }
+  return { scene, depth };
+}
+
+/**
+ * One frame of two surfaces, point-sampled at each texel's jittered centre: a plane at `nearZ`, in
+ * front of the wall, wherever `inFront` holds at the point the ray meets it, and the wall elsewhere.
+ */
+function renderLayered(
+  cam: Camera,
+  width: number,
+  height: number,
+  jitter: ArrayLike<number>,
+  nearZ: number,
+  inFront: (x: number, y: number) => boolean,
+): { scene: Float32Array; depth: Float32Array } {
+  const scene = new Float32Array(width * height * 3).fill(0.5);
+  const depth = new Float32Array(width * height).fill(1);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const u = (x + 0.5 - (jitter[0] as number)) / width;
+      const v = (y + 0.5 - (jitter[1] as number)) / height;
+      const near = hit(cam, u, v, nearZ);
+      const p = near !== null && inFront(near[0], near[1]) ? near : hit(cam, u, v, 0);
+      if (p !== null) depth[y * width + x] = clipDepth(cam, p);
     }
   }
   return { scene, depth };
@@ -554,11 +584,11 @@ test('WHERE A PIXEL KNOWS TOO LITTLE, THE RENDER READ AT ITS JITTERED POSITION F
 
 test('LAST FRAME’S DEPTH IS READ WHERE LAST FRAME’S JITTER PUT IT', () => {
   /*
-   * The pixel's surface moved three tenths of a texel, so its history lands between two of last
-   * frame's texel centres — and last frame was drawn two fifths of a texel to the right, which
-   * decides which of the two was nearer. Last frame's depth has a step there: an object a unit
-   * nearer on the left, the wall on the right. Read with last frame's jitter, the history lands at
-   * 3.8 + 0.4, on the wall, the same surface; without it, at 3.8, on the object.
+   * The pixel's surface moved three tenths of a texel, so it was at 3.8 — and last frame was drawn two
+   * fifths of a texel to the right, which decides which texel that is. Last frame's depth has a step:
+   * an object a unit nearer up to texel 4, the wall from texel 5. Read with last frame's jitter, the
+   * search for the surface starts at 3.8 + 0.4, in texel 4, and the wall is one over; without it, it
+   * starts in texel 3, and every texel within one of that holds the object.
    */
   const cam = camera([0, 0, 5], [0, 0, 0]);
   const sizes = { rw: 8, rh: 8, ow: 8, oh: 8 };
@@ -568,7 +598,7 @@ test('LAST FRAME’S DEPTH IS READ WHERE LAST FRAME’S JITTER PUT IT', () => {
   const previousDepth = new Float32Array(64);
   for (let y = 0; y < 8; y += 1) {
     for (let x = 0; x < 8; x += 1) {
-      previousDepth[y * 8 + x] = (x <= 3 ? nearer : wall).depth[y * 8 + x] as number;
+      previousDepth[y * 8 + x] = (x <= 4 ? nearer : wall).depth[y * 8 + x] as number;
     }
   }
   const frame = render(cam, 8, 8, [0, 0], (x) => 0.4 + 0.01 * x);
@@ -612,6 +642,105 @@ test('A SURFACE AT THE SAME DEPTH TURNED ON ITS EDGE IS NOT THE SAME SURFACE', (
   expect(turned.depth[4 * 8 + 4]).toBeCloseTo(frame.depth[4 * 8 + 4] as number, 6);
   expect(facing[at + 3]).toBeGreaterThan(CAP);
   expect(edgeOn[at + 3]).toBeLessThan(CAP * 0.2 + NATIVE_WEIGHT);
+});
+
+/** Two degrees across: a texel at five units is under a centimetre wide. */
+const NARROW = mat4.perspective(new Float64Array(16), Math.PI / 90, 1, 0.5, 40) as Float64Array;
+
+/**
+ * The output pixels away from the border that lost any of a full history: kept whole, a pixel's
+ * weight is the cap plus what this frame gathered, which the same resolve with no history measures.
+ */
+function historyLost(frame: ResolveFrame): string[] {
+  const { outputWidth: ow, outputHeight: oh } = frame;
+  const kept = new Float32Array(ow * oh * 4);
+  const fresh = new Float32Array(ow * oh * 4);
+  resolveFrame(frame, kept, new Float32Array(ow * oh * 3));
+  resolveFrame({ ...frame, hasHistory: false }, fresh, new Float32Array(ow * oh * 3));
+  const lost: string[] = [];
+  for (let y = 1; y < oh - 1; y += 1) {
+    for (let x = 1; x < ow - 1; x += 1) {
+      const at = (y * ow + x) * 4 + 3;
+      const whole = CAP + (fresh[at] as number);
+      if (Math.abs((kept[at] as number) - whole) > 1e-4) {
+        lost.push(
+          `${String(x)},${String(y)}: ${(kept[at] as number).toFixed(3)} of ${whole.toFixed(3)}`,
+        );
+      }
+    }
+  }
+  return lost;
+}
+
+test('A STILL SILHOUETTE KEEPS ITS HISTORY ON BOTH SIDES OF IT, whatever the jitter', () => {
+  /*
+   * Nothing moves: a panel a unit in front of the wall covers the left of the picture, and only the
+   * jitter changes, by nine tenths of a texel. A pixel on the wall beside the panel takes its motion
+   * from the panel — the dilation — so its history is the panel's to judge, and judged against the
+   * texel under the pixel, the wall side of every edge in a still picture threw its history away on
+   * every frame.
+   *
+   * The edge is at render texel 3.0, which this frame samples at 2.95 and 3.95 and last frame at 2.05
+   * and 3.05: at ratio one and a half, output column 5 observes texel 3, the wall, and dilates to
+   * texel 2, the panel — and the texel under the pixel last frame is 4, two from it. Only a search
+   * that starts where texel 2 was, and looks around it, finds the panel.
+   */
+  const cam = camera([0, 0, 5], [0, 0, 0]);
+  const sizes = { rw: 8, rh: 8, ow: 12, oh: 12 };
+  const previousJitter = [0.45, 0];
+  const jitter = [-0.45, 0];
+  /* Render texel 3.0 is clip x −0.25, which on the panel's plane, four units away, is this. */
+  const edge = -0.25 * 4 * Math.tan(Math.PI / 8);
+  const panel = (x: number): boolean => x < edge;
+  const before = renderLayered(cam, 8, 8, previousJitter, 1, panel);
+  const frame = renderLayered(cam, 8, 8, jitter, 1, panel);
+  const stale = historyOf(new Float32Array(12 * 12 * 3).fill(0.5), CAP);
+  expect(
+    historyLost(frameOf(cam, cam, frame, before.depth, stale, sizes, jitter, previousJitter, true)),
+  ).toEqual([]);
+});
+
+test('A SURFACE TURNED AWAY FROM THE EYE KEEPS ITS HISTORY WHILE THE JITTER MOVES', () => {
+  /*
+   * A wall at forty-five degrees, whose depth changes by five to twelve percent across one of these
+   * large texels. Half a texel of jitter moves every sample along it, so the nearest of last frame's
+   * samples lies half a step from this frame's — past a tolerance of one percent, with nothing moved.
+   */
+  const cam = camera([0, 0, 5], [0, 0, 0]);
+  const sizes = { rw: 12, rh: 10, ow: 12, oh: 10 };
+  const previousJitter = [0.25, 0];
+  const jitter = [-0.25, 0];
+  const before = render(cam, 12, 10, previousJitter, FLAT(0.5), 0, 1);
+  const frame = render(cam, 12, 10, jitter, FLAT(0.5), 0, 1);
+  const stale = historyOf(frame.scene, CAP);
+  expect(
+    historyLost(frameOf(cam, cam, frame, before.depth, stale, sizes, jitter, previousJitter, true)),
+  ).toEqual([]);
+});
+
+test('THIN PARTS JUST IN FRONT OF A SURFACE KEEP THEIR HISTORY WHILE THE JITTER MOVES', () => {
+  /*
+   * Rods three fifths of a texel wide, nine tenths of a percent of the depth in front of the wall:
+   * too close for depth to tell them from it, and — through a lens this narrow, where a texel is a
+   * tenth of their height — a normal differenced across one leans nearly edge-on. Which neighbours
+   * are rod and which are wall changes with the jitter, so the two frames' normals disagreed about a
+   * picture in which nothing moved.
+   */
+  const cam = camera([0, 0, 5], [0, 0, 0], NARROW);
+  const sizes = { rw: 40, rh: 6, ow: 40, oh: 6 };
+  const texel = (2 * 5 * Math.tan(Math.PI / 180)) / 40;
+  const rods = (x: number): boolean => {
+    const period = x / (3 * texel);
+    return period - Math.floor(period) < 0.2;
+  };
+  const previousJitter = [0.3, 0.1];
+  const jitter = [-0.2, -0.15];
+  const before = renderLayered(cam, 40, 6, previousJitter, 0.045, rods);
+  const frame = renderLayered(cam, 40, 6, jitter, 0.045, rods);
+  const stale = historyOf(frame.scene, CAP);
+  expect(
+    historyLost(frameOf(cam, cam, frame, before.depth, stale, sizes, jitter, previousJitter, true)),
+  ).toEqual([]);
 });
 
 test('THE RESOLVE BUILDS A PICTURE LARGER THAN THE ONE RENDERED, and it converges on the ideal', () => {

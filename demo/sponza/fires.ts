@@ -47,13 +47,15 @@ import type {
   Vec3,
 } from '../../packages/core/src/index';
 import type { DrftLight } from '@driftengine/drft';
-import { BRAZIERS, BRAZIER_TOP_M, buildBraziers } from './braziers';
+import { BRAZIERS, BRAZIER_BOWL_BOTTOM_M, BRAZIER_TOP_M, buildBraziers } from './braziers';
 import { join } from './lightJoin';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 /** A wood fire, about 1,800 K. */
 const FIRE_LIGHT: Vec3 = [0.45, 0.22, 0.08];
+/** How far below the bowl a brazier's shadow map begins, so the bowl's underside is never cut. */
+const BOWL_CLEARANCE_M = 0.05;
 /** A lantern's flame behind glass, about 2,000 K, and the file's own colour for it. */
 const LANTERN_LIGHT = 0.1;
 /** A candle, about 1,850 K. */
@@ -131,8 +133,8 @@ export class SponzaFires {
     this.shadows = options.shadows ?? true;
     this.summed = options.summed ?? true;
     this.braziers = renderer.createMesh(buildBraziers());
-    this.brazierFlames = BRAZIERS.map(([x, , z], seed) =>
-      createFlame({
+    this.brazierFlames = BRAZIERS.map(([x, , z], seed) => {
+      const flame = createFlame({
         x,
         y: BRAZIER_TOP_M,
         z,
@@ -141,8 +143,17 @@ export class SponzaFires {
         radius: 14,
         flicker: 0.2,
         seed: seed + 1,
-      }),
-    );
+      });
+      /*
+       * **Cut clear of the whole bowl, from the top of the sway.** The engine's near plane clears
+       * D / 6 under the coals, and this bowl hangs 16 cm under them: its lower half sat across the
+       * cut, so every re-bake decided afresh whether the floor under the brazier got a dark disc.
+       * The light comes from inside the bowl, so none of it is in the map.
+       */
+      flame.light.shadowNear =
+        flame.centre[1] + flame.swayM - BRAZIER_BOWL_BOTTOM_M + BOWL_CLEARANCE_M;
+      return flame;
+    });
     this.fire = renderer.createPlumes(
       this.brazierFlames.map((flame) => flame.plume),
       { material: 'fire', blend: 'additive', sizePulse: 0.2, windResponse: 0.05 },

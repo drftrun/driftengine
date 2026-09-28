@@ -743,7 +743,12 @@ export class SceneTarget {
      * `veilColor` and `veilAlpha` are positional defaults and every existing caller passes them
      * by position.
      */
-    temporal?: { readonly reprojection: Float32Array; readonly blend: number },
+    temporal?: {
+      readonly reprojection: Float32Array;
+      readonly blend: number;
+      readonly periodStart: boolean;
+      readonly depthToViewZ: Float32Array;
+    },
   ): void {
     const { gl } = this;
     this.depthWanted =
@@ -883,6 +888,8 @@ export class SceneTarget {
         this.width,
         this.height,
         temporal.blend,
+        temporal.periodStart,
+        temporal.depthToViewZ,
       );
     }
 

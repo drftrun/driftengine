@@ -296,9 +296,12 @@ test('A WANDERING LIGHT GETS ITS WHOLE CUBE IN ONE FRAME, so its origin moves ev
   /* One light, baked, and stale again on every frame however it is served: a flame. */
   const flame = { hasBaked: true, matchesSource: () => false };
 
-  /* Two faces while the run is short, which is the ordinary drifted-once budget. */
-  expect(staticBakes([flame], 1), 'the first stale frame is not yet chronic').toEqual([
-    { light: 0, faces: 2 },
+  /*
+   * The whole cube from the first stale frame. This asked for two while the run was short, which
+   * left the shader reading a cube a third drawn from somewhere else: see the test below.
+   */
+  expect(staticBakes([flame], 1), 'the first stale frame is not dribbled either').toEqual([
+    { light: 0, faces: 6 },
   ]);
 
   /* CHRONIC_STALE_FRAMES is 3, and past it the whole cube lands inside the frame. */
@@ -327,6 +330,44 @@ test('AND A LIGHT WITH NO IMAGE AT ALL IS STILL SERVED FIRST, ahead of a flame r
   expect(asked, 'the cold light takes the cube and the flame waits a frame').toEqual([
     { light: 1, faces: 6 },
   ]);
+});
+
+test('A MAP THE SHADER IS READING IS NEVER LEFT PART-WAY THROUGH A RE-BAKE', () => {
+  /*
+   * Faces land in the layer the shader samples as they are drawn, and the origin they were drawn
+   * from is published only with the last one. Two faces of six is therefore a cube read from the
+   * old origin with a third of it drawn from the new one: a face is a 90 degree frustum, so what
+   * that paints is a straight-edged quadrilateral of wrong shadow on the ground under the lamp.
+   * With the budget spent elsewhere it held for over a second; reported under a brazier as a dark
+   * shape that came and went.
+   */
+  const drifted = { hasBaked: true, matchesSource: () => false };
+  expect(staticBakes([drifted], 1), 'the first stale frame takes the whole cube').toEqual([
+    { light: 0, faces: 6 },
+  ]);
+  const other = { hasBaked: true, matchesSource: () => false };
+  expect(staticBakes([drifted, other], 1), 'the second waits rather than taking two').toEqual([
+    { light: 0, faces: 6 },
+  ]);
+
+  /* Held but not shaded: whole when the budget covers a cube, and otherwise not started. */
+  const asked: number[] = [];
+  runPointShadowBakes(
+    { ...trackingPool([drifted]), sampledCount: 0 },
+    [{ x: 0, y: 0, z: 0, radius: 10, shadowNear: 0.1, sourceRadius: 0 }],
+    2,
+    0,
+    0.01,
+    6,
+    createBakeScratch(16),
+    {},
+    {},
+    (_map, _light, _casters, maxFaces) => {
+      asked.push(maxFaces);
+      return maxFaces;
+    },
+  );
+  expect(asked, 'a warm map is not given part of a cube').toEqual([]);
 });
 
 test('A QUIET FRAME DOES NOT COST A WANDERER ITS ALLOWANCE, which is what stopped the vibration', () => {

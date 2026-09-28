@@ -20,6 +20,15 @@
  * The vertex stage is `FULLSCREEN_VERT`, shared with the occlusion pass, its blur and the rush.
  */
 import { glslSceneDepthToNdc } from '../depthConvention.ts';
+import {
+  FLICKER_BLEND,
+  FLICKER_MEMORY,
+  FLICKER_REPEAT,
+  FLICKER_SURFACE,
+  FLICKER_WIDTH,
+  STILL_FROM,
+  STILL_TO,
+} from '../temporalAa.ts';
 
 export const TEMPORAL_RESOLVE_FRAG = `#version 300 es
 precision highp float;
@@ -30,6 +39,22 @@ in vec2 vUv;
 uniform sampler2D uScene;
 /** What this pass wrote last frame: resolved, and conceptually unjittered. */
 uniform sampler2D uHistory;
+/**
+ * Each pixel's flicker record from last frame, the anti-flicker in temporalAa.ts: its spread about
+ * its period's mean, the sum this period has gathered, the last period's mean, and how many periods
+ * running have repeated. highp for the reason the depth's is: a luma in a half-float scene is not a
+ * value from 0 to 1.
+ */
+uniform highp sampler2D uFlicker;
+/**
+ * The rest of the record: the view depth the pixel's sample stood at, so the next frame can tell
+ * whether it follows the same surface, and the pixel's own depth swing, which that test allows for.
+ */
+uniform highp sampler2D uFlickerMotion;
+/** The inverse projection's depth row and w row, as the other passes read a depth into metres. */
+uniform vec4 uDepthToViewZ;
+/** One where the records can hold what they hold, zero where they cannot: then 4.4.1's resolve. */
+uniform float uAntiFlicker;
 /**
  * The frame's depth.
  *
@@ -53,6 +78,8 @@ uniform highp sampler2D uDepth;
 uniform mat4 uReprojection;
 /** One texel of the target, for walking the neighbourhood. */
 uniform vec2 uTexel;
+/** One on the first frame of the jitter's period, where the anti-flicker compares two periods. */
+uniform float uPeriodStart;
 /**
  * How much of the clipped history to keep, 0 to 1.
  *
@@ -63,7 +90,41 @@ uniform vec2 uTexel;
  */
 uniform float uHistoryBlend;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+/** The record carried out, in the texture uFlicker reads next frame. */
+layout(location = 1) out vec4 flickerOut;
+/** And the rest of it, in the texture uFlickerMotion reads. */
+layout(location = 2) out vec4 flickerMotionOut;
+
+const float FLICKER_MEMORY = ${FLICKER_MEMORY.toFixed(3)};
+const float FLICKER_WIDTH = ${FLICKER_WIDTH.toFixed(1)};
+const float FLICKER_REPEAT = ${FLICKER_REPEAT.toFixed(2)};
+const float FLICKER_BLEND = ${FLICKER_BLEND.toFixed(2)};
+const float FLICKER_SURFACE = ${FLICKER_SURFACE.toFixed(2)};
+const float STILL_FROM = ${STILL_FROM.toFixed(2)};
+const float STILL_TO = ${STILL_TO.toFixed(2)};
+
+float luma(vec3 c) {
+  return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+/** A record starting over: no spread, and nothing repeated yet. */
+vec4 freshRecord(vec3 current) {
+  float seen = luma(current);
+  return vec4(0.0, seen * FLICKER_MEMORY, seen, 0.0);
+}
+
+/** Metres in front of the camera, from a depth sample, as depthOfField.ts reads one. */
+float viewDepthOf(float depth) {
+  float z = ${glslSceneDepthToNdc('depth')};
+  return -(uDepthToViewZ.x * z + uDepthToViewZ.y) / (uDepthToViewZ.z * z + uDepthToViewZ.w);
+}
+
+/** Whether two periods' means are the same, one to zero. */
+float repeats(float mean, float previous) {
+  float apart = abs(mean - previous) / max(max(mean, previous), 1.0 / 255.0);
+  return 1.0 - smoothstep(FLICKER_REPEAT, 2.0 * FLICKER_REPEAT, apart);
+}
 
 /**
  * The colours actually present around this pixel this frame, as a box.
@@ -155,19 +216,45 @@ void main() {
   /* Nothing to blend towards: the first frame, a resize, a cut, or the effect switched off. */
   if (uHistoryBlend <= 0.0) {
     fragColor = vec4(current, 1.0);
+    flickerOut = freshRecord(current);
+    flickerMotionOut = vec4(0.0);
     return;
   }
 
+  /*
+   * **The motion is the nearest surface's among the nine**, the dilation every temporal resolve
+   * uses: a pixel at a thin thing samples it in some frames and what is behind it in others, and the
+   * two move apart as the camera does, so reprojecting each frame by whichever it caught sends its
+   * history and its record somewhere different every frame. A crack of light round a door moves with
+   * the door that frames it, and so does its pixel. The depth kept is that surface's too, so the record
+   * keeps and next frame tests the depth the reprojection followed.
+   */
+  vec2 nearestAt = vUv;
   float depth = textureLod(uDepth, vUv, 0.0).r;
-  vec4 clip = vec4(vUv * 2.0 - 1.0, ${glslSceneDepthToNdc('depth')}, 1.0);
+  float metres = viewDepthOf(depth);
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 at = vUv + vec2(float(x), float(y)) * uTexel;
+      float tap = textureLod(uDepth, at, 0.0).r;
+      float tapMetres = viewDepthOf(tap);
+      if (tapMetres < metres) {
+        metres = tapMetres;
+        depth = tap;
+        nearestAt = at;
+      }
+    }
+  }
+  vec4 clip = vec4(nearestAt * 2.0 - 1.0, ${glslSceneDepthToNdc('depth')}, 1.0);
   vec4 previous = uReprojection * clip;
   /* Behind the previous eye: there is no last-frame position to sample. */
   if (previous.w <= 0.0) {
     fragColor = vec4(current, 1.0);
+    flickerOut = freshRecord(current);
+    flickerMotionOut = vec4(metres, 0.0, 0.0, 0.0);
     return;
   }
 
-  vec2 wasUv = (previous.xy / previous.w) * 0.5 + 0.5;
+  vec2 wasUv = vUv + ((previous.xy / previous.w) * 0.5 + 0.5 - nearestAt);
   /*
    * **Off the edge of the last frame is a disocclusion**, and the honest answer is this frame's
    * colour rather than a clamped sample of the border, which would drag one row of pixels inward
@@ -175,6 +262,8 @@ void main() {
    */
   if (wasUv.x < 0.0 || wasUv.x > 1.0 || wasUv.y < 0.0 || wasUv.y > 1.0) {
     fragColor = vec4(current, 1.0);
+    flickerOut = freshRecord(current);
+    flickerMotionOut = vec4(metres, 0.0, 0.0, 0.0);
     return;
   }
 
@@ -182,8 +271,55 @@ void main() {
   vec3 hi;
   neighbourhood(lo, hi);
   vec3 history = historyCatmullRom(wasUv);
-  vec3 bounded = clipToNeighbourhood(history, lo, hi);
 
-  fragColor = vec4(mix(current, bounded, uHistoryBlend), 1.0);
+  /*
+   * The anti-flicker, operation for operation the one in temporalAa.ts. The record is read at the
+   * texel where the surface was rather than filtered, so two surfaces' records never mix at an
+   * edge; it is the surface's own if last frame's depth there, or at one of the texels beside it,
+   * is the depth this surface should have had — the nearest of five, because this frame's sample
+   * and last frame's can straddle an edge with nothing moved. Otherwise it is no record.
+   */
+  ivec2 size = textureSize(uFlicker, 0);
+  ivec2 was = clamp(ivec2(wasUv * vec2(size)), ivec2(0), size - 1);
+  float nearest = 1e9;
+  for (int n = 0; n < 5; n++) {
+    ivec2 at = was + (n == 1 ? ivec2(1, 0) : n == 2 ? ivec2(-1, 0) : n == 3 ? ivec2(0, 1) : n == 4 ? ivec2(0, -1) : ivec2(0));
+    float stood = texelFetch(uFlickerMotion, clamp(at, ivec2(0), size - 1), 0).r;
+    if (stood > 0.0) nearest = min(nearest, abs(stood - previous.w));
+  }
+  /* The swing is the pixel's whatever the test says: resetting it would stop it learning one. */
+  vec4 motionThere = texelFetch(uFlickerMotion, was, 0);
+  bool missedAll = nearest > 1e8;
+  bool same = uAntiFlicker > 0.5 && !missedAll &&
+    nearest <= FLICKER_WIDTH * motionThere.g + FLICKER_SURFACE * previous.w;
+  float swingOut = missedAll ? 0.0 : motionThere.g + (nearest - motionThere.g) * FLICKER_MEMORY;
+  float seen = luma(current);
+  vec4 held = same ? texelFetch(uFlicker, was, 0) : freshRecord(current);
+
+  float still = 1.0 - smoothstep(STILL_FROM, STILL_TO, length((wasUv - vUv) / uTexel));
+  float apart = abs(seen - held.b);
+  float reach = FLICKER_WIDTH * held.r + 1.0 / 255.0;
+  bool within = apart <= reach;
+  bool proven = held.a > 0.75 && within;
+  float widen = proven ? FLICKER_WIDTH * held.r * still : 0.0;
+  float blend = proven ? mix(uHistoryBlend, FLICKER_BLEND, still) : uHistoryBlend;
+  vec3 bounded = clipToNeighbourhood(history, lo - widen, hi + widen);
+
+  float sum = held.g;
+  float mean = held.b;
+  float repeated = within ? held.a : 0.0;
+  if (uPeriodStart > 0.5) {
+    repeated = repeats(sum, mean) > 0.5 ? min(1.0, repeated + 0.5) : 0.0;
+    mean = sum;
+    sum = 0.0;
+  }
+  flickerOut = vec4(
+    held.r + (apart - held.r) * FLICKER_MEMORY,
+    sum + seen * FLICKER_MEMORY,
+    mean,
+    repeated * still
+  );
+  flickerMotionOut = vec4(metres, swingOut, 0.0, 0.0);
+  fragColor = vec4(mix(current, bounded, blend), 1.0);
 }
 `;

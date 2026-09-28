@@ -82,6 +82,7 @@ export function flameFrequencyHz(diameterM: number): number {
 export function createFlame(options: FlameOptions): Flame {
   const height = HEIGHT_PER_DIAMETER * options.diameterM;
   const centre: Vec3 = [options.x, options.y + height / 3, options.z];
+  const swayM = (options.sway ?? SWAY_PER_HEIGHT) * height;
   /* A seed spread over the whole turn, so seeds 1 and 2 are not neighbours in phase. */
   const phase = ((options.seed ?? 0) * 2.399963) % (Math.PI * 2);
   const light: PointLightSource = {
@@ -94,7 +95,19 @@ export function createFlame(options: FlameOptions): Flame {
     radius: options.radius,
     /* Off, because this helper is the flicker; the selection's own would apply a second one. */
     flicker: 0,
-    shadowNear: Math.max(0.05, options.diameterM),
+    /*
+     * **Clear of what the fire burns from wherever the light has wandered**, which is the sway added
+     * to the near plane a still flame would want. The shadow map is baked from where the light
+     * stood, so the cut moves with it, and each axis moves by at most `swayM`: a near plane of D
+     * alone left a brazier's bowl 7 mm inside it at the top of the sway and 13 cm outside at the
+     * bottom, and the bowl's shadow on the floor under the brazier came and went with every
+     * re-bake — a dark disc on some, none on others.
+     *
+     * What it gives up is `swayM` of shadow nearest the light, which is inside the fixture. What
+     * would make it wrong is a fixture reaching further below the flame than D / 6: this clears
+     * that far and no further, so a deep bowl sets its own `shadowNear` from its own depth.
+     */
+    shadowNear: Math.max(0.05, options.diameterM) + swayM,
     sourceRadius: options.diameterM / 2,
     ...(options.castsShadow === false ? { castsShadow: false } : {}),
   };
@@ -112,7 +125,7 @@ export function createFlame(options: FlameOptions): Flame {
     color: [options.color[0], options.color[1], options.color[2]],
     flicker: options.flicker ?? 0.18,
     phase,
-    swayM: (options.sway ?? SWAY_PER_HEIGHT) * height,
+    swayM,
   };
 }
 

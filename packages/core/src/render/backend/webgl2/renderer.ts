@@ -1263,6 +1263,9 @@ export class WebGL2Renderer implements RendererApi {
    * Scratch, filled in `endFrame`, which may not allocate.
    */
   private frameProjection: ReadonlyMat4 | null = null;
+  /** The temporal resolve's depth-to-metres row, from the inverse of `frameProjection`. */
+  private readonly taaInvProjection = mat4.create();
+  private readonly taaDepthToViewZ = Float32Array.of(0, 0, 0, 1);
   private readonly aoInvProjection = mat4.create();
   private readonly aoProjScale = new Float32Array(2);
   /**
@@ -6193,7 +6196,14 @@ export class WebGL2Renderer implements RendererApi {
     const view = this.frameViewProj;
     const blur = this.quality.cameraMotionBlur * this.motionBlurScale;
     let motion: { reprojection: Float32Array; strength: number; max: number } | undefined;
-    let temporal: { reprojection: Float32Array; blend: number } | undefined;
+    let temporal:
+      | {
+          reprojection: Float32Array;
+          blend: number;
+          periodStart: boolean;
+          depthToViewZ: Float32Array;
+        }
+      | undefined;
     /*
      * **Both effects want the same one matrix**, so it is built once when either asks. The
      * reprojection was previously kept only while the blur was on, which is why this reads as it
@@ -6222,9 +6232,19 @@ export class WebGL2Renderer implements RendererApi {
        * its early exit on it — so this is present every jittered frame rather than absent on some,
        * and the pass still runs and fills the history for the next one.
        */
+      /* The anti-flicker's same-surface test reads depths in metres, as the occlusion does. */
+      if (this.frameProjection !== null) {
+        mat4.invert(this.taaInvProjection, this.frameProjection);
+        this.taaDepthToViewZ[0] = this.taaInvProjection[10] ?? 0;
+        this.taaDepthToViewZ[1] = this.taaInvProjection[14] ?? 0;
+        this.taaDepthToViewZ[2] = this.taaInvProjection[11] ?? 0;
+        this.taaDepthToViewZ[3] = this.taaInvProjection[15] ?? 1;
+      }
       temporal = {
         reprojection: this.reprojection as Float32Array,
         blend: this.temporalHistoryUsable ? TEMPORAL_HISTORY_BLEND : 0,
+        periodStart: this.temporalHistory.periodStart,
+        depthToViewZ: this.taaDepthToViewZ,
       };
     }
 

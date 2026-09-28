@@ -5,6 +5,8 @@ import {
   DEFAULT_DISOCCLUSION,
   disocclusionWeight,
   normalFromPositions,
+  planarity,
+  surfaceSlope,
   worldPositionFromDepth,
 } from './disocclusion.ts';
 
@@ -123,6 +125,72 @@ test('the disagreement is relative, so a far surface is not held to a near one�
   /* A tenth of a unit at a hundred units is a tenth of a percent; at one unit it is ten percent. */
   expect(disocclusionWeight(100, 100.1, 0, 1, P)).toBe(1);
   expect(disocclusionWeight(1, 1.1, 0, 1, P)).toBe(0);
+});
+
+test('A SURFACE’S OWN SLOPE IS FORGIVEN, because a new jitter samples it somewhere else', () => {
+  /*
+   * Two and a half percent apart is refused on a surface facing the eye, where a tolerance of one
+   * percent is fully spent at two. A surface whose depth moves two percent across a texel has
+   * samples that far apart from nothing but the jitter, so its slope widens the tolerance to three.
+   */
+  expect(disocclusionWeight(10, 10.25, 0, 1, P)).toBe(0);
+  expect(disocclusionWeight(10, 10.25, 0, 1, P, 0.02)).toBe(1);
+});
+
+test('the weight is continuous in the slope, as it is in the motion', () => {
+  /* The slope moves the tolerance one for one, so the bound is the motion sweep's at a scale of one. */
+  const T = P.depthTolerance;
+  let previous = disocclusionWeight(10, 10.3, 0, 1, P, 0);
+  for (let i = 1; i <= 4000; i += 1) {
+    const value = disocclusionWeight(10, 10.3, 0, 1, P, (i / 4000) * 0.2);
+    expect(Math.abs(value - previous)).toBeLessThanOrEqual(((1.5 * 0.03) / (T * T)) * (0.2 / 4000));
+    previous = value;
+  }
+});
+
+test('A SURFACE’S SLOPE IS THE STEP TO THE NEIGHBOUR ON IT, and a sliver has none', () => {
+  /* Nearer on one side and farther on the other: the smaller step, a tenth of a unit in ten. */
+  expect(surfaceSlope(9.9, 10, 10.3)).toBeCloseTo(0.01, 12);
+  /*
+   * Nearer or farther than both: every step leaves this surface for another one, so neither is its
+   * slope. A rod before a far wall, and a crack between two near faces.
+   */
+  expect(surfaceSlope(20, 10, 20)).toBe(0);
+  expect(surfaceSlope(5, 10, 5)).toBe(0);
+  /* One neighbour, at the border or where there is nothing drawn, is the only step there is. */
+  expect(surfaceSlope(0, 10, 10.2)).toBeCloseTo(0.02, 12);
+  expect(surfaceSlope(0, 10, 0)).toBe(0);
+});
+
+test('THREE TEXELS ON ONE PLANE ARE PLANAR AT ANY ANGLE, and an edge or a sliver is not', () => {
+  /*
+   * Inverse depth is affine across a plane on screen: 0.1, 0.11 and 0.12 in a row are one plane
+   * however steeply it is turned — the depths themselves, 10, 9.09 and 8.33, are not evenly spaced —
+   * so its two steps are equal and opposite.
+   */
+  expect(planarity(1 / 0.1, 1 / 0.11, 1 / 0.12)).toBe(1);
+  /* One side steps to the wall behind and the other does not: an edge. */
+  expect(planarity(10, 10, 20)).toBe(0);
+  /* Both step the same way: a rod in front of a wall, a sliver. */
+  expect(planarity(20, 10, 20)).toBe(0);
+  /*
+   * Steps of 0.022 and −0.01 in inverse depth disagree by 0.012 of 0.032 — three eighths, the middle
+   * of the band — and a smoothstep is a half there.
+   */
+  expect(planarity(1 / 0.09, 10, 1 / 0.122)).toBeCloseTo(0.5, 9);
+  /* A surface facing the eye has no steps to compare, and nothing on one side nothing to judge by. */
+  expect(planarity(10, 10, 10)).toBe(1);
+  expect(planarity(0, 10, 20)).toBe(1);
+});
+
+test('A SMALL STEP IS AS MUCH AN EDGE AS A LARGE ONE, because a normal across it is still wrong', () => {
+  /*
+   * A rod a hundredth of the depth in front of a wall passes a depth test, and a normal differenced
+   * across it is still tilted by its height over the texel's width — nearly edge-on where texels are
+   * small. What makes it an edge is that one side steps and the other does not, not the size.
+   */
+  expect(planarity(10, 10, 10.1)).toBe(0);
+  expect(planarity(10, 9.9, 10)).toBe(0);
 });
 
 test('a world position comes back out of a depth through the inverse view-projection', () => {

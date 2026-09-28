@@ -256,15 +256,15 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
      * **The run decays rather than resetting, and it climbs past the threshold before it stops.**
      *
      * A light that wanders on a curve is not stale on *every* frame — near the turning points of
-     * its travel it moves less in a frame than the rebake tolerance, so a run that reset to zero
-     * lost the tracking allowance there and the map dropped back to two faces a frame. The shadow
-     * then travelled smoothly through the fast part of the wander and stepped through the slow
-     * part, which is not motion and not stillness: it reads as a vibration. Reported that way,
-     * against a brazier, once the tracking allowance was in.
+     * its travel it moves less in a frame than the rebake tolerance. When the run decided whether a
+     * wanderer got its whole cube, a run that reset to zero dropped it back to two faces a frame
+     * there, and the shadow stepped through the slow part of the wander: reported as a vibration
+     * against a brazier. Every image-holding map is re-baked whole now, so the run only orders the
+     * queue, and the hysteresis keeps a wanderer behind the lights that settle instead of letting
+     * it jump ahead at every turning point.
      *
-     * So the run is hysteresis. It climbs to twice the threshold, which buys a light that has
-     * earned the allowance three quiet frames before it loses it, and decays one frame at a time
-     * so a light that genuinely settles stops re-baking rather than holding a budget for ever.
+     * It climbs to twice the threshold, which keeps a light chronic for three quiet frames, and
+     * decays one frame at a time so a light that genuinely settles rejoins the ordinary order.
      */
     const previous = scratch.staleRun[slot] ?? 0;
     const run = stale
@@ -285,37 +285,40 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
   let faces = facesPerFrame;
   let urgentSpent = false;
   /*
-   * **One wandering light finishes its cube in the frame it started it**, the same allowance a
-   * light with no image at all gets, and for a reason that turns out to be the same one: a map
-   * dribbled out at two faces a frame is a map nobody can sample correctly until it lands.
+   * **A map that holds an image is re-baked whole or not at all**, and one being shaded may take a
+   * whole cube a frame outside the budget to make that possible.
    *
-   * A cold light cannot be sampled *at all* until its six faces are in, so it takes the whole
-   * cube at once. A chronically stale one can be sampled throughout and is wrong in a quieter
-   * way: `planBake` pins the origin for the whole of a resumed bake, so six faces spread over
-   * three frames means the published origin steps once every third frame. The shader shoots from
-   * that origin, so the shadow it draws steps with it — reported on a brazier as motion that was
-   * "really fast, not smooth, snappy, and unrealistic", which is a 20 Hz sample of a flame that
-   * wanders about once a second.
+   * Faces land in the layer the shader samples as they are drawn, and `planBake` publishes the
+   * origin they were drawn from only with the last one. So a re-bake spread over frames is a cube
+   * the shader reads from the old origin with part of it drawn from the new one — and a face is a
+   * 90 degree frustum, so the part drawn from somewhere else is a straight-edged quadrilateral of
+   * wrong shadow on the ground under the lamp. With the budget spent elsewhere it could hold for a
+   * second and more. Reported under a brazier as a dark shape that came and went.
    *
-   * Given the cube in one frame the origin moves every frame and the shadow travels instead.
+   * A map with no image yet is not sampled until its sixth face lands (see
+   * `PointShadowSystem.bind`), so it still fills a few faces a frame, and a cold one being shaded
+   * still jumps the queue with all six.
+   *
+   * The allowance used to be for a *chronically* stale light only — a wandering flame — whose
+   * dribbled cube published a new origin once every third frame, so its shadow stepped at 20 Hz
+   * where the flame wanders about once a second: reported as motion that was "really fast, not
+   * smooth, snappy, and unrealistic". Any shaded light is owed the same now, because a cube read
+   * part-way is wrong in the same place for the same reason whether or not it will be stale again.
    *
    * **Bounded to one light, and it has to be.** Eight braziers each taking six passes is the 48
-   * passes and 89 ms `pointShadowFacesPerFrame` exists to prevent. One is the light being shaded
-   * that most recently went stale, which is the one somebody is standing next to; the rest keep
-   * dribbling under the ordinary budget, and their shadows step rather than travel. That is the
-   * right way round: a shadow you are looking at moves, and a shadow across the square does not
-   * cost the frame.
+   * passes and 89 ms `pointShadowFacesPerFrame` exists to prevent. The first in the plan's order
+   * takes it, and `planPointShadowBakes` puts the lights that settled ahead of the ones that never
+   * do, so a flame refining its image cannot hold a correction hostage. The rest keep sampling a
+   * complete image from a few centimetres away until their turn, which is the trade
+   * `pointShadowRebakeDistance` already makes. A warm map, held but not shaded, is re-baked when a
+   * whole cube fits the budget or once it is shaded, and not before.
    *
-   * It is spent *after* the cold and settling groups, because `planPointShadowBakes` orders the
-   * chronic ones last — so a light arriving in range still gets its first image ahead of a flame
-   * refining one it already has.
-   *
-   * **What would make it wrong** is a caster set heavy enough that six passes over it does not
-   * fit the frame. Measured against a game whose whole static world is about 8,500 triangles in
-   * a handful of draws; a world an order of magnitude heavier wants `pointShadowFacesPerFrame`
+   * **What would make it wrong** is a caster set heavy enough that six passes over it does not fit
+   * the frame. Measured against a game whose whole static world is about 8,500 triangles in a
+   * handful of draws; a world an order of magnitude heavier wants `pointShadowFacesPerFrame`
    * raised or this given up, and `gpuTiming` is how to tell which.
    */
-  let trackingSpent = false;
+  let refreshSpent = false;
   for (let i = 0; i < planned && faces > 0; i++) {
     const slot = scratch.order[i] ?? -1;
     /*
@@ -328,13 +331,20 @@ export function runPointShadowBakes<M extends StaleCheck, L extends BakeableLigh
     if (light === undefined || map === undefined) continue;
 
     const sampled = slot < pool.sampledCount;
-    const cold = sampled && scratch.ready[slot] === 0;
-    const urgent = cold && !urgentSpent;
-    /* A light being shaded whose map will be stale again next frame however it is served. */
-    const tracking = !cold && sampled && scratch.chronic[slot] === 1 && !trackingSpent;
-    if (urgent) urgentSpent = true;
-    if (tracking) trackingSpent = true;
-    faces -= bake(map, light, staticCasters, urgent || tracking ? faceCount : faces);
+    if (scratch.ready[slot] !== 1) {
+      /* No image to spoil: a few faces a frame, or all six at once for one being shaded. */
+      const urgent = sampled && !urgentSpent;
+      if (urgent) urgentSpent = true;
+      faces -= bake(map, light, staticCasters, urgent ? faceCount : faces);
+      continue;
+    }
+    if (faces >= faceCount) {
+      faces -= bake(map, light, staticCasters, faceCount);
+      continue;
+    }
+    if (!sampled || refreshSpent) continue;
+    refreshSpent = true;
+    faces -= bake(map, light, staticCasters, faceCount);
   }
 
   /*

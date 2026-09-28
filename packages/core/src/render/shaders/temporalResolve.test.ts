@@ -1,5 +1,14 @@
 import { expect, test } from 'vitest';
 
+import {
+  FLICKER_BLEND,
+  FLICKER_MEMORY,
+  FLICKER_REPEAT,
+  FLICKER_SURFACE,
+  FLICKER_WIDTH,
+  STILL_FROM,
+  STILL_TO,
+} from '../temporalAa.ts';
 import { TEMPORAL_RESOLVE_FRAG } from './temporalResolve.ts';
 
 /**
@@ -87,4 +96,54 @@ test('THE HISTORY IS READ SHARP, through Catmull-Rom rather than one bilinear fe
   expect(TEMPORAL_RESOLVE_FRAG).toContain('vec3 history = historyCatmullRom(wasUv);');
   expect(TEMPORAL_RESOLVE_FRAG).toContain('vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);');
   expect(TEMPORAL_RESOLVE_FRAG).not.toContain('textureLod(uHistory, wasUv');
+});
+
+/**
+ * **Every exit writes the record as well as the picture.** An output a fragment does not write is
+ * undefined, and the record read back next frame from an undefined texel is a pixel that widens by
+ * whatever the driver left there — on a cut, a resize, or the edge of a turning camera.
+ */
+test('EVERY EXIT WRITES THE FLICKER RECORD, not only the one that resolves', () => {
+  const pictures = TEMPORAL_RESOLVE_FRAG.split('fragColor = ').length - 1;
+  const records = TEMPORAL_RESOLVE_FRAG.split('flickerOut = ').length - 1;
+  const motions = TEMPORAL_RESOLVE_FRAG.split('flickerMotionOut = ').length - 1;
+  expect(pictures).toBe(4);
+  expect(records).toBe(pictures);
+  expect(motions).toBe(pictures);
+});
+
+/**
+ * **The anti-flicker is the one `temporalAa.ts` tests, constant for constant**, so the frame-by-frame
+ * model there is a model of what runs. And the record is a half-float value where the scene is,
+ * so it is read at the precision the depth is.
+ */
+test('the anti-flicker spells its twin’s constants and reads its record at highp', () => {
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(
+    `const float FLICKER_MEMORY = ${FLICKER_MEMORY.toFixed(3)};`,
+  );
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(
+    `const float FLICKER_WIDTH = ${FLICKER_WIDTH.toFixed(1)};`,
+  );
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(
+    `const float FLICKER_REPEAT = ${FLICKER_REPEAT.toFixed(2)};`,
+  );
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(
+    `const float FLICKER_BLEND = ${FLICKER_BLEND.toFixed(2)};`,
+  );
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(`const float STILL_FROM = ${STILL_FROM.toFixed(2)};`);
+  expect(TEMPORAL_RESOLVE_FRAG).toContain(`const float STILL_TO = ${STILL_TO.toFixed(2)};`);
+  expect(Number(FLICKER_MEMORY.toFixed(3))).toBe(FLICKER_MEMORY);
+  for (const [name, value, digits] of [['FLICKER_SURFACE', FLICKER_SURFACE, 2]] as const) {
+    expect(TEMPORAL_RESOLVE_FRAG).toContain(`const float ${name} = ${value.toFixed(digits)};`);
+    expect(Number(value.toFixed(digits)), name).toBe(value);
+  }
+  expect(TEMPORAL_RESOLVE_FRAG).toContain('uniform highp sampler2D uFlicker;');
+  expect(TEMPORAL_RESOLVE_FRAG).toContain('uniform highp sampler2D uFlickerMotion;');
+  /*
+   * **Fetched at the texel where the surface was, never filtered**: a filtered read at an edge
+   * mixes two surfaces' records, and a record is only worth anything as one surface's.
+   */
+  expect(TEMPORAL_RESOLVE_FRAG).toContain('texelFetch(uFlicker, was, 0)');
+  expect(TEMPORAL_RESOLVE_FRAG).not.toContain('textureLod(uFlicker');
+  expect(TEMPORAL_RESOLVE_FRAG).not.toContain('textureLod(uFlickerMotion');
 });

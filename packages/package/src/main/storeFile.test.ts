@@ -90,12 +90,18 @@ describe('a store as one file', () => {
       while (!existsSync(path)) await new Promise((resolve) => setTimeout(resolve, 2));
       let reads = 0;
       let torn = 0;
-      const until = Date.now() + 600;
-      while (Date.now() < until) {
+      /*
+       * **Counted, not timed.** This read for 600 ms and asked for more than ten, and a loaded
+       * machine running the whole suite managed exactly ten: the reads are 8 MB each, so how many fit
+       * a window is a fact about the machine. Forty spans many rewrites wherever it runs, and the
+       * deadline is only there so a writer that never wrote cannot hang the suite.
+       */
+      const until = Date.now() + 20_000;
+      while (reads < 40 && Date.now() < until) {
         if (readStoreFile(path)['pad']?.length !== 8_000_000) torn += 1;
         reads += 1;
       }
-      expect(reads, 'enough reads to have met a rewrite').toBeGreaterThan(10);
+      expect(reads, 'enough reads to have met a rewrite').toBe(40);
       expect(torn, `${torn} of ${reads} reads found a store part written`).toBe(0);
     } finally {
       child.kill('SIGKILL');

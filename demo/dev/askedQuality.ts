@@ -409,19 +409,19 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
      * file — and the pair `?clustered=0` / `?clustered=1` is the control this feature needs,
      * because a froxel table that is wrong and a froxel table that is empty draw the same picture.
      */
-    ...(asked.get('clustered') === '1' ? { clusteredLights: true } : {}),
+    ...(asked.get('clustered') === null ? {} : { clusteredLights: asked.get('clustered') === '1' }),
     /*
      * Temporal antialiasing, and the pair `?taa=0` / `?taa=1` is the control it needs: an edge
      * that is soft because it was resolved and one that is soft because the scene is blurry look
      * the same in a single capture.
      */
-    ...(asked.get('taa') === '1' ? { temporalAa: true } : {}),
+    ...(asked.get('taa') === null ? {} : { temporalAa: asked.get('taa') === '1' }),
     /*
      * Order-independent transparency, and `?oit=0` against `?oit=1` is the control it needs: the
      * whole claim is that the frame stops depending on submission order, which cannot be seen in
      * one capture.
      */
-    ...(asked.get('oit') === '1' ? { orderIndependent: true } : {}),
+    ...(asked.get('oit') === null ? {} : { orderIndependent: asked.get('oit') === '1' }),
     /*
      * The off-screen target itself, and this exists to be turned *off*. Four capabilities are
      * documented as needing it — `hdrScene`, the colour grade, the temporal resolve, drawn decals

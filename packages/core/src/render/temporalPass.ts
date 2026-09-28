@@ -15,6 +15,9 @@ import { TEMPORAL_RESOLVE_FRAG } from './shaders/temporalResolve.ts';
  * grade all read the scene texture, and reading the unresolved one would grade a stable picture
  * from an unstable source and put the crawl back on screen through the bloom.
  */
+/** The resolve's three outputs: the picture and the two halves of the flicker record. */
+const DRAW_ALL = [0x8ce0, 0x8ce1, 0x8ce2]; // COLOR_ATTACHMENT0, 1, 2
+
 export class TemporalPass {
   private readonly program: WebGLProgram;
   private readonly uniforms: Record<string, WebGLUniformLocation | null>;
@@ -22,6 +25,21 @@ export class TemporalPass {
 
   /** The pair, and which of them the next resolve writes into. */
   private textures: (WebGLTexture | null)[] = [null, null];
+  /**
+   * Each pixel's flicker record, a pair beside the history's and swapped with it: see the
+   * anti-flicker in `temporalAa.ts`. In the history's own format, which holds what the record does —
+   * a change and a sample are colours' luma, and eight bits hold them wherever eight bits hold the
+   * colour.
+   */
+  private records: (WebGLTexture | null)[] = [null, null];
+  /** The rest of each pixel's record — depth, pull and recent swing — beside the first. */
+  private motions: (WebGLTexture | null)[] = [null, null];
+  /**
+   * Whether the records can be half float, which the depth in them needs. Asked of the context
+   * rather than taken from the scene's format, since a record of an eight-bit scene still holds
+   * metres. Without it the anti-flicker is off and the resolve is the one before it existed.
+   */
+  private readonly recordFloat: boolean;
   private framebuffers: (WebGLFramebuffer | null)[] = [null, null];
   private write = 0;
 
@@ -40,6 +58,7 @@ export class TemporalPass {
      */
     private readonly floatColor: boolean,
   ) {
+    this.recordFloat = gl.getExtension('EXT_color_buffer_float') !== null;
     this.program = compileProgram(gl, FULLSCREEN_VERT, TEMPORAL_RESOLVE_FRAG, 'temporalResolve');
     this.uniforms = uniformLocations(gl, this.program, 'temporalPass');
     const vao = gl.createVertexArray();
@@ -55,19 +74,45 @@ export class TemporalPass {
 
     for (let i = 0; i < 2; i++) {
       if (this.textures[i] === null) this.textures[i] = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.textures[i]);
-      if (this.floatColor) {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
-      } else {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      if (this.records[i] === null) this.records[i] = gl.createTexture();
+      if (this.motions[i] === null) this.motions[i] = gl.createTexture();
+      for (const texture of [this.textures[i], this.records[i], this.motions[i]]) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        if (texture === this.textures[i] ? this.floatColor : this.recordFloat) {
+          /* The depth record is two numbers a pixel: metres, and how far they swing. */
+          const pair = texture === this.motions[i];
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            pair ? gl.RG16F : gl.RGBA16F,
+            width,
+            height,
+            0,
+            pair ? gl.RG : gl.RGBA,
+            gl.HALF_FLOAT,
+            null,
+          );
+        } else {
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            width,
+            height,
+            0,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            null,
+          );
+        }
+        /* Linear, because the history is sampled between texels wherever the reprojection lands;
+           clamped, because a sample that wrapped would pull the far edge of the screen into the
+           corner — and the shader rejects an off-screen reprojection before it can anyway. */
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       }
-      /* Linear, because the history is sampled between texels wherever the reprojection lands;
-         clamped, because a sample that wrapped would pull the far edge of the screen into the
-         corner — and the shader rejects an off-screen reprojection before it can anyway. */
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
       if (this.framebuffers[i] === null) this.framebuffers[i] = gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffers[i]);
@@ -78,6 +123,22 @@ export class TemporalPass {
         this.textures[i],
         0,
       );
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT1,
+        gl.TEXTURE_2D,
+        this.records[i],
+        0,
+      );
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT2,
+        gl.TEXTURE_2D,
+        this.motions[i],
+        0,
+      );
+      /* Per framebuffer, so set once here: the resolve writes the picture and the record. */
+      gl.drawBuffers(DRAW_ALL);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -96,6 +157,8 @@ export class TemporalPass {
     width: number,
     height: number,
     blend: number,
+    periodStart: boolean,
+    depthToViewZ: Float32Array,
   ): WebGLTexture {
     const { gl } = this;
     this.ensureSize(width, height);
@@ -120,10 +183,19 @@ export class TemporalPass {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, depth);
     gl.uniform1i(this.uniforms['uDepth'] ?? null, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.records[history]);
+    gl.uniform1i(this.uniforms['uFlicker'] ?? null, 3);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.motions[history]);
+    gl.uniform1i(this.uniforms['uFlickerMotion'] ?? null, 4);
+    gl.uniform4fv(this.uniforms['uDepthToViewZ'] ?? null, depthToViewZ);
+    gl.uniform1f(this.uniforms['uAntiFlicker'] ?? null, this.recordFloat ? 1 : 0);
 
     gl.uniformMatrix4fv(this.uniforms['uReprojection'] ?? null, false, reprojection);
     gl.uniform2f(this.uniforms['uTexel'] ?? null, 1 / width, 1 / height);
     gl.uniform1f(this.uniforms['uHistoryBlend'] ?? null, blend);
+    gl.uniform1f(this.uniforms['uPeriodStart'] ?? null, periodStart ? 1 : 0);
 
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -141,8 +213,12 @@ export class TemporalPass {
     const { gl } = this;
     for (let i = 0; i < 2; i++) {
       if (this.textures[i] !== null) gl.deleteTexture(this.textures[i]);
+      if (this.records[i] !== null) gl.deleteTexture(this.records[i]);
+      if (this.motions[i] !== null) gl.deleteTexture(this.motions[i]);
       if (this.framebuffers[i] !== null) gl.deleteFramebuffer(this.framebuffers[i]);
       this.textures[i] = null;
+      this.records[i] = null;
+      this.motions[i] = null;
       this.framebuffers[i] = null;
     }
     gl.deleteProgram(this.program);

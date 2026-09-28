@@ -15,6 +15,11 @@ export const BRAZIERS: readonly Vec3[] = [
   [6.14, 0, 2.6],
 ];
 export const BRAZIER_TOP_M = 1.02;
+/** The iron bowl under the coals: a disc 0.14 m deep, centred 0.93 m up. */
+const BOWL_Y_M = 0.93;
+const BOWL_HALF_M = 0.07;
+/** How far down the bowl reaches, which is what a flame's shadow has to be cut clear of. */
+export const BRAZIER_BOWL_BOTTOM_M = BOWL_Y_M - BOWL_HALF_M;
 
 /** A tripod and a bowl of coals, one mesh for all four. */
 export function buildBraziers(): ReturnType<MeshBuilder['build']> {
@@ -31,7 +36,7 @@ export function buildBraziers(): ReturnType<MeshBuilder['build']> {
         iron,
       );
     }
-    builder.addCylinder([x, 0.93, z], 0.32, 0.07, 'y', iron, 0, 16);
+    builder.addCylinder([x, BOWL_Y_M, z], 0.32, BOWL_HALF_M, 'y', iron, 0, 16);
     /* The coals: emissive, so they glow at night and are dark iron-red by day. */
     builder.addCylinder([x, 1.0, z], 0.27, 0.02, 'y', [0.55, 0.12, 0.03], 1, 16);
   }
