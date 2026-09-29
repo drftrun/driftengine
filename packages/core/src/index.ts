@@ -202,6 +202,15 @@ export { createPassAttachment } from './render/passTarget.ts';
  * resolve finds its geometry where the renderer's own verbs put theirs.
  */
 export { jitterClip } from './render/recon/jitter.ts';
+/*
+ * Which object a draw is, for a reconstruction that has to find where it was last frame. See
+ * `RendererApi.drawMesh`.
+ */
+/* Glass: a pane that shows what is behind it, clear or frosted. See `TranslucentMeshOptions.glass`. */
+export { resolveGlass } from './render/glass.ts';
+export type { GlassOptions, ResolvedGlass } from './render/glass.ts';
+export { createMover } from './render/recon/mover.ts';
+export type { Mover } from './render/recon/mover.ts';
 export type { FrameResource } from './render/frame/index.ts';
 /*
  * Occlusion culling, which is arithmetic rather than a GPU feature — so the class is public and a
@@ -568,6 +577,7 @@ export type { PrefilterQuality } from './render/prefilterEnvMap.ts';
 export type { ProbeBakeOptions } from './render/reflectionProbe.ts';
 export type {
   DirectionalShadowDepthLayers,
+  GlassShadows,
   OutputTransform,
   RenderQuality,
   RenderQualityOptions,

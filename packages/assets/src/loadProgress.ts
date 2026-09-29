@@ -1,4 +1,4 @@
-import type { MeshHandle, InstancedHandle, MeshInstances } from '@driftengine/core';
+import type { GlassOptions, MeshHandle, InstancedHandle, MeshInstances } from '@driftengine/core';
 
 /**
  * The vocabulary of a load in flight: which phase it is in, how far it has got, and what a
@@ -134,6 +134,13 @@ export interface DrftPart {
   readonly blend: boolean;
   /** Whether both faces are seen: glTF's `doubleSided`. Drawn without culling, each face lit as the front. */
   readonly doubleSided: boolean;
+  /**
+   * The glass this part is, from its file or from `DrftLoaderOptions.surface`, or null for a part
+   * that lets no light through. A glass part is also `blend`, so a caller drawing blended parts
+   * translucent passes this as the draw's `glass` and every pane arrives as the file or the
+   * override said. One object per merged group, shared by its parts, so it is not rebuilt per draw.
+   */
+  readonly glass: GlassOptions | null;
   /**
    * The copies this part is drawn as, or null for a part drawn once.
    *

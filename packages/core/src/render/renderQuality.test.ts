@@ -179,3 +179,10 @@ test('indirect light is off by default, and is a switch rather than a strength',
   expect(resolveRenderQuality({ indirectLight: true }).indirectLight).toBe(true);
   expect(resolveRenderQuality({ indirectLight: false }).indirectLight).toBe(false);
 });
+
+test('GLASS SHADOWS ARE ON BY DEFAULT, and a value that is not one of the three is refused', () => {
+  /* On, because nothing is allocated until glass casts: a scene without it pays nothing. */
+  expect(resolveRenderQuality().glassShadows).toBe('full');
+  expect(resolveRenderQuality({ glassShadows: 'half' }).glassShadows).toBe('half');
+  expect(() => resolveRenderQuality({ glassShadows: 'quarter' as never })).toThrow(/glassShadows/);
+});

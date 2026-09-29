@@ -7,7 +7,10 @@
  */
 import { expect, test } from 'vitest';
 
+import type { PointShadowTarget } from './pointShadowArray.ts';
+import { PointShadowMap, type PointGlassDraw } from './pointShadowMap.ts';
 import { createFaceRange, PointShadowImage, type FaceRange } from './pointShadowImage.ts';
+import { recordingGl } from './rendererHarness.ts';
 
 // The `?raw` suffix carries no type declaration; a variable path keeps TypeScript quiet
 // and vitest resolves it at run time, as `flat.test.ts` does for the renderer.
@@ -111,4 +114,74 @@ test('a partial bake finishes at the place it started, however the light moves',
   const fourth = plan(0.93);
   expect([fourth.first, fourth.last]).toEqual([0, 2]);
   expect(fourth.x).toBeCloseTo(0.93, 6);
+});
+
+/*
+ * **A lamp draws its glass after each face's opaque depth, into its own layers, and a face with no
+ * glass does no glass work** — unless that face's tint still holds a previous owner's glass, which
+ * is then cleared: a pool slot changes hands with its layer, and a lamp that inherited a tint it
+ * never cast would colour its light with somebody else's window.
+ */
+test('A LAMP DRAWS ITS GLASS INTO ITS OWN LAYERS, and a face without glass clears only what it held', () => {
+  const { gl } = recordingGl();
+  const log: string[] = [];
+  const held = new Set(['2/2']);
+  let face = -1;
+  const target: PointShadowTarget = {
+    hasGlass: true,
+    beginFace: () => log.push('face'),
+    resolveFace: (_gl, layer, f) => log.push(`opaque ${layer}/${f}`),
+    heldGlass: (layer, f) => held.has(`${layer}/${f}`),
+    beginGlassFace: () => log.push('glass'),
+    resolveGlassFace: (_gl, layer, f) => log.push(`glass ${layer}/${f}`),
+    beginTintFace: () => log.push('tint'),
+    resolveTintFace: (_gl, layer, f, drawn) => log.push(`tint ${layer}/${f} ${drawn}`),
+  };
+  const map = new PointShadowMap(() => target, 2, 512);
+  const glass: PointGlassDraw = {
+    offered: () => face === 0,
+    draw: (pass, x, y, z) => log.push(`draw ${pass} at ${x},${y},${z}`),
+  };
+  map.bake(gl, 1, 2, 3, 10, () => void face++, 0.1, 0.05, 3, glass);
+  expect(log).toEqual([
+    'face',
+    'opaque 2/0',
+    'glass',
+    'draw depth at 1,2,3',
+    'glass 2/0',
+    'tint',
+    'draw tint at 1,2,3',
+    'tint 2/0 true',
+    /* Nothing offered and nothing held: the opaque face alone. */
+    'face',
+    'opaque 2/1',
+    /* Nothing offered, but the previous owner's glass is still there: cleared, not drawn. */
+    'face',
+    'opaque 2/2',
+    'glass',
+    'glass 2/2',
+    'tint',
+    'tint 2/2 false',
+  ]);
+});
+
+test('A LAMP IN AN ARRAY WITHOUT GLASS DOES NO GLASS WORK, whatever its casters offered', () => {
+  const { gl } = recordingGl();
+  const log: string[] = [];
+  const target: PointShadowTarget = {
+    hasGlass: false,
+    beginFace: () => undefined,
+    resolveFace: () => undefined,
+    heldGlass: () => true,
+    beginGlassFace: () => log.push('glass'),
+    resolveGlassFace: () => log.push('glass'),
+    beginTintFace: () => log.push('tint'),
+    resolveTintFace: () => log.push('tint'),
+  };
+  const map = new PointShadowMap(() => target, 0, 512);
+  map.bake(gl, 0, 0, 0, 10, () => undefined, 0.1, 0.05, 6, {
+    offered: () => true,
+    draw: () => log.push('draw'),
+  });
+  expect(log).toEqual([]);
 });

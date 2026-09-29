@@ -1,3 +1,4 @@
+import { resolveGlass, type GlassOptions, type ResolvedGlass } from './glass.ts';
 import type { ReadonlyMat4 } from 'gl-matrix';
 import type { InstanceData } from './instancedMesh.ts';
 import type { InstancedHandle, MeshHandle, ScatterHandle } from './backend/api.ts';
@@ -41,7 +42,33 @@ import type { SurfaceTextureHandle } from './backend/api.ts';
  * outwards, so a required parameter added in a minor stops every consumer's sink and every test
  * double compiling. A sink that ignores it behaves exactly as it did.
  */
-export type SceneCasterMaterial = SurfaceMaterial<SurfaceTextureHandle> | null;
+export type SceneCasterMaterial =
+  | (SurfaceMaterial<SurfaceTextureHandle> & {
+      /**
+       * The caster is glass: it lets light through, so it writes no depth into any shadow map and a
+       * lamp behind it lights what is beyond. The colour replay into a mirror or a probe still draws
+       * it. With `RenderQuality.glassShadows` on it casts a coloured shadow instead: see
+       * `glassShadow.ts`.
+       */
+      readonly glass?: GlassOptions;
+    })
+  | null;
+
+/**
+ * Whether a caster writes depth into a shadow map: everything but glass. One line in each depth
+ * sink, so the answer is the same in every shadow a backend draws.
+ */
+export function castsDepth(material: SceneCasterMaterial | undefined): boolean {
+  return (material?.glass?.transmission ?? 0) <= 0;
+}
+
+/**
+ * The caster's glass, resolved into `out`, and whether it is glass at all — the rule `castsDepth`
+ * states from the other side, so a caster is exactly one of the two.
+ */
+export function glassOf(material: SceneCasterMaterial | undefined, out: ResolvedGlass): boolean {
+  return resolveGlass(material?.glass, out);
+}
 
 export interface ShadowCasterSink {
   /** A rigid mesh at a model transform: the world, a prop, a static piece of scenery. */

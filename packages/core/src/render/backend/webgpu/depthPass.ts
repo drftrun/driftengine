@@ -122,7 +122,8 @@ export function createDepthBindGroupLayout(
       {
         binding: PREVIOUS.texture,
         visibility: VISIBILITY_FRAGMENT,
-        texture: { sampleType: 'unfilterable-float' },
+        /* An array since the sun's maps became one (`shadowMap.ts`): the peel reads its static layer. */
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' },
       },
       {
         binding: PREVIOUS.sampler,

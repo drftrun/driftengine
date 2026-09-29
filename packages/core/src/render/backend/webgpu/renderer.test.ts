@@ -638,8 +638,16 @@ describe('the webgpu renderer', () => {
         .find((descriptor) => descriptor.label === label)?.size as number[] | undefined;
 
     /* 640 by 480 over 1.5, each axis rounded up on its own: 427 by 320. */
-    for (const label of ['post.sceneColor', 'flat.depth', 'refract.snapshot', 'post.ao']) {
+    for (const label of ['post.sceneColor', 'flat.depth', 'post.ao']) {
       expect(sized(label)?.slice(0, 2), label).toEqual([427, 320]);
+    }
+    /*
+     * **The blended draws are on the far side of the line.** They are drawn after the upscale, so
+     * the picture a pane refracts and the pair an order-independent set accumulates into are the
+     * drawing buffer's size, like the reconstructed picture they read and land on.
+     */
+    for (const label of ['refract.snapshot', 'post.oitAccum', 'post.oitReveal']) {
+      expect(sized(label)?.slice(0, 2), label).toEqual([640, 480]);
     }
     /* The canvas is untouched, which is what the composite draws into. */
     expect(stub.surface.canvas.width).toBe(640);
@@ -1167,6 +1175,34 @@ describe('the webgpu renderer', () => {
       String((p as { label?: string }).label ?? ''),
     );
     expect(after.some((label) => label.startsWith('recon.motion.'))).toBe(false);
+  });
+
+  /*
+   * **A blended draw of a reconstructing frame lands after the resolve**, at the output size and
+   * unjittered, rather than in the scene the resolve reconstructs: a translucent surface has no one
+   * motion per pixel, so a history can only smear it. With reconstruction off nothing moves.
+   */
+  it('DRAWS A BLENDED MESH AFTER THE RESOLVE while reconstructing, and never otherwise', () => {
+    const passesFor = (reconstruction: number): string[] => {
+      const stub = stubSurface();
+      const renderer = freshRenderer(
+        stub,
+        resolveRenderQuality({ screenEffects: true, reconstruction }),
+      );
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+      renderer.endFrame();
+      return stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    };
+    const on = passesFor(1.5);
+    expect(on).toContain('recon.late');
+    /* After the motion pass the resolve reads, and after the depth it tests against. */
+    expect(on.indexOf('recon.motion')).toBeLessThan(on.indexOf('recon.late'));
+    expect(on.indexOf('recon.lateDepth')).toBeLessThan(on.indexOf('recon.late'));
+    expect(passesFor(0)).not.toContain('recon.late');
   });
 
   it('runs the motion pass even when nothing moved, because its clear is what it is for', () => {
@@ -1959,8 +1995,9 @@ describe('the webgpu renderer', () => {
 
     const allocated = device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
-      .find((descriptor) => descriptor.label === 'shadow.static');
-    expect([...(allocated?.size as number[])]).toEqual([
+      .find((descriptor) => descriptor.label === 'shadow.sun');
+    /* Width and height; the third is how many of the sun's maps the profile keeps as layers. */
+    expect([...(allocated?.size as number[])].slice(0, 2)).toEqual([
       renderer.shadowMapSize,
       renderer.shadowMapSize,
     ]);
@@ -2008,6 +2045,179 @@ describe('the webgpu renderer', () => {
     expect(written[5]).toBe(1);
     expect(written[10]).toBeCloseTo(0.5);
     expect(written[14]).toBeCloseTo(0.5);
+  });
+
+  /**
+   * **Glass lets its light through.** A caster whose material says it is glass writes no depth into
+   * a shadow map, so a lamp behind a pane lights what is beyond it; the other caster in the same
+   * enumeration still casts. Glass B turns the same information into a coloured shadow.
+   */
+  it('A GLASS CASTER WRITES NO DEPTH, and the caster beside it still does', () => {
+    const { surface, pass } = stubSurface();
+    const renderer = new WebGPURenderer(surface);
+    const caster = {
+      key: 'flat:s0:u0',
+      vertexBuffers: [{ label: 'vertices' }],
+      indexBuffer: { label: 'indices' },
+      indexCount: 3,
+      complete: true,
+    };
+    renderer.beginShadowPass(mat4.create(), 'static');
+    pass.drawIndexed.mockClear();
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(caster as never, mat4.create());
+      sink.mesh(caster as never, mat4.create(), { glass: { transmission: 0.9, frost: 0.5 } });
+    });
+    expect(pass.drawIndexed, 'the opaque caster alone reaches the depth').toHaveBeenCalledTimes(1);
+    /* Kept aside for its own passes (Glass B), not dropped: see `glassCasters.ts`. */
+    const kept = (renderer as unknown as { glassCasters: { count: number } }).glassCasters;
+    expect(kept.count, 'the glass caster is kept aside').toBe(1);
+    renderer.endShadowPass();
+  });
+
+  /*
+   * **The sun draws its glass twice once its opaque casters are in**, and the first glass grows
+   * the sun's texture by two layers, carrying every layer it held across: the static map a
+   * consumer baked once survives, because the glass arrives in the very pass that drew it.
+   */
+  it('THE SUN DRAWS ITS GLASS TWICE, and the first glass grows its texture without losing a map', () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({ directionalShadowDepthLayers: 2 });
+    const renderer = freshRenderer(stub, quality);
+    const caster = {
+      key: 'flat:s0:u0',
+      vertexBuffers: [{ label: 'vertices' }],
+      indexBuffer: { label: 'indices' },
+      indexCount: 3,
+      complete: true,
+    };
+    const pane = {
+      glass: { transmission: 0.9, frost: 0.5, tint: [1, 0.5, 0.25] as [number, number, number] },
+    };
+    const frame = (): void => {
+      renderer.beginShadowPass(mat4.create(), 'static');
+      renderer.drawShadowCasters((sink) => {
+        sink.mesh(caster as never, mat4.create());
+        sink.mesh(caster as never, mat4.create(), pane);
+      });
+      renderer.endShadowPass();
+    };
+    stub.encoder.beginRenderPass.mockClear();
+    stub.pass.drawIndexed.mockClear();
+    frame();
+
+    const suns = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .filter((descriptor) => descriptor.label === 'shadow.sun');
+    expect(suns.map((descriptor) => (descriptor.size as number[])[2])).toEqual([3, 5]);
+    /* The tint carries its whole chain: frost reads the level its spread asks for. */
+    const tintTexture = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'shadow.sunTint');
+    const edge = (tintTexture?.size as number[])[0] as number;
+    expect(tintTexture?.mipLevelCount).toBe(Math.floor(Math.log2(edge)) + 1);
+    expect(stub.encoder.copyTextureToTexture, 'every layer held is carried').toHaveBeenCalledTimes(
+      3,
+    );
+    const labels = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    /* The new layers are born clear once — two glass depths, two tints — and then drawn. */
+    expect(labels.filter((label) => label.endsWith('.clear'))).toEqual([
+      'shadow.glass.clear',
+      'shadow.glass.clear',
+      'shadow.tint.clear',
+      'shadow.tint.clear',
+    ]);
+    expect(labels.filter((label) => !label.endsWith('.clear'))).toEqual([
+      'shadow.static',
+      'shadow.glass',
+      'shadow.tint',
+    ]);
+    const tintPass = stub.encoder.beginRenderPass.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'shadow.tint');
+    const colour = (tintPass?.colorAttachments as GPURenderPassColorAttachment[])[0];
+    expect(colour?.loadOp).toBe('clear');
+    expect(colour?.clearValue).toEqual([1, 1, 1, 1]);
+    expect(tintPass?.depthStencilAttachment).toBeUndefined();
+    expect(
+      stub.pass.drawIndexed,
+      'the opaque caster, the pane depth, the pane tint',
+    ).toHaveBeenCalledTimes(3);
+    const tinted = stub.device.createRenderPipeline.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => String(descriptor.label ?? '').startsWith('glass-tint'));
+    expect(tinted?.fragment?.targets[0]?.blend).toEqual({
+      color: { operation: 'add', srcFactor: 'dst', dstFactor: 'zero' },
+      alpha: { operation: 'add', srcFactor: 'dst-alpha', dstFactor: 'zero' },
+    });
+
+    stub.device.createTexture.mockClear();
+    stub.encoder.beginRenderPass.mockClear();
+    frame();
+    expect(
+      stub.device.createTexture.mock.calls.filter(([d]) => d.label === 'shadow.sun'),
+      'a second frame allocates nothing',
+    ).toHaveLength(0);
+    expect(
+      stub.encoder.beginRenderPass.mock.calls.map(([d]) => d.label),
+      'and clears nothing it already has',
+    ).toEqual(['shadow.static', 'shadow.glass', 'shadow.tint']);
+  });
+
+  /*
+   * **Off specialises the glass lookup out of every lit pipeline**, not only out of the casters:
+   * the lookup returning at its first line still cost the lit pass its registers. The generated
+   * shader is one string for both values, so this is the pipeline's `GLASS_SHADOWS` constant, and
+   * it has to reach every cache a lit pipeline can come from — the world's, the overlay's after
+   * the present, and the late pass's at output size.
+   */
+  it('GLASS SHADOWS OFF BUILDS EVERY LIT PIPELINE WITH THE GLASS SWITCH OFF, and on with it on', () => {
+    for (const glassShadows of ['full', 'off'] as const) {
+      const stub = stubSurface();
+      const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ glassShadows }));
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const caches = renderer as unknown as Record<
+        'pipelines' | 'overlayPipelines' | 'latePipelines',
+        { glassShadows: boolean }
+      >;
+      for (const name of ['pipelines', 'overlayPipelines', 'latePipelines'] as const) {
+        expect(caches[name].glassShadows, `${glassShadows}: ${name}`).toBe(glassShadows !== 'off');
+      }
+      const lit = stub.device.createRenderPipeline.mock.calls
+        .map(([descriptor]) => descriptor)
+        .filter((descriptor) => (descriptor.label ?? '').includes('|flat'));
+      expect(lit.length, glassShadows).toBeGreaterThan(0);
+      for (const descriptor of lit) {
+        /* The switch's id, which is what an override declared with one answers to. */
+        expect(descriptor.fragment?.constants, `${glassShadows}: ${descriptor.label}`).toEqual({
+          '0': glassShadows === 'off' ? 0 : 1,
+        });
+      }
+    }
+  });
+
+  it('A GLASS CASTER IS DROPPED ENTIRELY WHEN GLASS SHADOWS ARE OFF, as it was before they existed', () => {
+    const { surface, pass } = stubSurface();
+    const renderer = new WebGPURenderer(surface, resolveRenderQuality({ glassShadows: 'off' }));
+    const caster = {
+      key: 'flat:s0:u0',
+      vertexBuffers: [{ label: 'vertices' }],
+      indexBuffer: { label: 'indices' },
+      indexCount: 3,
+      complete: true,
+    };
+    renderer.beginShadowPass(mat4.create(), 'static');
+    pass.drawIndexed.mockClear();
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(caster as never, mat4.create(), { glass: { transmission: 0.9, frost: 0.5 } });
+    });
+    renderer.endShadowPass();
+    expect(pass.drawIndexed).toHaveBeenCalledTimes(0);
+    const kept = (renderer as unknown as { glassCasters: { count: number } }).glassCasters;
+    expect(kept.count).toBe(0);
   });
 
   /**
@@ -2081,22 +2291,25 @@ describe('the webgpu renderer', () => {
       .filter((label) => label.startsWith('shadow.'));
     expect(labels).toEqual(['shadow.static', 'shadow.peel', 'shadow.dynamic']);
 
-    /* Its own texture, at the profile's map size — not a second name for the static one, which
-       would put the movers and the world in one depth buffer and lose whichever is further. */
+    /*
+     * Its own layer, at the profile's map size — not a second name for the static one, which
+     * would put the movers and the world in one depth buffer and lose whichever is further. One
+     * texture since the sun's maps became an array (`shadowMap.ts`), a layer each.
+     */
     const maps = stub.device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
       .filter((descriptor) => String(descriptor.label ?? '').startsWith('shadow.'));
-    expect(maps.map((descriptor) => descriptor.label).sort()).toEqual([
-      'shadow.dynamic',
-      'shadow.peel',
-      'shadow.static',
+    expect(maps.map((descriptor) => descriptor.label)).toEqual(['shadow.sun']);
+    expect(maps[0]?.size, 'three layers at the profile map size').toEqual([
+      quality.directionalShadowMapSize,
+      quality.directionalShadowMapSize,
+      3,
     ]);
-    for (const map of maps) {
-      expect(map.size, `${String(map.label)} must match the profile`).toEqual([
-        quality.directionalShadowMapSize,
-        quality.directionalShadowMapSize,
-      ]);
-    }
+    const attached = stub.encoder.beginRenderPass.mock.calls
+      .map(([descriptor]) => descriptor)
+      .filter((descriptor) => String(descriptor.label ?? '').startsWith('shadow.'))
+      .map((descriptor) => descriptor.depthStencilAttachment?.view);
+    expect(new Set(attached).size, 'each pass attaches a layer of its own').toBe(3);
   });
 
   /**
@@ -6903,7 +7116,8 @@ describe('refraction under order-independent transparency', () => {
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
     const field =
-      (flatFragmentBindings(variantFor(quality)).fields['uRefractStrength']?.offset ?? -4) / 4;
+      /* The strength is the first of the four numbers `uSeeThrough` carries. */
+      (flatFragmentBindings(variantFor(quality)).fields['uSeeThrough']?.offset ?? -4) / 4;
     const submitted: number[] = [];
     const ring = (renderer as unknown as { perFrame: { writeBlock: (...a: never[]) => void } })
       .perFrame;
@@ -7135,4 +7349,162 @@ describe('the targets a probe bake draws into', () => {
     expect(views() - viewed, 'views').toBe(0);
     expect(stub.device.createBindGroup.mock.calls.length, 'bind groups').toBe(0);
   });
+});
+
+/**
+ * **A lamp draws its glass into its own layers, and the first glass interleaves the array.**
+ *
+ * Opaque layer L moves to 2L and its glass takes 2L + 1: a shader cannot ask an array its layer
+ * count under naga, so the glass sits beside its light rather than above the whole pool. Every map
+ * already in the array is carried across, and the tint is an array of its own, a layer a light.
+ */
+describe('glass in a lamp s shadow', () => {
+  const LIGHT = {
+    x: 0,
+    y: 2,
+    z: 0,
+    radius: 8,
+    shadowNear: 0.25,
+    sourceRadius: 0.05,
+    castsShadow: true,
+  };
+  const caster = {
+    key: 'flat:s0:u0',
+    vertexBuffers: [{ label: 'vertices' }],
+    indexBuffer: { label: 'indices' },
+    indexCount: 3,
+    complete: true,
+  };
+  const pane = {
+    glass: { transmission: 0.9, frost: 0.5, tint: [1, 0.5, 0.25] as [number, number, number] },
+  };
+  const bake = (renderer: WebGPURenderer, glass: boolean): void => {
+    renderer.updatePointShadows(
+      [LIGHT],
+      new Int32Array([0]),
+      1,
+      50,
+      50,
+      50,
+      1 / 60,
+      (sink) => {
+        sink.mesh(caster as never, mat4.create());
+        if (glass) sink.mesh(caster as never, mat4.create(), pane);
+      },
+      () => undefined,
+    );
+  };
+
+  it('A LAMP DRAWS ITS GLASS INTO ITS OWN LAYERS, and the first glass interleaves the array', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ pointShadowFacesPerFrame: 6 }));
+    renderer.prepareStaticPointShadows([LIGHT]);
+    const array = (renderer as unknown as { pointShadowArray: { layers: number } })
+      .pointShadowArray;
+    const n = array.layers;
+    stub.device.createTexture.mockClear();
+    stub.encoder.beginRenderPass.mockClear();
+    bake(renderer, true);
+
+    const arrays = stub.device.createTexture.mock.calls
+      .map(([d]) => d)
+      .filter((d) => d.label === 'pointShadow.array');
+    expect(
+      arrays.map((d) => (d.size as number[])[2]),
+      'twice the layers, once',
+    ).toEqual([2 * n]);
+    expect(
+      stub.encoder.copyTextureToTexture.mock.calls.map(([from, to]) => [
+        (from.origin as GPUOrigin3DDict).z,
+        (to.origin as GPUOrigin3DDict).z,
+      ]),
+      'every opaque layer carried to 2L',
+    ).toEqual(Array.from({ length: n }, (_, l) => [l, 2 * l]));
+    const tint = stub.device.createTexture.mock.calls
+      .map(([d]) => d)
+      .find((d) => d.label === 'pointShadow.tint');
+    expect(tint?.size).toEqual([1024, 1024, n]);
+    expect(tint?.format).toBe('rgba8unorm');
+    expect(tint?.mipLevelCount, 'the chain frost reads').toBe(11);
+
+    const labels = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    /* Six static faces, each with the pane, and the live map's six, which offer none. */
+    expect(labels.filter((l) => l === 'pointShadow.face').length).toBe(12);
+    expect(labels.filter((l) => l === 'pointShadow.glass').length, 'the pane s six').toBe(6);
+    expect(labels.filter((l) => l === 'pointShadow.tint').length).toBe(6);
+    expect(labels.filter((l) => l === 'pointShadow.tint.resolve').length).toBe(6);
+    /* The static light holds layer 0's slot, so its opaque depth lands in 0 and its glass in 1. */
+    const views = (renderer as unknown as { pointShadowArray: { layerViews: unknown[] } })
+      .pointShadowArray.layerViews;
+    const resolved = stub.encoder.beginRenderPass.mock.calls
+      .map(([d]) => d)
+      .filter((d) => d.label === 'pointShadow.resolve')
+      .map((d) => views.indexOf(d.depthStencilAttachment?.view));
+    const layer = (renderer as unknown as { resolvedPointShadows: { layers: Int32Array } })
+      .resolvedPointShadows.layers[0] as number;
+    expect(layer % 2, 'published at the even layer').toBe(0);
+    expect(resolved.filter((v) => v === layer).length, 'opaque depth at 2L').toBe(6);
+    expect(resolved.filter((v) => v === layer + 1).length, 'its glass at 2L + 1').toBe(6);
+    /* The live map offered no glass: its faces landed at its own even layer and nowhere odd. */
+    expect(resolved.filter((v) => v !== layer && v !== layer + 1).every((v) => v % 2 === 0)).toBe(
+      true,
+    );
+  });
+
+  it('A LAMP WITH NO GLASS DOES NO GLASS WORK, and allocates nothing for it', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ pointShadowFacesPerFrame: 6 }));
+    renderer.prepareStaticPointShadows([LIGHT]);
+    stub.device.createTexture.mockClear();
+    stub.encoder.beginRenderPass.mockClear();
+    bake(renderer, false);
+    const labels = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    expect(labels.filter((l) => l.startsWith('pointShadow.glass') || l.includes('tint'))).toEqual(
+      [],
+    );
+    expect(
+      stub.device.createTexture.mock.calls.filter(([d]) => d.label === 'pointShadow.tint'),
+    ).toHaveLength(0);
+  });
+
+  it('HALF GLASS SHADOWS HALVE THE LAMP S TINT and nothing else', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ pointShadowFacesPerFrame: 6, glassShadows: 'half' }),
+    );
+    renderer.prepareStaticPointShadows([LIGHT]);
+    stub.device.createTexture.mockClear();
+    bake(renderer, true);
+    const made = stub.device.createTexture.mock.calls.map(([d]) => d);
+    expect((made.find((d) => d.label === 'pointShadow.tint')?.size as number[])[0]).toBe(512);
+    expect((made.find((d) => d.label === 'pointShadow.array')?.size as number[])[0]).toBe(1024);
+  });
+});
+
+/**
+ * **Every pane on a ray counts once, whichever way it faces.** A light crosses a pane from either
+ * side, and a closed glass object has two surfaces on a ray — so the tint culls nothing, for the
+ * sun as for a lamp. It culled back faces for the sun, which counted one side of a closed pane.
+ */
+it('EVERY PANE ON A RAY COUNTS, WHICHEVER WAY IT FACES: the sun s tint culls nothing', () => {
+  const stub = stubSurface();
+  const renderer = freshRenderer(stub);
+  const caster = {
+    key: 'flat:s0:u0',
+    vertexBuffers: [{ label: 'vertices' }],
+    indexBuffer: { label: 'indices' },
+    indexCount: 3,
+    complete: true,
+  };
+  renderer.beginShadowPass(mat4.create(), 'static');
+  renderer.drawShadowCasters((sink) => {
+    sink.mesh(caster as never, mat4.create(), { glass: { transmission: 0.9, frost: 0 } });
+  });
+  renderer.endShadowPass();
+  const tinted = stub.device.createRenderPipeline.mock.calls
+    .map(([descriptor]) => descriptor)
+    .filter((descriptor) => String(descriptor.label ?? '').startsWith('glass-tint'));
+  expect(tinted.length).toBeGreaterThan(0);
+  expect(tinted.map((d) => d.primitive?.cullMode)).toEqual(tinted.map(() => 'none'));
 });

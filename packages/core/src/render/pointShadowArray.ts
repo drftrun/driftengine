@@ -2,6 +2,7 @@ import { mat3 } from 'gl-matrix';
 
 import { createEmptyTexture2D } from './emptyTexture.ts';
 import { LIVE_POINT_SHADOW_MAPS, POINT_SHADOW_POOL } from './lightBudget.ts';
+import { PointGlassTint } from './pointGlassTint.ts';
 import { pointShadowFaceRotation } from './pointShadowImage.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { OCTAHEDRAL_RESOLVE_FRAG, OCTAHEDRAL_RESOLVE_VERT } from './shaders/octahedralResolve.ts';
@@ -34,6 +35,37 @@ export interface PointShadowTarget {
     far: number,
     near: number,
   ): void;
+  /** Whether the array has grown its glass layers: `growForGlass`. */
+  readonly hasGlass: boolean;
+  /** Whether `face` of `layer` holds glass, which a face that offers none must clear. */
+  heldGlass(layer: number, face: number): boolean;
+  /** The depth scratch again, cleared, for the face's glass. */
+  beginGlassFace(gl: WebGL2RenderingContext): void;
+  resolveGlassFace(
+    gl: WebGL2RenderingContext,
+    layer: number,
+    face: number,
+    far: number,
+    near: number,
+  ): void;
+  /** The colour scratch, cleared to white, for what the face's glass lets through. */
+  beginTintFace(gl: WebGL2RenderingContext): void;
+  resolveTintFace(gl: WebGL2RenderingContext, layer: number, face: number, drawn: boolean): void;
+}
+
+/**
+ * Every published layer as the array stores it: `layer × stride`, and −1 left as −1.
+ *
+ * **Applied to the resolved arrays right after each resolve**, so every consumer of an uploaded
+ * index reads the physical layer: once glass arrives, light L's depth is at 2L and its glass at
+ * 2L + 1 (`PointShadowArray.growForGlass`). In place, because the resolve rewrites these every time.
+ */
+export function strideLayers(layers: Int32Array, stride: number): void {
+  if (stride === 1) return;
+  for (let i = 0; i < layers.length; i++) {
+    const layer = layers[i] as number;
+    if (layer >= 0) layers[i] = layer * stride;
+  }
 }
 
 /**
@@ -53,12 +85,16 @@ export interface PointShadowTarget {
  * never the same object.
  */
 export class PointShadowArray implements PointShadowTarget {
-  readonly texture: WebGLTexture;
   /**
-   * How many layers this array holds: the point pool, the two live transition maps, and two more
-   * for each rectangle a world said would cast. See the constructor's `extraLayers`.
+   * How many lights this array holds: the point pool, the two live transition maps, and two more
+   * for each rectangle a world said would cast. See the constructor's `extraLayers`. Counted in
+   * lights, so it does not move when glass doubles the storage under it.
    */
   readonly layers: number;
+  /** Replaced once, when glass first casts: see `growForGlass`. */
+  private current: WebGLTexture;
+  /** What the lights' glass lets through, made with the glass layers. */
+  private tint: PointGlassTint | null = null;
 
   private readonly framebuffer: WebGLFramebuffer;
   private readonly scratchTexture: WebGLTexture;
@@ -96,23 +132,8 @@ export class PointShadowArray implements PointShadowTarget {
     this.layers =
       Math.min(lightCount, POINT_SHADOW_POOL) + LIVE_POINT_SHADOW_MAPS + Math.max(0, extraLayers);
 
-    const texture = gl.createTexture();
-    if (texture === null) throw new Error('PointShadowArray: createTexture failed');
-    this.texture = texture;
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-    gl.texStorage3D(
-      gl.TEXTURE_2D_ARRAY,
-      1,
-      gl.DEPTH_COMPONENT24,
-      OCTAHEDRAL_EDGE,
-      OCTAHEDRAL_EDGE,
-      this.layers,
-    );
-    /* One storage level and no filtering, so textureLod(..., 0.0) is the only fetch there is. */
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const texture = depthArray(gl, this.layers);
+    this.current = texture;
 
     const scratchTexture = gl.createTexture();
     if (scratchTexture === null) throw new Error('PointShadowArray: createTexture failed');
@@ -183,6 +204,117 @@ export class PointShadowArray implements PointShadowTarget {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
   }
 
+  /** The array texture the lit pass samples. Replaced once, when glass first casts. */
+  get texture(): WebGLTexture {
+    return this.current;
+  }
+
+  get hasGlass(): boolean {
+    return this.tint !== null;
+  }
+
+  /** Physical layers a light: 1, or 2 once glass has interleaved the array. */
+  get stride(): number {
+    return this.tint === null ? 1 : 2;
+  }
+
+  /** The glass tint, one layer a light, once glass has cast; the lit pass samples it. */
+  get tintTexture(): WebGLTexture | null {
+    return this.tint?.texture ?? null;
+  }
+
+  /**
+   * Interleave the array for glass: light L's depth moves to 2L and its glass takes 2L + 1, and
+   * the tint is made. Returns whether it grew — once, on the first face whose casters held glass.
+   *
+   * **Interleaved rather than stacked above the opaque half** because a shader cannot ask an array
+   * its layer count under naga, so it cannot find `L + N`; `layer + 1` it can. **Every map already
+   * baked is carried across** by a depth blit, so nothing goes dark, and **no map needs baking
+   * again**: this runs on the first face that saw glass, so no map baked before it saw any, and a
+   * glass layer born at the far plane with a white tint is exactly what its bake would draw. What
+   * it costs is the doubled depth (4.19 MB a light at 1024) and the tint (5.6 MB a light with its
+   * chain, 1.4 MB at `'half'`), from then on.
+   */
+  growForGlass(gl: WebGL2RenderingContext, tintEdge: number): boolean {
+    if (this.tint !== null) return false;
+    const old = this.current;
+    const texture = depthArray(gl, this.layers * 2);
+    /* Off the unit it was made on, as the constructor leaves its own: see `beginFace`. */
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    const read = gl.createFramebuffer();
+    if (read === null) throw new Error('PointShadowArray: createFramebuffer failed');
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer);
+    for (let layer = 0; layer < this.layers; layer++) {
+      gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, old, 0, layer);
+      gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_ATTACHMENT, texture, 0, 2 * layer);
+      gl.blitFramebuffer(
+        0,
+        0,
+        OCTAHEDRAL_EDGE,
+        OCTAHEDRAL_EDGE,
+        0,
+        0,
+        OCTAHEDRAL_EDGE,
+        OCTAHEDRAL_EDGE,
+        gl.DEPTH_BUFFER_BIT,
+        gl.NEAREST,
+      );
+    }
+    /* Nothing is nearer a lamp than a pane that has not been drawn. */
+    for (let layer = 0; layer < this.layers; layer++) {
+      gl.framebufferTextureLayer(
+        gl.DRAW_FRAMEBUFFER,
+        gl.DEPTH_ATTACHMENT,
+        texture,
+        0,
+        2 * layer + 1,
+      );
+      gl.clearBufferfv(gl.DEPTH, 0, FAR_PLANE);
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(read);
+    gl.deleteTexture(old);
+    this.current = texture;
+    this.tint = new PointGlassTint(gl, this.faceSize, tintEdge, this.layers);
+    return true;
+  }
+
+  heldGlass(layer: number, face: number): boolean {
+    return this.tint?.held(layer, face) ?? false;
+  }
+
+  /** The depth scratch, cleared, for the face's glass: `beginFace` exactly. */
+  beginGlassFace(gl: WebGL2RenderingContext): void {
+    this.beginFace(gl);
+  }
+
+  /** The face's glass depth into light `layer`'s glass layer, 2L + 1. */
+  resolveGlassFace(
+    gl: WebGL2RenderingContext,
+    layer: number,
+    face: number,
+    far: number,
+    near: number,
+  ): void {
+    if (this.tint === null) return;
+    this.resolveInto(gl, 2 * layer + 1, face, far, near);
+  }
+
+  beginTintFace(gl: WebGL2RenderingContext): void {
+    this.tint?.beginFace(gl);
+  }
+
+  resolveTintFace(gl: WebGL2RenderingContext, layer: number, face: number, drawn: boolean): void {
+    this.tint?.resolveFace(gl, layer, face, drawn);
+  }
+
+  /** The chain frost reads, for every light whose tint a round touched: once a round. */
+  finishTints(gl: WebGL2RenderingContext): void {
+    this.tint?.fillMips(gl);
+  }
+
   /**
    * Bind the scratch as the render target for one face of one bake, and clear it.
    *
@@ -225,8 +357,19 @@ export class PointShadowArray implements PointShadowTarget {
     far: number,
     near: number,
   ): void {
+    this.resolveInto(gl, layer * this.stride, face, far, near);
+  }
+
+  /** The scratch into physical layer `physical`'s region for `face`. */
+  private resolveInto(
+    gl: WebGL2RenderingContext,
+    physical: number,
+    face: number,
+    far: number,
+    near: number,
+  ): void {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, this.texture, 0, layer);
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, this.current, 0, physical);
     gl.viewport(0, 0, OCTAHEDRAL_EDGE, OCTAHEDRAL_EDGE);
 
     gl.useProgram(this.program);
@@ -267,10 +410,33 @@ export class PointShadowArray implements PointShadowTarget {
   dispose(gl: WebGL2RenderingContext): void {
     gl.deleteFramebuffer(this.framebuffer);
     gl.deleteFramebuffer(this.scratchFramebuffer);
-    gl.deleteTexture(this.texture);
+    gl.deleteTexture(this.current);
     gl.deleteTexture(this.scratchTexture);
+    this.tint?.dispose(gl);
     gl.deleteTexture(this.parked);
     gl.deleteProgram(this.program);
     gl.deleteVertexArray(this.vao);
   }
+}
+
+const FAR_PLANE = new Float32Array([1]);
+
+/** The depth array: one storage level and no filtering, so textureLod(..., 0.0) is the only fetch. */
+function depthArray(gl: WebGL2RenderingContext, layers: number): WebGLTexture {
+  const texture = gl.createTexture();
+  if (texture === null) throw new Error('PointShadowArray: createTexture failed');
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+  gl.texStorage3D(
+    gl.TEXTURE_2D_ARRAY,
+    1,
+    gl.DEPTH_COMPONENT24,
+    OCTAHEDRAL_EDGE,
+    OCTAHEDRAL_EDGE,
+    layers,
+  );
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return texture;
 }

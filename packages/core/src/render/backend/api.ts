@@ -10,6 +10,7 @@ import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
 import type { SdfTextStyle } from '../sdfTextLayout.ts';
 import type { FrameTimer } from './timer.ts';
+import type { Mover } from '../recon/mover.ts';
 
 /**
  * Geometry on the device, as something a consumer holds and hands back.
@@ -767,18 +768,23 @@ export type RendererApi = Omit<
     depthLayer?: number,
     tint?: Vec3 | null,
     /**
-     * Where this mesh's surface was last frame, for a reconstruction's motion target.
+     * Where this mesh's surface was last frame, for a reconstruction's motion target: a `Mover`,
+     * or last frame's model matrix.
      *
-     * **Only a reconstruction reads it**, and only on WebGPU: it is what turns a moving object's
-     * stale history from a smear into a reprojection. A draw that says nothing gets the camera's
-     * motion, derived from the depth, which is exactly right for anything that did not move and
-     * wrong in proportion to how far a mover moved. Null and omitted mean the same thing.
+     * **A `Mover` is the ordinary answer.** Make one per moving object with `createMover()` and pass
+     * it with every draw of that object; the renderer keeps last frame's model and, for a skinned
+     * draw, last frame's palette. A matrix still works exactly as it always has: the *model* matrix
+     * this mesh was drawn with last frame, not a velocity, so a rotation and a scale are as correct
+     * as a translation. Null and omitted mean the same thing: the camera's motion, derived from the
+     * depth, which is exactly right for anything that did not move and wrong in proportion to how
+     * far a mover moved.
      *
-     * It is the *model* matrix this mesh was drawn with last frame, not a velocity: the pass
-     * transforms each vertex twice and lets the perspective divide do the rest, so a rotation and a
-     * scale are as correct as a translation.
+     * **Only a reconstruction reads it**, and only on WebGPU. A mover drawn twice in one frame is
+     * two objects wearing one identity: the second draw is warned about once and records no motion.
+     * Instanced batches and meshes rewritten with `updateMesh` need none — the batch and the mesh
+     * are their own identity.
      */
-    previousModel?: ReadonlyMat4 | null,
+    previousModel?: ReadonlyMat4 | Mover | null,
   ): void;
 
   /** Release the geometry behind a handle. */

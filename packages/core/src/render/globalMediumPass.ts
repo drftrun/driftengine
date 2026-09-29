@@ -19,9 +19,8 @@ export interface MediumLight {
   readonly sunShadow: number;
   /** World → light clip, **uncorrected**: the shader does its own `* 0.5 + 0.5`. */
   readonly lightViewProj: ReadonlyMat4;
-  readonly staticShadowMap: WebGLTexture;
-  readonly peeledShadowMap: WebGLTexture;
-  readonly dynamicShadowMap: WebGLTexture;
+  /** The sun's static, moving and peeled maps, as one array. See `shadowMap.ts`. */
+  readonly sunShadows: WebGLTexture;
   readonly peeledEnabled: boolean;
 }
 
@@ -210,14 +209,8 @@ export class GlobalMediumPass {
     gl.bindTexture(gl.TEXTURE_2D, depth);
     gl.uniform1i(u['uDepth'] ?? null, 0);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, light.staticShadowMap);
-    gl.uniform1i(u['uStaticShadowMap'] ?? null, 1);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, light.peeledShadowMap);
-    gl.uniform1i(u['uPeeledShadowMap'] ?? null, 2);
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, light.dynamicShadowMap);
-    gl.uniform1i(u['uDynamicShadowMap'] ?? null, 3);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, light.sunShadows);
+    gl.uniform1i(u['uSunShadows'] ?? null, 1);
 
     gl.uniformMatrix4fv(u['uDepthToWorld'] ?? null, false, this.depthToWorld);
     gl.uniform3f(u['uCameraPos'] ?? null, eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0);

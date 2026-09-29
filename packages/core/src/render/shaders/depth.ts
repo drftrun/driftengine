@@ -1,4 +1,5 @@
 import { resolveConditionals } from './conditionals.ts';
+import { SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { CUTOUT_COVERAGE_GLSL } from './cutoutCoverage.ts';
 import { SKINNING_GLSL } from './skinning.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from './vertexChannel.ts';
@@ -73,6 +74,11 @@ out vec4 vLightPosition;
 out vec2 vUv;
 flat out float vAlphaCutout;
 #endif
+#if GLASS
+/* Where on the pane this is, for the tint's own normal and its angle to the light. Last, so the
+   outputs before it keep the locations the plain variants give them. */
+out vec3 vGlassWorld;
+#endif
 
 void main() {
 #if SKINNED
@@ -100,20 +106,23 @@ void main() {
   vUv = aUv * uUvScale;
   vAlphaCutout = uAlphaCutout;
 #endif
+#if GLASS
+  vGlassWorld = bent;
+#endif
 }
 `;
 
 /** The rigid variant: the world, a prop, a mesh with no rig behind it. */
 export const DEPTH_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: false },
+  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: false },
   'depth',
 );
 
 /** The skinned variant, which reads a joint palette and moves the vertex by it. */
 export const DEPTH_SKINNED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: true, INSTANCED: false, CUTOUT: false },
+  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: false },
   'depth-skinned',
 );
 
@@ -127,7 +136,7 @@ export const DEPTH_SKINNED_VERT = resolveConditionals(
  */
 export const DEPTH_INSTANCED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: false },
+  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: false },
   'depth-instanced',
 );
 
@@ -143,13 +152,13 @@ export const DEPTH_INSTANCED_VERT = resolveConditionals(
  */
 export const DEPTH_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: true },
+  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: false },
   'depth-cutout',
 );
 
 export const DEPTH_INSTANCED_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: true },
+  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: false },
   'depth-instanced-cutout',
 );
 
@@ -157,14 +166,14 @@ export const DEPTH_FRAG = `#version 300 es
 precision highp float;
 in vec4 vLightPosition;
 
-uniform highp sampler2D uPreviousShadowMap;
+uniform highp sampler2DArray uPreviousShadowMap;
 uniform int uPeelShadowLayer;
 
 void main() {
   if (uPeelShadowLayer != 0) {
     vec3 p = vLightPosition.xyz / vLightPosition.w;
     vec2 uv = p.xy * 0.5 + 0.5;
-    float previousDepth = texture(uPreviousShadowMap, uv).r;
+    float previousDepth = texture(uPreviousShadowMap, vec3(uv, ${SUN_STATIC_LAYER}.0)).r;
     // Discard the already-recorded surface and everything in front of it. The
     // ordinary depth test then stores the next independently fading occluder.
     if (gl_FragCoord.z <= previousDepth + 0.00001) discard;
@@ -190,7 +199,7 @@ in vec4 vLightPosition;
 in vec2 vUv;
 flat in float vAlphaCutout;
 
-uniform highp sampler2D uPreviousShadowMap;
+uniform highp sampler2DArray uPreviousShadowMap;
 uniform int uPeelShadowLayer;
 uniform highp sampler2D uCutoutMap;
 ${CUTOUT_COVERAGE_GLSL}
@@ -200,9 +209,100 @@ void main() {
   if (uPeelShadowLayer != 0) {
     vec3 p = vLightPosition.xyz / vLightPosition.w;
     vec2 uv = p.xy * 0.5 + 0.5;
-    float previousDepth = textureLod(uPreviousShadowMap, uv, 0.0).r;
+    float previousDepth = textureLod(uPreviousShadowMap, vec3(uv, ${SUN_STATIC_LAYER}.0), 0.0).r;
     if (gl_FragCoord.z <= previousDepth + 0.00001) discard;
   }
+  if (alpha < vAlphaCutout) discard;
+}
+`;
+
+/**
+ * The glass tint's vertex stages: every way a caster is drawn, with the world position handed on.
+ *
+ * **The same five as the depth pass, and for the same reason**: a pane must cast its colour from
+ * exactly where it casts its depth, deformed and placed the same way, or the coloured patch parts
+ * from the pane's own shadow edge. The only addition is `vGlassWorld`.
+ */
+export const GLASS_TINT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: true },
+  'glass-tint',
+);
+export const GLASS_TINT_SKINNED_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: true },
+  'glass-tint-skinned',
+);
+export const GLASS_TINT_INSTANCED_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: true },
+  'glass-tint-instanced',
+);
+export const GLASS_TINT_CUTOUT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: true },
+  'glass-tint-cutout',
+);
+export const GLASS_TINT_INSTANCED_CUTOUT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: true },
+  'glass-tint-instanced-cutout',
+);
+
+/**
+ * What a pane lets through: its transmission and colour, less what it reflects toward the light,
+ * and how clear it is — `glassShadow.ts`'s `paneTexel`, stated for the device. Drawn with a
+ * multiplying blend and no depth test, so every pane on a ray contributes whatever order they
+ * come in.
+ *
+ * **The pane's normal is its triangle's**, from the derivatives of its world position, first and in
+ * uniform control flow: a pane is flat, a sign does not matter to a cosine taken absolutely, and it
+ * spares the five vertex stages a normal they would carry for this alone. What it gives up is a
+ * curved pane, whose Fresnel steps per triangle; what would change it is glass that is mostly bulbs.
+ */
+const GLASS_TINT_BODY = /* glsl */ `
+  vec3 n = normalize(cross(dFdx(vGlassWorld), dFdy(vGlassWorld)));
+  vec3 toLight = uGlassLight.w > 0.5 ? normalize(uGlassLight.xyz - vGlassWorld) : uGlassLight.xyz;
+  float cosLight = abs(dot(n, toLight));
+  float reflected = 0.04 + 0.96 * pow(1.0 - cosLight, 5.0);
+  outTint = vec4(uGlassPane.rgb * (1.0 - reflected), uGlassPane.a);
+`;
+
+export const GLASS_TINT_FRAG = `#version 300 es
+precision highp float;
+in vec4 vLightPosition;
+in vec3 vGlassWorld;
+
+/* rgb: transmission times tint; a: clarity, one less the frost. */
+uniform vec4 uGlassPane;
+/* xyz: the light's position (w 1) or the direction toward it (w 0). */
+uniform vec4 uGlassLight;
+
+out vec4 outTint;
+
+void main() {
+${GLASS_TINT_BODY}
+}
+`;
+
+/** A cut-out pane: its colour lands only where its depth does, by the depth cutout's own test. */
+export const GLASS_TINT_CUTOUT_FRAG = `#version 300 es
+precision highp float;
+in vec4 vLightPosition;
+in vec2 vUv;
+flat in float vAlphaCutout;
+in vec3 vGlassWorld;
+
+uniform vec4 uGlassPane;
+uniform vec4 uGlassLight;
+uniform highp sampler2D uCutoutMap;
+${CUTOUT_COVERAGE_GLSL}
+out vec4 outTint;
+
+void main() {
+  /* First, in uniform control flow, as the depth cutout samples it. */
+  float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));
+${GLASS_TINT_BODY}
   if (alpha < vAlphaCutout) discard;
 }
 `;

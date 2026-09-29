@@ -128,7 +128,7 @@ export function generateMipChain(
  * Cached per format, because the two differ: an `-srgb` target encodes on write, and blitting a
  * linear chain through a pipeline declared for the other one is a gamma error per level.
  */
-function mipBlitPipeline(
+export function mipBlitPipeline(
   device: GPUDevice,
   pipelines: MipPipelines,
   format: GPUTextureFormat,

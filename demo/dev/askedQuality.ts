@@ -330,6 +330,7 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
   const identifierGraph = asked.get('idgraph');
   /* `?cull=1`. Skips a mesh draw whose bounds are outside the frame; see RenderQuality. */
   const cullDraws = asked.get('cull') === '1';
+  const glassShadows = asked.get('glassshadows');
   const discard = asked.get('discard');
   const defer = asked.get('defer');
   /*
@@ -431,6 +432,10 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
      */
     ...(asked.get('fx') === '0' ? { screenEffects: false } : {}),
     ...(cullDraws ? { cullDraws } : {}),
+    /* `?glassshadows=off|half|full`: off is glass as it cast before a pane had a colour. */
+    ...(glassShadows === 'off' || glassShadows === 'half' || glassShadows === 'full'
+      ? { glassShadows }
+      : {}),
     ...(asked.get('hdr') === '1' ? { hdrScene: true } : {}),
     /* Compiles the night-side emissive term in. The amount is a scene's own, on `Environment`. */
     ...(asked.get('nightem') === '1' ? { nightEmissive: true } : {}),

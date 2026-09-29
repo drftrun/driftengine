@@ -25,6 +25,15 @@ export interface DrawSurfaceOverride {
    * gallery and read as a black blotch. 0 says dielectric.
    */
   readonly metallicScale?: number;
+  /**
+   * Glass, in place of what the file says: the share of light that passes, how milky it is, and
+   * the colour it takes (`GlassOptions` in the renderer). For a model whose panes arrive as an
+   * opaque dark material, because its format or its exporter had no word for glass. Transmission
+   * above zero draws the part blended.
+   */
+  readonly transmission?: number;
+  readonly frost?: number;
+  readonly tint?: readonly [number, number, number];
 }
 
 /**
@@ -50,7 +59,16 @@ export interface DrawGrouping {
   /** Whether both faces are drawn and lit. A merge of a two-sided part and a one-sided one would cull
    *  one of them or unhide the back of the other, so it is part of the key. */
   readonly doubleSided: boolean;
+  /**
+   * Glass. Zero transmission is not glass, and then frost is 0 and the tint white whatever the
+   * file or the override said, so a stray value on an opaque surface never splits a draw.
+   */
+  readonly transmission: number;
+  readonly frost: number;
+  readonly tint: readonly [number, number, number];
 }
+
+const CLEAR: readonly [number, number, number] = [1, 1, 1];
 
 /**
  * Resolve what a part will actually be drawn with.
@@ -60,7 +78,7 @@ export interface DrawGrouping {
  * 0, which is the identity that lets a file saying nothing about a property draw the same as one
  * that did not have the property to say.
  *
- * The override wins over the material for the three fields it may carry, because a consumer dressing
+ * The override wins over the material for the fields it may carry, because a consumer dressing
  * a surface by name knows more than a default an exporter wrote. A cutout is not among them: it is
  * a fact about the *image* a material wears, so nothing outside the file has anything to say
  * about it.
@@ -69,6 +87,8 @@ export function resolveDrawGrouping(
   material: DrftMaterial | undefined,
   override?: DrawSurfaceOverride,
 ): DrawGrouping {
+  const transmission = Math.max(0, override?.transmission ?? material?.transmission ?? 0);
+  const glass = transmission > 0;
   return {
     albedo: material?.albedo ?? -1,
     orm: material?.ormMap ?? -1,
@@ -80,8 +100,11 @@ export function resolveDrawGrouping(
     metallicScale: override?.metallicScale ?? material?.metallicScale ?? 1,
     occlusionStrength: material?.occlusionStrength ?? 0,
     cutout: material?.cutout ?? 0,
-    blend: material?.blend === true,
+    blend: material?.blend === true || glass,
     doubleSided: material?.doubleSided === true,
+    transmission,
+    frost: glass ? (override?.frost ?? material?.frost ?? 0) : 0,
+    tint: glass ? (override?.tint ?? material?.tint ?? CLEAR) : CLEAR,
   };
 }
 
@@ -101,5 +124,5 @@ export function drawKeyOf(
   override?: DrawSurfaceOverride,
 ): string {
   const g = resolveDrawGrouping(material, override);
-  return `${g.albedo}:${g.orm}:${g.normal}:${g.emissive}:${g.opacity}:${g.reflectivity}:${g.roughnessScale}:${g.metallicScale}:${g.occlusionStrength}:${g.cutout}:${g.blend ? 1 : 0}:${g.doubleSided ? 1 : 0}`;
+  return `${g.albedo}:${g.orm}:${g.normal}:${g.emissive}:${g.opacity}:${g.reflectivity}:${g.roughnessScale}:${g.metallicScale}:${g.occlusionStrength}:${g.cutout}:${g.blend ? 1 : 0}:${g.doubleSided ? 1 : 0}:${g.transmission}:${g.frost}:${g.tint[0]},${g.tint[1]},${g.tint[2]}`;
 }

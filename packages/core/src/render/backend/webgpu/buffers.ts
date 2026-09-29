@@ -125,6 +125,12 @@ export interface GpuMesh {
    * its own does.
    */
   readonly vertexStride: number;
+  /**
+   * Byte offsets of the joint indices and weights in the interleaved vertex, or null for a mesh
+   * that supplied neither. For a pass that skins through a shader of its own — the motion pass —
+   * which has to find them without the `present` map the generated pipelines are keyed by.
+   */
+  readonly skinOffsets: { readonly joints: number; readonly weights: number } | null;
   readonly indexBuffer: GPUBuffer;
   readonly indexCount: number;
   /**
@@ -192,7 +198,19 @@ export interface GpuMesh {
    * than every mesh paying it.
    */
   readonly update:
-    ((device: GPUDevice, positions: Float32Array, normals?: Float32Array) => void) | null;
+    | ((
+        device: GPUDevice,
+        positions: Float32Array,
+        normals?: Float32Array,
+        previous?: GPUBuffer | null,
+      ) => void)
+    | null;
+  /**
+   * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's interleaved
+   * rows, made the first time a reconstructing renderer rewrites the mesh, and the frame of the
+   * last rewrite. Null on a mesh created without `{ dynamic: true }`, which never moves a vertex.
+   */
+  readonly motion: { previous: GPUBuffer | null; changed: number } | null;
   dispose(): void;
 }
 
@@ -377,6 +395,7 @@ export function createGpuMeshIncremental(
     progress,
     hasTangents: data.tangents !== undefined,
     isSkinned: data.joints !== undefined,
+    skinOffsets: skinOffsetsOf(supplied),
     hasChannel: data.channel !== undefined,
     morph:
       data.morphTargets === undefined || data.morphTargetCount === undefined
@@ -505,6 +524,22 @@ function interleaveField(
   }
 }
 
+/**
+ * Where the joints and weights sit in a vertex of `supplied`, the attributes a mesh interleaves in
+ * layout order; null unless it supplied both.
+ */
+function skinOffsetsOf(supplied: readonly VertexAttribute[]): GpuMesh['skinOffsets'] {
+  let floats = 0;
+  let joints = -1;
+  let weights = -1;
+  for (const attribute of supplied) {
+    if (attribute.name === 'joints') joints = floats * 4;
+    if (attribute.name === 'weights') weights = floats * 4;
+    floats += attribute.components;
+  }
+  return joints >= 0 && weights >= 0 ? { joints, weights } : null;
+}
+
 /** The handle, made where it can see only what it hands out. */
 function gpuMeshOf(parts: {
   readonly vertices: GPUBuffer;
@@ -516,14 +551,17 @@ function gpuMeshOf(parts: {
   readonly progress: { readonly uploaded: boolean };
   readonly hasTangents: boolean;
   readonly isSkinned: boolean;
+  readonly skinOffsets: GpuMesh['skinOffsets'];
   readonly hasChannel: boolean;
   readonly morph: MorphTexture | null;
   readonly update: GpuMesh['update'];
 }): GpuMesh {
+  const motion = parts.update === null ? null : { previous: null as GPUBuffer | null, changed: -1 };
   const { vertices, constants, indexBuffer, progress } = parts;
   return {
     vertexBuffers: [vertices, constants],
     vertexStride: parts.stride,
+    skinOffsets: parts.skinOffsets,
     indexBuffer,
     indexCount: parts.indexCount,
     bounds: parts.bounds,
@@ -535,7 +573,9 @@ function gpuMeshOf(parts: {
     hasChannel: parts.hasChannel,
     morph: parts.morph,
     update: parts.update,
+    motion,
     dispose(): void {
+      motion?.previous?.destroy();
       vertices.destroy();
       constants.destroy();
       indexBuffer.destroy();
@@ -557,7 +597,12 @@ function dynamicUpdate(
   positionField: number,
   normalField: number,
 ): NonNullable<GpuMesh['update']> {
-  return (target: GPUDevice, positions: Float32Array, normals?: Float32Array): void => {
+  return (
+    target: GPUDevice,
+    positions: Float32Array,
+    normals?: Float32Array,
+    previous: GPUBuffer | null = null,
+  ): void => {
     if (positions.length !== vertexCount * 3) {
       throw new Error(
         `this mesh has ${vertexCount} vertices and the update has ${positions.length / 3}. ` +
@@ -565,6 +610,9 @@ function dynamicUpdate(
           'every other attribute are sized against it.',
       );
     }
+    /* The rows as they stand are last frame's, handed over before a position of them changes.
+       `writeBuffer` copies at the call, so patching the array afterwards cannot reach this copy. */
+    if (previous !== null) target.queue.writeBuffer(previous, 0, interleaved);
     /* Everything that decides whether this is on screen starts from the bounds, so a cloth
        that blew sideways out of its original box would be culled while still visible. */
     boundsOfPositions(positions, bounds);

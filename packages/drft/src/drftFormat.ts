@@ -23,7 +23,7 @@ export const DRFT_VERSION_MAJOR = 1;
  * Additive revisions within a generation: new optional chunks, new attribute bits, new
  * enum values with a defined fallback. Never a changed meaning.
  */
-export const DRFT_VERSION_MINOR = 18;
+export const DRFT_VERSION_MINOR = 19;
 
 /** Bytes before the chunk table. */
 export const HEADER_BYTES = 32;
@@ -582,10 +582,19 @@ export interface DrftMaterial {
    * tree's cards are not drawn. Absent means false, which is how every surface before it was drawn.
    */
   readonly doubleSided?: boolean;
+  /**
+   * Glass, 1.19: the share of light that passes, 0 opaque to 1 clear. Absent or 0 is not glass,
+   * which is what every surface before it was. See the engine's `glass.ts`.
+   */
+  readonly transmission?: number;
+  /** How milky the glass is, 0 see-through to 1 fully diffusing. 1.19. */
+  readonly frost?: number;
+  /** The colour light takes through the glass; white is clear. 1.19. */
+  readonly tint?: readonly [number, number, number];
 }
 
 /** Floats in a `MATL` entry, then the signed texture indices that follow them. */
-export const MATERIAL_FLOATS = 15;
+export const MATERIAL_FLOATS = 20;
 /**
  * Albedo, normal, ORM and emissive.
  *
@@ -596,7 +605,11 @@ export const MATERIAL_FLOATS = 15;
  * them is speculative — only unbound, and the plans that bind them need no second stride bump.
  */
 export const MATERIAL_INDICES = 4;
-/** A `u32` of flags after them, since 1.18: bit 0 is `blend`, bit 1 is `doubleSided`. */
+/**
+ * A `u32` of flags after them, since 1.18: bit 0 is `blend`, bit 1 is `doubleSided`. Glass's five
+ * floats — transmission, frost, tint — follow the flags word, since 1.19, which is why the float
+ * count is twenty while the entry is still laid out floats, indices, flags, floats.
+ */
 export const MATERIAL_FLAGS = 1;
 export const MATERIAL_ENTRY_BYTES = MATERIAL_FLOATS * 4 + MATERIAL_INDICES * 4 + MATERIAL_FLAGS * 4;
 

@@ -82,6 +82,8 @@ export class SceneTarget {
   private colorCopyFramebuffer: WebGLFramebuffer | null = null;
   /** Whether this frame has filled it. One snapshot serves every refracting draw in a frame. */
   private colorCopyFilled = false;
+  /** Whether this frame's copy has its mip chain, which frosted glass reads. See `snapshotColor`. */
+  private colorCopyMips = false;
   /**
    * The colour grade, as a 3D texture on unit 4, and the table it was built from.
    *
@@ -275,12 +277,24 @@ export class SceneTarget {
      */
     if (this.colorCopy === null) this.colorCopy = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.colorCopy);
-    if (this.floatColor) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.HALF_FLOAT, null);
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    /*
+     * **Every level, so glass can read a blurrier one.** Frosted glass reads the copy at a level its
+     * frost picks, and a texture sampled through a mipmapping filter with a level missing is
+     * incomplete and reads black — so the chain is allocated here, once per size, and filled only on
+     * a frame that draws glass (`snapshotColor`). Plain refraction reads level 0, as it always has.
+     */
+    const levels = Math.floor(Math.log2(Math.max(width, height))) + 1;
+    for (let level = 0; level < levels; level += 1) {
+      const w = Math.max(1, width >> level);
+      const h = Math.max(1, height >> level);
+      if (this.floatColor) {
+        gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
     }
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels - 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -419,6 +433,7 @@ export class SceneTarget {
     /* Last frame's snapshot is last frame's scene. See `snapshotDepth`. */
     this.depthCopyFilled = false;
     this.colorCopyFilled = false;
+    this.colorCopyMips = false;
     this.bind();
   }
 
@@ -516,12 +531,21 @@ export class SceneTarget {
    * Null where the copy could not be made, and a caller must read that as "do not refract" rather
    * than as a black texture — refracting against black paints every pane the colour of a hole.
    */
-  snapshotColor(afresh = false): WebGLTexture | null {
+  snapshotColor(
+    afresh = false,
+    /** Fill the copy's mip chain as well, once a frame: what frosted glass reads. */
+    mips = false,
+  ): WebGLTexture | null {
     if (this.colorCopy === null || this.colorCopyFramebuffer === null) return null;
-    if (this.colorCopyFilled && !afresh) return this.colorCopy;
+    if (this.colorCopyFilled && !afresh) {
+      if (mips) this.fillColorCopyMips();
+      return this.colorCopy;
+    }
     const { gl } = this;
     const source = this.msaaFramebuffer ?? this.framebuffer;
     if (source === null) return null;
+    const drawing = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const reading = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
 
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, source);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.colorCopyFramebuffer);
@@ -546,11 +570,31 @@ export class SceneTarget {
       gl.NEAREST,
     );
     const refused = gl.getError() !== gl.NO_ERROR;
-    /* Back to what the caller was drawing into, whichever that was. */
-    gl.bindFramebuffer(gl.FRAMEBUFFER, source);
+    /*
+     * **Back to what the caller was drawing into, whichever that was** — read before the copy and
+     * handed back, never assumed. It was the scene's framebuffer, assumed, and a pane drawn into a
+     * reflection probe's face then left the scene's bound: the probe attached its next face to it,
+     * a face-sized colour beside a screen-sized depth, and every draw after refused as incomplete.
+     */
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, drawing);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, reading);
     if (refused) return null;
     this.colorCopyFilled = true;
+    this.colorCopyMips = false;
+    if (mips) this.fillColorCopyMips();
     return this.colorCopy;
+  }
+
+  /** The copy's mip chain from its level 0, once per copy. */
+  private fillColorCopyMips(): void {
+    if (this.colorCopyMips || this.colorCopy === null) return;
+    const { gl } = this;
+    /* Bound on whichever unit is active and handed back, so the caller's texture there survives. */
+    const previous = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+    gl.bindTexture(gl.TEXTURE_2D, this.colorCopy);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindTexture(gl.TEXTURE_2D, previous);
+    this.colorCopyMips = true;
   }
 
   snapshotDepth(
@@ -573,6 +617,8 @@ export class SceneTarget {
     const { gl } = this;
     const source = this.msaaFramebuffer ?? this.framebuffer;
     if (source === null) return null;
+    const drawing = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const reading = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
 
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, source);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.depthCopyFramebuffer);
@@ -595,8 +641,9 @@ export class SceneTarget {
       gl.NEAREST,
     );
     const refused = gl.getError() !== gl.NO_ERROR;
-    /* Back to what the caller was drawing into, whichever that was. */
-    gl.bindFramebuffer(gl.FRAMEBUFFER, source);
+    /* Back to what the caller was drawing into, read rather than assumed: see `snapshotColor`. */
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, drawing);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, reading);
     if (refused) return null;
     this.depthCopyFilled = true;
     return this.depthCopy;

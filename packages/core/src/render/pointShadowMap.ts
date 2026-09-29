@@ -36,6 +36,19 @@ export { FACE_COUNT, POINT_SHADOW_NEAR };
 
 const scratchViewProj = mat4.create();
 
+/**
+ * What a bake asks of the renderer about glass, after each face's opaque depth.
+ *
+ * **Asked before it is drawn** because the answer decides whether the face binds a glass target at
+ * all: a face that offers no glass and holds none from a previous owner does no glass work.
+ */
+export interface PointGlassDraw {
+  /** Whether the face just drawn offered any glass. */
+  offered(): boolean;
+  /** Draw that glass: its depth, or what it lets through lit from the bake origin. */
+  draw(pass: 'depth' | 'tint', x: number, y: number, z: number): void;
+}
+
 export class PointShadowMap {
   readonly size: number;
   /**
@@ -163,6 +176,8 @@ export class PointShadowMap {
     near = POINT_SHADOW_NEAR,
     sourceRadius = DEFAULT_SOURCE_RADIUS,
     maxFaces = FACE_COUNT,
+    /** The face's glass, when glass shadows are on: `PointGlassDraw`. */
+    glass: PointGlassDraw | null = null,
   ): number {
     /*
      * What to render now, **and what to render it for**. A bake in flight owns the parameters
@@ -220,6 +235,7 @@ export class PointShadowMap {
        * next face's pass does care about.
        */
       array.resolveFace(gl, this.layer, face, plan.range, plan.near);
+      if (glass !== null) this.bakeGlassFace(gl, array, glass, face, plan);
     }
 
     gl.enable(gl.CULL_FACE);
@@ -237,5 +253,30 @@ export class PointShadowMap {
    * needing disposal is exactly the shape of a leak nobody notices. The array is disposed by the
    * renderer that built it.
    */
+  /**
+   * The face's glass, twice: where the nearest pane is, then what the panes let through.
+   *
+   * A face that offers no glass still clears a region a previous owner's glass is in — the depth to
+   * the far plane and the tint to white, from scratches cleared and not drawn into — because a pool
+   * slot changes hands with its layer.
+   */
+  private bakeGlassFace(
+    gl: WebGL2RenderingContext,
+    array: PointShadowTarget,
+    glass: PointGlassDraw,
+    face: number,
+    plan: FaceRange,
+  ): void {
+    if (!array.hasGlass) return;
+    const offered = glass.offered();
+    if (!offered && !array.heldGlass(this.layer, face)) return;
+    array.beginGlassFace(gl);
+    if (offered) glass.draw('depth', plan.x, plan.y, plan.z);
+    array.resolveGlassFace(gl, this.layer, face, plan.range, plan.near);
+    array.beginTintFace(gl);
+    if (offered) glass.draw('tint', plan.x, plan.y, plan.z);
+    array.resolveTintFace(gl, this.layer, face, offered);
+  }
+
   dispose(_gl: WebGL2RenderingContext): void {}
 }

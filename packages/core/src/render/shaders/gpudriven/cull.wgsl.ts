@@ -104,9 +104,11 @@ struct Params {
   eyeZ: f32,
   /** Non-zero to select the blended clusters, zero to select everything else. */
   wantBlend: f32,
+  /** Non-zero to keep, of those, only glass: what the light's glass pass draws. */
+  wantGlass: f32,
 };
 ${MATERIAL_TABLE_WGSL}
-@group(0) @binding(0) var<storage, read> params: array<f32, 7>;
+@group(0) @binding(0) var<storage, read> params: array<f32, 8>;
 /** Six floats a cluster: centre, radius, own error, parent error. */
 @group(0) @binding(1) var<storage, read> clusters: array<f32>;
 @group(0) @binding(2) var<storage, read_write> selected: array<u32>;
@@ -139,8 +141,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
    * neither is drawn twice and neither is dropped. The flag is read through a uniform by an index
    * that is the same for every cluster of a mesh, so the branch is as coherent as this shader gets.
    */
-  let blended = materials[min(materialOf[i], ${MATERIAL_SLOTS - 1}u)].orm.w != 0.0;
+  let material = materials[min(materialOf[i], ${MATERIAL_SLOTS - 1}u)];
+  let blended = material.orm.w != 0.0;
   if (blended != (params[6] != 0.0)) {
+    selected[i] = 0u;
+    return;
+  }
+  /* The light's glass pass: a blended surface that is not glass casts nothing, as on the forward
+     path, so only a material letting light through is kept. */
+  if (params[7] != 0.0 && material.extra.y <= 0.0) {
     selected[i] = 0u;
     return;
   }

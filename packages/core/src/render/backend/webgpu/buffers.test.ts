@@ -191,6 +191,46 @@ describe('a gpu mesh', () => {
     expect(device.queue.writeBuffer).toHaveBeenCalled();
   });
 
+  /*
+   * The motion pass skins through a shader of its own, so it has to find the joints and weights in
+   * the interleaved vertex without the generated pipelines' `present` map. Positions, normals and
+   * colours are three floats each and emissive is one — ten floats, forty bytes — and the joint
+   * indices follow at forty, four floats wide, with the weights after them at fifty-six.
+   */
+  it('SAYS WHERE A SKINNED MESH KEEPS ITS JOINTS AND WEIGHTS, and a rigid one says nothing', () => {
+    const { device } = fakeDevice();
+    const rigged = createGpuMesh(device, {
+      ...triangle(),
+      joints: new Float32Array(12),
+      weights: new Float32Array(12),
+    });
+    expect(rigged.skinOffsets).toEqual({ joints: 40, weights: 56 });
+    expect(createGpuMesh(device, triangle()).skinOffsets).toBeNull();
+  });
+
+  /*
+   * A reconstruction needs where a rewritten mesh's vertices were last frame. The update writes the
+   * rows as they stood into the buffer it is handed before patching a position, and `writeBuffer`
+   * copies at the call — so the previous buffer holds the old positions and the mesh the new ones.
+   */
+  it('A DYNAMIC MESH HANDS OVER ITS ROWS AS THEY STOOD BEFORE IT PATCHES THEM', () => {
+    const { device, memory } = fakeDevice();
+    const mesh = createGpuMesh(device, triangle(), true);
+    expect(mesh.motion).toEqual({ previous: null, changed: -1 });
+    expect(createGpuMesh(device, triangle()).motion).toBeNull();
+
+    const previous = device.createBuffer({ size: 120, usage: 0 });
+    mesh.update?.(device, new Float32Array([10, 0, 0, 11, 0, 0, 10, 1, 0]), undefined, previous);
+
+    const was = new Float32Array((memory.get(previous) as Uint8Array).buffer);
+    const now = new Float32Array(
+      (memory.get(mesh.vertexBuffers[0] as object) as Uint8Array).buffer,
+    );
+    /* The first vertex's x, then the second's: ten floats a vertex in this triangle's rows. */
+    expect([was[0], was[10]]).toEqual([0, 1]);
+    expect([now[0], now[10]]).toEqual([10, 11]);
+  });
+
   it('destroys every buffer it made', () => {
     const { device } = fakeDevice();
     const mesh = createGpuMesh(device, triangle());

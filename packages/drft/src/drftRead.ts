@@ -758,6 +758,16 @@ export function readMaterials(buffer: ArrayBuffer, chunk: DrftChunk): DrftMateri
       blend: has(76, 4) ? (view.getUint32(at + 76, true) & 1) !== 0 : false,
       /* One-sided unless it says otherwise, which is how every file before the bit was drawn. */
       doubleSided: has(76, 4) ? (view.getUint32(at + 76, true) & 2) !== 0 : false,
+      /* Not glass, which is what every file before 1.19 meant. */
+      transmission: has(80, 4) ? view.getFloat32(at + 80, true) : 0,
+      frost: has(84, 4) ? view.getFloat32(at + 84, true) : 0,
+      tint: has(88, 12)
+        ? [
+            view.getFloat32(at + 88, true),
+            view.getFloat32(at + 92, true),
+            view.getFloat32(at + 96, true),
+          ]
+        : [1, 1, 1],
     });
   }
   return out;

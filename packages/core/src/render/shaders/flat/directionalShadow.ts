@@ -1,5 +1,13 @@
 /** Filtering the directional cascade, with receiver-plane depth gradient compensation. */
 import { DIRECTIONAL_SHADOW_FADE_START, MAX_SHADOW_FILTER_TAPS } from '../../renderQuality.ts';
+import {
+  SUN_DYNAMIC_LAYER,
+  SUN_GLASS_MOVING_LAYER,
+  SUN_GLASS_STATIC_LAYER,
+  SUN_PEELED_LAYER,
+  SUN_STATIC_LAYER,
+} from '../../shadowMap.ts';
+import { FROST_RADIUS_CAP, FROST_SPREAD } from '../../glassShadow.ts';
 
 export const DIRECTIONALSHADOW_GLSL = `vec2 receiverPlaneDepthGradient(vec3 p) {
   vec3 dx = dFdx(p);
@@ -127,10 +135,10 @@ float shadowFactor(float directionalNdl) {
    */
   float coarseCompare = p.z - 1.0 / uShadowDepthSpan;
   float coarse =
-    directionalVisibility(p.z, coarseCompare, textureLod(uStaticShadowMap, p.xy, 0.0).r) *
-    directionalVisibility(p.z, coarseCompare, textureLod(uDynamicShadowMap, p.xy, 0.0).r);
+    directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_STATIC_LAYER}.0), 0.0).r) *
+    directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r);
   if (uPeeledShadowEnabled != 0) {
-    coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uPeeledShadowMap, p.xy, 0.0).r);
+    coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_PEELED_LAYER}.0), 0.0).r);
   }
   float strength = uShadowStrength * edgeFade * lowElevationFade;
   if (receiverFade <= 0.0) return mix(1.0, coarse, strength);
@@ -191,11 +199,11 @@ float shadowFactor(float directionalNdl) {
      * \`shadowMap.ts\` allocates these with one storage level and \`NEAREST\` filtering, so
      * there is no mip to select and level zero is the only thing \`texture\` could have read.
      */
-    float staticDepth = textureLod(uStaticShadowMap, sampleUv, 0.0).r;
-    float dynamicDepth = textureLod(uDynamicShadowMap, sampleUv, 0.0).r;
+    float staticDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_STATIC_LAYER}.0), 0.0).r;
+    float dynamicDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_DYNAMIC_LAYER}.0), 0.0).r;
     staticLit += directionalVisibility(tapReceiverDepth, compare, staticDepth);
     if (uPeeledShadowEnabled != 0) {
-      float peeledDepth = textureLod(uPeeledShadowMap, sampleUv, 0.0).r;
+      float peeledDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_PEELED_LAYER}.0), 0.0).r;
       peeledLit += directionalVisibility(tapReceiverDepth, compare, peeledDepth);
     } else {
       peeledLit += 1.0;
@@ -214,6 +222,89 @@ float shadowFactor(float directionalNdl) {
   float lit = staticLit * peeledLit * dynamicLit;
 
   return mix(1.0, mix(coarse, lit, receiverFade), strength);
+}
+
+/*
+ * One of the sun's two glass layers at receiver p: how milky the nearest pane is and how far behind
+ * it this receiver stands, the spread that follows (glassShadow.ts's frostRadius, capped), and the
+ * tint's level for that spread. Then glassShadow.ts's spreadTint: the outline from taps at the base
+ * radius — where the clear pane's patch ends — and the colour from the spread taps, each read coarse,
+ * unmixed from the ground around it and weighed by the pane's share of it, so a frosted patch mixes
+ * its panes' colours and keeps the light the clear one lets through. What it gives up is a pane lying
+ * behind the receiver lending it colour within the spread, which only a receiver between two panes
+ * meets. One function for both layers, because two copies were most of the lit shaders' growth.
+ */
+vec3 sunGlassLayer(vec3 p, float paneLayer, float tintLayer, float bias, float texel, float uvPerMetre) {
+  float tintSize = float(textureSize(uSunGlassTints, 0).x);
+  float clarity = textureLod(uSunGlassTints, vec3(p.xy, tintLayer), 0.0).a;
+  float behind =
+    max(p.z - textureLod(uSunShadows, vec3(p.xy, paneLayer), 0.0).r, 0.0) * uShadowDepthSpan;
+  float radius = clamp(
+    (1.0 - clarity) * ${FROST_SPREAD.toFixed(6)} * behind * uvPerMetre,
+    texel,
+    texel * ${FROST_RADIUS_CAP.toFixed(1)}
+  );
+  float lod = log2(max(radius * tintSize, 1.0));
+  float cover = 0.0;
+  vec3 colour = vec3(0.0);
+  float found = 0.0;
+  for (int i = 0; i < ${MAX_SHADOW_FILTER_TAPS}; i++) {
+    if (i >= uShadowFilterTaps) break;
+    vec2 offset = DIRECTIONAL_PCF_OFFSETS[i];
+    vec2 edgeUv = p.xy + offset * texel;
+    cover += p.z > textureLod(uSunShadows, vec3(edgeUv, paneLayer), 0.0).r + bias ? 1.0 : 0.0;
+    /* The spread taps weigh by the pane's unmixed share rather than a depth test: continuous, so a
+       colour crossing between two panes blends rather than stepping through sixteen bands. */
+    vec4 pane = glassUnmix(textureLod(uSunGlassTints, vec3(p.xy + offset * radius, tintLayer), lod), clarity);
+    colour += pane.rgb * pane.a;
+    found += pane.a;
+  }
+  float taps = float(max(uShadowFilterTaps, 1));
+  return mix(vec3(1.0), found > 0.0 ? colour / found : vec3(1.0), cover / taps);
+}
+
+/*
+ * What the sun's light keeps of itself through glass at this receiver: glassShadow.ts's tap rule
+ * and frost spread, over shadowFactor's own taps. A tap counts a pane only when the receiver is
+ * farther from the sun than that pane (the glass depth layers), so a surface on the sun's side of a
+ * pane, and the pane itself, keep the sun's own colour; the taps average with equal weight, so the
+ * spread moves light rather than losing it. Frost widens the taps by how far behind the nearest pane
+ * the receiver is, capped, with the tap count unchanged. What it gives up is spread past the edge of
+ * an opaque frame's shadow, which this lookup never sees. Faded with the opaque shadow's own fades.
+ */
+vec3 sunGlassLookup(float directionalNdl) {
+  vec3 p = vLightPos.xyz / vLightPos.w;
+  p = p * 0.5 + 0.5;
+  /* Map units per metre along the receiver, from derivatives taken first in uniform control flow,
+     so a frost spread stated in metres lands the same whatever size of light matrix a consumer built. */
+  float uvPerMetre = length(dFdx(p.xy)) / max(length(dFdx(vWorldPos)), 1e-6);
+  if (uShadowStrength <= 0.0 || textureSize(uSunGlassTints, 0).x <= 1) return vec3(1.0);
+  if (directionalNdl <= 0.0) return vec3(1.0);
+  if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return vec3(1.0);
+  vec2 fromCentre = abs(p.xy - 0.5) * 2.0;
+  float edgeFade = 1.0 - smoothstep(0.72, 0.98, max(fromCentre.x, fromCentre.y));
+  edgeFade *= 1.0 - smoothstep(0.90, 1.0, p.z);
+  float shadowSlope = length(uDirectionalDir.xz) / max(uDirectionalDir.y, 0.001);
+  float lowElevationFade = 1.0 - smoothstep(
+    uShadowMaxSlope * ${DIRECTIONAL_SHADOW_FADE_START.toFixed(2)},
+    uShadowMaxSlope,
+    shadowSlope
+  );
+  float strength = uShadowStrength * edgeFade * lowElevationFade;
+  if (strength <= 0.0) return vec3(1.0);
+
+  float bias = 0.14 / uShadowDepthSpan;
+  float texel = 1.35 / uShadowMapSize;
+  vec3 staticTint = sunGlassLayer(p, ${SUN_GLASS_STATIC_LAYER}.0, 0.0, bias, texel, uvPerMetre);
+  vec3 movingTint = sunGlassLayer(p, ${SUN_GLASS_MOVING_LAYER}.0, 1.0, bias, texel, uvPerMetre);
+  return mix(vec3(1.0), staticTint * movingTint, strength);
+}
+
+/* The way in, asking first whether this build reads glass at all (GLASS_SHADOWS). A constant, so
+   the lookup's derivatives are still taken in uniform control flow. */
+vec3 sunGlassTint(float directionalNdl) {
+  if (GLASS_SHADOWS) return sunGlassLookup(directionalNdl);
+  return vec3(1.0);
 }
 #endif
 

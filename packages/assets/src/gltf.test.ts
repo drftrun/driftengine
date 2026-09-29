@@ -764,3 +764,65 @@ test('A METAL WHOSE COLOUR IS IN A TEXTURE IS GIVEN NO WHITE HIGHLIGHT, which dr
   expect((read.meshes[0] as MeshData).specular?.[0], 'and the lane the shader reads').toBe(0);
   expect(read.materials[0]?.roughness, "the specification's roughness is kept").toBe(1);
 });
+
+test('A MATERIAL THAT TRANSMITS LIGHT ARRIVES AS GLASS, and rough glass is frosted glass', () => {
+  /*
+   * `KHR_materials_transmission` is how every exporter says "glass". Its roughness is the blur of
+   * what is seen through it — the extension says so — so a rough transmissive material is exactly
+   * this engine's frost, and a smooth one is clear.
+   */
+  const clear = readMaterial({
+    name: 'pane',
+    pbrMetallicRoughness: { roughnessFactor: 0 },
+    extensions: { KHR_materials_transmission: { transmissionFactor: 0.8 } },
+  }).materials[0];
+  expect(clear?.transmission).toBeCloseTo(0.8, 6);
+  expect(clear?.frost).toBe(0);
+  expect(clear?.tint).toEqual([1, 1, 1]);
+  expect(clear?.blend, 'glass is drawn over what is behind it').toBe(true);
+
+  const rough = readMaterial({
+    name: 'etched',
+    pbrMetallicRoughness: { roughnessFactor: 0.6 },
+    extensions: { KHR_materials_transmission: { transmissionFactor: 1 } },
+  }).materials[0];
+  expect(rough?.frost).toBeCloseTo(0.6, 6);
+
+  const milky = readMaterial({
+    name: 'shade',
+    pbrMetallicRoughness: { roughnessFactor: 0.1 },
+    extensions: {
+      KHR_materials_transmission: { transmissionFactor: 0.9 },
+      KHR_materials_diffuse_transmission: {
+        diffuseTransmissionFactor: 0.5,
+        diffuseTransmissionColorFactor: [1, 0.9, 0.8],
+      },
+    },
+  }).materials[0];
+  expect(milky?.frost).toBeCloseTo(0.5, 6);
+  expect(milky?.tint).toEqual([1, 0.9, 0.8]);
+
+  const green = readMaterial({
+    name: 'bottle',
+    pbrMetallicRoughness: { roughnessFactor: 0 },
+    extensions: {
+      KHR_materials_transmission: { transmissionFactor: 1 },
+      KHR_materials_volume: { attenuationColor: [0.9, 1, 0.9] },
+    },
+  }).materials[0];
+  expect(green?.tint, 'the volume colour where no diffuse colour is stated').toEqual([0.9, 1, 0.9]);
+
+  /* A factor that scales a roughness map is not a roughness: 1 here means "as the map says". */
+  const mapped = readMaterial({
+    name: 'smudged',
+    pbrMetallicRoughness: { roughnessFactor: 1, metallicRoughnessTexture: { index: 0 } },
+    extensions: { KHR_materials_transmission: { transmissionFactor: 1 } },
+  }).materials[0];
+  expect(mapped?.frost, 'a mapped roughness does not frost the pane').toBe(0);
+
+  const wall = readMaterial({ name: 'wall', pbrMetallicRoughness: { roughnessFactor: 0.3 } })
+    .materials[0];
+  expect(wall?.transmission, 'no extension, no glass').toBe(0);
+  expect(wall?.frost).toBe(0);
+  expect(wall?.blend).toBe(false);
+});

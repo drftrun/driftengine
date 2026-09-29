@@ -563,6 +563,12 @@ function buildMaterials(materials: readonly DrftMaterial[]): PendingChunk {
       (material.blend === true ? 1 : 0) | (material.doubleSided === true ? 2 : 0),
       true,
     );
+    /* Glass, 1.19: after the flags word, so every earlier offset stays where readers expect it. */
+    view.setFloat32(at + 80, material.transmission ?? 0, true);
+    view.setFloat32(at + 84, material.frost ?? 0, true);
+    view.setFloat32(at + 88, material.tint?.[0] ?? 1, true);
+    view.setFloat32(at + 92, material.tint?.[1] ?? 1, true);
+    view.setFloat32(at + 96, material.tint?.[2] ?? 1, true);
     at += MATERIAL_ENTRY_BYTES;
   }
   return { code: CHUNK_MATL, flags: 0, bytes };

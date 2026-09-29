@@ -129,6 +129,18 @@ export function recordingGl(
     COLOR_BUFFER_BIT: 0x00004000,
     /* Named so a test can tell a mesh that declared itself deforming from one that did not. */
     ARRAY_BUFFER: 0x8892,
+    /* Named so a blend a pass sets can be read back as numbers: glass multiplies what it lets
+       through, and a test that cannot tell DST_COLOR from a recorder cannot tell it multiplies. */
+    ZERO: 0,
+    DST_ALPHA: 0x0304,
+    DST_COLOR: 0x0306,
+    FUNC_ADD: 0x8006,
+    COLOR: 0x1800,
+    DEPTH: 0x1801,
+    /* Named so a copy can be read as from-and-to: a blit's two framebuffers are the whole claim. */
+    READ_FRAMEBUFFER: 0x8ca8,
+    DRAW_FRAMEBUFFER: 0x8ca9,
+    BLEND: 0x0be2,
     STATIC_DRAW: 0x88e4,
     DYNAMIC_DRAW: 0x88e8,
   };

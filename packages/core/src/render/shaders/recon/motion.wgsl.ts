@@ -88,6 +88,90 @@ fn motionUv(clip: vec4<f32>) -> vec2<f32> {
   return clip.xy / clip.w * 0.5 + vec2<f32>(0.5);
 }
 
+/*
+ * The skinned stage: the joints this frame and last frame, read from two palette textures of the
+ * frame's ring. The same four weighted products in the same order as the scene's own skinning, so
+ * the depth this stage produces is the depth the scene wrote.
+ */
+@group(1) @binding(0) var palette: texture_2d<f32>;
+@group(1) @binding(1) var previousPalette: texture_2d<f32>;
+
+fn jointOf(source: texture_2d<f32>, index: i32) -> mat4x4<f32> {
+  let x = index * 4;
+  return mat4x4<f32>(
+    textureLoad(source, vec2<i32>(x, 0), 0),
+    textureLoad(source, vec2<i32>(x + 1, 0), 0),
+    textureLoad(source, vec2<i32>(x + 2, 0), 0),
+    textureLoad(source, vec2<i32>(x + 3, 0), 0));
+}
+
+fn skinOf(source: texture_2d<f32>, joints: vec4<f32>, weights: vec4<f32>) -> mat4x4<f32> {
+  return jointOf(source, i32(joints.x)) * weights.x
+       + jointOf(source, i32(joints.y)) * weights.y
+       + jointOf(source, i32(joints.z)) * weights.z
+       + jointOf(source, i32(joints.w)) * weights.w;
+}
+
+@vertex
+fn motionSkinnedVert(
+  @location(0) position: vec3<f32>,
+  @location(11) joints: vec4<f32>,
+  @location(12) weights: vec4<f32>,
+) -> Varyings {
+  let world = draw.model * (skinOf(palette, joints, weights) * vec4<f32>(position, 1.0));
+  let wasWorld =
+    draw.previousModel * (skinOf(previousPalette, joints, weights) * vec4<f32>(position, 1.0));
+  var out: Varyings;
+  out.clip = frame.raster * world;
+  out.now = frame.viewProj * world;
+  out.was = frame.previousViewProj * wasWorld;
+  return out;
+}
+
+/*
+ * The rewritten stage: a mesh whose vertices were rewritten this frame reads last frame's rows from
+ * a second buffer of the same stride, so each vertex carries both of its positions.
+ */
+@vertex
+fn motionDynamicVert(
+  @location(0) position: vec3<f32>,
+  @location(1) previousPosition: vec3<f32>,
+) -> Varyings {
+  let world = draw.model * vec4<f32>(position, 1.0);
+  let wasWorld = draw.previousModel * vec4<f32>(previousPosition, 1.0);
+  var out: Varyings;
+  out.clip = frame.raster * world;
+  out.now = frame.viewProj * world;
+  out.was = frame.previousViewProj * wasWorld;
+  return out;
+}
+
+/*
+ * The instanced stage: each instance's matrix this frame and last frame, read from the batch's
+ * placement and the copy of last frame's it kept. Slot for slot, so an instance is paired with
+ * itself; the per-draw matrices are not read.
+ */
+@vertex
+fn motionInstancedVert(
+  @location(0) position: vec3<f32>,
+  @location(2) m0: vec4<f32>,
+  @location(3) m1: vec4<f32>,
+  @location(4) m2: vec4<f32>,
+  @location(5) m3: vec4<f32>,
+  @location(6) p0: vec4<f32>,
+  @location(7) p1: vec4<f32>,
+  @location(8) p2: vec4<f32>,
+  @location(9) p3: vec4<f32>,
+) -> Varyings {
+  let world = mat4x4<f32>(m0, m1, m2, m3) * vec4<f32>(position, 1.0);
+  let wasWorld = mat4x4<f32>(p0, p1, p2, p3) * vec4<f32>(position, 1.0);
+  var out: Varyings;
+  out.clip = frame.raster * world;
+  out.now = frame.viewProj * world;
+  out.was = frame.previousViewProj * wasWorld;
+  return out;
+}
+
 @fragment
 fn motionFrag(in: Varyings) -> @location(0) vec4<f32> {
   /*

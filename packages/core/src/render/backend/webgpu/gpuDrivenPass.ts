@@ -92,6 +92,11 @@ import {
   gpuDrivenSupported,
   recordGpuDrivenStages,
 } from '../../gpudriven/pipeline.ts';
+import { resolveGlass, type GlassOptions, type ResolvedGlass } from '../../glass.ts';
+import type { GlassShadows } from '../../renderQuality.ts';
+import { GLASS_TINT_BLEND } from './glassTintPass.ts';
+import { SnapshotMips } from './snapshotMips.ts';
+import type { MipPipelines } from './surfaceTexturePass.ts';
 import type { GpuDrivenFrameShape, GpuDrivenPassName } from '../../gpudriven/pipeline.ts';
 import { createDeps, resetDeps } from '../../frame/deps.ts';
 import { createGraphPasses, createGraphScratch, scheduleGraph } from '../../frame/graphSchedule.ts';
@@ -369,6 +374,14 @@ export interface GpuDrivenMaterial {
    * blend and said nothing else gets — visible, and therefore findable.
    */
   readonly opacity?: number;
+  /**
+   * Glass: how much light passes, how milky it is, and the colour it takes — `GlassOptions`, as the
+   * forward path's `drawTranslucentMesh` takes it. Absent, or letting nothing through, is not glass.
+   *
+   * **A glass material is drawn in the blended half whatever `blend` says**, because a visibility
+   * buffer holds one surface a pixel and glass is the pane and what is behind it.
+   */
+  readonly glass?: GlassOptions;
 }
 
 /** What the pass needs told once a frame, before `beginFrame`. */
@@ -473,6 +486,12 @@ export interface GpuDrivenShadowOptions {
    * texels, and reaches toward the sun as far as the scene does.
    */
   readonly followRadius?: number;
+  /**
+   * What the sun keeps through glass: `RenderQualityOptions.glassShadows`, which a contributed pass
+   * is not handed and so takes here. `'full'` by default, as there; `'half'` halves the tint and
+   * `'off'` draws a glass material's shadow as nothing, which is what it cast before.
+   */
+  readonly glass?: GlassShadows;
 }
 
 interface Level {
@@ -675,6 +694,30 @@ export class GpuDrivenPass implements PassDefinition {
   private latentClamp: GPUSampler | null = null;
   private latentRepeat: GPUSampler | null = null;
   private shadowView: GPUTextureView | null = null;
+  /** The nearest pane's depth from the sun: the shadow texture's second layer, where glass casts. */
+  private glassDepthView: GPUTextureView | null = null;
+  /** What the panes let through, as the sun sees them, with the chain frost reads. */
+  private glassTintTexture: GPUTexture | null = null;
+  private glassTintTarget: GPUTextureView | null = null;
+  private glassTintSampled: GPUTextureView | null = null;
+  private glassTintMips: SnapshotMips | null = null;
+  /** One white texel, bound where no glass casts, which the lookup reads as none. */
+  private glassTintNone: GPUTexture | null = null;
+  private readonly glassMode: GlassShadows;
+  /** Whether the sun's glass pass runs at all: a glass material, and glass shadows not off. */
+  private readonly castsGlass: boolean;
+  private glassList: GPUBuffer | null = null;
+  private glassArgs: GPUBuffer | null = null;
+  private glassLodBuffer: GPUBuffer | null = null;
+  private readonly lodParamsGlass = new Float32Array(8);
+  private shadowCullSettingsGlass: GPUBuffer | null = null;
+  private glassLodGroup: GPUBindGroup | null = null;
+  private glassCullGroup: GPUBindGroup | null = null;
+  private glassCompactGroup: GPUBindGroup | null = null;
+  private glassDepthPipeline: GPURenderPipeline | null = null;
+  private glassDepthGroup: GPUBindGroup | null = null;
+  private glassTintPipeline: GPURenderPipeline | null = null;
+  private glassTintGroup: GPUBindGroup | null = null;
   /**
    * What is bound as the probe where the frame has none.
    *
@@ -790,7 +833,26 @@ export class GpuDrivenPass implements PassDefinition {
   private visibilityTexture: GPUTexture | null = null;
   private depthTexture: GPUTexture | null = null;
   private colourTexture: GPUTexture | null = null;
+  /** Level 0: what the shading writes, the resolve lays over and the blit presents. */
   private colourView: GPUTextureView | null = null;
+  /** Every level, for glass to read at the level its frost picks. Level 0 alone with no glass. */
+  private colourSampledView: GPUTextureView | null = null;
+  /** The chain glass reads, filled from the shaded picture each frame; null in a scene with none. */
+  private colourMips: SnapshotMips | null = null;
+  /** Whether any material is glass, which is what earns the colour its chain: see `buildTargets`. */
+  private readonly hasGlass: boolean;
+  /** The pipelines the chain draws with, one a format. */
+  private readonly mipPipelineCache = new Map<string, GPURenderPipeline>();
+  private readonly mipPipelines: MipPipelines = {
+    get: (key, describe) => {
+      const held = this.mipPipelineCache.get(key);
+      if (held !== undefined) return held;
+      const made = (this.device as GPUDevice).createRenderPipeline(describe());
+      this.mipPipelineCache.set(key, made);
+      return made;
+    },
+  };
+  private glassSampler: GPUSampler | null = null;
   private visibility: GPUBuffer | null = null;
   private hzb: GPUBuffer | null = null;
   private levelStart: GPUBuffer | null = null;
@@ -921,7 +983,10 @@ export class GpuDrivenPass implements PassDefinition {
     this.decode = packDecodeTables(this.programs.programs);
     this.scene = scene;
     this.materials = materials;
+    this.hasGlass = materials.some((material) => resolveGlass(material.glass, glassProbe));
     this.shadowSize = shadow.mapSize ?? DEFAULT_RENDER_QUALITY.directionalShadowMapSize;
+    this.glassMode = shadow.glass ?? DEFAULT_RENDER_QUALITY.glassShadows;
+    this.castsGlass = this.hasGlass && this.glassMode !== 'off';
     this.shadowMaxDistance =
       shadow.maxDistance ?? DEFAULT_RENDER_QUALITY.directionalShadowMaxDistance;
     this.shadowMaxSlope = shadow.maxSlope ?? DEFAULT_RENDER_QUALITY.directionalShadowMaxSlope;
@@ -1163,6 +1228,10 @@ export class GpuDrivenPass implements PassDefinition {
     this.shadowArgs = this.storage(device, 'draw shadow', shadowArgs, INDIRECT | COPY_SRC);
     this.shadowArgsTwo = this.storage(device, 'draw shadow two', shadowArgs, INDIRECT | COPY_SRC);
     this.shadowSelected = this.empty(device, 'shadow selected', count * 4);
+    /* The sun's glass: its own list and arguments, over the light's selection once the map is done. */
+    this.glassList = this.empty(device, 'shadow glass list', count * 4);
+    this.glassArgs = this.storage(device, 'draw shadow glass', shadowArgs, INDIRECT | COPY_SRC);
+    this.glassLodBuffer = this.empty(device, 'lod params glass', 8 * 4);
     this.shadowKeep = this.empty(device, 'shadow keep', count * 4);
     this.shadowPlanes = this.empty(device, 'shadow planes', FRUSTUM_FLOATS * 4);
     this.shadowHistories = [
@@ -1198,6 +1267,12 @@ export class GpuDrivenPass implements PassDefinition {
       'cull settings, shadow two',
       this.shadowCullValues,
     );
+    /* The glass pass's: no pyramid and no cones, since a pane casts from either side. */
+    this.shadowCullSettingsGlass = this.storage(
+      device,
+      'cull settings, shadow glass',
+      this.shadowCullValues,
+    );
     this.shadowCompactSettings = this.storage(
       device,
       'phase shadow',
@@ -1219,11 +1294,61 @@ export class GpuDrivenPass implements PassDefinition {
      */
     this.shadowTexture = device.createTexture({
       label: 'gpu-driven shadow',
-      size: { width: this.shadowSize, height: this.shadowSize },
+      /* A second layer for the nearest pane where a material is glass, and none where none is. */
+      size: {
+        width: this.shadowSize,
+        height: this.shadowSize,
+        depthOrArrayLayers: this.castsGlass ? 2 : 1,
+      },
       format: SHADOW_FORMAT,
       usage: RENDER_ATTACHMENT | TEXTURE_BINDING,
     });
-    this.shadowView = this.shadowTexture.createView();
+    const layer = (at: number): GPUTextureView =>
+      (this.shadowTexture as GPUTexture).createView({
+        dimension: '2d',
+        baseArrayLayer: at,
+        arrayLayerCount: 1,
+      });
+    this.shadowView = layer(0);
+    this.glassDepthView = this.castsGlass ? layer(1) : null;
+    const tintSize =
+      this.glassMode === 'half' ? Math.max(1, this.shadowSize >> 1) : this.shadowSize;
+    this.glassTintTexture = this.castsGlass
+      ? device.createTexture({
+          label: 'gpu-driven glass tint',
+          size: { width: tintSize, height: tintSize },
+          format: 'rgba8unorm',
+          mipLevelCount: Math.floor(Math.log2(tintSize)) + 1,
+          usage: RENDER_ATTACHMENT | TEXTURE_BINDING,
+        })
+      : null;
+    if (this.glassTintTexture !== null) {
+      this.glassTintTarget = this.glassTintTexture.createView({
+        baseMipLevel: 0,
+        mipLevelCount: 1,
+      });
+      this.glassTintSampled = this.glassTintTexture.createView();
+      this.glassTintMips = new SnapshotMips(
+        device,
+        this.mipPipelines,
+        this.glassTintTexture,
+        'rgba8unorm',
+        null,
+        'gpu-driven glass tint mips',
+      );
+    }
+    this.glassTintNone = device.createTexture({
+      label: 'gpu-driven no glass',
+      size: { width: 1, height: 1 },
+      format: 'rgba8unorm',
+      usage: TEXTURE_BINDING | TEXTURE_COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: this.glassTintNone },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 },
+    );
 
     this.emptyEnvironment = device.createTexture({
       label: 'gpu-driven no environment',
@@ -1538,6 +1663,37 @@ export class GpuDrivenPass implements PassDefinition {
       });
     this.shadowGroup = shadowRasterFor(this.shadowList as GPUBuffer);
     this.shadowGroupTwo = shadowRasterFor(this.shadowListTwo as GPUBuffer);
+    /*
+     * **The nearest pane, from the sun: the same raster, culling nothing**, since a pane casts from
+     * either side; into the shadow texture's second layer. Built only where glass casts.
+     */
+    if (this.castsGlass) {
+      this.glassDepthPipeline = device.createRenderPipeline({
+        label: 'gpu-driven shadow glass',
+        layout: 'auto',
+        vertex: { module: raster, entryPoint: 'vertexMain' },
+        primitive: { topology: 'triangle-list', cullMode: 'none', frontFace: 'cw' },
+        depthStencil: {
+          format: SHADOW_FORMAT,
+          depthWriteEnabled: true,
+          depthCompare: 'less',
+          depthBias: 4,
+          depthBiasSlopeScale: 1.1,
+        },
+      });
+      this.glassDepthGroup = device.createBindGroup({
+        layout: this.glassDepthPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.shadowMatrix as GPUBuffer } },
+          { binding: 1, resource: { buffer: this.glassList as GPUBuffer } },
+          { binding: 2, resource: { buffer: this.clusterMeta as GPUBuffer } },
+          { binding: 3, resource: { buffer: this.indices as GPUBuffer } },
+          { binding: 4, resource: { buffer: this.vertices as GPUBuffer } },
+          { binding: 5, resource: { buffer: this.transformBuffer as GPUBuffer } },
+          { binding: 6, resource: { buffer: this.materialOf as GPUBuffer } },
+        ],
+      });
+    }
 
     /*
      * **The transparent half's raster: one indirect draw into two targets at once.**
@@ -1604,6 +1760,38 @@ export class GpuDrivenPass implements PassDefinition {
       },
     });
     this.watchBlendPipeline(device);
+    /*
+     * **What a pane lets through, from the sun**: the blended raster's vertex stage handed the
+     * light's matrix and the glass list, and \`glassTintFrag\` for the colour — white target, a
+     * multiplying blend, no depth, so every pane on a ray counts in any order.
+     */
+    if (this.castsGlass) {
+      this.glassTintPipeline = device.createRenderPipeline({
+        label: 'gpu-driven shadow tint',
+        layout: 'auto',
+        vertex: { module: blend, entryPoint: 'blendVert' },
+        fragment: {
+          module: blend,
+          entryPoint: 'glassTintFrag',
+          targets: [{ format: 'rgba8unorm', blend: GLASS_TINT_BLEND }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+      });
+      this.glassTintGroup = device.createBindGroup({
+        layout: this.glassTintPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.shadowMatrix as GPUBuffer } },
+          { binding: 1, resource: { buffer: this.glassList as GPUBuffer } },
+          { binding: 2, resource: { buffer: this.clusterMeta as GPUBuffer } },
+          { binding: 3, resource: { buffer: this.indices as GPUBuffer } },
+          { binding: 4, resource: { buffer: this.vertices as GPUBuffer } },
+          { binding: 5, resource: { buffer: this.transformBuffer as GPUBuffer } },
+          { binding: 6, resource: { buffer: this.materialOf as GPUBuffer } },
+          { binding: 7, resource: { buffer: this.materialTable as GPUBuffer } },
+          { binding: 8, resource: { buffer: this.frameBuffer as GPUBuffer } },
+        ],
+      });
+    }
 
     /*
      * **Premultiplied over, where `renderer.ts`'s composite is a lerp**, and `blendRaster.wgsl.ts`
@@ -1796,6 +1984,39 @@ export class GpuDrivenPass implements PassDefinition {
       shadowCullFor(this.shadowCullSettings as GPUBuffer),
       shadowCullFor(this.shadowCullSettingsTwo as GPUBuffer),
     ];
+    /*
+     * **The sun's glass cut: the light's selection again, of the glass alone**, once the map is
+     * drawn and those buffers are free. The camera's level of detail, as the map's; every pane in
+     * the light's frustum kept, as the blended half keeps every pane — so compacted as phase two
+     * against a history of zeros, exactly as that half is.
+     */
+    if (this.castsGlass) {
+      this.glassLodGroup = device.createBindGroup({
+        layout: (this.lodPipeline as GPUComputePipeline).getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.glassLodBuffer as GPUBuffer } },
+          { binding: 1, resource: { buffer: this.clusterLod as GPUBuffer } },
+          { binding: 2, resource: { buffer: this.shadowSelected as GPUBuffer } },
+          { binding: 3, resource: { buffer: this.clusterMeta as GPUBuffer } },
+          { binding: 4, resource: { buffer: this.instanceNone as GPUBuffer } },
+          { binding: 5, resource: { buffer: this.materialOf as GPUBuffer } },
+          { binding: 6, resource: { buffer: this.materialTable as GPUBuffer } },
+        ],
+      });
+      this.glassCullGroup = shadowCullFor(this.shadowCullSettingsGlass as GPUBuffer);
+      this.glassCompactGroup = device.createBindGroup({
+        layout: (this.compactPipeline as GPUComputePipeline).getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.blendCompactSettings as GPUBuffer } },
+          { binding: 1, resource: { buffer: this.shadowSelected as GPUBuffer } },
+          { binding: 2, resource: { buffer: this.shadowKeep as GPUBuffer } },
+          { binding: 3, resource: { buffer: this.zeroHistory as GPUBuffer } },
+          { binding: 4, resource: { buffer: this.glassList as GPUBuffer } },
+          { binding: 5, resource: { buffer: this.historySink as GPUBuffer } },
+          { binding: 6, resource: { buffer: this.glassArgs as GPUBuffer } },
+        ],
+      });
+    }
     this.shadowSeedGroup = device.createBindGroup({
       layout: (this.shadowSeedPipeline as GPUComputePipeline).getBindGroupLayout(0),
       entries: [
@@ -1998,11 +2219,29 @@ export class GpuDrivenPass implements PassDefinition {
       label: 'gpu-driven colour',
       size: { width: stride, height },
       format: 'rgba16float',
+      /*
+       * **A chain only where a material is glass**, which a frosted pane reads a coarser level of,
+       * as the forward path's refraction copy does. A scene with no glass allocates exactly the one
+       * level it always did.
+       */
+      mipLevelCount: this.hasGlass ? Math.floor(Math.log2(Math.max(stride, height))) + 1 : 1,
       /* `RENDER_ATTACHMENT` only so a clear-only render pass can empty it each frame: a storage
          texture has no clear, and the alternative is a dispatch over every pixel. */
       usage: STORAGE_BINDING | TEXTURE_BINDING | RENDER_ATTACHMENT,
     });
-    this.colourView = this.colourTexture.createView();
+    /* A storage binding takes one level, so everything that writes or presents reads level 0. */
+    this.colourView = this.colourTexture.createView({ baseMipLevel: 0, mipLevelCount: 1 });
+    this.colourSampledView = this.colourTexture.createView();
+    this.colourMips = this.hasGlass
+      ? new SnapshotMips(
+          device,
+          this.mipPipelines,
+          this.colourTexture,
+          'rgba16float',
+          null,
+          'gpu-driven colour mips',
+        )
+      : null;
     this.oitAccum = device.createTexture({
       label: 'gpu-driven oit accum',
       size: { width: stride, height },
@@ -2158,13 +2397,23 @@ export class GpuDrivenPass implements PassDefinition {
         { binding: 16, resource: this.latentRepeat as GPUSampler },
         { binding: 17, resource: { buffer: this.decodeNodes as GPUBuffer } },
         { binding: 18, resource: { buffer: this.decodeWeights as GPUBuffer } },
+        /* The sun's glass, or the opaque map and a white texel where none casts. */
+        {
+          binding: 19,
+          resource: this.glassDepthView ?? (this.shadowView as GPUTextureView),
+        },
+        {
+          binding: 20,
+          resource: this.glassTintSampled ?? (this.glassTintNone as GPUTexture).createView(),
+        },
+        { binding: 21, resource: this.glassSamplerFor(device) },
       ],
     });
 
     this.blitGroup = device.createBindGroup({
       layout: (this.blitPipeline as GPURenderPipeline).getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: (this.colourTexture as GPUTexture).createView() },
+        { binding: 0, resource: this.colourView as GPUTextureView },
         /* The depth the raster wrote, sampled so the blit can hand it to the frame. */
         ...(this.presentDepth
           ? [
@@ -2209,6 +2458,12 @@ export class GpuDrivenPass implements PassDefinition {
           { binding: 13, resource: this.latentRepeat as GPUSampler },
           { binding: 14, resource: { buffer: this.decodeNodes as GPUBuffer } },
           { binding: 15, resource: { buffer: this.decodeWeights as GPUBuffer } },
+          /* What the opaque half drew, for glass to show: `blendRaster.wgsl.ts`. */
+          { binding: 16, resource: this.colourSampledView as GPUTextureView },
+          {
+            binding: 17,
+            resource: this.glassSamplerFor(device),
+          },
         ],
       });
 
@@ -2467,6 +2722,16 @@ export class GpuDrivenPass implements PassDefinition {
     queue.writeBuffer(this.shadowCullSettings as GPUBuffer, 0, this.shadowCullValues);
     this.shadowCullValues[3] = this.occlusion ? 1 : 0;
     queue.writeBuffer(this.shadowCullSettingsTwo as GPUBuffer, 0, this.shadowCullValues);
+    if (this.castsGlass) {
+      /* No pyramid and no cones, and the cones put back for the next frame's first write. */
+      this.shadowCullValues[3] = 0;
+      this.shadowCullValues[CULL_CONES] = 0;
+      queue.writeBuffer(this.shadowCullSettingsGlass as GPUBuffer, 0, this.shadowCullValues);
+      this.shadowCullValues[CULL_CONES] = 1;
+      this.lodParamsGlass.set(this.lodParamsBlend);
+      this.lodParamsGlass[7] = 1;
+      queue.writeBuffer(this.glassLodBuffer as GPUBuffer, 0, this.lodParamsGlass);
+    }
     queue.writeBuffer(this.planesBuffer as GPUBuffer, 0, this.planes);
     queue.writeBuffer(this.frameBuffer as GPUBuffer, 0, params);
     queue.writeBuffer(this.lodBuffer as GPUBuffer, 0, this.lodParams);
@@ -2524,7 +2789,9 @@ export class GpuDrivenPass implements PassDefinition {
      * one: the table is written when the pass is built. A scene with nothing blended schedules the
      * three transparent stages away entirely and encodes the frame it encoded before they existed.
      */
-    this.shape.blended = this.materials.some((material) => material.blend === true);
+    /* Glass is the blended half's whatever its flag says: a visibility buffer holds one surface. */
+    this.shape.blended =
+      this.hasGlass || this.materials.some((material) => material.blend === true);
 
     /* `instanceCount` is the one word the compaction touches; the other three never change. */
     encoder.clearBuffer(argsOne, 4, 4);
@@ -2707,6 +2974,8 @@ export class GpuDrivenPass implements PassDefinition {
          */
         if (!this.blendUsable || this.blendPipeline === null || this.blendRasterGroup === null)
           return;
+        /* The shaded picture's chain, which glass reads: after `shade`, before the panes. */
+        this.colourMips?.record(encoder);
         const pass = encoder.beginRenderPass({
           label: 'gpu-driven blend draw',
           colorAttachments: [
@@ -3033,6 +3302,59 @@ export class GpuDrivenPass implements PassDefinition {
     second.end();
     this.drawShadowHalf(encoder, 1, writes);
     this.shadowFlipped = !this.shadowFlipped;
+    if (this.castsGlass && this.blendUsable) this.drawShadowGlass(encoder, groups);
+  }
+
+  /**
+   * The sun's glass, after its opaque map: the glass cut from the light, then the panes drawn
+   * twice — where the nearest one is, and what they let through, multiplied — and the tint's
+   * chain filled for frost to read. The forward path's `flushSunGlass`, in this pipeline's terms.
+   */
+  private drawShadowGlass(encoder: GPUCommandEncoder, groups: number): void {
+    encoder.clearBuffer(this.glassArgs as GPUBuffer, 4, 4);
+    const cut = encoder.beginComputePass({ label: 'gpu-driven shadow glass cut' });
+    cut.setPipeline(this.lodPipeline as GPUComputePipeline);
+    cut.setBindGroup(0, this.glassLodGroup as GPUBindGroup);
+    cut.dispatchWorkgroups(groups);
+    cut.setPipeline(this.cullPipeline as GPUComputePipeline);
+    cut.setBindGroup(0, this.glassCullGroup as GPUBindGroup);
+    cut.dispatchWorkgroups(groups);
+    cut.setPipeline(this.compactPipeline as GPUComputePipeline);
+    cut.setBindGroup(0, this.glassCompactGroup as GPUBindGroup);
+    cut.dispatchWorkgroups(groups);
+    cut.end();
+
+    const depth = encoder.beginRenderPass({
+      label: 'gpu-driven shadow glass',
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: this.glassDepthView as GPUTextureView,
+        depthClearValue: SHADOW_DEPTH_CLEAR,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    depth.setPipeline(this.glassDepthPipeline as GPURenderPipeline);
+    depth.setBindGroup(0, this.glassDepthGroup as GPUBindGroup);
+    depth.drawIndirect(this.glassArgs as GPUBuffer, 0);
+    depth.end();
+
+    const tint = encoder.beginRenderPass({
+      label: 'gpu-driven shadow tint',
+      colorAttachments: [
+        {
+          view: this.glassTintTarget as GPUTextureView,
+          clearValue: { r: 1, g: 1, b: 1, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    });
+    tint.setPipeline(this.glassTintPipeline as GPURenderPipeline);
+    tint.setBindGroup(0, this.glassTintGroup as GPUBindGroup);
+    tint.drawIndirect(this.glassArgs as GPUBuffer, 0);
+    tint.end();
+    this.glassTintMips?.record(encoder);
   }
 
   /** One half of the map: the first clears it, the second draws over it and closes the stage's time. */
@@ -3059,6 +3381,19 @@ export class GpuDrivenPass implements PassDefinition {
     pass.setBindGroup(0, (half === 0 ? this.shadowGroup : this.shadowGroupTwo) as GPUBindGroup);
     pass.drawIndirect((half === 0 ? this.shadowArgs : this.shadowArgsTwo) as GPUBuffer, 0);
     pass.end();
+  }
+
+  /** The linear sampler glass reads the colour's and the tint's chains through, made once. */
+  private glassSamplerFor(device: GPUDevice): GPUSampler {
+    this.glassSampler ??= device.createSampler({
+      label: 'gpu-driven glass',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+    return this.glassSampler;
   }
 
   private drawPhase(encoder: GPUCommandEncoder, phase: 0 | 1, clear: boolean): void {
@@ -3118,6 +3453,8 @@ export class GpuDrivenPass implements PassDefinition {
     if (device.backend !== 'webgpu') return;
     this.disposeTargets();
     this.shadowTexture?.destroy();
+    this.glassTintTexture?.destroy();
+    this.glassTintNone?.destroy();
     this.emptyEnvironment?.destroy();
     this.latents?.destroy();
     this.queries?.destroy();
@@ -3156,6 +3493,10 @@ export class GpuDrivenPass implements PassDefinition {
       this.shadowListTwo,
       this.shadowSelected,
       this.shadowKeep,
+      this.glassList,
+      this.glassArgs,
+      this.glassLodBuffer,
+      this.shadowCullSettingsGlass,
       this.shadowPlanes,
       this.shadowCullSettings,
       this.shadowCullSettingsTwo,
@@ -3200,3 +3541,6 @@ function multiply(out: Float32Array, a: ArrayLike<number>, b: ArrayLike<number>)
     }
   }
 }
+
+/** Where `hasGlass` reads each material's glass through; only the answer is kept. */
+const glassProbe: ResolvedGlass = { transmission: 0, frost: 0, tint: [1, 1, 1] };

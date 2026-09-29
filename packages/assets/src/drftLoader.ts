@@ -2,7 +2,7 @@
 
 import type { MeshData } from '@driftengine/drft';
 import type { MeshHandle, RendererApi } from '@driftengine/core';
-import type { SurfaceTextureHandle } from '@driftengine/core';
+import type { GlassOptions, SurfaceTextureHandle } from '@driftengine/core';
 import { MeshBuilder, concatMeshes, createMeshInstances, placeMesh } from '@driftengine/core';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { DrftSdfvEntry } from '@driftengine/drft';
@@ -11,7 +11,7 @@ import type { DrftFieldPlacement } from './fieldPlacement.ts';
 import type { DrftTexture } from '@driftengine/drft';
 import { TextureSet, textureColorSpaces } from './drftTextures.ts';
 import { drawKeyOf, resolveDrawGrouping } from './drawKey.ts';
-import type { DrawSurfaceOverride } from './drawKey.ts';
+import type { DrawGrouping, DrawSurfaceOverride } from './drawKey.ts';
 import {
   streamDrft,
   CODEC_JPEG,
@@ -260,6 +260,8 @@ export class DrftLoader {
       cutout: number;
       blend: boolean;
       doubleSided: boolean;
+      /** Built once when the group is made, and shared by every part drawn from it. */
+      glass: GlassOptions | null;
       /** The group's parts, placed, joined once when the group is built. See `concatMeshes`. */
       members: MeshData[];
     }
@@ -964,6 +966,7 @@ export class DrftLoader {
       cutout: 0,
       blend: false,
       doubleSided: false,
+      glass: null,
       reveal: this.outlinePart?.reveal ?? 0,
       instances: null,
     };
@@ -1033,6 +1036,7 @@ export class DrftLoader {
         cutout,
         blend,
         doubleSided,
+        glass: glassOf(g),
       });
     }
 
@@ -1052,6 +1056,7 @@ export class DrftLoader {
         cutout,
         blend,
         doubleSided,
+        glass: glassOf(g),
         members: [],
       };
       this.groups.set(key, group);
@@ -1093,6 +1098,7 @@ export class DrftLoader {
         cutout,
         blend,
         doubleSided,
+        glass: group.glass,
         reveal: 0,
         instances: null,
       };
@@ -1190,6 +1196,7 @@ export class DrftLoader {
         cutout: group.cutout,
         blend: group.blend,
         doubleSided: group.doubleSided,
+        glass: group.glass,
         reveal: 1,
         instances: null,
       });
@@ -1307,6 +1314,12 @@ export class DrftLoader {
       fraction: patch.fraction ?? Math.min(1, parts * this.meshShare + images * this.imageShare),
     };
   }
+}
+
+/** A group's glass as the renderer takes it, or null for a group that lets no light through. */
+function glassOf(g: DrawGrouping): GlassOptions | null {
+  if (g.transmission <= 0) return null;
+  return { transmission: g.transmission, frost: g.frost, tint: [g.tint[0], g.tint[1], g.tint[2]] };
 }
 
 /**

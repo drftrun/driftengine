@@ -113,9 +113,14 @@ const { GPU_DRIVEN_MATERIAL_FLOATS, MATERIAL_BLEND, writeMaterialTable } = await
 const { MATERIAL_SLOTS } = await import(
   `${ROOT}packages/core/src/render/shaders/gpudriven/materialTable.wgsl.ts`
 );
-const { BLEND_OIT_PARITY_WGSL } = await import(
+const { BLEND_OIT_PARITY_WGSL, GLASS_SHADE_PARITY_WGSL } = await import(
   `${ROOT}packages/core/src/render/shaders/gpudriven/blendRaster.wgsl.ts`
 );
+const { glassShade } = await import(`${ROOT}packages/core/src/render/gpudriven/lit.ts`);
+const { SUN_GLASS_PARITY_WGSL } = await import(
+  `${ROOT}packages/core/src/render/shaders/gpudriven/sunGlass.wgsl.ts`
+);
+const { glassTintAt } = await import(`${ROOT}packages/core/src/render/gpudriven/sunGlass.ts`);
 const { oitWeight, resolveOit } = await import(
   `${ROOT}packages/core/src/render/orderIndependent.ts`
 );
@@ -349,15 +354,17 @@ try {
      * be its exact complement — which is the property that matters: every live cluster is drawn by
      * one half and no cluster by both.
      */
+    /* And every eighth is glass, which the light's glass pass keeps and nothing else blended. */
     const materialOf = new Uint32Array(COUNT);
-    for (let i = 0; i < COUNT; i += 1) materialOf[i] = i % 4 === 0 ? 1 : 0;
+    for (let i = 0; i < COUNT; i += 1) materialOf[i] = i % 8 === 0 ? 2 : i % 4 === 0 ? 1 : 0;
     const table = new Float32Array(
       writeMaterialTable(
         [
           { tint: [1, 1, 1], emissive: 0 },
           { tint: [1, 1, 1], emissive: 0, blend: true },
+          { tint: [1, 1, 1], emissive: 0, glass: { transmission: 0.9, frost: 0.2 } },
         ],
-        new Uint32Array(6).fill(0xffffffff),
+        new Uint32Array(12).fill(0xffffffff),
         MATERIAL_SLOTS,
       ),
     );
@@ -365,14 +372,14 @@ try {
       failures.push('lodCut: the corpus built no blended material, so the filter is untested');
     }
 
-    const cutRun = async (wantBlend) =>
+    const cutRun = async (wantBlend, wantGlass = 0) =>
       gpu.run({
         wgsl: LOD_CUT_WGSL,
         workgroups: [Math.ceil(COUNT / 64)],
         buffers: [
           {
             type: 'f32',
-            values: [screenHeight, fovY, threshold, eye[0], eye[1], eye[2], wantBlend],
+            values: [screenHeight, fovY, threshold, eye[0], eye[1], eye[2], wantBlend, wantGlass],
             readOnly: true,
           },
           { type: 'f32', values: clusters, readOnly: true },
@@ -385,6 +392,7 @@ try {
       });
     const out = await cutRun(0);
     const blendOut = await cutRun(1);
+    const glassOut = await cutRun(1, 1);
 
     const want = new Uint32Array(COUNT);
     const chosen = selectClusters(
@@ -403,9 +411,11 @@ try {
     let blendedInCut = 0;
     for (let i = 0; i < COUNT; i += 1) {
       /* The opaque run is the reference minus whatever the blend filter took out of it. */
-      const isBlended = materialOf[i] === 1;
+      const isBlended = materialOf[i] !== 0;
       check('lodCut', i, isBlended ? 0 : want[i], out[2][i]);
       check('lodCutBlend', i, isBlended ? want[i] : 0, blendOut[2][i]);
+      /* The light's glass pass: of the blended half, the glass alone. */
+      check('lodCutGlass', i, materialOf[i] === 2 ? want[i] : 0, glassOut[2][i]);
       /* Never both, which is the invariant: a cluster is drawn by one half of the frame. */
       check('lodCutHalves', i, 0, out[2][i] & blendOut[2][i]);
       if (isBlended && blendOut[2][i] === 1) blendedInCut += 1;
@@ -1392,6 +1402,137 @@ try {
     }
     if (clamped === 0) failures.push('oit: no case reached either clamp, so neither was tested');
     report(`oit blend      ${cases.length} fragments, ${clamped} against a clamp`);
+  }
+  /* -------------------------------------------------------------- glass over its own shading */
+  {
+    /*
+     * **The blended raster's glass against `gpudriven/lit.ts`'s `glassShade`**, which is the
+     * forward path's glass branch in TypeScript. The corpus crosses the view from face-on to past
+     * grazing and from the back — a pane is symmetric, and the floor at 0.05 is a decision — with
+     * clear and frosted panes, a glow, and a pane letting nothing through.
+     */
+    const random = lcg(0x61a55e5);
+    const cases = [];
+    for (const cosView of [1, 0.7, 0.3, 0.05, 0.01, -0.01, -0.5, -1]) {
+      for (const [transmission, frost] of [
+        [0, 0.5],
+        [0.9, 0],
+        [0.6, 0.4],
+        [1, 1],
+      ]) {
+        cases.push([
+          random(),
+          random(),
+          random(),
+          random(),
+          random(),
+          random(),
+          transmission,
+          frost,
+          random(),
+          random(),
+          random(),
+          cosView,
+          random() * 2,
+          random() * 2,
+          random() * 2,
+          0,
+        ]);
+      }
+    }
+    const flat = new Float32Array(cases.length * 16);
+    cases.forEach((one, i) => flat.set(one, i * 16));
+    const out = await gpu.run({
+      wgsl: GLASS_SHADE_PARITY_WGSL,
+      workgroups: [Math.ceil(cases.length / 64)],
+      buffers: [
+        { type: 'f32', values: flat, readOnly: true },
+        { type: 'f32', length: cases.length * 4, read: true },
+      ],
+    });
+    let worst = 0;
+    const shaded = [0, 0, 0];
+    for (let i = 0; i < cases.length; i += 1) {
+      const c = Array.from(flat.subarray(i * 16, i * 16 + 16));
+      glassShade(
+        [c[0], c[1], c[2]],
+        [c[3], c[4], c[5]],
+        { transmission: c[6], frost: c[7], tint: [c[8], c[9], c[10]] },
+        c[11],
+        [c[12], c[13], c[14]],
+        shaded,
+      );
+      for (let k = 0; k < 3; k += 1) {
+        const error = Math.abs(shaded[k] - out[1][i * 4 + k]);
+        worst = Math.max(worst, error);
+        if (error > 1e-5)
+          failures.push(
+            `glassShade[${i}.${k}]: reference ${shaded[k]}, device ${out[1][i * 4 + k]}`,
+          );
+      }
+    }
+    report(`glass shade    ${cases.length} panes, worst ${worst.toExponential(1)}`);
+  }
+  /* ---------------------------------------------------------------- the sun through glass */
+  {
+    /*
+     * **The whole lookup, reads included**, because the device reads the maps through hooks this
+     * entry answers the way `gpudriven/sunGlass.ts` does. Three panes on a 32-texel map — clear,
+     * frosted, and frosted over the clear one — and receivers in front of them, behind them, and
+     * beside them, so the outline, the spread and the unmixing all have work to do.
+     */
+    const SIZE = 32;
+    const depths = new Float32Array(SIZE * SIZE).fill(1);
+    const tints = new Float32Array(SIZE * SIZE * 4).fill(1);
+    const pane = (x0, x1, y0, y1, depth, rgba) => {
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const at = y * SIZE + x;
+          depths[at] = Math.min(depths[at], depth);
+          for (let c = 0; c < 4; c += 1) tints[at * 4 + c] *= rgba[c];
+        }
+      }
+    };
+    pane(2, 12, 4, 28, 0.3, [0.8, 0.3, 0.3, 1]);
+    pane(14, 24, 4, 28, 0.4, [0.3, 0.8, 0.3, 0.3]);
+    pane(18, 30, 10, 20, 0.2, [0.4, 0.4, 0.9, 0.5]);
+    const config = [SIZE, 12, 0.04, 12];
+    const random = lcg(0x5a1f6c3);
+    const cases = [];
+    for (let i = 0; i < 256; i += 1) cases.push([random(), random(), random(), 0]);
+    const flat = new Float32Array(cases.length * 4);
+    cases.forEach((one, i) => flat.set(one, i * 4));
+    const out = await gpu.run({
+      wgsl: SUN_GLASS_PARITY_WGSL,
+      workgroups: [Math.ceil(cases.length / 64)],
+      buffers: [
+        { type: 'f32', values: depths, readOnly: true },
+        { type: 'f32', values: tints, readOnly: true },
+        { type: 'f32', values: flat, readOnly: true },
+        { type: 'f32', values: new Float32Array(config), readOnly: true },
+        { type: 'f32', length: cases.length * 4, read: true },
+      ],
+    });
+    const maps = { size: SIZE, glassDepth: depths, tint: tints };
+    const settings = { depthSpan: config[1], uvPerMetre: config[2], taps: config[3] };
+    const texel = { r: 0, g: 0, b: 0, clarity: 0 };
+    let worst = 0;
+    let tinted = 0;
+    for (let i = 0; i < cases.length; i += 1) {
+      const [u, v, depth] = cases[i];
+      const want = glassTintAt(u, v, depth, maps, settings, texel);
+      if (want.r < 0.999 || want.g < 0.999 || want.b < 0.999) tinted += 1;
+      const got = [out[4][i * 4], out[4][i * 4 + 1], out[4][i * 4 + 2]];
+      [want.r, want.g, want.b].forEach((w, c) => {
+        const error = Math.abs(w - got[c]);
+        worst = Math.max(worst, error);
+        if (error > 2e-4) failures.push(`sunGlass[${i}.${c}]: reference ${w}, device ${got[c]}`);
+      });
+    }
+    if (tinted === 0) failures.push('sun glass: no receiver was tinted, so nothing was tested');
+    report(
+      `sun glass      ${cases.length} receivers, ${tinted} tinted, worst ${worst.toExponential(1)}`,
+    );
   }
   /* ------------------------------------------------------------------ binning by material */
   {

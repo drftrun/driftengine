@@ -32,7 +32,10 @@ test('A SUNLIT WALL SENDS A PROBE WHAT THE FRAME DRAWS IT AS, the sun at the sca
    * division by pi — `directionalColor` is the radiance a white surface facing the sun sends back.
    * The probes' own level is stored as a mean radiance, so the ambient term needs none either.
    */
-  expect(frame).toContain('lit = albedo * (ambient + uDirectionalColor * direct * (1.0 - metal));');
+  /* The frame's sun is the environment's colour times what glass lets through on its way; the bake
+     sees no glass, so a bounce through a tinted window comes back untinted — stated in glassShadow.ts. */
+  expect(frame).toContain('vec3 sunColor = uDirectionalColor * sunGlass;');
+  expect(frame).toContain('lit = albedo * (ambient + sunColor * direct * (1.0 - metal));');
   /*
    * So a traced hit sends the sun at the same scale. Divided by pi it did not, and every sunlit
    * wall a probe struck came back a third as bright as the frame drew it: a room lit through its

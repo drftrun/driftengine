@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { EMISSIVE_SHADOW_SHARE, LOBES_GLSL } from '../shaders/flat/lobes.ts';
-import { HEMISPHERIC, litColour, newLitColour, specularLobe } from './lit.ts';
+import { HEMISPHERIC, glassShade, litColour, newLitColour, specularLobe } from './lit.ts';
 
 import type { LitEnvironment, LitSurface } from './lit.ts';
 
@@ -655,4 +655,56 @@ test('A SHADOW TAKES A SHARE OF A GLOW, not all of it, and the share is the forw
   }
   /* Full shade keeps 45% of the glow: a lit inlay in a deck that is itself in shadow. */
   expect(glow({ albedo, shade: 0 }, ENVIRONMENT)[0]).toBeCloseTo(0.5 * 0.6 * 0.45, 6);
+});
+
+/*
+ * **Glass, as the forward path draws it** (`flat/main.ts`'s glass branch, `glass.ts`'s arithmetic):
+ * the pane's own shading, with what is behind it shown over it by how much it lets through and how
+ * little it reflects at this angle, and the light behind it glowing through by how frosted it is.
+ */
+test('GLASS SHOWS WHAT IS BEHIND IT, AND GLOWS WITH THE LIGHT BEHIND IT BY ITS FROST', () => {
+  const out: [number, number, number] = [0, 0, 0];
+  /* Clear, face-on, over a black pane and a white room: 0.9 × (1 − 0.04) of the tint. */
+  glassShade(
+    [0, 0, 0],
+    [1, 1, 1],
+    { transmission: 0.9, frost: 0, tint: [1, 0.5, 0.25] },
+    1,
+    [0, 0, 0],
+    out,
+  );
+  expect(out[0]).toBeCloseTo(0.864, 6);
+  expect(out[1]).toBeCloseTo(0.432, 6);
+  expect(out[2]).toBeCloseTo(0.216, 6);
+  /* Fully frosted with a sun glow of 0.5 behind it: the glow comes through as 0.5 × tint × t. */
+  glassShade(
+    [0, 0, 0],
+    [0, 0, 0],
+    { transmission: 0.8, frost: 1, tint: [1, 1, 0.5] },
+    1,
+    [0.5, 0.5, 0.5],
+    out,
+  );
+  expect(out[0]).toBeCloseTo(0.4, 6);
+  expect(out[2]).toBeCloseTo(0.2, 6);
+  /* Seen from behind the angle is the same: a pane is symmetric. */
+  glassShade(
+    [0.2, 0.2, 0.2],
+    [1, 1, 1],
+    { transmission: 0.9, frost: 0, tint: [1, 1, 1] },
+    -1,
+    [0, 0, 0],
+    out,
+  );
+  expect(out[0]).toBeCloseTo(0.2 * (1 - 0.864) + 0.864, 6);
+  /* Letting nothing through is the pane's own shading. */
+  glassShade(
+    [0.3, 0.2, 0.1],
+    [1, 1, 1],
+    { transmission: 0, frost: 0.5, tint: [1, 1, 1] },
+    1,
+    [1, 1, 1],
+    out,
+  );
+  expect(out).toEqual([0.3, 0.2, 0.1]);
 });

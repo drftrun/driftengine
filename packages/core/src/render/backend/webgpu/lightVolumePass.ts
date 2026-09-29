@@ -87,7 +87,11 @@ export function createLightVolumeBindGroupLayout(
     entries.push({
       binding: texture.texture,
       visibility: VISIBILITY_FRAGMENT,
-      texture: { sampleType: 'unfilterable-float' },
+      texture: {
+        sampleType: 'unfilterable-float',
+        /* The sun's maps are one array since 4.5.0; see `shadowMap.ts`. */
+        ...(texture.type === 'sampler2DArray' ? { viewDimension: '2d-array' as const } : {}),
+      },
     });
     entries.push({
       binding: texture.sampler,

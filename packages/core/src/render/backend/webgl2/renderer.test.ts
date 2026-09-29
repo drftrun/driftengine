@@ -9,6 +9,7 @@ import { createEnvironment } from './renderer.ts';
 import { Camera } from '../../camera.ts';
 import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
+import { createMeshInstances } from '../../instances.ts';
 
 /**
  * Whether order-independent transparency is on, asked the only way a caller can ask it.
@@ -944,4 +945,342 @@ test('EVERY FRAGMENT STAGE DOING BIT ARITHMETIC DECLARES HIGHP INT, or a sixteen
     .map((source) => /void main\(\)[\s\S]{0,120}/.exec(source)?.[0].replace(/\s+/g, ' ') ?? '');
   expect(fragments.length, 'the programs were recorded').toBeGreaterThan(10);
   expect(offenders).toEqual([]);
+});
+
+/*
+ * **A pane drawn into a probe's face takes no copy of the frame.** The copy is of the frame being
+ * drawn to the screen, not of the face, so a pane showing it would show the wrong picture — and
+ * taking it rebound the scene's framebuffer in the middle of the bake, which broke the whole frame
+ * on the first scene to put glass in front of its probes. WebGPU has refused here since refraction
+ * existed (`takeRefractSnapshot`); this backend now makes the same decision.
+ */
+test('A PANE IN A PROBE FACE TAKES NO COPY OF THE FRAME, and the same pane outside the bake does', () => {
+  const { gl, canvas, calls } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+  const renderer = new Renderer(
+    canvas,
+    resolveRenderQuality({ screenEffects: true, reflectionProbeSize: 64 }),
+  );
+  const mesh = new Mesh(gl, GEOMETRY);
+  const glass = { glass: { transmission: 0.9, frost: 0.5 } };
+  const COLOR_BUFFER_BIT = 0x4000;
+  const copies = (from: number): number =>
+    calls
+      .slice(from)
+      .filter((call) => call.name === 'blitFramebuffer' && call.args[8] === COLOR_BUFFER_BIT)
+      .length;
+
+  renderer.beginFrame([0, 0, 0]);
+  const baking = calls.length;
+  const baked = renderer.bakeReflectionProbe([0, 1, 0], [0, 0, 0], () => {
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, glass);
+  });
+  expect(baked, 'the bake must have run, or this asserts nothing').toBe(true);
+  expect(copies(baking), 'no copy inside the bake').toBe(0);
+
+  const framing = calls.length;
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1, glass);
+  expect(copies(framing), 'the control: a pane in the frame takes one').toBe(1);
+});
+
+/*
+ * **A double-sided material is drawn from both sides whichever path draws it.** The mesh paths
+ * switched culling off for one and the instanced path did not, so every double-sided part the file
+ * places many times — a lantern's panes, one quad drawn four times — lost its far side on this
+ * backend alone, since WebGPU's pipeline culls by the same flag for both. The pane behind a
+ * lantern's open bottom was simply absent here and drawn there.
+ */
+test('A DOUBLE-SIDED MATERIAL DRAWS BOTH SIDES OF AN INSTANCED BATCH, as it does of a mesh', () => {
+  const { gl, canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const batch = renderer.createInstanced(mesh, 4);
+  const data = createMeshInstances(4);
+  data.count = 4;
+  renderer.uploadInstanced(batch, data);
+  const CULL_FACE = 0x0b44;
+  /** Whether culling was off at the moment the draw named by `name` was issued. */
+  const drewUnculled = (from: number, name: string): boolean => {
+    let culled = true;
+    for (const call of calls.slice(from)) {
+      if (call.args[0] === CULL_FACE && call.name === 'disable') culled = false;
+      if (call.args[0] === CULL_FACE && call.name === 'enable') culled = true;
+      if (call.name === name) return !culled;
+    }
+    throw new Error(`no ${name} was issued, so this asserts nothing`);
+  };
+
+  renderer.beginFrame([0, 0, 0]);
+  renderer.setMaterial({ doubleSided: true });
+  const meshAt = calls.length;
+  renderer.drawMesh(mesh, mat4.create());
+  expect(drewUnculled(meshAt, 'drawElements'), 'the control: a mesh').toBe(true);
+
+  const batchAt = calls.length;
+  renderer.drawInstanced(batch, data);
+  expect(drewUnculled(batchAt, 'drawElementsInstanced'), 'an instanced batch').toBe(true);
+
+  const glassAt = calls.length;
+  renderer.drawTranslucentInstanced(batch, data, 1);
+  expect(drewUnculled(glassAt, 'drawElementsInstanced'), 'and a blended one').toBe(true);
+});
+
+/*
+ * **A see-through batch takes a material of its own, as a see-through mesh does.** Both backends
+ * count material changes by one rule (`materialChanges.ts`), and a draw that refracts or is glass
+ * differs from the pass. The instanced path here still said an instanced draw does not refract after
+ * it had learned to, so a batch of panes was one material change on WebGPU and none here.
+ */
+test('A GLASS BATCH COUNTS ITS MATERIAL CHANGE AS A GLASS MESH DOES', () => {
+  const { gl, canvas } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ screenEffects: true }));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const batch = renderer.createInstanced(mesh, 4);
+  const data = createMeshInstances(4);
+  data.count = 4;
+  renderer.uploadInstanced(batch, data);
+  const glass = { glass: { transmission: 0.9, frost: 0.5 } };
+  const materials = (): number =>
+    renderer.frameBudget.lines.find((line) => line.name === 'materials')?.used ?? -1;
+
+  renderer.beginFrame([0, 0, 0]);
+  renderer.drawMesh(mesh, mat4.create());
+  const before = materials();
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1, glass);
+  const forMesh = materials() - before;
+  expect(forMesh, 'the control: a glass mesh takes one').toBeGreaterThan(0);
+
+  /* An ordinary draw first, so the batch starts from an open material as the mesh did: the glass
+     mesh leaves the material dirty behind it, and a batch drawn straight after takes one anyway. */
+  renderer.drawMesh(mesh, mat4.create());
+  const between = materials();
+  renderer.drawTranslucentInstanced(batch, data, 1, glass);
+  expect(materials() - between, 'and a glass batch takes the same').toBe(forMesh);
+});
+
+/*
+ * **A glass caster is kept aside, and only when glass shadows are on.** It never reaches the opaque
+ * depth — Glass A's rule — and since Glass B it waits in a list for the passes that draw where the
+ * nearest pane is and what the panes let through. With the option off it is dropped, exactly as
+ * before glass shadows existed.
+ */
+test('A GLASS CASTER IS KEPT ASIDE FOR ITS OWN PASSES, and dropped when glass shadows are off', () => {
+  for (const glassShadows of ['full', 'off'] as const) {
+    const { canvas, calls } = recordingGl();
+    const renderer = new Renderer(canvas, resolveRenderQuality({ glassShadows }));
+    const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+    const mesh = new Mesh(gl, GEOMETRY);
+    renderer.beginShadowPass(mat4.create(), 'static');
+    const before = calls.length;
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(mesh, mat4.create());
+      sink.mesh(mesh, mat4.create(), { glass: { transmission: 0.9, frost: 0.5 } });
+    });
+    const draws = calls.slice(before).filter((call) => call.name === 'drawElements').length;
+    expect(draws, `${glassShadows}: the opaque caster alone reaches the depth`).toBe(1);
+    const kept = (renderer as unknown as { glassCasters: { count: number } }).glassCasters;
+    expect(kept.count, `${glassShadows}: what is kept aside`).toBe(glassShadows === 'off' ? 0 : 1);
+    renderer.endShadowPass();
+  }
+});
+
+/*
+ * **Glass shadows off compiles none of the glass lookup into the lit program.** Returning at its
+ * first line was not enough: the code still cost the lit pass its registers, 0.42 ms at 720p on
+ * the courtyard at night. So the program is built with the lookups' one switch set from the option.
+ */
+test('GLASS SHADOWS OFF BUILDS THE LIT PROGRAM WITH NO GLASS LOOKUP, and on builds it with one', () => {
+  for (const glassShadows of ['full', 'half', 'off'] as const) {
+    const { canvas, calls } = recordingGl();
+    new Renderer(canvas, resolveRenderQuality({ glassShadows }));
+    const lit = calls
+      .filter((call) => call.name === 'shaderSource')
+      .map((call) => String(call.args[1]))
+      .filter((source) => source.includes('vec3 sunGlassTint('));
+    expect(lit.length, `${glassShadows}: the lit program was compiled`).toBeGreaterThan(0);
+    const on = glassShadows !== 'off';
+    for (const source of lit) {
+      expect(source, glassShadows).toContain(`const bool GLASS_SHADOWS = ${String(on)};`);
+    }
+  }
+});
+
+/*
+ * **The sun draws its glass twice once its opaque casters are in**: into a glass depth layer, where
+ * the nearest pane is, and into a tint layer, what the panes let through, multiplied and with no
+ * depth test so every pane on a ray counts. The first glass the sun is offered grows its array by
+ * the two glass layers and carries the maps it already holds across, so the static map the consumer
+ * baked survives without being baked again.
+ */
+test('THE SUN DRAWS ITS GLASS TWICE, and the first glass grows its array without losing a map', () => {
+  const DST_COLOR = 0x0306;
+  const DST_ALPHA = 0x0304;
+  const ZERO = 0;
+  const DEPTH_TEST = 0x0b71;
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({ directionalShadowDepthLayers: 2 }));
+  const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+  const mesh = new Mesh(gl, GEOMETRY);
+  const pane = {
+    glass: { transmission: 0.9, frost: 0.5, tint: [1, 0.5, 0.25] as [number, number, number] },
+  };
+  const frame = (): ReturnType<typeof calls.slice> => {
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(mesh, mat4.create());
+      sink.mesh(mesh, mat4.create(), pane);
+    });
+    const at = calls.length;
+    renderer.endShadowPass();
+    return calls.slice(at);
+  };
+
+  const first = frame();
+  const grown = first.filter(
+    (call) => call.name === 'texStorage3D' && call.args[2] === gl.DEPTH_COMPONENT24,
+  );
+  expect(
+    grown.map((call) => call.args[5]),
+    'static, moving, peel, then two glass layers',
+  ).toEqual([5]);
+  const carried = first.filter(
+    (call) => call.name === 'blitFramebuffer' && call.args[8] === gl.DEPTH_BUFFER_BIT,
+  );
+  expect(carried.length, 'every map already held is carried across').toBe(3);
+  expect(
+    first.filter((call) => call.name === 'drawElements').length,
+    'one glass depth draw and one tint draw; the opaque caster is not drawn again',
+  ).toBe(2);
+  /* The tint's own state: a multiplying blend, no depth test, a white clear. */
+  expect(
+    first.some(
+      (call) =>
+        call.name === 'blendFuncSeparate' &&
+        call.args[0] === DST_COLOR &&
+        call.args[1] === ZERO &&
+        call.args[2] === DST_ALPHA &&
+        call.args[3] === ZERO,
+    ),
+  ).toBe(true);
+  expect(first.some((call) => call.name === 'disable' && call.args[0] === DEPTH_TEST)).toBe(true);
+  expect(first.some((call) => call.name === 'clearBufferfv')).toBe(true);
+
+  const second = frame();
+  expect(
+    second.filter((call) => call.name === 'texStorage3D').length,
+    'a second frame allocates nothing',
+  ).toBe(0);
+});
+
+/*
+ * **A lamp draws its glass into its own layers, and the lit pass is told where they are.** The first
+ * face to offer glass interleaves the array — light L's depth at 2L, its glass at 2L + 1 — and every
+ * index the lit pass is handed moves with it, or each light would read its neighbour's glass as its
+ * own depth.
+ */
+test('A LAMP DRAWS ITS GLASS INTO ITS OWN LAYERS, and the lit pass reads the interleaved index', () => {
+  const DST_COLOR = 0x0306;
+  const { canvas, calls } = recordingGl({ uniforms: ['uPointShadowLayer[0]'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ pointShadowFacesPerFrame: 6 }));
+  const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+  const mesh = new Mesh(gl, GEOMETRY);
+  const light = {
+    x: 0,
+    y: 2,
+    z: 0,
+    radius: 8,
+    shadowNear: 0.25,
+    sourceRadius: 0.05,
+    castsShadow: true,
+  };
+  const pane = {
+    glass: { transmission: 0.9, frost: 0.5, tint: [1, 0.5, 0.25] as [number, number, number] },
+  };
+  renderer.prepareStaticPointShadows([light]);
+  const n = (renderer as unknown as { pointShadowArray: { layers: number } }).pointShadowArray
+    .layers;
+  calls.length = 0;
+  renderer.updatePointShadows(
+    [light],
+    new Int32Array([0]),
+    1,
+    50,
+    50,
+    50,
+    1 / 60,
+    (sink) => {
+      sink.mesh(mesh, mat4.create());
+      sink.mesh(mesh, mat4.create(), pane);
+    },
+    () => undefined,
+  );
+  const depth = calls.filter(
+    (c) => c.name === 'texStorage3D' && c.args[2] === gl.DEPTH_COMPONENT24,
+  );
+  expect(
+    depth.map((c) => c.args[5]),
+    'interleaved, once',
+  ).toEqual([2 * n]);
+  const tint = calls.filter((c) => c.name === 'texStorage3D' && c.args[2] === gl.RGBA8);
+  expect(
+    tint.map((c) => c.args.slice(3)),
+    'a tint layer a light',
+  ).toEqual([[1024, 1024, n]]);
+  expect(
+    calls.filter((c) => c.name === 'blendFuncSeparate' && c.args[0] === DST_COLOR).length,
+    'six faces multiplied their glass',
+  ).toBe(6);
+
+  calls.length = 0;
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(new Camera(), createEnvironment());
+  const upload = calls.find(
+    (c) =>
+      c.name === 'uniform1iv' &&
+      (c.args[0] as { name?: string } | null)?.name === 'uPointShadowLayer[0]',
+  );
+  const layers = [...(upload?.args[1] as Int32Array)];
+  const pool = (
+    renderer as unknown as { pointShadows: { mapForLight(i: number): { layer: number } } }
+  ).pointShadows;
+  expect(layers[0], 'the light at twice its own layer').toBe(2 * pool.mapForLight(0).layer);
+  expect(
+    layers.slice(1).every((l) => l === -1),
+    'and nothing else',
+  ).toBe(true);
+  const live = (renderer as unknown as { resolvedPointShadows: { liveLayers: Int32Array } })
+    .resolvedPointShadows.liveLayers;
+  expect(
+    [...live].every((l) => l === -1 || l % 2 === 0),
+    'live maps at even layers too',
+  ).toBe(true);
+});
+
+/*
+ * **Every pane on a ray counts once, whichever way it faces**: the tint culls nothing, for the sun
+ * as for a lamp, because a light crosses a pane from either side and a closed glass object has two
+ * surfaces on a ray. It culled back faces for the sun, which counted one side of a closed pane.
+ */
+test('EVERY PANE ON A RAY COUNTS, WHICHEVER WAY IT FACES: the sun s tint culls nothing', () => {
+  const CULL_FACE = 0x0b44;
+  const DST_COLOR = 0x0306;
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+  const mesh = new Mesh(gl, GEOMETRY);
+  renderer.beginShadowPass(mat4.create(), 'static');
+  renderer.drawShadowCasters((sink) => {
+    sink.mesh(mesh, mat4.create(), { glass: { transmission: 0.9, frost: 0 } });
+  });
+  calls.length = 0;
+  renderer.endShadowPass();
+  const tintState = calls.findIndex(
+    (c) => c.name === 'blendFuncSeparate' && c.args[0] === DST_COLOR,
+  );
+  expect(tintState).toBeGreaterThanOrEqual(0);
+  const draw = calls.findIndex((c, i) => i > tintState && c.name === 'drawElements');
+  const culling = calls
+    .slice(0, draw)
+    .filter((c) => (c.name === 'enable' || c.name === 'disable') && c.args[0] === CULL_FACE)
+    .at(-1);
+  expect(culling?.name, 'culling is off when the pane is drawn into the tint').toBe('disable');
 });

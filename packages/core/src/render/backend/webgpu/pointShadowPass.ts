@@ -18,6 +18,8 @@ import {
   OCTAHEDRAL_RESOLVE_VERT_WGSL,
 } from '../../shaders/generated/octahedralResolve.wgsl.ts';
 import { SHADOW_FORMAT } from './depthPass.ts';
+import { GpuPointGlassTint } from './pointGlassTintPass.ts';
+import type { MipPipelines } from './surfaceTexturePass.ts';
 import { UniformRing } from './uniformRing.ts';
 
 /**
@@ -47,6 +49,9 @@ const VISIBILITY_FRAGMENT = 0x2;
  * silently not landing in its layer.
  */
 const RESOLVE_SLOTS = (POINT_SHADOW_POOL + LIVE_POINT_SHADOW_MAPS) * FACE_COUNT;
+/** Twice once glass arrives: a face resolves its opaque depth and then its glass. */
+const DEPTH_RESOLVE_SLOTS = 2 * RESOLVE_SLOTS;
+const USAGE_COPY = 0x01 | 0x02; // COPY_SRC | COPY_DST
 
 /** `mat3x3<f32>` then four scalars, at std140's sixteen-byte columns: see the generated struct. */
 const RESOLVE_UNIFORM_SIZE = 64;
@@ -66,15 +71,19 @@ const rotationColumn = new Float32Array(3);
  * both say the resolve reads the scratch.
  */
 export class GpuPointShadowArray {
-  /** The array, as the shader samples it. */
-  readonly view: GPUTextureView;
+  /** Lights this array holds; the storage doubles under it once glass arrives. */
   readonly layers: number;
   /** Where a face is rendered before it is resolved. One, shared by every light. */
   readonly scratchView: GPUTextureView;
 
-  private readonly texture: GPUTexture;
+  /** Replaced once, when glass first casts: see `growForGlass`. */
+  private texture: GPUTexture;
+  private arrayView: GPUTextureView;
+  private tint: GpuPointGlassTint | null = null;
+  private readonly device: GPUDevice;
+  private readonly faceSize: number;
   private readonly scratch: GPUTexture;
-  private readonly layerViews: GPUTextureView[] = [];
+  private layerViews: GPUTextureView[] = [];
   private readonly pipeline: GPURenderPipeline;
   private readonly bindGroup: GPUBindGroup;
   /**
@@ -102,24 +111,12 @@ export class GpuPointShadowArray {
   ) {
     this.layers =
       Math.min(lightCount, POINT_SHADOW_POOL) + LIVE_POINT_SHADOW_MAPS + Math.max(0, extraLayers);
+    this.device = device;
+    this.faceSize = faceSize;
 
-    this.texture = device.createTexture({
-      label: 'pointShadow.array',
-      size: [OCTAHEDRAL_EDGE, OCTAHEDRAL_EDGE, this.layers],
-      format: SHADOW_FORMAT,
-      usage: USAGE_RENDER_ATTACHMENT | USAGE_TEXTURE_BINDING,
-    });
-    this.view = this.texture.createView({ dimension: '2d-array' });
-    for (let layer = 0; layer < this.layers; layer++) {
-      this.layerViews.push(
-        this.texture.createView({
-          label: `pointShadow.layer${layer}`,
-          dimension: '2d',
-          baseArrayLayer: layer,
-          arrayLayerCount: 1,
-        }),
-      );
-    }
+    this.texture = depthArray(device, this.layers);
+    this.arrayView = this.texture.createView({ dimension: '2d-array' });
+    this.layerViews = layerViewsOf(this.texture, this.layers);
 
     this.scratch = device.createTexture({
       label: 'pointShadow.scratch',
@@ -132,7 +129,7 @@ export class GpuPointShadowArray {
     this.ring = new UniformRing(
       device,
       RESOLVE_UNIFORM_SIZE,
-      RESOLVE_SLOTS,
+      DEPTH_RESOLVE_SLOTS,
       USAGE_UNIFORM_DST,
       'pointShadow.resolve.uniforms',
     );
@@ -206,7 +203,102 @@ export class GpuPointShadowArray {
     far: number,
     near: number,
   ): void {
-    const view = this.layerViews[layer];
+    this.resolveInto(encoder, layer * this.stride, face, far, near);
+  }
+
+  /** The face's glass depth into light `layer`'s glass layer, 2L + 1. */
+  resolveGlass(
+    encoder: GPUCommandEncoder,
+    layer: number,
+    face: number,
+    far: number,
+    near: number,
+  ): void {
+    if (this.tint === null) return;
+    this.resolveInto(encoder, 2 * layer + 1, face, far, near);
+  }
+
+  /** The array, as the shader samples it. Replaced once, when glass first casts. */
+  get view(): GPUTextureView {
+    return this.arrayView;
+  }
+
+  get hasGlass(): boolean {
+    return this.tint !== null;
+  }
+
+  /** Physical layers a light: 1, or 2 once glass has interleaved the array. */
+  get stride(): number {
+    return this.tint === null ? 1 : 2;
+  }
+
+  /** The lights' glass tint, once glass has cast. */
+  get glassTint(): GpuPointGlassTint | null {
+    return this.tint;
+  }
+
+  /**
+   * Interleave the array for glass, on `encoder`: light L's depth moves to 2L and its glass takes
+   * 2L + 1, every glass layer born at the far plane, and the tint made. The reasoning, and why no
+   * map re-bakes, is `PointShadowArray.growForGlass`'s.
+   *
+   * Returns the texture it replaced, which the caller destroys once `encoder` is submitted — the
+   * copies out of it are recorded there — or null when the array had already grown.
+   */
+  growForGlass(
+    encoder: GPUCommandEncoder,
+    tintEdge: number,
+    pipelines: MipPipelines,
+  ): GPUTexture | null {
+    if (this.tint !== null) return null;
+    const old = this.texture;
+    const texture = depthArray(this.device, this.layers * 2);
+    for (let layer = 0; layer < this.layers; layer++) {
+      encoder.copyTextureToTexture(
+        { texture: old, origin: { x: 0, y: 0, z: layer } },
+        { texture, origin: { x: 0, y: 0, z: 2 * layer } },
+        [OCTAHEDRAL_EDGE, OCTAHEDRAL_EDGE, 1],
+      );
+    }
+    this.texture = texture;
+    this.arrayView = texture.createView({ dimension: '2d-array' });
+    this.layerViews = layerViewsOf(texture, this.layers * 2);
+    /* Nothing is nearer a lamp than a pane that has not been drawn. */
+    for (let layer = 0; layer < this.layers; layer++) {
+      encoder
+        .beginRenderPass({
+          label: 'pointShadow.glass.clear',
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view: this.layerViews[2 * layer + 1] as GPUTextureView,
+            depthClearValue: 1,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+          },
+        })
+        .end();
+    }
+    this.tint = new GpuPointGlassTint(
+      this.device,
+      pipelines,
+      this.faceSize,
+      tintEdge,
+      this.layers,
+      RESOLVE_SLOTS,
+      encoder,
+    );
+    return old;
+  }
+
+  /** The scratch into physical layer `physical`'s region for `face`. */
+  private resolveInto(
+    encoder: GPUCommandEncoder,
+    physical: number,
+    face: number,
+    far: number,
+    near: number,
+  ): void {
+    const view = this.layerViews[physical];
     if (view === undefined) return;
     const slot = this.ring.allocate();
     if (slot === null) return;
@@ -242,25 +334,39 @@ export class GpuPointShadowArray {
   /** Start a frame's bakes. See the ring: slots are reused and nothing is freed. */
   beginFrame(): void {
     this.ring.reset();
+    this.tint?.beginFrame();
   }
 
   /** Upload every slot this frame's resolves took, in one write, before the encoder is submitted. */
   flush(): void {
     this.ring.flush();
+    this.tint?.flush();
   }
 
   dispose(): void {
     this.texture.destroy();
     this.scratch.destroy();
     this.ring.dispose();
+    this.tint?.dispose();
   }
 }
 
 /** What a face's pass needs from the caller: somewhere to record, and the casters to record. */
 export type PointShadowFacePass = (view: GPUTextureView, viewProj: mat4) => void;
 
-/** And what turns that face into its region of the light's octahedral layer. */
-export type PointShadowResolve = (layer: number, face: number, far: number, near: number) => void;
+/**
+ * And what turns that face into its region of the light's octahedral layer — and, where the face
+ * offered glass, draws and resolves that too, lit from the bake origin `x`, `y`, `z`.
+ */
+export type PointShadowResolve = (
+  layer: number,
+  face: number,
+  far: number,
+  near: number,
+  x: number,
+  y: number,
+  z: number,
+) => void;
 
 export class GpuPointShadowMap implements PointShadowSource {
   readonly size: number;
@@ -369,7 +475,7 @@ export class GpuPointShadowMap implements PointShadowSource {
         array.scratchView,
         pointShadowFaceViewProj(face, plan.x, plan.y, plan.z, plan.near, plan.range, scratch),
       );
-      resolveFace(this.layer, face, plan.range, plan.near);
+      resolveFace(this.layer, face, plan.range, plan.near, plan.x, plan.y, plan.z);
     }
 
     this.image.completeBake(last, plan.x, plan.y, plan.z, plan.range, plan.near, plan.sourceRadius);
@@ -378,4 +484,30 @@ export class GpuPointShadowMap implements PointShadowSource {
 
   /** Nothing to free: every GPU object belongs to `GpuPointShadowArray` now. */
   dispose(): void {}
+}
+
+/** The depth array, copyable so glass can interleave it without a re-bake. */
+function depthArray(device: GPUDevice, layers: number): GPUTexture {
+  return device.createTexture({
+    label: 'pointShadow.array',
+    size: [OCTAHEDRAL_EDGE, OCTAHEDRAL_EDGE, layers],
+    format: SHADOW_FORMAT,
+    usage: USAGE_RENDER_ATTACHMENT | USAGE_TEXTURE_BINDING | USAGE_COPY,
+  });
+}
+
+/** One single-layer view per physical layer: a depth attachment takes exactly one. */
+function layerViewsOf(texture: GPUTexture, layers: number): GPUTextureView[] {
+  const views: GPUTextureView[] = [];
+  for (let layer = 0; layer < layers; layer++) {
+    views.push(
+      texture.createView({
+        label: `pointShadow.layer${layer}`,
+        dimension: '2d',
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      }),
+    );
+  }
+  return views;
 }

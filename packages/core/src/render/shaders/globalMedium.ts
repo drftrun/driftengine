@@ -1,3 +1,4 @@
+import { SUN_DYNAMIC_LAYER, SUN_PEELED_LAYER, SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
 import { MAX_GLOBAL_MEDIUM_STEPS } from '../globalMedium.ts';
 
@@ -79,9 +80,8 @@ uniform int uSteps;
 /** How much of the medium the sun's own shadow map removes, 0 to 1. At 0 nothing is sampled. */
 uniform float uSunShadow;
 uniform mat4 uLightViewProj;
-uniform sampler2D uStaticShadowMap;
-uniform sampler2D uPeeledShadowMap;
-uniform sampler2D uDynamicShadowMap;
+/* The sun's static, moving and peeled maps, as layers of one array: see shadowMap.ts. */
+uniform highp sampler2DArray uSunShadows;
 uniform int uPeeledShadowEnabled;
 
 out vec4 fragColor;
@@ -150,11 +150,11 @@ float sunReach(vec3 worldPos) {
   if (edgeFade <= 0.0) return 1.0;
 
   float compare = p.z - SHADOW_BIAS;
-  float blocked = occlusion(textureLod(uStaticShadowMap, p.xy, 0.0).r, compare);
+  float blocked = occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_STATIC_LAYER}.0), 0.0).r, compare);
   if (uPeeledShadowEnabled != 0) {
-    blocked = max(blocked, occlusion(textureLod(uPeeledShadowMap, p.xy, 0.0).r, compare));
+    blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_PEELED_LAYER}.0), 0.0).r, compare));
   }
-  blocked = max(blocked, occlusion(textureLod(uDynamicShadowMap, p.xy, 0.0).r, compare));
+  blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r, compare));
   return mix(1.0, 1.0 - blocked, uSunShadow * edgeFade);
 }
 

@@ -36,20 +36,40 @@ export class GpuInstancedBatch {
     });
   }
 
+  /** Last frame's packed slots, for a reconstruction; made on first use by the renderer. */
+  previousBuffer: GPUBuffer | null = null;
+  /** How many slots the upload before the last one held, and how many the last one holds. */
+  previousCount = 0;
+  liveCount = 0;
+  /** The frame of the last upload. See `changeFrames.ts`. */
+  changed = -1;
+
   /**
    * Pack and push `data.count` instances, in one write.
    *
    * Only the live prefix, for the reason `uploadScatter` gives: the rest is not drawn and
    * uploading it would be per-frame waste with nothing reading it.
+   *
+   * **Given `previous`, the placement still in the staging array — the last upload, which is last
+   * frame's — is written there first**, so a reconstruction can pair each slot with where it was.
+   * `writeBuffer` copies at the call, so packing afterwards cannot reach that copy.
    */
-  upload(queue: GPUQueue, data: MeshInstances): void {
+  upload(queue: GPUQueue, data: MeshInstances, previous: GPUBuffer | null = null): void {
     const count = Math.min(data.count, this.capacity);
+    if (previous !== null) {
+      if (this.liveCount > 0) {
+        queue.writeBuffer(previous, 0, this.staging, 0, this.liveCount * INSTANCE_FLOATS);
+      }
+      this.previousCount = this.liveCount;
+    }
+    this.liveCount = count;
     if (count === 0) return;
     packInstances(data, this.staging);
     queue.writeBuffer(this.buffer, 0, this.staging, 0, count * INSTANCE_FLOATS);
   }
 
   dispose(): void {
+    this.previousBuffer?.destroy();
     this.buffer.destroy();
   }
 }

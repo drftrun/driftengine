@@ -15,6 +15,10 @@ import { SkinPaletteTexture } from './skinPaletteTexture.ts';
  * **What would make it wrong** is a genuine crowd — a stadium, a swarm of rigged birds — and the
  * fix is then the one `skinPalette.ts` names: one texture holding every palette with a per-draw
  * row offset, which spends a uniform and a shader change to stop spending textures.
+ *
+ * **A reconstructing frame spends one more per skinned mover**: last frame's pose is uploaded into
+ * a slot of its own for the motion pass. So the same budget is about twelve such characters with a
+ * reflection and three shadow layers each.
  */
 export const MAX_SKIN_PALETTES = 128;
 

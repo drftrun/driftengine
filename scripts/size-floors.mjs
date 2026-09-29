@@ -323,7 +323,7 @@ export const FLOORS = {
    * packs. `readDrft` has to decode a quantised mesh to read one, so this is the price of reading
    * any file a current baker writes, not an opt-in.
    */
-  'drft-only': 9923,
+  'drft-only': 9974,
   /*
    * Raised 2026-08-22 by the normal map, and again the same day by the ORM map. Both splits are
    * measured rather than assumed.
@@ -736,7 +736,28 @@ export const FLOORS = {
    * its hand-written WGSL twin. Measured against floors that were exact at 4.4.1, so none of it is
    * older drift.
    */
-  'core-only': 814916,
+  /*
+   * **Raised 2026-09-29 by glass shadows: +91,585 on `core-only`, 11.2%, and every `core-and-*`
+   * entry by 91,5xx to 91,7xx the same way.** Measured against `main` at Glass A (9f4f7617), which
+   * sat inside these floors. **Almost all of it is generated WGSL**: the lit shader's twenty-one
+   * permutations each carry the sun's glass lookup and the lamps', and naga expands a GLSL function
+   * several times over — `flat.wgsl.ts` alone went from 389,914 to 443,779 gzipped, and gzip cannot
+   * share text between permutations a hundred kilobytes apart. Folding the lamp and rectangle
+   * lookups into one function and the sun's two layers into one saved 8,338 of it. The rest is the
+   * two backends' glass passes, the point tint, the GPU-driven pipeline's glass, and the shaders
+   * those need. **What would make it wrong** is a consumer for whom the payload matters more than
+   * coloured shadows; the honest answer there is a lit shader that fetches its glass permutation
+   * only once glass casts, which is a loader change and not a floor.
+   */
+  /*
+   * **Raised again the same day by +2,214, and every `core-and-*` entry by 2,170 to 2,256, by the
+   * glass switch**: each of the sixteen lit permutations now declares the `GLASS_SHADOWS` override
+   * and three one-line entry points that branch on it, so `'off'` compiles the lookups away rather
+   * than leaving them to cost the lit pass its registers. The same measurement found `drft-only`
+   * 51 bytes, `capture-only` 54 and `nav-only` 2 above floors that were stale since glass's
+   * container fields, and `tools-only` one byte under; all four are the measured number now.
+   */
+  'core-only': 908715,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -749,7 +770,7 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 819778,
+  'core-and-gizmo': 913568,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -762,7 +783,7 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 821193,
+  'core-and-audio': 914945,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -784,7 +805,7 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 821182,
+  'core-and-animation': 915019,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -819,7 +840,7 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 852825,
+  'core-and-script': 946552,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -883,7 +904,7 @@ export const FLOORS = {
    * pairs inside each bucket. A kilobyte and a quarter for a tenth off every path an agent walks,
    * and the same answer as above about who pays: a separate export path when somebody minds.
    */
-  'nav-only': 8399,
+  'nav-only': 8401,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the
@@ -911,7 +932,7 @@ export const FLOORS = {
    * typed structurally, so the package still depends on nothing new. Named in the fixture in the
    * same commit, which is the whole point of the paragraph above it.
    */
-  'tools-only': 5391,
+  'tools-only': 5390,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional
@@ -973,8 +994,8 @@ export const FLOORS = {
    * **68,567, 2026-09-25**: +2,194, all of it `@driftengine/drft`'s — the `MSHQ` encoder and the
    * `LITE` writer arriving with `writeDrft`. Nothing in this package moved.
    */
-  'capture-only': 68821,
-  'core-and-splats': 831920,
+  'capture-only': 68875,
+  'core-and-splats': 925757,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -991,7 +1012,7 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 816304,
+  'core-and-terrain': 910131,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1017,8 +1038,8 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 823853,
-  'core-and-assets': 830967,
+  'core-and-ui2d': 917652,
+  'core-and-assets': 924973,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1029,7 +1050,7 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 823320,
+  'core-audio-spatial': 917115,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { LIVE_POINT_SHADOW_MAPS, POINT_SHADOW_POOL } from './lightBudget.ts';
-import { OCTAHEDRAL_EDGE, PointShadowArray } from './pointShadowArray.ts';
+import { OCTAHEDRAL_EDGE, PointShadowArray, strideLayers } from './pointShadowArray.ts';
 import { recordingGl } from './rendererHarness.ts';
 
 /*
@@ -141,4 +141,87 @@ test('a face pass does not leave the scratch bound for sampling while it is the 
   expect(nulled, 'with a complete texture rather than null — see emptyTexture.ts').toBe(false);
 
   array.dispose(gl);
+});
+
+/*
+ * **The first glass interleaves the array: opaque layer L moves to 2L, its glass takes 2L + 1.**
+ *
+ * Interleaved rather than stacked above the opaque half, because a shader cannot ask an array how
+ * many layers it has under naga — so it cannot find `L + N`, while `layer + 1` needs nothing. Every
+ * map already baked is carried across, so nothing goes dark, and every glass layer is born at the
+ * far plane: nothing is nearer a lamp than a pane that has not been drawn.
+ */
+test('THE FIRST GLASS INTERLEAVES THE ARRAY, carrying every opaque layer to 2L', () => {
+  const { gl, calls } = recordingGl();
+  const array = new PointShadowArray(gl, 512, 3);
+  const before = array.texture;
+  const n = array.layers;
+  expect(array.stride, 'no glass: one layer a light').toBe(1);
+  calls.length = 0;
+
+  expect(array.growForGlass(gl, OCTAHEDRAL_EDGE), 'the first glass grows').toBe(true);
+  const depth = calls.filter(
+    (c) => c.name === 'texStorage3D' && c.args[2] === gl.DEPTH_COMPONENT24,
+  );
+  expect(
+    depth.map((c) => c.args[5]),
+    'twice the layers',
+  ).toEqual([2 * n]);
+  expect(array.layers, 'still counted in lights').toBe(n);
+  expect(array.stride).toBe(2);
+  expect(array.texture, 'a new texture').not.toBe(before);
+
+  /* Every carry reads layer L of the old texture and writes layer 2L of the new one. */
+  const carried: [unknown, unknown][] = [];
+  let read: unknown = null;
+  for (const c of calls) {
+    if (c.name === 'framebufferTextureLayer' && c.args[0] === gl.READ_FRAMEBUFFER) read = c.args[4];
+    if (c.name === 'framebufferTextureLayer' && c.args[0] === gl.DRAW_FRAMEBUFFER) {
+      const drawn = c.args[4];
+      const next = calls[calls.indexOf(c) + 1];
+      if (next?.name === 'blitFramebuffer') carried.push([read, drawn]);
+    }
+  }
+  expect(carried).toEqual(Array.from({ length: n }, (_, l) => [l, 2 * l]));
+  /* And every glass layer is cleared to the far plane. */
+  const cleared: unknown[] = [];
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i];
+    if (c?.name !== 'clearBufferfv' || c.args[0] !== gl.DEPTH) continue;
+    expect((c.args[2] as Float32Array)[0], 'the far plane').toBe(1);
+    const attached = calls
+      .slice(0, i)
+      .filter((a) => a.name === 'framebufferTextureLayer' && a.args[0] === gl.DRAW_FRAMEBUFFER)
+      .at(-1);
+    cleared.push(attached?.args[4]);
+  }
+  expect(cleared).toEqual(Array.from({ length: n }, (_, l) => 2 * l + 1));
+
+  calls.length = 0;
+  expect(array.growForGlass(gl, OCTAHEDRAL_EDGE), 'and never again').toBe(false);
+  expect(calls.filter((c) => c.name === 'texStorage3D')).toEqual([]);
+  array.dispose(gl);
+});
+
+test('ONCE GLASS EXISTS A FACE RESOLVES ITS OPAQUE DEPTH AT 2L AND ITS GLASS AT 2L + 1', () => {
+  const { gl, calls } = recordingGl();
+  const array = new PointShadowArray(gl, 512, 3);
+  const attached = (): unknown =>
+    calls.filter((c) => c.name === 'framebufferTextureLayer').at(-1)?.args[4];
+  array.resolveFace(gl, 1, 0, 20, 0.25);
+  expect(attached(), 'before glass: its own layer').toBe(1);
+  array.growForGlass(gl, OCTAHEDRAL_EDGE);
+  array.resolveFace(gl, 1, 0, 20, 0.25);
+  expect(attached(), 'after: the even layer').toBe(2);
+  array.resolveGlassFace(gl, 1, 0, 20, 0.25);
+  expect(attached(), 'and its glass beside it').toBe(3);
+  array.dispose(gl);
+});
+
+test('A PUBLISHED LAYER IS STRIDED AS THE ARRAY STORES IT, and no layer stays no layer', () => {
+  const layers = new Int32Array([0, 3, -1, 7]);
+  strideLayers(layers, 1);
+  expect([...layers], 'no glass: unchanged').toEqual([0, 3, -1, 7]);
+  strideLayers(layers, 2);
+  expect([...layers]).toEqual([0, 6, -1, 14]);
 });

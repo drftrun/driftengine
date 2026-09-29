@@ -1,6 +1,7 @@
-/** A GPU-driven material as the shading pass reads it: five blocks, one of them integers. */
+/** A GPU-driven material as the shading pass reads it: seven blocks, one of them integers. */
 
 import type { GpuDrivenMaterial } from '../backend/webgpu/gpuDrivenPass.ts';
+import { resolveGlass, type ResolvedGlass } from '../glass.ts';
 import { DECODE_NO_PROGRAM } from '../shaders/gpudriven/decode.wgsl.ts';
 import type { GpuDrivenProgram } from './decodeTables.ts';
 
@@ -34,17 +35,18 @@ export interface GpuDrivenTextures {
 
 /**
  * Words a material entry: tint and emissive, the surface scalars, four program indices, the UV
- * scale and two strengths, the two ORM scales with the cutout and blend flags, and
- * the opacity with three spare.
+ * scale and two strengths, the two ORM scales with the cutout and blend flags, the opacity with the
+ * glass's transmission and frost and one spare, and the glass's tint with one spare.
  *
  * **It was eight until 2026-09-17**, and metalness took its last spare lane the same day, so the
  * programs and the scales needed three more blocks rather than squeezing into what was left. It
  * became twenty-four on 2026-09-18, when transparency arrived and there was nowhere left to put an
  * opacity: the cutout took lane 18 and the blend flag took 19, and lane 11 is a reserved program
  * slot rather than a gap. A sixteen-byte block is 1 kB across the whole table, against the 64 kB a
- * uniform buffer may hold.
+ * uniform buffer may hold. **Twenty-eight on 2026-09-29**, for glass: its transmission and frost
+ * took two of the opacity block's spares and its tint needed a block of its own.
  */
-export const GPU_DRIVEN_MATERIAL_FLOATS = 24;
+export const GPU_DRIVEN_MATERIAL_FLOATS = 28;
 
 /**
  * Below this base-colour alpha the raster discards a fragment. Zero means no test.
@@ -73,6 +75,16 @@ export const MATERIAL_BLEND = 19;
  * all. A material that does not blend never reads this.
  */
 export const MATERIAL_OPACITY = 20;
+
+/**
+ * Glass (`glass.ts`): how much light passes, and how milky it is. Zero transmission is not glass,
+ * and a material that is glass is drawn in the blended half whatever `blend` says — a visibility
+ * buffer holds one surface a pixel, and glass is two.
+ */
+export const MATERIAL_GLASS_TRANSMISSION = 21;
+export const MATERIAL_GLASS_FROST = 22;
+/** The colour light takes through the glass: three lanes, white where the material is not glass. */
+export const MATERIAL_GLASS_TINT = 24;
 
 /**
  * Where a material's emissive program is: the fourth program lane, which the table reserved and
@@ -155,10 +167,20 @@ export function writeMaterialTable(
     float(m, 17, textures?.metallicScale ?? 1);
     /* Zero is off, so a material that says nothing about cutout writes the table it wrote before. */
     float(m, MATERIAL_ALPHA_CUTOFF, material.alphaCutoff ?? 0);
+    /* Glass A's clamps and its test of what is glass at all, so both pipelines agree on it. */
+    const glass = resolveGlass(material.glass, glassScratch);
     /* Zero is opaque, so a material that says nothing about blending stays in the opaque half. */
-    float(m, MATERIAL_BLEND, material.blend === true ? 1 : 0);
+    float(m, MATERIAL_BLEND, material.blend === true || glass ? 1 : 0);
     /* One, so a material that asked to blend and said nothing else is as solid as an opaque one. */
     float(m, MATERIAL_OPACITY, material.opacity ?? 1);
+    float(m, MATERIAL_GLASS_TRANSMISSION, glassScratch.transmission);
+    float(m, MATERIAL_GLASS_FROST, glassScratch.frost);
+    float(m, MATERIAL_GLASS_TINT, glassScratch.tint[0]);
+    float(m, MATERIAL_GLASS_TINT + 1, glassScratch.tint[1]);
+    float(m, MATERIAL_GLASS_TINT + 2, glassScratch.tint[2]);
   });
   return buffer;
 }
+
+/** One resolution every material's glass is read through. */
+const glassScratch: ResolvedGlass = { transmission: 0, frost: 0, tint: [1, 1, 1] };

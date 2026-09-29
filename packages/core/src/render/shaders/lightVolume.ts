@@ -47,6 +47,7 @@
  *   halves of one frame disagreeing about the same light.
  */
 
+import { SUN_DYNAMIC_LAYER, SUN_PEELED_LAYER, SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { resolveConditionals } from './conditionals.ts';
 
 export const LIGHT_VOLUME_VERT = `#version 300 es
@@ -159,9 +160,8 @@ uniform vec3 uDustOffset;
 uniform float uSunShadow;
 uniform mat4 uLightViewProj;
 uniform float uShadowMapSize;
-uniform sampler2D uStaticShadowMap;
-uniform sampler2D uPeeledShadowMap;
-uniform sampler2D uDynamicShadowMap;
+/* The sun's static, moving and peeled maps, as layers of one array: see shadowMap.ts. */
+uniform highp sampler2DArray uSunShadows;
 uniform int uPeeledShadowEnabled;
 #endif
 
@@ -324,11 +324,11 @@ float sunReach(vec3 worldPos) {
   if (edgeFade <= 0.0) return 1.0;
 
   float compare = p.z - BIAS;
-  float blocked = occlusion(textureLod(uStaticShadowMap, p.xy, 0.0).r, compare);
+  float blocked = occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_STATIC_LAYER}.0), 0.0).r, compare);
   if (uPeeledShadowEnabled != 0) {
-    blocked = max(blocked, occlusion(textureLod(uPeeledShadowMap, p.xy, 0.0).r, compare));
+    blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_PEELED_LAYER}.0), 0.0).r, compare));
   }
-  blocked = max(blocked, occlusion(textureLod(uDynamicShadowMap, p.xy, 0.0).r, compare));
+  blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r, compare));
   return mix(1.0, 1.0 - blocked, uSunShadow * edgeFade);
 }
 #endif

@@ -489,7 +489,7 @@ test('a texture carries the name its source gave it', () => {
  * Every stride this format has declared, forged and reopened.
  *
  * **44** predates `reflectivity`; **48** predates the three map indices; **72** predates `cutout`;
- * **76** predates `blend`.
+ * **76** predates `blend`; **80** predates glass (`transmission`, `frost`, `tint`), 1.19.
  * All three must still open, and all three must default the fields they cannot reach rather than
  * reading past themselves into the name block. Anything else breaks §4.4 rule 1, that a file
  * written today opens in every future reader.
@@ -499,10 +499,24 @@ test('a texture carries the name its source gave it', () => {
  * writer ever produced while still passing.
  */
 for (const [stride, absent] of [
-  [44, ['reflectivity', 'normalMap', 'ormMap', 'emissiveMap', 'cutout', 'blend']],
-  [48, ['normalMap', 'ormMap', 'emissiveMap', 'cutout', 'blend']],
-  [72, ['cutout', 'blend']],
-  [76, ['blend']],
+  [
+    44,
+    [
+      'reflectivity',
+      'normalMap',
+      'ormMap',
+      'emissiveMap',
+      'cutout',
+      'blend',
+      'transmission',
+      'frost',
+      'tint',
+    ],
+  ],
+  [48, ['normalMap', 'ormMap', 'emissiveMap', 'cutout', 'blend', 'transmission', 'frost', 'tint']],
+  [72, ['cutout', 'blend', 'transmission', 'frost', 'tint']],
+  [76, ['blend', 'transmission', 'frost', 'tint']],
+  [80, ['transmission', 'frost', 'tint']],
 ] as const) {
   test(`a ${stride} byte material entry still opens, defaulting what it cannot reach`, () => {
     const mesh: MeshData = {
@@ -533,6 +547,9 @@ for (const [stride, absent] of [
           occlusionStrength: 0,
           cutout: 0.5,
           blend: true,
+          transmission: 0.9,
+          frost: 0.4,
+          tint: [1, 0.8, 0.6],
         },
       ],
       /*
@@ -592,8 +609,15 @@ for (const [stride, absent] of [
       roughnessScale: 1,
       metallicScale: 1,
       occlusionStrength: 0,
+      /* Not glass, which is what every file before 1.19 meant. */
+      transmission: 0,
+      frost: 0,
     };
     for (const field of absent) {
+      if (field === 'tint') {
+        expect(material?.tint, `tint is past a ${stride} byte entry`).toEqual([1, 1, 1]);
+        continue;
+      }
       expect(material?.[field], `${field} is past a ${stride} byte entry`).toBe(defaults[field]);
     }
     if (!(absent as readonly string[]).includes('reflectivity')) {
@@ -601,6 +625,53 @@ for (const [stride, absent] of [
     }
   });
 }
+
+/*
+ * **Glass is in the file**, 1.19: how much light passes, how milky it is and the colour it takes, so a
+ * lantern's pane or a window arrives as glass rather than as a grey surface. See `glass.ts`.
+ */
+test('A GLASS MATERIAL ROUND-TRIPS ITS TRANSMISSION, FROST AND TINT', () => {
+  const mesh: MeshData = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    colors: new Float32Array(9).fill(0.5),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const asset = readDrft(
+    writeDrft({
+      meshes: [mesh],
+      materials: [
+        {
+          name: 'pane',
+          color: [1, 1, 1],
+          specular: 0,
+          roughness: 0.5,
+          emissive: 0,
+          emissiveColor: [-1, -1, -1],
+          opacity: 1,
+          albedo: -1,
+          reflectivity: 0,
+          normalMap: -1,
+          ormMap: -1,
+          emissiveMap: -1,
+          roughnessScale: 1,
+          metallicScale: 1,
+          occlusionStrength: 0,
+          cutout: 0,
+          blend: true,
+          transmission: 0.75,
+          frost: 0.5,
+          tint: [1, 0.75, 0.5],
+        },
+      ],
+    }),
+  );
+  const material = asset.materials[0];
+  expect(material?.transmission).toBe(0.75);
+  expect(material?.frost).toBe(0.5);
+  expect(material?.tint).toEqual([1, 0.75, 0.5]);
+});
 
 /** The three indices and the cutout survive a round trip at the current stride. */
 test('a material carries a normal, ORM and emissive texture index, and a cutout', () => {

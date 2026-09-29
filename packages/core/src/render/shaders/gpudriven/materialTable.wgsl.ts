@@ -38,8 +38,10 @@ struct Material {
   maps: vec4<f32>,
   /** Roughness scale, metallic scale, the alpha cutoff, and non-zero where this one blends. */
   orm: vec4<f32>,
-  /** The blended opacity, and three spare. */
+  /** The blended opacity, the glass's transmission and frost, and one spare. */
   extra: vec4<f32>,
+  /** The glass's tint, white where the material is not glass, and one spare. */
+  glassTint: vec4<f32>,
 }
 
 const NO_PROGRAM: u32 = ${DECODE_NO_PROGRAM}u;

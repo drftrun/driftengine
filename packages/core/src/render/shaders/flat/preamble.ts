@@ -108,13 +108,20 @@ in float vThickness;
  * paid by every consumer whether or not they refract, against 19.8 KB for a branch -- which is the
  * price table Track D's three shipped rows measured.
  *
- * uRefractStrength at 0 is every draw that shipped before this existed, and it is the default, so
+ * uSeeThrough.x, the strength, at 0 is every draw that shipped before this existed, and it is the default, so
  * the sampler is bound to an empty texture and read nowhere on a frame that refracts nothing.
  */
 uniform sampler2D uRefractScene;
-uniform float uRefractStrength;
+/*
+ * **Four numbers in one vector: refraction's strength and path thickness, glass's transmission and
+ * frost** (x, y, z, w). One vector rather than four, and that is the whole reason: on a device at the
+ * WebGL2 floor of 256 fragment uniform vectors, every loose float is a vector the light budget
+ * gives up, and four separate floats cost half the shadowed lights such a device can have. The tints
+ * stay colours of their own. Zero transmission is not glass — see glass.ts.
+ */
+uniform vec4 uSeeThrough;
 uniform vec3 uRefractTint;
-uniform float uRefractThickness;
+uniform vec3 uGlassTint;
 flat in int vHasTangents;
 
 /**
@@ -268,9 +275,13 @@ uniform vec3 uEmissiveScale;
  * half of the file, because a test asserts that a profile without a probe mentions them
  * nowhere — a comment is source too, and it failed that test first.
  */
-uniform highp sampler2D uStaticShadowMap;  // wgsl:share shadow
-uniform highp sampler2D uPeeledShadowMap;  // wgsl:share shadow
-uniform highp sampler2D uDynamicShadowMap;  // wgsl:share shadow
+/* The sun's static, moving and peeled maps, as layers of one array: see shadowMap.ts. Where glass
+   has cast, the last two layers are the nearest pane's depth, static then moving. */
+uniform highp sampler2DArray uSunShadows;  // wgsl:share shadow
+/* What the sun keeps through glass, static then moving: colour times colour, and clarity (see
+   glassShadow.ts). A one-texel stand-in where no glass has cast, which the lookup reads as none.
+   Mipmapped and filtered, unlike the depths: frost reads the level its spread asks for. */
+uniform highp sampler2DArray uSunGlassTints;  // wgsl:share tint
 /** 0 disables directional shadows when their source is not emitting. */
 uniform float uShadowStrength;
 uniform float uShadowMapSize;
@@ -866,6 +877,10 @@ uniform float uPointShadowWeight[MAX_LIGHTS];
  * it exists.
  */
 uniform highp sampler2DArray uPointShadows;  // wgsl:share shadow
+/* What each light keeps through glass: one layer a light, colour times colour and clarity, beside
+   the array above — whose light L then keeps its depth at 2L and its nearest pane at 2L + 1 (see
+   pointShadowArray.ts). A one-texel stand-in where no lamp has met glass, read as none. */
+uniform highp sampler2DArray uPointGlassTints;  // wgsl:share tint
 
 /**
  * Moving casters are separate from persistent world maps. Two live maps exist

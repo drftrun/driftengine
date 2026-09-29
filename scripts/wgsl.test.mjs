@@ -22,6 +22,7 @@ import {
   hoistUniformBlock,
   mapLocations,
   raiseVersion,
+  overridableConstants,
   renameBuiltins,
   requestSamplerlessExtension,
   separateSamplers,
@@ -222,6 +223,43 @@ test('separateSamplers gives a marked group one sampler and leaves the rest alon
  * as a call argument with "sampler constructor must appear at point of use", so the split
  * has to reach through the signature. Exactly one function in this corpus takes one.
  */
+/*
+ * **A switch the device specialises, so one generated string serves both of its values.** The
+ * lit shader's glass lookups are switched off by a constant; as an ordinary constant the WGSL
+ * would have to be generated twice, which is a second copy of every lit permutation in the
+ * payload. A specialisation constant becomes a WGSL `override` that a pipeline sets, and the
+ * device then compiles the lookups away as it would under `#if`.
+ */
+test('overridableConstants makes a marked constant one the pipeline sets, and nothing else', () => {
+  const { source, overrides } = overridableConstants(
+    [
+      'const bool GLASS_SHADOWS = true;  // wgsl:override',
+      'const float EPSILON = 0.001;',
+      'const bool SECOND = false; // wgsl:override',
+    ].join('\n'),
+  );
+  assert.match(source, /^layout\(constant_id = 0\) const bool GLASS_SHADOWS = true;$/m);
+  assert.match(source, /^layout\(constant_id = 1\) const bool SECOND = false;$/m);
+  assert.match(source, /^const float EPSILON = 0\.001;$/m, 'an unmarked constant stays a constant');
+  assert.deepEqual(overrides, { GLASS_SHADOWS: 0, SECOND: 1 });
+});
+
+/*
+ * glslang folds any expression over a specialisation constant into an `OpSpecConstantOp`, and
+ * naga answers that with "unsupported instruction SpecConstantOp at Type" and nothing to say
+ * which line. The one form that goes through is the constant as a branch's own condition, so the
+ * rule says so where the mistake is made.
+ */
+test('overridableConstants refuses a negated switch, which naga cannot translate', () => {
+  assert.throws(
+    () =>
+      overridableConstants(
+        'const bool GLASS_SHADOWS = true;  // wgsl:override\nvec3 f() { if (!GLASS_SHADOWS) return vec3(1.0); return vec3(0.0); }',
+      ),
+    /GLASS_SHADOWS.*branch on GLASS_SHADOWS itself/,
+  );
+});
+
 test('requestSamplerlessExtension: "\'texelFetch\' : required extension not requested: GL_EXT_samplerless_texture_functions"', () => {
   /*
    * A consequence of splitting the combined sampler, not of anything the author wrote: in ES 3.00
@@ -505,6 +543,33 @@ test('an explicit-level fetch stays explicit through the toolchain', { skip: SKI
     /textureSample\(/,
     'an implicit-derivative sample appeared where the GLSL asked for an explicit level',
   );
+});
+
+/*
+ * The rule above is only worth anything if glslang and naga carry the constant through: the
+ * lit pipelines set it by name, and an override the module does not declare is a validation
+ * error that drops the frame. Checked where it is unused too, because a permutation compiled
+ * without shadows declares the switch and reads it nowhere, and is still handed it.
+ */
+test('a marked constant reaches WGSL as an override, read or not', { skip: SKIP }, async () => {
+  const source = [
+    '#version 300 es',
+    'precision highp float;',
+    'const bool GLASS_SHADOWS = true;  // wgsl:override',
+    'const bool UNREAD = true;  // wgsl:override',
+    'in vec2 vUv;',
+    'out vec4 outColor;',
+    'vec3 lookup(vec2 p) {',
+    '  if (GLASS_SHADOWS) return vec3(sin(p.x), cos(p.y), 0.5);',
+    '  return vec3(1.0);',
+    '}',
+    'void main() { outColor = vec4(lookup(vUv), 1.0); }',
+  ].join('\n');
+
+  const { wgsl, bindings } = await compileToWgsl(source, 'fragment', 'override-rule');
+  assert.match(wgsl, /@id\(0\) override GLASS_SHADOWS: bool = true;/);
+  assert.match(wgsl, /@id\(1\) override UNREAD: bool = true;/);
+  assert.deepEqual(bindings.overrides, { GLASS_SHADOWS: 0, UNREAD: 1 });
 });
 
 /*

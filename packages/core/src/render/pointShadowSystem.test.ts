@@ -92,6 +92,13 @@ function recordingTarget() {
     resolveFace: (_gl, layer, face) => {
       resolved.push({ layer, face });
     },
+    /* No glass: the pooling rule is the same with or without it. */
+    hasGlass: false,
+    heldGlass: () => false,
+    beginGlassFace: () => {},
+    resolveGlassFace: () => {},
+    beginTintFace: () => {},
+    resolveTintFace: () => {},
   };
   return { target, resolved };
 }

@@ -209,6 +209,12 @@ test('A FRAME WITH NOTHING BLENDED RECORDS THE THREE TRANSPARENT STAGES AS DEAD'
 test('and a frame that does blend records them reading and writing', () => {
   const { deps, nodes } = frame(true, true);
   expect(Array.from(writesOf(deps, nodes.blendDraw))).toEqual([RES.oitAccum, RES.oitReveal]);
+  /* Glass shows the opaque picture behind it, so the transparent raster reads the colour — and
+     is recorded after the shading that writes it, not before. */
+  expect(Array.from(readsOf(deps, nodes.blendDraw))).toContain(RES.colour);
+  expect(GPU_DRIVEN_PASSES.indexOf('blendDraw')).toBeGreaterThan(
+    GPU_DRIVEN_PASSES.indexOf('shade'),
+  );
   /* The resolve composites over the opaque picture, so the colour is both what it reads and what
      it writes — which is also what puts it after the shading rather than beside it. */
   expect(Array.from(readsOf(deps, nodes.blendResolve))).toContain(RES.colour);

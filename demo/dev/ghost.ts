@@ -28,9 +28,16 @@ import {
   Camera,
   MeshBuilder,
   createEnvironment,
+  createMeshInstances,
+  createMover,
   createRenderer,
 } from '../../packages/core/src/index';
-import type { MeshHandle, RendererApi, Vec3 } from '../../packages/core/src/index';
+import type {
+  MeshHandle,
+  ParticleInstances,
+  RendererApi,
+  Vec3,
+} from '../../packages/core/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 /** Black, so a ghost is the brightest thing in the region it is left in. */
@@ -114,10 +121,21 @@ async function main(): Promise<void> {
   const stats = document.getElementById('stats') as HTMLElement;
 
   const asked = new URLSearchParams(location.search);
-  /* `slide` crosses the frame, `spin` turns on the spot — see `turnedAt` for why both exist. */
-  const spinning = (asked.get('motion') ?? 'slide') === 'spin';
-  /* Whether the draw says where it was. Off is the control: every pixel takes the camera's motion. */
-  const stated = asked.get('motion0') !== '1';
+  /*
+   * What moves, and how. `slide` crosses the frame and `spin` turns on the spot — see `turnedAt`
+   * for why both exist — and the rest are one rig per kind of motion a reconstruction must follow:
+   * `skin` bends a limb by its palette, `dynamic` rewrites a mesh through `updateMesh`, `instanced`
+   * moves an instanced batch, and `translucent` and `particles` are the blended draws that are
+   * drawn after the upscale.
+   */
+  const kind = asked.get('motion') ?? 'slide';
+  const spinning = kind === 'spin';
+  /*
+   * How a draw says which object it is: `none` (the control: every pixel takes the camera's
+   * motion), `matrix` (last frame's model) or `mover` (a `Mover`). `motion0=1` is the old spelling
+   * of `none`. The dynamic and instanced rigs need neither: the mesh and the batch are their own.
+   */
+  const ident = asked.get('motion0') === '1' ? 'none' : (asked.get('ident') ?? 'matrix');
 
   const created = await createRenderer(canvas, askedQuality(), DEV_RENDERER);
   await created.renderer.ready();
@@ -132,6 +150,65 @@ async function main(): Promise<void> {
   const floor: MeshHandle = renderer.createMesh(
     new MeshBuilder().addBox([0, -0.6, 0], [3, 0.05, 2], [0.35, 0.37, 0.4]).build(),
   );
+
+  const mover = createMover();
+
+  /* A bar skinned to two joints, its upper half bending about z at the elbow. */
+  const barData = new MeshBuilder().addBox([0, 0.25, 0], [0.12, 0.5, 0.12], [1, 1, 1]).build();
+  const barVertices = barData.positions.length / 3;
+  const joints = new Float32Array(barVertices * 4);
+  const weights = new Float32Array(barVertices * 4);
+  for (let v = 0; v < barVertices; v += 1) {
+    const upper = (barData.positions[v * 3 + 1] as number) > 0.25 ? 1 : 0;
+    joints[v * 4 + 1] = 1;
+    weights[v * 4] = 1 - upper;
+    weights[v * 4 + 1] = upper;
+  }
+  const bar: MeshHandle = renderer.createMesh({ ...barData, joints, weights });
+  const palette = new Float32Array(32);
+  /** Joint 0 at rest; joint 1 turned about z through the elbow at y = 0.25. */
+  function bend(out: Float32Array, radians: number): void {
+    const c = Math.cos(radians);
+    const s = Math.sin(radians);
+    out.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 0);
+    out.set([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0.25 * s, 0.25 - 0.25 * c, 0, 1], 16);
+  }
+
+  /* The box again, moved by rewriting its vertices rather than by its matrix. */
+  const dynamicData = new MeshBuilder().addBox([0, 0, 0], [0.22, 0.22, 0.22], [1, 1, 1]).build();
+  const dynamicBox: MeshHandle = renderer.createMesh(dynamicData, { dynamic: true });
+  const dynamicPositions = new Float32Array(dynamicData.positions.length);
+
+  /* Five boxes in one instanced batch, crossing together. */
+  const batch = renderer.createInstanced(box, 5);
+  const instances = createMeshInstances(5);
+  instances.count = 5;
+
+  /* Sparks: the blended draw that is not a mesh. */
+  const sparks = renderer.createParticles(16, {
+    material: 'spark',
+    blend: 'additive',
+    coreGain: 1.8,
+  });
+  const sparkData: ParticleInstances = {
+    positions: new Float32Array(48),
+    sizes: new Float32Array(16),
+    spins: new Float32Array(16),
+    colors: new Float32Array(48),
+    alphas: new Float32Array(16),
+    ages: new Float32Array(16),
+    seeds: new Float32Array(16),
+    velocities: new Float32Array(48),
+    count: 16,
+    capacity: 16,
+  };
+  for (let i = 0; i < 16; i += 1) {
+    sparkData.sizes[i] = 0.08;
+    sparkData.alphas[i] = 1;
+    sparkData.ages[i] = 0.5;
+    sparkData.seeds[i] = i / 16;
+    sparkData.colors.set([1, 0.55, 0.2], i * 3);
+  }
 
   const env = createEnvironment();
   env.ambient = [0.35, 0.37, 0.4];
@@ -186,11 +263,54 @@ async function main(): Promise<void> {
     renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(floor, floorModel, 0, [1, 1, 1]);
-    const model = spinning ? turnedAt(boxModel, at, -0.33) : modelAt(boxModel, at, -0.33);
     const previous = spinning
       ? turnedAt(previousBoxModel, was, -0.33)
       : modelAt(previousBoxModel, was, -0.33);
-    renderer.drawMesh(box, model, 0, [1, 0.55, 0.2], stated ? previous : null);
+    const identity = ident === 'mover' ? mover : ident === 'matrix' ? previous : null;
+    if (kind === 'skin') {
+      /*
+       * A swing of 0.8 radians either way, about nine degrees a frame at its fastest, so the limb
+       * stays above the floor for every step. A steady bend of four radians a metre folded it into
+       * the floor by the ninth step and measured an object that was no longer there.
+       */
+      bend(palette, 0.8 * Math.sin((at - START_X) * 3));
+      renderer.setSkinPalette(palette);
+      renderer.drawMesh(
+        bar,
+        modelAt(boxModel, 0, -0.5),
+        0,
+        [1, 0.55, 0.2],
+        ident === 'mover' ? mover : null,
+      );
+      renderer.setSkinPalette(null);
+    } else if (kind === 'dynamic') {
+      for (let v = 0; v < dynamicPositions.length; v += 3) {
+        dynamicPositions[v] = (dynamicData.positions[v] as number) + at;
+        dynamicPositions[v + 1] = (dynamicData.positions[v + 1] as number) - 0.33;
+        dynamicPositions[v + 2] = dynamicData.positions[v + 2] as number;
+      }
+      renderer.updateMesh(dynamicBox, dynamicPositions);
+      renderer.drawMesh(dynamicBox, modelAt(boxModel, 0), 0, [1, 0.55, 0.2]);
+    } else if (kind === 'instanced') {
+      for (let i = 0; i < 5; i += 1) {
+        instances.models.set(modelAt(boxModel, at, -0.33 + (i - 2) * 0.12), i * 16);
+        instances.tints.set([1, 0.55, 0.2], i * 3);
+      }
+      renderer.uploadInstanced(batch, instances);
+      renderer.drawInstanced(batch, instances);
+    } else if (kind === 'translucent') {
+      renderer.drawTranslucentMesh(box, modelAt(boxModel, at, -0.33), 0.85, {
+        tint: [1, 0.55, 0.2],
+      });
+    } else if (kind === 'particles') {
+      for (let i = 0; i < 16; i += 1) {
+        sparkData.positions.set([at + (i % 4) * 0.05, -0.33 + Math.floor(i / 4) * 0.05, 0], i * 3);
+      }
+      renderer.drawParticles(sparks, sparkData, camera, env, 1);
+    } else {
+      const model = spinning ? turnedAt(boxModel, at, -0.33) : modelAt(boxModel, at, -0.33);
+      renderer.drawMesh(box, model, 0, [1, 0.55, 0.2], identity);
+    }
     renderer.endFrame();
   }
 
@@ -221,6 +341,25 @@ async function main(): Promise<void> {
 
   /* Settled at the first position before anything is measured: an empty history is its own case. */
   for (let i = 0; i < SETTLE; i += 1) await tick(start, start, false);
+
+  if (asked.get('stepper') === '1') {
+    /*
+     * One arriving draw of step `i`, from step `i - 1`, and nothing after it, so a capture taken
+     * then reads what the arriving frame showed. `scripts/ghost-check.mjs --edges=1` drives this
+     * and compares each capture with the same step drawn at no reconstruction.
+     */
+    (globalThis as unknown as { __ghostStep: (i: number) => Promise<void> }).__ghostStep = (i) =>
+      new Promise((done) => {
+        requestAnimationFrame(() => {
+          const x = spinning ? (i + 1) * SPIN : START_X + (i + 1) * SPEED;
+          const before = spinning ? i * SPIN : START_X + i * SPEED;
+          drawAt(x, before);
+          done();
+        });
+      });
+    stats.textContent = 'stepper ready';
+    return;
+  }
 
   for (let step = 0; step < STEPS; step += 1) {
     const x = spinning ? (step + 1) * SPIN : START_X + (step + 1) * SPEED;
@@ -254,7 +393,7 @@ async function main(): Promise<void> {
   const total = result.moving.reduce((sum, value) => sum + value, 0);
   const trail = result.trail.reduce((sum, value) => sum + value, 0);
   stats.textContent =
-    `${created.backend} · ${spinning ? 'spin' : 'slide'} · ${String(STEPS)} steps · ${String(total)} differ · ` +
+    `${created.backend} · ${kind} · ${ident} · ${String(STEPS)} steps · ${String(total)} differ · ` +
     `${String(trail)} trailing · worst ${String(result.worst)}`;
 }
 

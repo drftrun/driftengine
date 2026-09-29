@@ -14,6 +14,7 @@
  */
 import { MAX_SHADOW_FILTER_TAPS } from '../../renderQuality.ts';
 import { OUTPUT_TRANSFORM_GLSL } from '../outputTransform.ts';
+import { LAMP_GLASS_GLSL } from './lampGlass.ts';
 
 export const POINTSHADOW_GLSL = `/**
  * How much of one tap's occlusion survives its own penumbra.
@@ -338,6 +339,7 @@ float areaShadow(
   }
   return lit / float(max(uShadowFilterTaps, 1));
 }
+${LAMP_GLASS_GLSL}
 #endif
 
 out vec4 outColor;

@@ -50,7 +50,7 @@ test('a light contributes only as much as it is present', () => {
     'vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);',
   );
   expect(source, 'and the shadow is what separates the two sums it lands in').toContain(
-    'lampOpen += lampDiffuse; lampShadowed += lampDiffuse * shaded;',
+    'lampOpen += lampDiffuse; lampShadowed += lampDiffuse * shaded * lampGlass;',
   );
   // `shape` is the falloff curve the profile asked for; squaring belongs to one of them.
   expect(source, 'and the shaped falloff still squares').toContain(
@@ -216,7 +216,7 @@ test('a shining surface takes a highlight from the sun, and only where it is ask
      assertions are split to match — that it is built with the sun's shadow, and that it reaches
      `lit` — because the property under test is the shadow, not the line number. */
   expect(source, 'and it is shadowed like any other sunlight').toContain(
-    'uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;',
+    'sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;',
   );
   /*
    * **Both halves, because the split is the whole point.** A dielectric's share goes in before the
@@ -248,7 +248,7 @@ test('a polished surface reflects the lamps, not only the sun', () => {
   /* `lampSpec` rather than `vSpecular` since the ORM map: it is that attribute exactly wherever
      no map is bound. What this line asserts is the three terms after it. */
   expect(source, 'and it fades with the light, not independently of it').toContain(
-    '* lampSpec * shape * lightWeight; lampOpen += lampHighlight; lampShadowed += lampHighlight * shaded;',
+    '* lampSpec * shape * lightWeight; lampOpen += lampHighlight; lampShadowed += lampHighlight * shaded * lampGlass;',
   );
   /*
    * The lobe is GGX rather than a pow(): its long tail is what smears a lamp into a streak
@@ -329,8 +329,7 @@ test('a profile with shadows off compiles none of the shadow path', () => {
     'uPointShadow9',
     'uLivePointShadow0',
     'float pointShadow(',
-    'uStaticShadowMap',
-    'uDynamicShadowMap',
+    'uSunShadows',
     'float shadowFactor(',
     'DIRECTIONAL_PCF_OFFSETS',
   ]) {
@@ -864,7 +863,7 @@ test('every metal term collapses to its dielectric form at metal 0', () => {
   /* max(uReflectivity, 0.0) is uReflectivity, because both renderers clamp it non-negative. */
   expect(source).toContain('max(uReflectivity, metal)');
   /* And the diffuse, whose ambient half cancels — see the spec's 3.1. */
-  expect(source).toContain('albedo * (ambient + uDirectionalColor * direct * (1.0 - metal))');
+  expect(source).toContain('albedo * (ambient + sunColor * direct * (1.0 - metal))');
 });
 
 /*
@@ -1301,9 +1300,11 @@ test('the instanced variant writes a neutral thickness', () => {
 test('refraction is a uniform and a branch rather than a permutation', () => {
   const source = flatFrag(REFRACT_BASE);
   expect(source).toContain('uniform sampler2D uRefractScene;');
-  expect(source).toContain('uniform float uRefractStrength;');
+  /* Strength, thickness, glass transmission and frost share one vector: see the preamble's note on
+     the uniform budget at the WebGL2 floor. */
+  expect(source).toContain('uniform vec4 uSeeThrough;');
   expect(source).toContain('uniform vec3 uRefractTint;');
-  expect(source).toContain('uniform float uRefractThickness;');
+  expect(source).toContain('uniform vec3 uGlassTint;');
   expect(source).not.toContain('#if REFRACTION');
 });
 
@@ -1314,7 +1315,7 @@ test('refraction is a uniform and a branch rather than a permutation', () => {
  */
 test('the path length divides by the view angle and is clamped off the silhouette', () => {
   const source = flatFrag(REFRACT_BASE);
-  expect(source).toContain('max(dot(refractN, refractV), 0.05)');
+  expect(source).toContain('max(abs(dot(refractN, refractV)), 0.05)');
   expect(source).toContain('pow(uRefractTint, vec3(pathLength))');
 });
 
@@ -1323,15 +1324,16 @@ test('the path length divides by the view angle and is clamped off the silhouett
  * pane at the border, which reads as a tear rather than as an approximation running out.
  */
 test('the refracted sample is clamped inside the frame', () => {
-  expect(flatFrag(REFRACT_BASE)).toContain('clamp(screenUv + refractN.xy * uRefractStrength');
+  expect(flatFrag(REFRACT_BASE)).toContain('clamp(screenUv + refractN.xy * uSeeThrough.x');
 });
 
 /*
  * Off is the default and off is what every call that predates this means, so a scene that never
- * refracts reads the sampler nowhere.
+ * refracts reads the sampler nowhere. Glass asks too: a pane shows what is behind it whether or not
+ * it bends it, so either one enters the branch, and a draw asking for neither does not.
  */
 test('the refraction branch is entered only when a draw asks for it', () => {
-  expect(flatFrag(REFRACT_BASE)).toContain('if (uRefractStrength > 0.0) {');
+  expect(flatFrag(REFRACT_BASE)).toContain('if (uSeeThrough.x > 0.0 || glassTransmission > 0.0) {');
 });
 
 /**
@@ -1480,4 +1482,88 @@ test('A POINT SHADOW IS NOT LOOKED UP WHERE ITS LIGHT HAS ALL BUT FADED, and the
   expect(source).toContain('if (liveLayer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {');
   expect(source).toContain('float shaded = mix(1.0, occl, shadowWeight);');
   expect(source).toContain('const float POINT_SHADOW_MIN_WEIGHT = 0.03;');
+});
+
+test("THE SUN'S THREE SHADOW MAPS ARE READ AS ONE ARRAY", () => {
+  /* Static, moving and peeled are layers of one sampler2DArray since 4.5.0: one texture unit
+     where there were three, which is what glass's tints are bound with. */
+  expect(source).toContain('uniform highp sampler2DArray uSunShadows;');
+  expect(source).not.toContain('uStaticShadowMap');
+  expect(source).not.toContain('uPeeledShadowMap');
+  expect(source).not.toContain('uDynamicShadowMap');
+});
+
+test("SUNLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR in every term the sun lights", () => {
+  /* The sun's colour, tinted by what the panes on its way let through (sunGlassTint), and the
+     three terms it lights all read it: the diffuse, the highlight, and a pane's own glow. */
+  expect(source).toContain('vec3 sunGlass = sunGlassTint(max(surfaceNdl, 0.0));');
+  expect(source).toContain('vec3 sunColor = uDirectionalColor * sunGlass;');
+  expect(source).toContain('lit = albedo * (ambient + sunColor * direct * (1.0 - metal));');
+  expect(source).toContain('glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;');
+  expect(source).toMatch(/sunColor \* specularLobe\(/);
+  /* The lookup counts a pane only when the receiver is behind it, as glassShadow.ts's tapTint. */
+  expect(source).toContain('uniform highp sampler2DArray uSunGlassTints;');
+});
+
+test("LAMPLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR, a lamp's and a rectangle's, in every term", () => {
+  /* The lamp's static and live glass, each faced in by its own map's presence as the opaque
+     shadow is, and read by the diffuse, the highlight and a pane's own glow. Into the shadowed
+     sums only, so the pixel-pair resolve averages the tint's taps as it averages the shadow's. */
+  expect(source).toContain(
+    'vec3 lampGlass = mix(vec3(1.0), staticGlass, uPointShadowWeight[shadowRead]) * mix(vec3(1.0), liveGlass, liveWeight);',
+  );
+  expect(source).toContain('lampShadowed += lampDiffuse * shaded * lampGlass;');
+  expect(source).toContain('lampShadowed += lampHighlight * shaded * lampGlass;');
+  expect(source).toContain(
+    'glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;',
+  );
+  expect(source).toContain('lampShadowed += areaDiffuse * areaOccl * areaGlass;');
+  expect(source).toContain('lampShadowed += areaHighlight * areaOccl * areaGlass;');
+  expect(source).toContain('glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;');
+  /* The glass sits beside its light's layer, and the tint is a layer a light. */
+  expect(source).toContain('uniform highp sampler2DArray uPointGlassTints;');
+  expect(source).toContain('float glassLayer = layer + 1.0;');
+  expect(source).toContain('float tintLayer = layer * 0.5;');
+});
+
+/*
+ * **Off means none of the glass path, not an unreached one.** Code a branch never takes still costs
+ * a shader its registers: measured 2026-09-29 on the courtyard at night, the lookups compiled in
+ * and returning at their first line cost the lit pass 0.42 ms at 720p on WebGL2 and 1.2 ms at 4K,
+ * against nothing once compiled out. So every way into them branches on one switch first — a
+ * constant in this source, an override the device sets on the generated one.
+ */
+test('A BUILD WITH GLASS SHADOWS OFF READS NO GLASS, through one switch every lookup asks first', () => {
+  expect(full).toContain('const bool GLASS_SHADOWS = true;  // wgsl:override');
+  const off = flatFrag({
+    pointShadows: true,
+    directionalShadows: true,
+    environmentProbe: true,
+    nightEmissive: false,
+    glassShadows: false,
+  });
+  expect(off).toContain('const bool GLASS_SHADOWS = false;  // wgsl:override');
+  expect(off.replace('GLASS_SHADOWS = false;', 'GLASS_SHADOWS = true;'), 'and nothing else').toBe(
+    full,
+  );
+  for (const entry of ['vec3 sunGlassTint(', 'vec3 pointGlassTint(', 'vec3 areaGlassTint(']) {
+    const from = source.indexOf(entry);
+    expect(from, entry).toBeGreaterThan(-1);
+    const body = source.slice(source.indexOf('{', from) + 1).trimStart();
+    expect(body, `${entry} asks first`).toMatch(/^if \(GLASS_SHADOWS\) return /);
+  }
+});
+
+test('A PANE SEEN FROM BEHIND LETS THROUGH WHAT IT LETS THROUGH FROM IN FRONT', () => {
+  /* A pane is symmetric: its Fresnel is the angle to its surface, whichever side the eye is on.
+     Unsigned, a pane seen from behind clamped to the grazing floor and reflected 78% of itself. */
+  expect(source).toContain('float cosView = max(abs(dot(refractN, refractV)), 0.05);');
+});
+
+test('A PANE SEEN FROM BEHIND IS LIT FROM THE EYE S SIDE, and glows with the light beyond it', () => {
+  /* Glass is two-sided whatever its material says: from behind, the side the eye sees is the one
+     lit, and the light on its far side is what glows through — as the second pipeline draws it. */
+  expect(source).toContain(
+    'bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
+  );
 });

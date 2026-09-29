@@ -69,6 +69,8 @@ function recordingDevice() {
   const texture = (descriptor: GPUTextureDescriptor) => {
     const made = {
       label: descriptor.label ?? '',
+      /* What a real texture reports, so a chain built over one has the levels it was made with. */
+      mipLevelCount: descriptor.mipLevelCount ?? 1,
       createView: () => ({ label: descriptor.label ?? '' }),
       destroy: () => undefined,
     };
@@ -210,9 +212,10 @@ function recordedFrame(
     { tint: [1, 1, 1], emissive: 0 },
     { tint: [1, 0, 0], emissive: 1 },
   ],
+  shadow: GpuDrivenShadowOptions = {},
 ) {
   const { device, encoder, commands } = recordingDevice();
-  const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), materials);
+  const pass = new GpuDrivenPass(streamingScene(oneTriangleMeshes(), IDENTITY), materials, shadow);
   const mounted: PassDevice = {
     backend: 'webgpu',
     device,
@@ -1355,6 +1358,82 @@ test('A BLENDED MATERIAL OPENS A TRANSPARENT PASS AND LEAVES THE OPAQUE ONE ALON
   /* And the opaque half is untouched, which is the other half of "leaves it alone". */
   expect(commands).toContain('beginRenderPass({gpu-driven phase 1: colour clear, depth clear})');
   expect(commands).toContain('beginRenderPass({gpu-driven phase 2: colour load, depth load})');
+});
+
+test('A GLASS MATERIAL OPENS THE TRANSPARENT PASS TOO, and fills the opaque picture s chain first', () => {
+  /* Glass is two surfaces a pixel, so it is the blended half's whatever its blend flag says. */
+  const commands = frameText(
+    recordedFrame(VIEW, [
+      { tint: [1, 1, 1], emissive: 0 },
+      { tint: [1, 1, 1], emissive: 0, glass: { transmission: 0.9, frost: 0.4 } },
+    ]),
+  );
+  expect(commands).toContain(
+    'beginRenderPass({gpu-driven blend draw: colour clear, colour clear, depth read-only})',
+  );
+  expect(commands).toContain('beginRenderPass({gpu-driven blend resolve: colour load})');
+  /* The chain glass reads is filled after the shading and before the panes are drawn. */
+  const at = (label: string): number => commands.findIndex((line) => line.includes(label));
+  const mips = at('gpu-driven colour mips');
+  expect(mips, 'the chain is filled').toBeGreaterThan(-1);
+  expect(mips).toBeGreaterThan(at('gpu-driven shade'));
+  expect(mips).toBeLessThan(at('gpu-driven blend draw'));
+});
+
+test('A SCENE WITH NO GLASS FILLS NO CHAIN, and its colour has the one level it always had', () => {
+  const commands = frameText(
+    recordedFrame(VIEW, [
+      { tint: [1, 1, 1], emissive: 0 },
+      { tint: [0.2, 0.5, 1], emissive: 0, blend: true },
+    ]),
+  );
+  expect(commands.some((line) => line.includes('gpu-driven colour mips'))).toBe(false);
+  /* The control that it would have been seen: the blended half is recorded. */
+  expect(commands.some((line) => line.includes('gpu-driven blend draw'))).toBe(true);
+});
+
+test('THE SUN DRAWS ITS GLASS AFTER ITS MAP: a glass cut, the nearest pane, what the panes let through', () => {
+  const lit = { ...VIEW, shadowStrength: 1 };
+  const pane = {
+    tint: [1, 1, 1] as [number, number, number],
+    emissive: 0,
+    glass: { transmission: 0.9, frost: 0.3 },
+  };
+  const glassy = frameText(recordedFrame(lit, [{ tint: [1, 1, 1], emissive: 0 }, pane]));
+  const at = (commands: readonly string[], label: string): number =>
+    commands.findIndex((line) => line.includes(label));
+  const stages = [
+    'gpu-driven shadow glass cut',
+    'gpu-driven shadow glass',
+    'gpu-driven shadow tint',
+  ];
+  for (const label of stages) expect(at(glassy, label), label).toBeGreaterThan(-1);
+  /* After the opaque map, and the tint's chain filled before anything shades. */
+  expect(at(glassy, 'gpu-driven shadow glass cut')).toBeGreaterThan(
+    at(glassy, 'gpu-driven shadow, phase 2'),
+  );
+  expect(at(glassy, 'gpu-driven glass tint mips')).toBeGreaterThan(
+    at(glassy, 'gpu-driven shadow tint'),
+  );
+  expect(at(glassy, 'gpu-driven glass tint mips')).toBeLessThan(at(glassy, 'gpu-driven shade'));
+
+  /* Glass shadows off, or no glass at all: none of it. */
+  const off = frameText(
+    recordedFrame(lit, [{ tint: [1, 1, 1], emissive: 0 }, pane], { glass: 'off' }),
+  );
+  const none = frameText(
+    recordedFrame(lit, [
+      { tint: [1, 1, 1], emissive: 0 },
+      { tint: [1, 1, 1], emissive: 0, blend: true },
+    ]),
+  );
+  for (const commands of [off, none]) {
+    expect(commands.some((line) => line.includes('glass') || line.includes('shadow tint'))).toBe(
+      false,
+    );
+    /* The control: the opaque map is still drawn. */
+    expect(at(commands, 'gpu-driven shadow, phase 2')).toBeGreaterThan(-1);
+  }
 });
 
 test('THE TRANSPARENT DRAW READS ITS OWN LIST AND ITS OWN ARGUMENTS', () => {

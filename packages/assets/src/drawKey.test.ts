@@ -51,6 +51,7 @@ describe('drawKeyOf', () => {
     ['metallicScale', { metallicScale: 0.5 }],
     ['occlusionStrength', { occlusionStrength: 0.5 }],
     ['cutout', { cutout: 0.5 }],
+    ['transmission', { transmission: 0.5 }],
   ] as const)('separates two materials differing only in %s', (_name, fields) => {
     expect(drawKeyOf(material(fields))).not.toBe(drawKeyOf(material()));
   });
@@ -90,6 +91,9 @@ describe('resolveDrawGrouping', () => {
       cutout: 0.5,
       blend: false,
       doubleSided: false,
+      transmission: 0,
+      frost: 0,
+      tint: [1, 1, 1],
     });
   });
 
@@ -107,6 +111,9 @@ describe('resolveDrawGrouping', () => {
       cutout: 0,
       blend: false,
       doubleSided: false,
+      transmission: 0,
+      frost: 0,
+      tint: [1, 1, 1],
     });
   });
 });
@@ -143,4 +150,39 @@ it('AN OVERRIDE MAY SAY A SURFACE IS NOT METAL, whatever its map says', () => {
   expect(resolveDrawGrouping(stone, { metallicScale: 0 }).metallicScale).toBe(0);
   expect(resolveDrawGrouping(stone).metallicScale).toBe(1);
   expect(drawKeyOf(stone, { metallicScale: 0 })).not.toBe(drawKeyOf(stone));
+});
+
+it('AN OVERRIDE MAY SAY A SURFACE IS GLASS, and glass is drawn blended', () => {
+  /*
+   * A bought model's lantern panes arrive as an opaque dark material: the file cannot say glass.
+   * A consumer who can name the material says it here, and the part is then drawn over what is
+   * behind it, so it cannot share a draw with the opaque surface it was.
+   */
+  const pane = material({ albedo: 1 });
+  const glass = resolveDrawGrouping(pane, { transmission: 0.9, frost: 0.5 });
+  expect(glass.blend).toBe(true);
+  expect(glass.transmission).toBeCloseTo(0.9, 6);
+  expect(glass.frost).toBeCloseTo(0.5, 6);
+  expect(glass.tint).toEqual([1, 1, 1]);
+  expect(drawKeyOf(pane, { transmission: 0.9, frost: 0.5 })).not.toBe(drawKeyOf(pane));
+  /* Two glasses differing in how much passes, how milky or how coloured are two draws. Blend
+     alone separates glass from what it was, so each of these is asserted between two glasses. */
+  expect(drawKeyOf(pane, { transmission: 0.5 })).not.toBe(drawKeyOf(pane, { transmission: 0.9 }));
+  expect(drawKeyOf(pane, { transmission: 0.9, frost: 0.2 })).not.toBe(
+    drawKeyOf(pane, { transmission: 0.9, frost: 0.5 }),
+  );
+  expect(drawKeyOf(pane, { transmission: 0.9, tint: [1, 0.8, 0.6] })).not.toBe(
+    drawKeyOf(pane, { transmission: 0.9 }),
+  );
+});
+
+it('A FILE THAT SAYS GLASS IS KEPT AS GLASS, and frost without transmission is nothing', () => {
+  const bottle = material({ transmission: 0.8, frost: 0.3, tint: [0.9, 1, 0.9] });
+  const read = resolveDrawGrouping(bottle);
+  expect(read.transmission).toBeCloseTo(0.8, 6);
+  expect(read.frost).toBeCloseTo(0.3, 6);
+  expect(read.tint).toEqual([0.9, 1, 0.9]);
+  expect(read.blend).toBe(true);
+  /* Letting nothing through is not glass, so a stray frost or tint must not split a draw. */
+  expect(drawKeyOf(material({ frost: 0.7, tint: [0.5, 0.5, 0.5] }))).toBe(drawKeyOf(material()));
 });

@@ -1,5 +1,51 @@
 [
  {
+  "version": "4.5.0",
+  "date": "2026-09-29",
+  "entries": [
+   {
+    "kind": "added",
+    "short": "Moving objects stay sharp under reconstruction: name each with createMover() and it no longer leaves a ghost or a doubled edge.",
+    "text": "**A reconstruction can follow what moves, when the draw says what it is.** DriftTR reprojects each pixel by where its surface was last frame, and it knew that only for a draw handed last frame's model matrix. A consumer that passed none, which was every consumer measured, got the camera's motion for everything: right for the world, wrong for anything that moved, so a mover trailed a ghost and a doubled edge.\n\n`createMover()` makes an identity for one moving object, and `drawMesh` takes it where it took last frame's matrix. The renderer keeps that object's last model and, for a skinned draw, its last joint palette, so a bending limb reprojects as well as a sliding body. A matrix works exactly as it did. A mover drawn twice in one frame is two objects wearing one identity: the second draw is warned about once and records no motion.\n\nMeasured on `demo/dev/ghost.html` against a native four-sample frame, trail pixels without and with a mover: a slide 6,602 → 1,150, a spin 8,599 → 3,012, a skinned limb 11,648 → 1,518. **A cut is still the consumer's to say**: call `renderer.cameraCut()` where the view jumps, or the first frames after it blend the old view in. Only a reconstruction reads any of this, and reconstruction is WebGPU's."
+   },
+   {
+    "kind": "added",
+    "short": "Glass: a pane shows what is behind it, blurred as far as it is frosted, keeps its own highlight, and glows with the lights behind it.",
+    "text": "**`TranslucentMeshOptions.glass`: `{ transmission, frost, tint }`.** A pane shows what is behind it by how much it lets through less what Schlick's Fresnel reflects at the view angle, keeps its own lighting and highlight, blurs what it shows by reading the level of the frame copy's mip chain its frost picks, and glows with every light behind it (the sun, lamps, rectangles and DriftLight) in proportion to its frost. It is two-sided and symmetric: seen from behind it passes and glows with the light beyond it as it does from in front. A glass caster writes no depth, so a lantern's own light leaves the lantern.\n\nA model says so three ways. `.drft` 1.19 carries the three fields; the glTF reader maps `KHR_materials_transmission`, `KHR_materials_diffuse_transmission` and `KHR_materials_volume`, rough glass arriving as frosted glass; and `DrftLoaderOptions.surface` can declare a file's opaque pane glass, which lands on `DrftPart.glass`. Both backends agree to a level on a bought courtyard's lantern at night, its panes from 95 to 246."
+   },
+   {
+    "kind": "added",
+    "short": "Light through glass takes the glass's colour: sunlight and lamplight through a stained or frosted pane land tinted, and frost spreads the colour.",
+    "text": "**Coloured shadows, for every light that casts one, on both backends.** Light through a pane takes `transmission × (1 − F) × tint`: the sun's static and moving maps, pooled and live lamps, and rectangles. Each map gains a glass depth layer, the nearest pane, and an RGBA8 tint, every pane on the ray multiplied together with its clarity. A receiver is tinted only behind a pane; its outline comes from depth-tested taps and its colour from taps spread by frost and read at the tint's matching mip level, unmixed from the ground around the pane, so a frosted patch is softer and passes the light a clear one does. Measured on `demo/dev/glassShadow.html`, both backends within 0.4 levels: clear sun patches 149/56 against 149.1/55.6 derived by hand, a lamp's 47.2/30.0 against 47.1/29.8; frost moves the light it passes by 0.1 to 1.4%.\n\n**`RenderQualityOptions.glassShadows`** is `'full'`, `'half'` (the tints at half size) or `'off'`. Nothing is allocated until a glass caster reaches a map; then, at `'full'`, 78 MB for the sun's two maps and 9.8 MB a lamp layer, roughly halved at `'half'`. `'off'` casts nothing through glass and compiles the lookup out of the lit shader, which a world that never casts through glass should say: a lookup that finds no glass still costs the lit pass its registers, 0.27 ms on WebGPU and 0.42 ms on WebGL2 at 720p on a bought courtyard at night. Where glass does cast, that courtyard's lit pass costs 2.3 ms more on either backend, its lamps being enclosed in frosted glass.\n\n**What it gives up**: a pane is thin, so a solid of glass under-darkens and bends light once; DriftLight's summed far field and the probes' bounce are not tinted; frost spreads colour only inside the opaque frame's shadow; and a second copy of a pane's triangles is a second pane, so two-sided glass is declared with `doubleSided`. The core bundle grows 91.6 KB gzipped, nearly all of it the lit shaders' generated WGSL."
+   },
+   {
+    "kind": "added",
+    "short": "The GPU-driven renderer draws glass, and its sunlight through glass takes the glass's colour.",
+    "text": "**`GpuDrivenMaterial.glass` takes the same `{ transmission, frost, tint }`.** A glass material is drawn in the renderer's blended half with the forward renderer's see-through, frost, Fresnel and sun glow, reading a mip chain of the opaque colour, and `GpuDrivenShadowOptions.glass` gives its sun a third light-space cut for glass, drawn into a glass layer and a tint as the forward sun's is. Its arithmetic is checked on the device against the TypeScript reference by `scripts/gpu-parity.mjs`, and its clear patches measure the forward renderer's 149/56. Its glass shadow ignores cutouts, as its opaque shadow does."
+   },
+   {
+    "kind": "changed",
+    "short": "Under reconstruction, glass, captions, particles and other see-through things are drawn at full resolution, sharp and without trails.",
+    "text": "**While reconstructing, every blended draw lands after the upscale, at output resolution.** A translucent pane, a caption, a spark or a plume has no one depth a reprojection can trust, so drawn into the reconstructed picture it trailed and softened with whatever was behind it. Blended meshes, particles, plumes, bolts, lines, film, caustics and world text now draw in a late pass on the output-size frame, unjittered and depth-tested against the upscaled depth; refraction and order-independent panes read the reconstructed picture and land in it. On the ghost page a moving translucent pane's trail went from 5,751 pixels to 20, and particles' from 2,464 to 0.\n\n**Light volumes stay reconstructed**: their march reads render-size depth and is among the most expensive passes in a frame, so they keep the render size. Without a reconstruction nothing changes, and every published scene draws identically, to the pixel on WebGPU."
+   },
+   {
+    "kind": "fixed",
+    "short": "Crowds of instanced objects and meshes rewritten every frame no longer leave a ghost behind them under reconstruction.",
+    "text": "**Two kinds of motion had no way to say where they had been.** An instanced batch carried one placement per instance and no previous one, and a mesh rewritten with `updateMesh` moved its vertices under a draw that looked still, so both were reprojected by the camera's motion alone and ghosted under reconstruction whatever the consumer passed. Each now keeps last frame's state beside this frame's, slot for slot and vertex for vertex, and needs nothing from the caller: the batch and the mesh are their own identity. An instanced crowd's trail on the ghost page went from 8,961 pixels to 1,340."
+   },
+   {
+    "kind": "fixed",
+    "short": "WebGL2: a pane in front of a reflection probe no longer turns the whole frame grey, and a double-sided instanced batch draws both of its sides.",
+    "text": "**Three WebGL2 defects, each reached first by glass.** The copy of the frame that refraction reads rebound the scene's framebuffer on its way out rather than the caller's, so a pane drawn into a reflection probe's face attached the probe's next face to the scene and the whole frame went flat grey. WebGL2 also took that copy inside a probe bake at all, which WebGPU has always refused: the copy is of the frame on screen, not of the face. And an instanced batch never turned culling off for a double-sided material, so its far faces were missing on WebGL2 alone; 28 of one bought courtyard's 53 double-sided materials are instanced."
+   },
+   {
+    "kind": "note",
+    "short": "DrftPart.glass is a new required field: code that builds its own DrftPart adds glass: null.",
+    "text": "**`DrftPart.glass` is required**, `null` for a part that is not glass, so a consumer that constructs a `DrftPart` itself, a test stub for instance, adds `glass: null` or no longer typechecks. Parts the loader makes carry it already.\n\n**And a reconstruction is still softer than native on geometry that never moves.** A mover fixes motion, not that: on the ghost page a still edge at a reconstruction of 1.5 measures about 8 in edge error against a native frame's 3, which is the reconstruction's own resolution rather than anything a consumer passes."
+   }
+  ]
+ },
+ {
   "version": "4.4.2",
   "date": "2026-09-28",
   "entries": [

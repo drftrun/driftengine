@@ -82,6 +82,28 @@ fn oitResolved(accum: vec4<f32>, reveal: f32) -> vec4<f32> {
 }
 `;
 
+/**
+ * Glass over its own shading, as the forward path draws it: `gpudriven/lit.ts`'s `glassShade`,
+ * which `scripts/gpu-parity.mjs` holds this to. Schlick at 0.04 with the angle unsigned — a pane
+ * passes the same light seen from either side — and floored at the forward path's grazing 0.05.
+ */
+const GLASS_SHADE_WGSL = /* wgsl */ `
+fn glassShade(
+  own: vec3<f32>,
+  seen: vec3<f32>,
+  transmission: f32,
+  frost: f32,
+  tint: vec3<f32>,
+  cosView: f32,
+  sunGlow: vec3<f32>,
+) -> vec3<f32> {
+  let c = clamp(abs(cosView), 0.05, 1.0);
+  let fresnel = 0.04 + 0.96 * pow(1.0 - c, 5.0);
+  let shown = transmission * (1.0 - fresnel);
+  return own + (seen * tint - own) * shown + sunGlow * tint * (frost * transmission);
+}
+`;
+
 export const BLEND_RASTER_WGSL = /* wgsl */ `
 struct BlendVarying {
   @builtin(position) position: vec4<f32>,
@@ -108,6 +130,12 @@ ${FRAME_BLOCK_WGSL}
 @group(0) @binding(9) var environmentMap: texture_2d_array<f32>;
 @group(0) @binding(10) var environmentSampler: sampler;
 ${decodeResourcesWgsl({ group: 0, latents: 11, clampSampler: 12, repeatSampler: 13, nodes: 14, weights: 15 })}
+/**
+ * What the opaque half drew, with a mip chain on a frame whose scene holds glass: a pane shows it,
+ * a frosted one a coarser level of it. Read only by a material whose transmission is not zero.
+ */
+@group(0) @binding(16) var opaqueColour: texture_2d<f32>;
+@group(0) @binding(17) var opaqueSampler: sampler;
 fn decodeLatentSize() -> f32 {
   return frame.size.w;
 }
@@ -126,6 +154,7 @@ ${MESH_TRANSFORM_WGSL}
 ${SHADE_LIGHTING_WGSL}
 ${FOG_WGSL}
 ${OIT_WGSL}
+${GLASS_SHADE_WGSL}
 
 const NO_PROGRAM_HERE: u32 = ${0xffffffff}u;
 
@@ -241,7 +270,25 @@ fn blendFrag(in: BlendVarying) -> BlendTargets {
    * distance — which is the whole reason this pipeline gained a fog.
    */
   let toward = distance(in.world, frame.eye.xyz);
-  let colour = mix(litColour(surface, room), mediumColour(), mediumFog(toward, in.world.y));
+  let fog = mediumFog(toward, in.world.y);
+  var colour = mix(litColour(surface, room), mediumColour(), fog);
+  /*
+   * **Glass shows what is behind it**, as the forward path's glass branch does: the opaque half's
+   * picture at this pixel, at the level frost picks, two short of the chain's end so a fully frosted
+   * pane keeps the large light and dark behind it. The sun glows through from the pane's far side,
+   * after the haze as the forward path adds it. A pane is seen from both sides, so its facing is
+   * the side toward the eye.
+   */
+  let transmission = entry.extra.y;
+  if (transmission > 0.0) {
+    let size = vec2<f32>(textureDimensions(opaqueColour, 0));
+    let levels = max(floor(log2(max(size.x, size.y))) - 2.0, 0.0);
+    let seen = textureSampleLevel(opaqueColour, opaqueSampler, in.position.xy / size, entry.extra.z * levels).xyz;
+    let cosView = dot(surface.normal, toEye);
+    let facing = select(surface.normal, -surface.normal, cosView < 0.0);
+    let sunGlow = frame.lightColour.xyz * max(-dot(facing, frame.lightDir.xyz), 0.0) * (1.0 - fog);
+    colour = glassShade(colour, seen, transmission, entry.extra.z, entry.glassTint.xyz, cosView, sunGlow);
+  }
 
   /*
    * **The distance to the eye, not the clip-space depth**, because that is what oitWeight's falloff
@@ -254,6 +301,20 @@ fn blendFrag(in: BlendVarying) -> BlendTargets {
   /* One channel, and it multiplies: what this layer let through. See the blend state. */
   out.reveal = vec4<f32>(alpha, 0.0, 0.0, alpha);
   return out;
+}
+
+/*
+ * **What a pane lets through, drawn from the sun into the tint map**: \`blendVert\` again, handed
+ * the light's raster matrix and the glass list, and this for the colour — \`glassShadow.ts\`'s
+ * paneTexel, the forward path's GLASS_TINT_FRAG in this language. Written against a white target
+ * with a multiplying blend and no depth, so every pane on a ray counts in any order.
+ */
+@fragment
+fn glassTintFrag(in: BlendVarying) -> @location(0) vec4<f32> {
+  let entry = materials[min(in.material, ${MATERIAL_SLOTS - 1}u)];
+  let c = clamp(abs(dot(normalize(in.normal), frame.lightDir.xyz)), 0.05, 1.0);
+  let passes = entry.extra.y * (1.0 - (0.04 + 0.96 * pow(1.0 - c, 5.0)));
+  return vec4<f32>(passes * entry.glassTint.xyz, 1.0 - entry.extra.z);
 }
 `;
 
@@ -339,5 +400,31 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   results[out + 1u] = resolved.x;
   results[out + 2u] = resolved.y;
   results[out + 3u] = resolved.z;
+}
+`;
+
+/**
+ * `glassShade` alone, as a dispatch, so it can be checked against `gpudriven/lit.ts`.
+ *
+ * Sixteen floats a case — own, seen, transmission, frost, tint, the view cosine, the glow, one
+ * spare — and four out, the colour and one spare.
+ */
+export const GLASS_SHADE_PARITY_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> cases: array<f32>;
+@group(0) @binding(1) var<storage, read_write> results: array<f32>;
+${GLASS_SHADE_WGSL}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x * 16u + 15u >= arrayLength(&cases)) { return; }
+  let at = id.x * 16u;
+  let own = vec3<f32>(cases[at], cases[at + 1u], cases[at + 2u]);
+  let seen = vec3<f32>(cases[at + 3u], cases[at + 4u], cases[at + 5u]);
+  let tint = vec3<f32>(cases[at + 8u], cases[at + 9u], cases[at + 10u]);
+  let glow = vec3<f32>(cases[at + 12u], cases[at + 13u], cases[at + 14u]);
+  let shaded = glassShade(own, seen, cases[at + 6u], cases[at + 7u], tint, cases[at + 11u], glow);
+  let out = id.x * 4u;
+  results[out] = shaded.x;
+  results[out + 1u] = shaded.y;
+  results[out + 2u] = shaded.z;
 }
 `;

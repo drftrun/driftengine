@@ -6,7 +6,11 @@ import type { GpuDrivenProgram } from './decodeTables.ts';
 import {
   GPU_DRIVEN_MATERIAL_FLOATS,
   MATERIAL_ALPHA_CUTOFF,
+  MATERIAL_BLEND,
   MATERIAL_EMISSIVE_PROGRAM,
+  MATERIAL_GLASS_FROST,
+  MATERIAL_GLASS_TINT,
+  MATERIAL_GLASS_TRANSMISSION,
   collectPrograms,
   writeMaterialTable,
 } from './materialTable.ts';
@@ -192,4 +196,38 @@ test('AN EMISSIVE MAP TAKES THE FOURTH PROGRAM SLOT, which is lane 11', () => {
   expect(lanes(table, 0).u.slice(8, 12)).toEqual([0, DECODE_NO_PROGRAM, DECODE_NO_PROGRAM, 1]);
   expect(lanes(table, 1).u[11]).toBe(0);
   expect(MATERIAL_EMISSIVE_PROGRAM).toBe(11);
+});
+
+test('A GLASS MATERIAL CARRIES ITS TRANSMISSION, FROST AND TINT, and belongs to the blended half', () => {
+  const pane: GpuDrivenMaterial = {
+    tint: [1, 1, 1],
+    emissive: 0,
+    glass: { transmission: 0.8, frost: 0.3, tint: [1, 0.9, 0.8] },
+  };
+  const plain: GpuDrivenMaterial = { tint: [1, 1, 1], emissive: 0, blend: false };
+  const letsNothing: GpuDrivenMaterial = {
+    tint: [1, 1, 1],
+    emissive: 0,
+    glass: { transmission: 0, frost: 0.5, tint: [0.2, 0.2, 0.2] },
+  };
+  const { indices } = collectPrograms([pane, plain, letsNothing]);
+  const table = writeMaterialTable([pane, plain, letsNothing], indices, 3);
+  expect(GPU_DRIVEN_MATERIAL_FLOATS, 'seven blocks of four').toBe(28);
+  const glass = lanes(table, 0).f;
+  expect(glass[MATERIAL_GLASS_TRANSMISSION]).toBe(Math.fround(0.8));
+  expect(glass[MATERIAL_GLASS_FROST]).toBe(Math.fround(0.3));
+  expect(glass.slice(MATERIAL_GLASS_TINT, MATERIAL_GLASS_TINT + 3)).toEqual([
+    1,
+    Math.fround(0.9),
+    Math.fround(0.8),
+  ]);
+  expect(glass[MATERIAL_BLEND], 'glass is drawn in the blended half whatever blend says').toBe(1);
+  expect([glass[23], glass[27]], 'the spare lanes stay spare').toEqual([0, 0]);
+  /* Not glass — letting nothing through — writes zeros and a white tint, and keeps its own flag. */
+  for (const f of [lanes(table, 1).f, lanes(table, 2).f]) {
+    expect(f[MATERIAL_GLASS_TRANSMISSION]).toBe(0);
+    expect(f[MATERIAL_GLASS_FROST]).toBe(0);
+    expect(f[MATERIAL_BLEND]).toBe(0);
+  }
+  expect(lanes(table, 2).f.slice(MATERIAL_GLASS_TINT, MATERIAL_GLASS_TINT + 3)).toEqual([1, 1, 1]);
 });

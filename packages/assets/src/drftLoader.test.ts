@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vitest';
 import { DEFAULT_UPLOAD_MS_PER_FRAME, isDocumentResponse, mayBeginMore } from './uploadBudget.ts';
 import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP, SDFV_WHOLE_FILE } from '@driftengine/drft';
 import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
+import type { DrftLoaderOptions } from './drftLoader.ts';
 import { writeDrft } from '@driftengine/drft';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { MeshData, RendererApi } from '@driftengine/core';
@@ -201,8 +202,8 @@ function triangle(): MeshData {
   };
 }
 
-async function partsFrom(materials: readonly DrftMaterial[]) {
-  const loader = new DrftLoader(fakeRenderer(), {});
+async function partsFrom(materials: readonly DrftMaterial[], options: DrftLoaderOptions = {}) {
+  const loader = new DrftLoader(fakeRenderer(), options);
   const drft = writeDrft({
     head: { name: 'maps' },
     meshes: materials.map(() => triangle()),
@@ -799,4 +800,25 @@ test('A FIELD STANDS WHERE THE LOADER PUT THE MODEL, once for the file and once 
   const dx = (copies[1]?.model[12] ?? 0) - (copies[0]?.model[12] ?? 0);
   expect(dx).toBeCloseTo(10 * scale, 5);
   expect(Array.from(whole[0]?.source.field ?? [])).toEqual(Array.from(field));
+});
+
+test('A PART SAYS WHETHER IT IS GLASS, from its file or from the override', async () => {
+  const parts = await partsFrom(
+    [
+      material({ name: 'bottle', albedo: 0, transmission: 0.8, frost: 0.25 }),
+      material({ name: 'pane', albedo: 1 }),
+      material({ name: 'wall', albedo: 2 }),
+    ],
+    {
+      surface: (m) =>
+        m?.name === 'pane' ? { transmission: 0.9, frost: 0.5, tint: [1, 0.9, 0.8] } : undefined,
+    },
+  );
+  const bottle = parts.find((part) => part.albedo === 0);
+  expect(bottle?.glass?.transmission).toBeCloseTo(0.8, 6);
+  expect(bottle?.glass?.frost).toBeCloseTo(0.25, 6);
+  expect(bottle?.blend).toBe(true);
+  const pane = parts.find((part) => part.albedo === 1);
+  expect(pane?.glass).toEqual({ transmission: 0.9, frost: 0.5, tint: [1, 0.9, 0.8] });
+  expect(parts.find((part) => part.albedo === 2)?.glass, 'a wall is not glass').toBeNull();
 });

@@ -77,15 +77,36 @@ interface GltfSpecularGlossiness {
   /** RGB the specular colour, A the glossiness. Both multiply the factors above. */
   specularGlossinessTexture?: { index: number; texCoord?: number };
 }
+/**
+ * The three extensions that together say a material is glass: how much light passes
+ * (`KHR_materials_transmission`), how much of it is scattered on the way and the colour it takes
+ * (`KHR_materials_diffuse_transmission`), and the colour a thickness of it absorbs towards
+ * (`KHR_materials_volume`). Only the fields this reader maps are named.
+ */
+interface GltfTransmission {
+  transmissionFactor?: number;
+}
+interface GltfDiffuseTransmission {
+  diffuseTransmissionFactor?: number;
+  diffuseTransmissionColorFactor?: number[];
+}
+interface GltfVolume {
+  attenuationColor?: number[];
+}
 interface GltfMaterial {
   pbrMetallicRoughness?: GltfPbrMetallicRoughness;
   /**
-   * The material extensions this reader knows. One, and everything else is ignored.
+   * The material extensions this reader knows, and everything else is ignored.
    *
-   * Read as an optional field rather than as `Record<string, unknown>` so that adding a second
-   * costs a name here and a branch in `pbrOf`, and so that a typo in either is a compile error.
+   * Read as optional fields rather than as `Record<string, unknown>` so that adding one costs a
+   * name here and a branch where it is read, and so that a typo in either is a compile error.
    */
-  extensions?: { KHR_materials_pbrSpecularGlossiness?: GltfSpecularGlossiness };
+  extensions?: {
+    KHR_materials_pbrSpecularGlossiness?: GltfSpecularGlossiness;
+    KHR_materials_transmission?: GltfTransmission;
+    KHR_materials_diffuse_transmission?: GltfDiffuseTransmission;
+    KHR_materials_volume?: GltfVolume;
+  };
   normalTexture?: { index: number; texCoord?: number; scale?: number };
   /** `strength` is a mix from 1, not a multiply: 0 means unoccluded. */
   occlusionTexture?: { index: number; texCoord?: number; strength?: number };
@@ -640,6 +661,8 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
    * A separate occlusion image is dropped rather than loaded into a second unit. One map, one
    * unit, and `textureUnitBudget.test.ts` says the next unit belongs to emissive.
    */
+  const glass = glassOf(material, modulated ? undefined : roughness);
+
   const occlusion = material?.occlusionTexture;
   const occlusionStrength =
     modulated && occlusion !== undefined && occlusion.index === ormMap
@@ -662,7 +685,7 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
      * cannot say the material blends, and a leaf whose shape is all in its texture's alpha drew as a
      * solid card. So it is said.
      */
-    blend: blends,
+    blend: blends || glass.transmission > 0,
     /* Seen from both faces: a curtain, a leaf card. The specification's default is one face. */
     doubleSided: material?.doubleSided === true,
     /* Only in MASK mode: the specification says `alphaCutoff` has no meaning in the other two. */
@@ -678,7 +701,47 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
     metallicScale: modulated ? (pbr?.metallicFactor ?? 1) : 1,
     occlusionStrength,
     albedo: pbr?.baseColorTexture?.index ?? -1,
+    transmission: glass.transmission,
+    frost: glass.frost,
+    tint: glass.tint,
   };
+}
+
+const unit = (value: number | undefined, fallback: number): number =>
+  Math.min(1, Math.max(0, value ?? fallback));
+
+/**
+ * What a material's extensions say about letting light through, as this engine's glass.
+ *
+ * **Rough glass is frosted glass.** `KHR_materials_transmission` says its roughness blurs what is
+ * seen through the surface, and that blur is exactly what `frost` is, so a transmissive material's
+ * roughness raises its frost and a diffusely transmitting share raises it too — whichever says
+ * more. Only transmission makes a material glass: a surface stating diffuse transmission alone is a
+ * leaf or a sheet of paper, which this engine's glass would draw see-through and let every shadow
+ * pass, so it stays the opaque surface it was. What that gives up is a paper shade stated by that
+ * extension alone, which arrives opaque; a per-material override is the door for it.
+ *
+ * `roughness` is `undefined` where a map carries the roughness per texel: the factor then only
+ * scales the map, so it says nothing about how rough the glass is, and frost comes from the
+ * diffuse share alone rather than from a number the file did not state.
+ */
+function glassOf(
+  material: GltfMaterial | undefined,
+  roughness: number | undefined,
+): { transmission: number; frost: number; tint: [number, number, number] } {
+  const ext = material?.extensions;
+  const transmission = unit(ext?.KHR_materials_transmission?.transmissionFactor, 0);
+  if (transmission <= 0) return { transmission: 0, frost: 0, tint: [1, 1, 1] };
+  const diffuse = ext?.KHR_materials_diffuse_transmission;
+  const frost = Math.max(unit(diffuse?.diffuseTransmissionFactor, 0), unit(roughness, 0));
+  const colour =
+    diffuse?.diffuseTransmissionColorFactor ?? ext?.KHR_materials_volume?.attenuationColor;
+  const tint: [number, number, number] = [
+    unit(colour?.[0], 1),
+    unit(colour?.[1], 1),
+    unit(colour?.[2], 1),
+  ];
+  return { transmission, frost, tint };
 }
 
 /** What a caller can tell the reader about what it is going to do with the result. */

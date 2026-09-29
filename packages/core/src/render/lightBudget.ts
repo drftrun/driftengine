@@ -38,13 +38,14 @@ export const MAX_POINT_LIGHTS = 16;
 export const LIVE_POINT_SHADOW_MAPS = 2;
 
 /**
- * Texture units the directional cascade binds: static, its depth peel, and dynamic.
+ * Texture units the sun's shadow binds: one, for its static, moving and peeled layers.
  *
- * Named because the shading pass's total unit count has to be compared against what a
- * device offers, and a budget assembled from three literals scattered across two files
- * is a budget nobody can check. See the guard in `Renderer`'s constructor.
+ * **It was three**, a `sampler2D` per map, until 4.5.0 folded them into one `sampler2DArray`
+ * (`shadowMap.ts`) the way the lamps' twelve cubemaps became one — which is where the two tints
+ * glass casts with found their units. Named because the shading pass's total has to be compared
+ * against what a device offers; see the guard in `Renderer`'s constructor.
  */
-export const DIRECTIONAL_SHADOW_UNITS = 3;
+export const DIRECTIONAL_SHADOW_UNITS = 1;
 
 /**
  * Texture units every point light's shadow binds: one, for all of them.
@@ -229,6 +230,19 @@ export const REFRACT_SCENE_TEXTURE_UNIT = COOKIE_ATLAS_TEXTURE_UNIT + 1;
  */
 export const DRIFT_LIGHT_INDEX_TEXTURE_UNIT = REFRACT_SCENE_TEXTURE_UNIT + 1;
 export const DRIFT_LIGHT_ATLAS_TEXTURE_UNIT = DRIFT_LIGHT_INDEX_TEXTURE_UNIT + 1;
+
+/**
+ * What the sun keeps through glass (`sunGlassTint.ts`), the lit program's fourteenth fragment
+ * sampler: the unit the sun's three maps gave back when they became one array.
+ */
+export const SUN_GLASS_TINT_TEXTURE_UNIT = DRIFT_LIGHT_ATLAS_TEXTURE_UNIT + 1;
+
+/**
+ * What each lamp keeps through glass (`pointGlassTint.ts`), the lit program's fifteenth fragment
+ * sampler and the last one that leaves a sixteenth spare. Unit sixteen of the combined pool, which
+ * WebGL2 guarantees thirty-two of; what a stage may declare is the sixteen, and this is fifteen.
+ */
+export const POINT_GLASS_TINT_TEXTURE_UNIT = SUN_GLASS_TINT_TEXTURE_UNIT + 1;
 
 /**
  * A cookie's tile, in texels a side.

@@ -13,6 +13,9 @@ import {
   glShadowDepthFunc,
 } from '../../depthConvention.ts';
 import type { FrameView } from '../../frameView.ts';
+import type { Mover } from '../../recon/mover.ts';
+import { resolveGlass } from '../../glass.ts';
+import type { GlassOptions, ResolvedGlass } from '../../glass.ts';
 import type { ClipControlExtension } from '../../depthConvention.ts';
 import type { ReadonlyMat4 } from 'gl-matrix';
 import type { Camera } from '../../camera.ts';
@@ -148,12 +151,16 @@ import {
   DEPTH_SKINNED_VERT,
   DEPTH_VERT,
 } from '../../shaders/depth.ts';
-import { PointShadowArray } from '../../pointShadowArray.ts';
-import { ShadowMap } from '../../shadowMap.ts';
+import { OCTAHEDRAL_EDGE, PointShadowArray, strideLayers } from '../../pointShadowArray.ts';
+import { SunShadowArray, type SunShadowLayer } from '../../shadowMap.ts';
 import { POINT_SHADOW_SAMPLER, PointShadowSystem } from '../../pointShadowSystem.ts';
 import type { ShadowLight } from '../../pointShadowSystem.ts';
+import { castsDepth, glassOf } from '../../shadowCasters.ts';
+import { GlassCasterList, type GlassReplaySink } from '../../glassCasters.ts';
+import { SunGlassTint } from '../../sunGlassTint.ts';
+import { GlassTintPrograms, type GlassTintProgram } from './glassTintPrograms.ts';
 import type { SceneCasterMaterial, ShadowCasterSink, ShadowCasters } from '../../shadowCasters.ts';
-import { FACE_COUNT, PointShadowMap } from '../../pointShadowMap.ts';
+import { FACE_COUNT, PointShadowMap, type PointGlassDraw } from '../../pointShadowMap.ts';
 import { createResolvedPointShadows, DEFAULT_SOURCE_RADIUS } from '../../pointShadowImage.ts';
 import {
   createBakeScratch,
@@ -162,6 +169,8 @@ import {
 } from '../../pointShadowBudget.ts';
 import {
   DIRECTIONAL_SHADOW_UNITS,
+  SUN_GLASS_TINT_TEXTURE_UNIT,
+  POINT_GLASS_TINT_TEXTURE_UNIT,
   LIVE_POINT_SHADOW_MAPS,
   MAX_POINT_LIGHTS,
   NORMAL_TEXTURE_UNIT,
@@ -781,6 +790,13 @@ export interface TranslucentMeshOptions {
    */
   readonly thicknessM?: number;
   /**
+   * Glass: the pane shows what is behind it, by how much it lets through and how little it reflects
+   * at the view angle, blurred by how frosted it is, tinted, and glowing with the lights behind it.
+   * It keeps its own lighting and highlight, which `refraction` alone replaces. Absent, or letting
+   * nothing through, is not glass. See `glass.ts`; `refraction` still bends what a pane shows.
+   */
+  readonly glass?: GlassOptions;
+  /**
    * Whether this draw writes depth. `true`, which is what it has always done, unless a caller
    * says otherwise.
    *
@@ -1114,6 +1130,8 @@ export class WebGL2Renderer implements RendererApi {
   private skinPaletteSet = false;
 
   private readonly emptyTexture2D: WebGLTexture;
+  /** One glass resolution reused by every draw, so a pane allocates nothing. See `glass.ts`. */
+  private readonly glassScratch: ResolvedGlass = { transmission: 0, frost: 0, tint: [1, 1, 1] };
   /** DriftLight's stand-ins while no field is whole: no brick anywhere, and no light. */
   private readonly emptyDriftIndex: WebGLTexture;
   private readonly emptyDriftAtlas: WebGLTexture;
@@ -1186,6 +1204,7 @@ export class WebGL2Renderer implements RendererApi {
     refraction: number;
     refractTint: Vec3 | undefined;
     thicknessM: number;
+    glass: GlassOptions | undefined;
   } = {
     lit: true,
     fog: true,
@@ -1196,6 +1215,7 @@ export class WebGL2Renderer implements RendererApi {
     refraction: 0,
     refractTint: undefined,
     thicknessM: 0,
+    glass: undefined,
   };
 
   private motionBlurScale = 1;
@@ -1324,9 +1344,8 @@ export class WebGL2Renderer implements RendererApi {
   private readonly depthInstancedCutoutUniforms: Record<string, WebGLUniformLocation>;
   private readonly scatterDepthProgram: WebGLProgram;
   private readonly scatterDepthUniforms: Record<string, WebGLUniformLocation>;
-  private readonly shadowMap: ShadowMap | null;
-  private readonly peeledShadowMap: ShadowMap | null;
-  private readonly dynamicShadowMap: ShadowMap | null;
+  /** The sun's static, moving and peeled maps, as layers of one array. See `shadowMap.ts`. */
+  private readonly sunShadows: SunShadowArray | null;
   private readonly pointShadows: PointShadowSystem<PointShadowMap> | null;
   /**
    * The layers a world's casting rectangles hold, above the point pool in the same array.
@@ -1551,7 +1570,7 @@ export class WebGL2Renderer implements RendererApi {
   /** Non-zero while the drawing buffer is pinned; see `lockDrawingBuffer`. */
   private lockedWidth = 0;
   private lockedHeight = 0;
-  private activeShadowMap: ShadowMap | null = null;
+  private activeSunLayer: SunShadowLayer | null = null;
   private reflectionPassActive = false;
   private reflectionReadyThisFrame = false;
   private reflectionAtmosphereY = 0;
@@ -1575,7 +1594,7 @@ export class WebGL2Renderer implements RendererApi {
    *
    * **Not whether the map exists.** That was the test here, on the belief that a GL texture is
    * born reading as the far plane; it is born zeroed, and a scene that built the layer and never
-   * peeled it sampled an occluder at the light. `ShadowMap` now clears itself at birth, so an
+   * peeled it sampled an occluder at the light. `SunShadowArray` clears itself at birth, so an
    * unfilled layer would read as lit either way — this is what keeps the two backends one
    * decision, and a frame that does not peel from paying a fetch per tap for nothing.
    */
@@ -1602,8 +1621,34 @@ export class WebGL2Renderer implements RendererApi {
    * Built once at construction, arrow properties closing over `this`: a sink created
    * per pass would allocate six objects per light per frame.
    */
+  /** What the sun's light keeps through glass, made the first time glass casts: `sunGlassTint.ts`. */
+  private sunGlassTint: SunGlassTint | null = null;
+  /** The five programs a pane casts its colour through, compiled the first time glass casts. */
+  private glassTintPrograms: GlassTintPrograms | null = null;
+  /** True while the glass list is replayed into the glass depth layer through `casterSink`. */
+  private drawingGlassDepth = false;
+  /** How many times a shadow array grew its glass layers: once per family, and never again. */
+  private sunGlassRebuilds = 0;
+  /** The light a tint pass is drawn for, and one pane's colour and clarity: uploaded per entry. */
+  private readonly glassLight = new Float32Array(4);
+  private readonly glassPane = new Float32Array(4);
+  /** The glass the open shadow pass was offered, kept for its own passes: `glassCasters.ts`. */
+  private readonly glassCasters = new GlassCasterList();
+  /** One resolution every glass caster is read through, so recording one allocates nothing. */
+  private readonly glassCasterScratch: ResolvedGlass = {
+    transmission: 0,
+    frost: 0,
+    tint: [1, 1, 1],
+  };
   private readonly casterSink: ShadowCasterSink = {
     mesh: (mesh, model, material) => {
+      if (!this.drawingGlassDepth && !castsDepth(material)) {
+        /* Glass: kept aside for its own two passes rather than dropped. See `glassCasters.ts`. */
+        if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
+          this.glassCasters.recordMesh(mesh, model, material, this.glassCasterScratch);
+        }
+        return;
+      }
       this.shadowDrawBudget.ask();
       const { gl } = this;
       /* A two-sided caster casts from whichever face the light sees: nothing culled. */
@@ -1639,6 +1684,12 @@ export class WebGL2Renderer implements RendererApi {
      * columns the batch's own buffer supplies.
      */
     instanced: (batch, data, material) => {
+      if (!this.drawingGlassDepth && !castsDepth(material)) {
+        if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
+          this.glassCasters.recordInstanced(batch, data, material, this.glassCasterScratch);
+        }
+        return;
+      }
       const { gl } = this;
       const gpuBatch = batch as InstancedBatch;
       const count = Math.min(data.count, gpuBatch.capacity);
@@ -1665,7 +1716,13 @@ export class WebGL2Renderer implements RendererApi {
       if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       gl.useProgram(this.depthProgram);
     },
-    skinnedMesh: (mesh, model, palette) => {
+    skinnedMesh: (mesh, model, palette, material) => {
+      if (!this.drawingGlassDepth && !castsDepth(material)) {
+        if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
+          this.glassCasters.recordSkinned(mesh, model, palette, material, this.glassCasterScratch);
+        }
+        return;
+      }
       this.shadowDrawBudget.ask();
       const { gl } = this;
       const u = this.depthSkinnedUniforms;
@@ -1748,8 +1805,59 @@ export class WebGL2Renderer implements RendererApi {
     gl.useProgram(this.depthProgram);
     gl.uniform1i(this.depthUniforms['uPeelShadowLayer'] ?? null, 0);
     gl.uniformMatrix4fv(this.depthUniforms['uLightViewProj'] ?? null, false, faceViewProj);
+    /* A face is an enumeration of its own: its glass is its own. */
+    this.glassCasters.clear();
     casters(this.casterSink);
+    /*
+     * The first face to offer glass interleaves the array, before its opaque depth is resolved:
+     * `PointShadowArray.growForGlass`. Nothing baked before this saw glass, so nothing re-bakes.
+     */
+    if (this.glassCasters.count > 0 && this.quality.glassShadows !== 'off') {
+      const tintEdge =
+        this.quality.glassShadows === 'half' ? OCTAHEDRAL_EDGE >> 1 : OCTAHEDRAL_EDGE;
+      this.pointShadowArray?.growForGlass(gl, tintEdge);
+    }
   };
+
+  /**
+   * A lamp's glass, after each face's opaque depth: `PointShadowMap.bake` asks and binds, this
+   * draws, through the same sinks the sun's glass takes and in the face's own matrix.
+   */
+  private readonly pointGlassDraw: PointGlassDraw = {
+    offered: () => this.glassCasters.count > 0,
+    draw: (pass, x, y, z) => {
+      const { gl } = this;
+      if (pass === 'depth') {
+        /* Nothing on the unit the depth programs declare a previous map on: see `flushSunGlass`. */
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
+        this.activeDepthPeel = false;
+        gl.useProgram(this.depthProgram);
+        gl.uniform1i(this.depthUniforms['uPeelShadowLayer'] ?? null, 0);
+        gl.uniformMatrix4fv(
+          this.depthUniforms['uLightViewProj'] ?? null,
+          false,
+          this.activeDepthViewProj ?? IDENTITY_MAT4,
+        );
+        this.drawingGlassDepth = true;
+        this.glassCasters.replay(this.glassDepthSink);
+        this.drawingGlassDepth = false;
+        return;
+      }
+      this.glassTintPrograms ??= new GlassTintPrograms(gl);
+      /* A place, w 1: the tint takes each pane's angle to the lamp from its own position. */
+      this.glassLight[0] = x;
+      this.glassLight[1] = y;
+      this.glassLight[2] = z;
+      this.glassLight[3] = 1;
+      this.glassCasters.replay(this.glassTintSink);
+    },
+  };
+
+  /** The glass hook a bake is handed: none at all when glass shadows are off. */
+  private get pointGlass(): PointGlassDraw | null {
+    return this.quality.glassShadows === 'off' ? null : this.pointGlassDraw;
+  }
 
   /**
    * Viewport in CSS pixels rather than device pixels.
@@ -2716,20 +2824,18 @@ export class WebGL2Renderer implements RendererApi {
       gl.uniform1i(uniforms['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
     }
     gl.useProgram(null);
-    this.shadowMap = this.quality.directionalShadows
-      ? new ShadowMap(gl, this.quality.directionalShadowMapSize)
-      : null;
-    // A second static depth layer preserves both occluders where two world
-    // shadows overlap. It is depth-peeled from the first map below.
-    this.peeledShadowMap =
-      this.quality.directionalShadows && this.quality.directionalShadowDepthLayers > 1
-        ? new ShadowMap(gl, this.quality.directionalShadowMapSize)
-        : null;
-    // Movers get an independent layer. It preserves distance fading when a
-    // moving and a static caster overlap: their transmissions multiply rather
-    // than one depth replacing the other.
-    this.dynamicShadowMap = this.quality.directionalShadows
-      ? new ShadowMap(gl, this.quality.directionalShadowMapSize)
+    /*
+     * The static world, its movers and — where more than one static depth layer is asked for —
+     * the peel, as layers of one array. Movers get a layer of their own so a moving and a static
+     * caster that overlap keep both distance fades: their transmissions multiply rather than one
+     * depth replacing the other. The peel keeps the second static occluder the same way.
+     */
+    this.sunShadows = this.quality.directionalShadows
+      ? new SunShadowArray(
+          gl,
+          this.quality.directionalShadowMapSize,
+          this.quality.directionalShadowDepthLayers > 1,
+        )
       : null;
     // Static maps are allocated once the world reports its light count. No
     // cubemap resources exist at all when the quality profile disables them.
@@ -2921,9 +3027,9 @@ export class WebGL2Renderer implements RendererApi {
        * every one of them, per renderer, for as long as it lived; `renderer.test.ts` counts them.
        */
       this.sceneTarget?.dispose();
-      this.shadowMap?.dispose(gl);
-      this.peeledShadowMap?.dispose(gl);
-      this.dynamicShadowMap?.dispose(gl);
+      this.sunShadows?.dispose(gl);
+      this.sunGlassTint?.dispose(gl);
+      this.glassTintPrograms?.dispose(gl);
       this.planarReflection?.dispose(gl);
       this.pointShadows?.dispose();
       gl.deleteVertexArray(this.panelVao);
@@ -3606,8 +3712,10 @@ export class WebGL2Renderer implements RendererApi {
     const lit = options.lit ?? true;
     const fog = options.fog ?? true;
     const toneMapped = options.toneMapped ?? true;
-    /* An instanced draw does not refract. See `materialChanges.ts`. */
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting: false });
+    /* A blended batch shows what is behind it — refraction or glass — as a single draw does, and
+       counts a material of its own for it by the rule both backends share (`materialChanges.ts`). */
+    const refracting = blend && this.bindSeeThrough(u, options);
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
     if (own) this.materials.dirty();
     this.takeMaterial();
     const depthWrite = options.depthWrite ?? true;
@@ -3627,20 +3735,9 @@ export class WebGL2Renderer implements RendererApi {
      * **A null snapshot leaves the strength at zero**, so the draw shades as an ordinary
      * translucent one rather than sampling a black texture and painting the pane the colour of a
      * hole. That is the defined state the two-backends rule asks for instead of a silent no-op.
+     * The copy is bound above, before the material is counted, because whether it was taken is
+     * part of what the count asks.
      */
-    const refraction = options.refraction ?? 0;
-    let refracting = false;
-    if (refraction > 0) {
-      const snapshot = this.sceneTarget?.snapshotColor() ?? null;
-      if (snapshot !== null) {
-        refracting = true;
-        gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
-        gl.bindTexture(gl.TEXTURE_2D, snapshot);
-        gl.uniform1f(u['uRefractStrength'] ?? null, refraction);
-        gl.uniform3fv(u['uRefractTint'] ?? null, options.refractTint ?? WHITE_TINT);
-        gl.uniform1f(u['uRefractThickness'] ?? null, options.thicknessM ?? 0);
-      }
-    }
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
     if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 0);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.gradeCode(), 1));
@@ -3658,7 +3755,11 @@ export class WebGL2Renderer implements RendererApi {
       gl.polygonOffset(offset.slope, offset.units);
     }
 
+    /* Both sides of a double-sided material, as every mesh path does and WebGPU's pipeline does
+       for both: without it a batch's far faces were culled here alone. */
+    if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     mesh.drawInstances(gl, count);
+    if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
 
     if (layer > 0) {
       gl.polygonOffset(0, 0);
@@ -3673,16 +3774,59 @@ export class WebGL2Renderer implements RendererApi {
     if (opacity < 1) gl.uniform1f(u['uOpacity'] ?? null, 1);
     /* The binding is released with the uniform, which is the 2026-08-27 rule: a WebGL2 binding
        outlives its frame, so a snapshot left on unit 14 is held against the next frame's copy. */
-    if (refracting) {
-      gl.uniform1f(u['uRefractStrength'] ?? null, 0);
-      gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
-      gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
-    }
+    if (refracting) this.unbindSeeThrough(u);
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
     if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 1);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
     if (own) this.materials.dirty();
     this.useFlatProgram();
+  }
+
+  /**
+   * Bind what a translucent draw shows through it: the frame's copy, refraction's bend and absorption,
+   * and glass. Returns whether the copy is bound, and so whether `unbindSeeThrough` owes it back.
+   *
+   * **A glass draw takes the copy even when it does not bend**, since a pane shows what is behind it
+   * either way, and asks for the copy's mip chain, which a frosted pane reads blurred. A null copy
+   * leaves both off, so the pane shades as ordinary translucency rather than sampling black.
+   *
+   * **Refused inside a probe's face or a mirror**, as WebGPU's `takeRefractSnapshot` refuses: the
+   * copy is of the frame drawn to the screen, so a pane there would show the wrong picture, and
+   * taking it mid-bake is how a probe's next face came to be attached to the scene's framebuffer.
+   */
+  private bindSeeThrough(
+    u: Record<string, WebGLUniformLocation>,
+    options: TranslucentMeshOptions,
+  ): boolean {
+    const { gl } = this;
+    const refraction = options.refraction ?? 0;
+    const glassy = resolveGlass(options.glass, this.glassScratch);
+    if (refraction <= 0 && !glassy) return false;
+    if (this.probePassActive || this.reflectionPassActive) return false;
+    const snapshot = this.sceneTarget?.snapshotColor(false, glassy) ?? null;
+    if (snapshot === null) return false;
+    gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, snapshot);
+    const glass = this.glassScratch;
+    /* Strength, path thickness, transmission, frost: one vector, for the budget the shader states. */
+    gl.uniform4f(
+      u['uSeeThrough'] ?? null,
+      Math.max(refraction, 0),
+      options.thicknessM ?? 0,
+      glass.transmission,
+      glass.frost,
+    );
+    gl.uniform3fv(u['uRefractTint'] ?? null, options.refractTint ?? WHITE_TINT);
+    gl.uniform3fv(u['uGlassTint'] ?? null, glass.tint);
+    return true;
+  }
+
+  /** Put back what `bindSeeThrough` bound: the binding outlives its frame (the 2026-08-27 rule). */
+  private unbindSeeThrough(u: Record<string, WebGLUniformLocation>): void {
+    const { gl } = this;
+    gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
+    gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
   }
 
   disposeMesh(mesh: Mesh): void {
@@ -4353,6 +4497,13 @@ export class WebGL2Renderer implements RendererApi {
      */
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.pointShadowArray?.texture ?? this.emptyTexture2DArray);
     gl.uniform1i(uniforms[POINT_SHADOW_SAMPLER] ?? null, firstUnit);
+    /* What the lamps keep through glass: the one-texel stand-in, read as none, until glass casts. */
+    gl.activeTexture(gl.TEXTURE0 + POINT_GLASS_TINT_TEXTURE_UNIT);
+    gl.bindTexture(
+      gl.TEXTURE_2D_ARRAY,
+      this.pointShadowArray?.tintTexture ?? this.emptyTexture2DArray,
+    );
+    gl.uniform1i(uniforms['uPointGlassTints'] ?? null, POINT_GLASS_TINT_TEXTURE_UNIT);
 
     gl.uniform1iv(uniforms['uPointShadowLayer[0]'] ?? null, resolved.layers);
     /* Origin and far plane in one row; see `uPointShadowProjection` in the preamble. */
@@ -4726,21 +4877,17 @@ export class WebGL2Renderer implements RendererApi {
     lightViewProj: ReadonlyMat4,
     layer: 'static' | 'static-peel' | 'dynamic' = 'static',
   ): void {
-    const shadowMap =
-      layer === 'static'
-        ? this.shadowMap
-        : layer === 'static-peel'
-          ? this.peeledShadowMap
-          : this.dynamicShadowMap;
-    if (shadowMap === null) {
+    const sun = this.sunShadows;
+    if (sun === null || (layer === 'static-peel' && sun.layers < 3)) {
       this.shadowPassActive = false;
-      this.activeShadowMap = null;
+      this.activeSunLayer = null;
       return;
     }
     const { gl } = this;
     this.gpuTimer.begin('shadows');
     this.shadowPassActive = true;
-    this.activeShadowMap = shadowMap;
+    this.activeSunLayer = layer;
+    this.glassCasters.clear();
     /* The static layer opens first, so a frame's peel counts from here. See `peelFilled`. */
     if (layer === 'static') this.peelFilled = false;
     /*
@@ -4767,16 +4914,16 @@ export class WebGL2Renderer implements RendererApi {
     // The previous mesh pass left all directional maps bound for sampling.
     // A texture cannot be sampled while it is attached to the active depth
     // target, even when the shader branch would skip that sample.
-    const targetUnit = layer === 'static' ? 0 : layer === 'static-peel' ? 1 : 2;
-    gl.activeTexture(gl.TEXTURE0 + targetUnit);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    shadowMap.begin(gl);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
+    sun.begin(gl, layer);
     gl.useProgram(this.depthProgram);
     const peel = layer === 'static-peel';
     gl.uniform1i(this.depthUniforms['uPeelShadowLayer'] ?? null, peel ? 1 : 0);
     if (peel) {
+      /* The static layer, read while the peel is drawn aside: see `SunShadowArray`. */
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.shadowMap?.texture ?? null);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, sun.texture);
       gl.uniform1i(this.depthUniforms['uPreviousShadowMap'] ?? null, 0);
     }
     /* The corrected one, matching `activeDepthViewProj` above: a pass must render its map with the
@@ -4888,18 +5035,165 @@ export class WebGL2Renderer implements RendererApi {
     casters(this.casterSink);
   }
 
+  /**
+   * Draw the pass's glass twice: where the nearest pane is, and what the panes let through.
+   *
+   * After the opaque casters, in the pass's own light matrix. A layer that has held glass is
+   * redrawn even when this pass offered none, so glass that has gone takes its colour with it. The
+   * first glass grows the array (`SunShadowArray.growForGlass`) and makes the tint target.
+   */
+  private flushSunGlass(which: 'static' | 'dynamic'): void {
+    const sun = this.sunShadows;
+    const list = this.glassCasters;
+    if (sun === null || this.quality.glassShadows === 'off') return;
+    if (list.count === 0 && !sun.hasGlass) return;
+    const { gl } = this;
+    if (list.count > 0 && sun.growForGlass(gl)) this.sunGlassRebuilds++;
+
+    /* Where the nearest pane is: the depth programs, through the sink every opaque caster took. */
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
+    sun.beginGlass(gl, which);
+    this.activeDepthPeel = false;
+    gl.useProgram(this.depthProgram);
+    gl.uniform1i(this.depthUniforms['uPeelShadowLayer'] ?? null, 0);
+    gl.uniformMatrix4fv(
+      this.depthUniforms['uLightViewProj'] ?? null,
+      false,
+      this.activeDepthViewProj ?? IDENTITY_MAT4,
+    );
+    this.drawingGlassDepth = true;
+    list.replay(this.glassDepthSink);
+    this.drawingGlassDepth = false;
+    sun.end(gl);
+
+    /* What the panes let through, every one on a ray, multiplied. */
+    this.glassTintPrograms ??= new GlassTintPrograms(gl);
+    const size = this.quality.glassShadows === 'half' ? Math.max(1, sun.size >> 1) : sun.size;
+    const tint = (this.sunGlassTint ??= new SunGlassTint(gl, size));
+    /*
+     * The direction the light travels, off the light matrix's depth row: an orthographic
+     * projection's depth grows along it. The sign is immaterial — the tint takes the cosine
+     * absolutely — and w 0 says it is a direction rather than a place.
+     */
+    const m = this.activeDepthViewProj ?? IDENTITY_MAT4;
+    const length = Math.hypot(m[2] as number, m[6] as number, m[10] as number) || 1;
+    this.glassLight[0] = (m[2] as number) / length;
+    this.glassLight[1] = (m[6] as number) / length;
+    this.glassLight[2] = (m[10] as number) / length;
+    this.glassLight[3] = 0;
+    tint.begin(gl, which === 'static' ? 0 : 1);
+    list.replay(this.glassTintSink);
+    tint.end(gl);
+    gl.useProgram(this.depthProgram);
+  }
+
+  /** The glass list into the glass depth layer: `casterSink` itself, with glass let through. */
+  private readonly glassDepthSink: GlassReplaySink = {
+    mesh: (mesh, model, material) => this.casterSink.mesh(mesh, model, material),
+    instanced: (batch, data, material) => this.casterSink.instanced?.(batch, data, material),
+    skinnedMesh: (mesh, model, palette, material) =>
+      this.casterSink.skinnedMesh(mesh, model, palette, material),
+  };
+
+  /** One pane's tint uniforms, and its cutout where it has one. */
+  private bindGlassTint(
+    program: GlassTintProgram,
+    glass: ResolvedGlass,
+    cutout: CutoutCaster<SurfaceTextureHandle> | null,
+  ): void {
+    const { gl } = this;
+    const u = program.uniforms;
+    gl.useProgram(program.program);
+    gl.uniformMatrix4fv(
+      u['uLightViewProj'] ?? null,
+      false,
+      this.activeDepthViewProj ?? IDENTITY_MAT4,
+    );
+    this.uploadWind(u, this.frameWind);
+    this.glassPane[0] = glass.transmission * glass.tint[0];
+    this.glassPane[1] = glass.transmission * glass.tint[1];
+    this.glassPane[2] = glass.transmission * glass.tint[2];
+    this.glassPane[3] = 1 - glass.frost;
+    gl.uniform4fv(u['uGlassPane'] ?? null, this.glassPane);
+    gl.uniform4fv(u['uGlassLight'] ?? null, this.glassLight);
+    if (cutout !== null) {
+      gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
+      gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
+      (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
+      gl.uniform1i(u['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
+    }
+  }
+
+  /**
+   * The glass list into the tint layer, through the tint programs, **culling nothing**: a light
+   * crosses a pane whichever way the pane faces, and a closed glass object has two surfaces on a
+   * ray, so every one counts. What that asks of a model is that a pane be one surface — two-sided
+   * glass says so with `doubleSided`, and a second copy of its triangles is a second pane.
+   */
+  private readonly glassTintSink: GlassReplaySink = {
+    mesh: (mesh, model, material, glass) => {
+      const programs = this.glassTintPrograms;
+      if (programs === null) return;
+      const { gl } = this;
+      const cutout = cutoutOf(material);
+      const program = cutout !== null ? programs.cutout : programs.rigid;
+      this.bindGlassTint(program, glass, cutout);
+      gl.uniformMatrix4fv(program.uniforms['uModel'] ?? null, false, model);
+      gl.disable(gl.CULL_FACE);
+      (mesh as Mesh).draw(gl);
+      if (this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
+      if (cutout !== null) this.restoreSurfaceTextureUnit();
+    },
+    instanced: (batch, data, material, glass) => {
+      const programs = this.glassTintPrograms;
+      if (programs === null) return;
+      const { gl } = this;
+      const gpuBatch = batch as InstancedBatch;
+      const count = Math.min(data.count, gpuBatch.capacity);
+      if (count === 0) return;
+      const cutout = cutoutOf(material);
+      this.bindGlassTint(
+        cutout !== null ? programs.instancedCutout : programs.instanced,
+        glass,
+        cutout,
+      );
+      gl.disable(gl.CULL_FACE);
+      gpuBatch.mesh.drawInstances(gl, count);
+      if (this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
+      if (cutout !== null) this.restoreSurfaceTextureUnit();
+    },
+    skinnedMesh: (mesh, model, palette, _material, glass) => {
+      const programs = this.glassTintPrograms;
+      if (programs === null) return;
+      const { gl } = this;
+      const program = programs.skinned;
+      this.bindGlassTint(program, glass, null);
+      gl.uniformMatrix4fv(program.uniforms['uModel'] ?? null, false, model);
+      this.skinPalette.update(gl, palette);
+      this.skinPalette.bind(gl, SKIN_PALETTE_TEXTURE_UNIT);
+      gl.uniform1i(program.uniforms['uJointPalette'] ?? null, SKIN_PALETTE_TEXTURE_UNIT);
+      gl.disable(gl.CULL_FACE);
+      (mesh as Mesh).draw(gl);
+      if (this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
+    },
+  };
+
   endShadowPass(): void {
     if (this.contextLost) return;
-    const shadowMap = this.activeShadowMap;
-    if (!this.shadowPassActive || shadowMap === null) return;
-    shadowMap.end(this.gl);
-    if (shadowMap === this.peeledShadowMap) this.peelFilled = true;
+    const sun = this.sunShadows;
+    const layer = this.activeSunLayer;
+    if (!this.shadowPassActive || sun === null || layer === null) return;
+    sun.end(this.gl);
+    if (layer === 'static-peel') this.peelFilled = true;
+    /* The peel keeps no glass: its layer is the second opaque occluder and nothing else. */
+    else this.flushSunGlass(layer === 'dynamic' ? 'dynamic' : 'static');
     /* Back to the frame's sense; see `beginShadowPass` for why it left it. */
     this.gl.depthFunc(glDepthFuncEqual(this.gl));
     this.gl.clearDepth(this.depthClear);
     this.gpuTimer.end();
     this.shadowPassActive = false;
-    this.activeShadowMap = null;
+    this.activeSunLayer = null;
     // Restore the drawing-buffer viewport the shadow pass overrode.
     this.restoreViewport();
   }
@@ -4938,6 +5232,8 @@ export class WebGL2Renderer implements RendererApi {
       directionalShadows: this.quality.directionalShadows,
       environmentProbe: this.probeCapture !== null,
       nightEmissive: this.quality.nightEmissive,
+      /* Off compiles none of the glass lookup: see `FlatShaderOptions.glassShadows`. */
+      glassShadows: this.quality.glassShadows !== 'off',
     };
     const build = (budget: LightBudget): string =>
       flatFrag({ ...variant, maxLights: budget.maxLights, maxAreaLights: budget.maxAreaLights });
@@ -5254,6 +5550,8 @@ export class WebGL2Renderer implements RendererApi {
         this.bakeOne(map, light, casters as ShadowCasters, maxFaces),
     );
     this.updateAreaShadows(areaLights, frameDt, staticCasters, dynamicCasters);
+    /* The chain frost reads, once for the round, for the lights whose glass it drew or cleared. */
+    this.pointShadowArray.finishTints(this.gl);
     this.restoreViewport();
   }
 
@@ -5314,6 +5612,10 @@ export class WebGL2Renderer implements RendererApi {
      * reason: it already holds everything it needs.
      */
     set.resolve(areaLights, this.resolvedAreaShadows);
+    /* As the array stores them: 2L once glass has interleaved it. See `strideLayers`. */
+    const stride = this.pointShadowArray?.stride ?? 1;
+    strideLayers(this.resolvedAreaShadows.layer, stride);
+    strideLayers(this.resolvedAreaShadows.liveLayer, stride);
   }
 
   /**
@@ -5378,6 +5680,7 @@ export class WebGL2Renderer implements RendererApi {
         near,
         DEFAULT_SOURCE_RADIUS,
         maxFaces,
+        this.pointGlass,
       ),
     );
   }
@@ -5401,6 +5704,7 @@ export class WebGL2Renderer implements RendererApi {
         light.shadowNear,
         light.sourceRadius,
         maxFaces,
+        this.pointGlass,
       ),
     );
   }
@@ -5635,6 +5939,10 @@ export class WebGL2Renderer implements RendererApi {
    *
    * What it gives up is one frame of history: the frame after a cut has no blur and no temporal
    * blend, as the first frame of a session has none. Nothing else is reset.
+   *
+   * **A reconstructing renderer depends on it**: its history is the last shot's, and without this
+   * call a cut blends that shot into the first frames of the next. Nothing detects a cut on the
+   * caller's behalf, deliberately — a fast pan and a cut look alike from here.
    */
   cameraCut(): void {
     this.hasPreviousView = false;
@@ -6425,7 +6733,9 @@ export class WebGL2Renderer implements RendererApi {
        * flat paint with the effect on. The opaque frame is finished here, which is what a pane
        * should show; the latch then serves every pane in the replay. Only when something refracts.
        */
-      if (this.translucentQueue.refracts) this.sceneTarget?.snapshotColor();
+      if (this.translucentQueue.refracts) {
+        this.sceneTarget?.snapshotColor(false, this.translucentQueue.glassy);
+      }
       this.oit.accumulateOit(this.canvas.width, this.canvas.height, oitDepth, (weighted) => {
         this.oitReplaying = true;
         this.useFlatProgram();
@@ -6442,6 +6752,7 @@ export class WebGL2Renderer implements RendererApi {
           options.refraction = draw.refraction;
           options.refractTint = draw.refractTint as unknown as Vec3 | undefined;
           options.thicknessM = draw.thicknessM;
+          options.glass = draw.glass ?? undefined;
           this.drawTranslucentMesh(draw.mesh as Mesh, draw.model, draw.opacity, options);
         });
         /* Back to zero for every other draw in the frame, exactly as `uOpacity` and `uTint` are. */
@@ -6504,9 +6815,7 @@ export class WebGL2Renderer implements RendererApi {
             /* The placeholder rather than null where a map is merely absent, for the reason
                `emptyTexture.ts` gives. It is black, which as a depth is an occluder at the light,
                so it is safe only because `sunShadow` is 0 whenever these maps do not exist. */
-            staticShadowMap: this.shadowMap?.texture ?? this.emptyTexture2D,
-            peeledShadowMap: this.peeledShadowMap?.texture ?? this.emptyTexture2D,
-            dynamicShadowMap: this.dynamicShadowMap?.texture ?? this.emptyTexture2D,
+            sunShadows: this.sunShadows?.texture ?? this.emptyTexture2DArray,
             peeledEnabled: this.peelFilled,
           },
         );
@@ -6853,9 +7162,11 @@ export class WebGL2Renderer implements RendererApi {
     gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
     gl.uniform1i(u['uRefractScene'] ?? null, REFRACT_SCENE_TEXTURE_UNIT);
-    gl.uniform1f(u['uRefractStrength'] ?? null, 0);
+    /* Neither refracting nor glass, which is every draw that does not say otherwise. See
+       `bindSeeThrough` for the four numbers in the one vector. */
+    gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
     gl.uniform3fv(u['uRefractTint'] ?? null, WHITE_TINT);
-    gl.uniform1f(u['uRefractThickness'] ?? null, 0);
+    gl.uniform3fv(u['uGlassTint'] ?? null, WHITE_TINT);
     gl.uniform3fv(u['uDirectionalDir'] ?? null, env.directionalDir);
     gl.uniform3fv(u['uDirectionalColor'] ?? null, env.directionalColor);
     gl.uniform3fv(u['uAmbient'] ?? null, env.ambient);
@@ -6957,7 +7268,7 @@ export class WebGL2Renderer implements RendererApi {
      * its own copy of this lookup; the two backends have to project the same way.
      */
     gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, env.lightViewProj);
-    gl.uniform1f(u['uShadowStrength'] ?? null, this.shadowMap === null ? 0 : env.shadowStrength);
+    gl.uniform1f(u['uShadowStrength'] ?? null, this.sunShadows === null ? 0 : env.shadowStrength);
     gl.uniform1f(u['uShadowMapSize'] ?? null, this.quality.directionalShadowMapSize);
     gl.uniform1f(u['uShadowDepthSpan'] ?? null, env.shadowDepthSpan);
     gl.uniform1f(u['uShadowMaxDistance'] ?? null, this.quality.directionalShadowMaxDistance);
@@ -6984,16 +7295,12 @@ export class WebGL2Renderer implements RendererApi {
      */
     if (this.quality.directionalShadows) {
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.shadowMap?.texture ?? this.emptyTexture2D);
-      gl.uniform1i(u['uStaticShadowMap'] ?? null, 0);
-
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.peeledShadowMap?.texture ?? this.emptyTexture2D);
-      gl.uniform1i(u['uPeeledShadowMap'] ?? null, 1);
-
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, this.dynamicShadowMap?.texture ?? this.emptyTexture2D);
-      gl.uniform1i(u['uDynamicShadowMap'] ?? null, 2);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.sunShadows?.texture ?? this.emptyTexture2DArray);
+      gl.uniform1i(u['uSunShadows'] ?? null, 0);
+      /* What the sun keeps through glass, or the one-texel stand-in the lookup reads as none. */
+      gl.activeTexture(gl.TEXTURE0 + SUN_GLASS_TINT_TEXTURE_UNIT);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.sunGlassTint?.texture ?? this.emptyTexture2DArray);
+      gl.uniform1i(u['uSunGlassTints'] ?? null, SUN_GLASS_TINT_TEXTURE_UNIT);
     }
 
     if (this.pointShadows === null) {
@@ -7006,6 +7313,10 @@ export class WebGL2Renderer implements RendererApi {
     } else {
       /* Chosen in `pointShadowSystem.ts` and bound here; see `resolve` for the split. */
       this.pointShadows.resolve(this.resolvedPointShadows);
+      /* As the array stores them: 2L once glass has interleaved it. See `strideLayers`. */
+      const stride = this.pointShadowArray?.stride ?? 1;
+      strideLayers(this.resolvedPointShadows.layers, stride);
+      strideLayers(this.resolvedPointShadows.liveLayers, stride);
       this.bindPointShadows(u, DIRECTIONAL_SHADOW_UNITS);
       /*
        * The rectangles' layers, into the array `bindPointShadows` just put on its unit. Resolved
@@ -7223,13 +7534,14 @@ export class WebGL2Renderer implements RendererApi {
      */
     tint: Vec3 | null = null,
     /**
-     * Where the mesh was last frame, which this backend takes and ignores.
+     * Where the mesh was last frame — a `Mover` or a matrix — which this backend takes and ignores.
      *
      * Accepted rather than absent so that one scene draws through both renderers unchanged — the
      * parity rule this repository is built on. Reconstruction is WebGPU's, having no compute stage
-     * here, so there is no motion target for this to be written into.
+     * here, so there is no motion target for this to be written into, and a mover passed here is
+     * neither read nor advanced.
      */
-    _previousModel: ReadonlyMat4 | null = null,
+    _previousModel: ReadonlyMat4 | Mover | null = null,
   ): void {
     if (this.contextLost) return;
     /* Geometry that has not all arrived is not drawn. See `Mesh.complete`. */
@@ -7474,19 +7786,7 @@ export class WebGL2Renderer implements RendererApi {
      * translucent one rather than sampling a black texture and painting the pane the colour of a
      * hole. That is the defined state the two-backends rule asks for instead of a silent no-op.
      */
-    const refraction = options.refraction ?? 0;
-    let refracting = false;
-    if (refraction > 0) {
-      const snapshot = this.sceneTarget?.snapshotColor() ?? null;
-      if (snapshot !== null) {
-        refracting = true;
-        gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
-        gl.bindTexture(gl.TEXTURE_2D, snapshot);
-        gl.uniform1f(u['uRefractStrength'] ?? null, refraction);
-        gl.uniform3fv(u['uRefractTint'] ?? null, options.refractTint ?? WHITE_TINT);
-        gl.uniform1f(u['uRefractThickness'] ?? null, options.thicknessM ?? 0);
-      }
-    }
+    const refracting = this.bindSeeThrough(u, options);
     /*
      * **The blend and the depth mask belong to whoever owns the pass.** In the ordinary case that
      * is this draw; during an order-independent replay it is `OitPass`, which has set an additive
@@ -7529,6 +7829,7 @@ export class WebGL2Renderer implements RendererApi {
     if (ownsState) gl.disable(gl.BLEND);
     gl.uniform1f(u['uOpacity'] ?? null, 1);
     if (tint !== null) gl.uniform3fv(u['uTint'] ?? null, WHITE_TINT);
+    if (refracting) this.unbindSeeThrough(u);
     /* Put back for whatever is drawn next, exactly as `uOpacity` and `uTint` are — a pass
        cannot inherit a material from the draw before it. */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
@@ -7916,16 +8217,8 @@ export class WebGL2Renderer implements RendererApi {
         gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
 
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.shadowMap?.texture ?? this.emptyTexture2D);
-        gl.uniform1i(u['uStaticShadowMap'] ?? null, 0);
-
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.peeledShadowMap?.texture ?? this.emptyTexture2D);
-        gl.uniform1i(u['uPeeledShadowMap'] ?? null, 1);
-
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, this.dynamicShadowMap?.texture ?? this.emptyTexture2D);
-        gl.uniform1i(u['uDynamicShadowMap'] ?? null, 2);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.sunShadows?.texture ?? this.emptyTexture2DArray);
+        gl.uniform1i(u['uSunShadows'] ?? null, 0);
       }
     }
 

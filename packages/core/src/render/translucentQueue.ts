@@ -3,6 +3,8 @@ import type { ReadonlyMat4 } from 'gl-matrix';
 /* Type-only, and from the backend that declares it — the same import `backend/api.ts` makes,
    for the same reason: the shape belongs to the draw verb and erases at compile time. */
 import type { TranslucentMeshOptions } from './backend/webgl2/renderer.ts';
+import { resolveGlass } from './glass.ts';
+import type { ResolvedGlass } from './glass.ts';
 
 /**
  * The frame's translucent draws, held so they can be submitted more than once.
@@ -51,10 +53,14 @@ export interface TranslucentDraw {
   /** What survives one metre of the medium. Null where the draw named none; otherwise a copy. */
   refractTint: Float32Array | null;
   thicknessM: number;
+  /** Glass, resolved, or null for a draw that is not glass. See `glass.ts`. */
+  glass: ResolvedGlass | null;
 }
 
 /** A record with its storage, reused across frames. */
 interface PooledDraw extends TranslucentDraw {
+  /** Where `glass` points when set: allocated once with the record, never released. */
+  readonly glassStore: ResolvedGlass;
   /** Allocated once and pointed at by `tint` when a draw has one. */
   readonly tintStore: Float32Array;
   /** The same arrangement for the refraction tint: allocated once, never released. */
@@ -77,6 +83,8 @@ function newRecord(): PooledDraw {
     refractTint: null,
     thicknessM: 0,
     refractTintStore: new Float32Array(3),
+    glass: null,
+    glassStore: { transmission: 0, frost: 0, tint: [1, 1, 1] },
   };
 }
 
@@ -84,6 +92,7 @@ export class TranslucentQueue {
   private readonly pool: PooledDraw[] = [];
   private count = 0;
   private refracting = 0;
+  private glassing = 0;
 
   /** How many draws this frame has recorded. */
   get length(): number {
@@ -96,6 +105,11 @@ export class TranslucentQueue {
    */
   get refracts(): boolean {
     return this.refracting > 0;
+  }
+
+  /** Whether anything recorded this frame is glass, so the copy it reads needs its mip chain. */
+  get glassy(): boolean {
+    return this.glassing > 0;
   }
 
   /** How many records are pooled, which a test uses to assert a steady scene stops allocating. */
@@ -137,7 +151,11 @@ export class TranslucentQueue {
       record.tint = record.tintStore;
     }
     record.refraction = options.refraction ?? 0;
-    if (record.refraction > 0) this.refracting++;
+    /* Glass reads the copy too, whether or not it bends: see `glass.ts`. */
+    const glassy = resolveGlass(options.glass, record.glassStore);
+    record.glass = glassy ? record.glassStore : null;
+    if (glassy) this.glassing++;
+    if (record.refraction > 0 || glassy) this.refracting++;
     record.thicknessM = options.thicknessM ?? 0;
     const refractTint = options.refractTint ?? null;
     if (refractTint === null) {
@@ -168,5 +186,6 @@ export class TranslucentQueue {
   reset(): void {
     this.count = 0;
     this.refracting = 0;
+    this.glassing = 0;
   }
 }

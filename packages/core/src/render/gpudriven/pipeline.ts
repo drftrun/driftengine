@@ -132,11 +132,11 @@ export const GPU_DRIVEN_PASSES = [
   'phaseTwoCull',
   'phaseTwoDraw',
   'blendCull',
-  'blendDraw',
   'visibilityCopy',
   'bin',
   'cursorCopy',
   'shade',
+  'blendDraw',
   'blendResolve',
 ] as const;
 
@@ -230,10 +230,11 @@ function edgesFor(res: GpuDrivenResources): {
     /*
      * **It reads the depth the opaque half wrote and does not write it.** A pane behind a wall is
      * rejected at the wall; nothing here writes depth, so two panes do not hide each other and
-     * there is something left to blend.
+     * there is something left to blend. **And it reads the shaded colour**, because glass shows the
+     * opaque picture behind it — which is why it is recorded after `shade` rather than before.
      */
     blendDraw: [
-      [res.blendList, res.clusters, res.depth],
+      [res.blendList, res.clusters, res.depth, res.colour],
       [res.oitAccum, res.oitReveal],
     ],
     visibilityCopy: [[res.visibility], [res.visibilityCopy]],

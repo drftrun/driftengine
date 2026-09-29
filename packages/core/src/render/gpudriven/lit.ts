@@ -2,6 +2,7 @@
 
 import { EMISSIVE_SHADOW_SHARE, MIN_LOBE_ALPHA } from '../shaders/flat/lobes.ts';
 import { environmentWeight } from './ibl.ts';
+import { schlickFresnel, type ResolvedGlass } from '../glass.ts';
 
 /**
  * **The lit expression had no reference until 2026-09-16, and that was a gap rather than a policy.**
@@ -324,6 +325,36 @@ export function litColour(
     const glowColour = surface.emissiveColour?.[channel] ?? albedo;
     out[channel] =
       (base + (reflected - base) * weight + highlight * metal + glowColour * glow) * occlusion;
+  }
+  return out;
+}
+
+/**
+ * Glass over its own shading: what is behind it shown by how much it lets through and how little it
+ * reflects at this angle, and the light behind it glowing through by how frosted it is — the forward
+ * path's glass branch (`flat/main.ts`) and `glass.ts`'s arithmetic, for the blended raster's twin.
+ *
+ * **`cosView` is taken unsigned**, because a pane passes the same light seen from either side.
+ * `sunGlow` is the light arriving at the pane's far side from the eye, which frost scatters toward
+ * it; a clear pane shows that light's source in `seen` instead. Allocates nothing: `out` is the
+ * caller's, and may be `own`.
+ */
+export function glassShade(
+  own: readonly [number, number, number],
+  seen: readonly [number, number, number],
+  glass: ResolvedGlass,
+  cosView: number,
+  sunGlow: readonly [number, number, number],
+  out: [number, number, number],
+): [number, number, number] {
+  const t = glass.transmission;
+  const shown = t * (1 - schlickFresnel(Math.abs(cosView)));
+  const glowing = glass.frost * t;
+  for (let c = 0; c < 3; c++) {
+    const tint = glass.tint[c] as number;
+    const mine = own[c] as number;
+    out[c] =
+      mine + ((seen[c] as number) * tint - mine) * shown + (sunGlow[c] as number) * tint * glowing;
   }
   return out;
 }

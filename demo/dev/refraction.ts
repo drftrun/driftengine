@@ -40,7 +40,32 @@ const CLEAR: Vec3 = [0.02, 0.03, 0.08];
 /** How many bars the backdrop carries. Enough that a small displacement moves a measurable area. */
 const BARS = 16;
 
-type Variant = 'none' | 'off' | 'clear' | 'strong' | 'tinted' | 'face' | 'edge' | 'ramp' | 'nolane';
+type Variant =
+  | 'none'
+  | 'off'
+  | 'clear'
+  | 'strong'
+  | 'tinted'
+  | 'face'
+  | 'edge'
+  | 'ramp'
+  | 'nolane'
+  /* Glass (`TranslucentMeshOptions.glass`): clear, half-frosted and frosted panes over the bars. */
+  | 'glass-clear'
+  | 'glass-half'
+  | 'glass-frosted'
+  /* A warm light behind a frosted pane, and the same with frost 0: the glow is the difference. */
+  | 'glass-backlit'
+  | 'glass-backlit0';
+
+/** How milky each glass variant is. */
+const FROST: Partial<Record<Variant, number>> = {
+  'glass-clear': 0,
+  'glass-half': 0.5,
+  'glass-frosted': 1,
+  'glass-backlit': 1,
+  'glass-backlit0': 0,
+};
 
 /** The absorbing colour: red and blue fall, green survives, so a tinted pane reads green. */
 const GLASS: Vec3 = [0.15, 0.85, 0.25];
@@ -162,6 +187,14 @@ function pane(variant: Variant): MeshData {
    * pane that bends the scene and takes no colour out of it.
    */
   if (variant === 'nolane') return { positions, normals, colors, emissive, indices };
+  if (FROST[variant] !== undefined) {
+    /* Glass keeps its own highlight: a dark, glossy pane, so what it adds over the bars is its
+       reflection and its specular rather than a colour of its own. */
+    colors.fill(0.05);
+    const specular = new Float32Array(verts).fill(1);
+    const roughness = new Float32Array(verts).fill(0.15);
+    return { positions, normals, colors, emissive, channel, specular, roughness, indices };
+  }
   return { positions, normals, colors, emissive, channel, indices };
 }
 
@@ -193,6 +226,22 @@ async function main(): Promise<void> {
   env.ambientGround = [0.3, 0.3, 0.3];
   env.directionalColor = [0.5, 0.5, 0.5];
   env.directionalDir = [0, 0, 1];
+  /*
+   * For glass, the light is placed where the tilted pane reflects it into the camera — the
+   * reflection of the view about the pane's normal, (sin 0.35, 0, cos 0.35) — so the highlight a
+   * pane keeps is on screen to be measured rather than somewhere the camera cannot see.
+   */
+  if (FROST[variant] !== undefined) env.directionalDir = [0.644, 0, 0.764];
+  /*
+   * One lamp between the pane and the bars, 0.6 m behind the glass: it lights nothing the camera
+   * sees directly (the bars are emissive), so any change in the pane is the light coming through it.
+   */
+  if (variant === 'glass-backlit' || variant === 'glass-backlit0') {
+    env.lightCount = 1;
+    env.lightPositions.set([0, 0, -0.6]);
+    env.lightColors.set([3, 2.1, 1.2]);
+    env.lightRadii[0] = 3;
+  }
 
   const camera = new Camera();
   camera.fovYDeg = 45;
@@ -229,6 +278,10 @@ async function main(): Promise<void> {
   let blue = 0;
   let leftLum = 0;
   let rightLum = 0;
+  /* Glass: how bright the dark bars read through the pane (its own highlight and reflection lift
+     them), and the mean step between neighbouring pixels along a row (frost blurs it down). */
+  let darkLum = 0;
+  let contrast = 0;
   let digest = '';
 
   /**
@@ -277,6 +330,28 @@ async function main(): Promise<void> {
         }
       }
     }
+    let darkSum = 0;
+    let darkCount = 0;
+    let stepSum = 0;
+    let stepCount = 0;
+    for (let y = boxY; y < boxY + boxH; y++) {
+      let before = -1;
+      for (let x = boxX; x < boxX + boxW; x++) {
+        const [r, g, b] = at(x, y) as [number, number, number];
+        const l = (r + g + b) / 3;
+        if (l < 90) {
+          darkSum += l;
+          darkCount += 1;
+        }
+        if (before >= 0) {
+          stepSum += Math.abs(l - before);
+          stepCount += 1;
+        }
+        before = l;
+      }
+    }
+    darkLum = darkCount === 0 ? 0 : darkSum / darkCount;
+    contrast = stepCount === 0 ? 0 : stepSum / stepCount;
     pixels = count;
     red = count === 0 ? 0 : sumR / count;
     green = count === 0 ? 0 : sumG / count;
@@ -339,13 +414,21 @@ async function main(): Promise<void> {
         variant === 'edge' ||
         variant === 'ramp' ||
         variant === 'nolane';
-      renderer.drawTranslucentMesh(glass, model, 1, {
-        lit: false,
-        fog: false,
-        refraction: strength,
-        refractTint: absorbing ? GLASS : undefined,
-        thicknessM: absorbing ? 1.2 : 0,
-      });
+      const frost = FROST[variant];
+      if (frost !== undefined) {
+        renderer.drawTranslucentMesh(glass, model, 1, {
+          fog: false,
+          glass: { transmission: 0.9, frost, tint: [0.95, 1, 0.97] },
+        });
+      } else {
+        renderer.drawTranslucentMesh(glass, model, 1, {
+          lit: false,
+          fog: false,
+          refraction: strength,
+          refractTint: absorbing ? GLASS : undefined,
+          thicknessM: absorbing ? 1.2 : 0,
+        });
+      }
     }
     renderer.endFrame();
     measure();
@@ -378,6 +461,8 @@ async function main(): Promise<void> {
   out['__leftLum'] = leftLum;
   out['__rightLum'] = rightLum;
   out['__digest'] = digest;
+  out['__darkLum'] = darkLum;
+  out['__contrast'] = contrast;
   out['__drawn'] = true;
 }
 

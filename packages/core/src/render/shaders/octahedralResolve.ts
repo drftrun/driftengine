@@ -13,6 +13,30 @@ void main() {
 }`;
 
 /**
+ * Which cube face owns this octahedral texel, and where in that face it looks: `d`, `forward` and
+ * `faceUv`, with every texel another face owns discarded. **One text for both resolves**, depth
+ * and tint, because the tie-breaking has to agree with itself as well as with the CPU: a sliver
+ * of texels given to one face's depth and another face's colour is a tinted seam.
+ */
+const FACE_REGION = `  vec3 d = octDecode(gl_FragCoord.xy / uEdge);
+
+  /*
+   * Which face owns this texel. The tie-breaking is x, then y, then z, and it has to match the
+   * CPU's exactly or a sliver of texels along a boundary belongs to two faces or to none.
+   */
+  vec3 a = abs(d);
+  int face;
+  if (a.x >= a.y && a.x >= a.z) face = d.x >= 0.0 ? 0 : 1;
+  else if (a.y >= a.z) face = d.y >= 0.0 ? 2 : 3;
+  else face = d.z >= 0.0 ? 4 : 5;
+  if (face != uFaceIndex) discard;
+
+  /* lookAt looks down -z, so a direction inside this face has a negative z here. */
+  vec3 v = uFaceRotation * d;
+  float forward = -v.z;
+  vec2 faceUv = (v.xy / forward) * 0.5 + 0.5;`;
+
+/**
  * One cube face into its region of an octahedral map, as linear radial distance.
  *
  * **Every octahedral texel has exactly one dominant axis, so the six regions are disjoint and
@@ -46,23 +70,7 @@ uniform float uEdge;
 ${OCTAHEDRAL_GLSL}
 
 void main() {
-  vec3 d = octDecode(gl_FragCoord.xy / uEdge);
-
-  /*
-   * Which face owns this texel. The tie-breaking is x, then y, then z, and it has to match the
-   * CPU's exactly or a sliver of texels along a boundary belongs to two faces or to none.
-   */
-  vec3 a = abs(d);
-  int face;
-  if (a.x >= a.y && a.x >= a.z) face = d.x >= 0.0 ? 0 : 1;
-  else if (a.y >= a.z) face = d.y >= 0.0 ? 2 : 3;
-  else face = d.z >= 0.0 ? 4 : 5;
-  if (face != uFaceIndex) discard;
-
-  /* lookAt looks down -z, so a direction inside this face has a negative z here. */
-  vec3 v = uFaceRotation * d;
-  float forward = -v.z;
-  vec2 faceUv = (v.xy / forward) * 0.5 + 0.5;
+${FACE_REGION}
 
   /*
    * textureLod at level zero rather than plain texture. The scratch carries one storage level and
@@ -80,4 +88,29 @@ void main() {
   float faceLocalZ = (2.0 * uFar * uNear) / (uFar + uNear - ndc * (uFar - uNear));
   /* d is a unit vector, so forward is its cosine to the axis and this is the true radius. */
   gl_FragDepth = clamp((faceLocalZ / forward) / uFar, 0.0, 1.0);
+}`;
+
+/**
+ * One face of a lamp's glass tint into its region of the tint layer: the depth resolve's region,
+ * and a colour copied rather than a depth decoded.
+ *
+ * **Nearest, at level zero**, like the depth beside it: the tint's outline has to land on the
+ * glass depth's texels, and a filtered copy would smear a pane's colour a texel past its edge.
+ */
+export const OCTAHEDRAL_RESOLVE_TINT_FRAG = `#version 300 es
+precision highp float;
+
+/** The face the bake just tinted, as colour. */
+uniform highp sampler2D uFace;
+uniform mat3 uFaceRotation;
+uniform int uFaceIndex;
+uniform float uEdge;
+
+out vec4 outTint;
+
+${OCTAHEDRAL_GLSL}
+
+void main() {
+${FACE_REGION}
+  outTint = textureLod(uFace, faceUv, 0.0);
 }`;

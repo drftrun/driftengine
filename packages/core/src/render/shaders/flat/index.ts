@@ -7,6 +7,7 @@ import { preambleGlsl } from './preamble.ts';
 import { LOBES_GLSL } from './lobes.ts';
 import { POINTSHADOW_GLSL } from './pointShadow.ts';
 import { DIRECTIONALSHADOW_GLSL } from './directionalShadow.ts';
+import { glassTintGlsl } from './glassTint.ts';
 import { MORPH_GLSL } from '../morph.ts';
 import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
@@ -365,6 +366,19 @@ export interface FlatShaderOptions {
    */
   readonly nightEmissive: boolean;
   /**
+   * Whether this build reads glass in its shadows at all: `glassShadows` other than `'off'`. True
+   * when absent, which is what the generated WGSL is built with.
+   *
+   * **Not a permutation axis, and the payload is why.** Every lit permutation carries the glass
+   * lookups, and a second copy of each without them would be most of the generated file again. So
+   * it is one switch, `GLASS_SHADOWS`, that every way into the lookups branches on first: written
+   * into this source for WebGL2, and a pipeline-overridable constant on the generated WGSL, which
+   * the device compiles away as it would under `#if`. That matters because the lookups returning
+   * at their first line still cost the lit pass its registers — 0.42 ms at 720p on WebGL2 on the
+   * courtyard at night, measured, and nothing once compiled out.
+   */
+  readonly glassShadows?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -466,6 +480,9 @@ export function flatFrag(options: FlatShaderOptions): string {
        * is at depth zero, and it is still declared before `pointShadow` uses it.
        */
       OCTAHEDRAL_GLSL,
+      /* Depth zero as well: both glass lookups, sun and lamps, call it, and every permutation
+         declares its switch, which the pipelines set whether the permutation reads it or not. */
+      glassTintGlsl(options.glassShadows ?? true),
       LOBES_GLSL,
       POINTSHADOW_GLSL,
       DIRECTIONALSHADOW_GLSL,

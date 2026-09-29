@@ -10,7 +10,7 @@ import { SceneTarget } from './sceneTarget.ts';
  * them. Anything not named below comes back as a recorded no-op returning a fresh object, so
  * the constructor runs to completion and the test asserts the one thing it is about.
  */
-function recordingGl() {
+function recordingGl(overrides: Record<string, (...a: unknown[]) => unknown> = {}) {
   const calls: { name: string; args: unknown[] }[] = [];
   const constants: Record<string, number> = {
     MAX_SAMPLES: 0x8d57,
@@ -19,6 +19,8 @@ function recordingGl() {
     READ_FRAMEBUFFER: 0x8ca8,
     DRAW_FRAMEBUFFER: 0x8ca9,
     FRAMEBUFFER: 0x8d40,
+    DRAW_FRAMEBUFFER_BINDING: 0x8ca6,
+    READ_FRAMEBUFFER_BINDING: 0x8caa,
     FRAMEBUFFER_COMPLETE: 0x8cd5,
     NO_ERROR: 0,
     COLOR_BUFFER_BIT: 0x4000,
@@ -50,6 +52,7 @@ function recordingGl() {
       pname === constants.ACTIVE_UNIFORMS ? 0 : true,
     getActiveUniform: () => ({ name: '', size: 1, type: 0 }),
     getUniformLocation: () => ({}),
+    ...overrides,
   };
 
   const gl = new Proxy(
@@ -350,5 +353,40 @@ describe('the colour snapshot', () => {
 
     const blit = calls.find((c) => c.name === 'blitFramebuffer');
     expect(blit?.args[8]).toBe(0x4000);
+  });
+});
+
+/*
+ * **A snapshot is taken from inside whatever the caller is drawing into**, and that is not always the
+ * scene. A reflection probe binds its own framebuffer once and attaches each cube face to whatever is
+ * bound; a pane drawn into one face took the copy, the copy rebound the scene's framebuffer, and the
+ * next face was attached to the scene's — a colour attachment the size of a face beside a depth the
+ * size of the screen, and every draw after it refused as incomplete. The frame drew flat grey.
+ */
+describe('a snapshot inside another framebuffer', () => {
+  const DRAW_BINDING = 0x8ca6;
+  const READ_BINDING = 0x8caa;
+  const probeFramebuffer = { probe: true };
+  const bound = (pname: unknown) =>
+    pname === DRAW_BINDING || pname === READ_BINDING ? probeFramebuffer : 4;
+
+  it.each([
+    ['colour', (t: SceneTarget) => t.snapshotColor()],
+    ['depth', (t: SceneTarget) => t.snapshotDepth()],
+  ] as const)('HANDS BACK THE %s CALLER S OWN FRAMEBUFFER, not the scene s', (_name, take) => {
+    const { gl, calls } = recordingGl({ getParameter: bound });
+    const target = new SceneTarget(gl, 1);
+    target.begin(640, 480);
+    calls.length = 0;
+
+    take(target);
+
+    const blit = calls.findIndex((c) => c.name === 'blitFramebuffer');
+    expect(blit).toBeGreaterThanOrEqual(0);
+    const after = calls.slice(blit).filter((c) => c.name === 'bindFramebuffer');
+    const drawn = after.filter((c) => c.args[0] === 0x8d40 || c.args[0] === 0x8ca9).at(-1);
+    const read = after.filter((c) => c.args[0] === 0x8d40 || c.args[0] === 0x8ca8).at(-1);
+    expect(drawn?.args[1], 'drawing continues where the caller was drawing').toBe(probeFramebuffer);
+    expect(read?.args[1], 'and reading from it').toBe(probeFramebuffer);
   });
 });

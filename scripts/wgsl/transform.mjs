@@ -445,6 +445,48 @@ export function requestSamplerlessExtension(source) {
 }
 
 /**
+ * A constant the pipeline sets, written `// wgsl:override` on its declaration: a Vulkan
+ * specialisation constant, which naga emits as a WGSL `override` with the same name.
+ *
+ * **One generated string for both values of a switch.** An ordinary constant is folded into the
+ * WGSL, so a shader switched on it would be generated once per value, which is a second copy of
+ * every lit permutation in the payload. An override is set when a pipeline is built, and the
+ * device then compiles the unreached branch away as it would under `#if`, which is the whole
+ * point: code a branch never runs still costs a shader its registers. WebGL2 needs none of this —
+ * its GLSL is assembled at runtime with the value written in, and keeps the marker as a comment.
+ *
+ * Numbered in the order declared, and reported so a test can hold the renderer to the names.
+ * **Read it only as a branch's own condition.** glslang folds any expression over it into an
+ * `OpSpecConstantOp`, which naga refuses; the negation is the one somebody writes first, so it is
+ * refused here with a sentence rather than there without one.
+ * **What it gives up**: an override is a scalar, so a switch is one `bool` or number, never a
+ * struct or an array size; and `// wgsl:override` on anything but a one-line scalar `const` is
+ * left alone rather than refused, which is the same leniency the sampler marker has.
+ */
+export function overridableConstants(source) {
+  const overrides = {};
+  let id = 0;
+  const rewritten = source.replace(
+    /^(\s*)const\s+(bool|int|uint|float)\s+(\w+)\s*=\s*([^;]+);[ \t]*\/\/[ \t]*wgsl:override[^\n]*$/gm,
+    (_match, indent, type, name, value) => {
+      overrides[name] = id;
+      const line = `${indent}layout(constant_id = ${id}) const ${type} ${name} = ${value.trim()};`;
+      id += 1;
+      return line;
+    },
+  );
+  for (const name of Object.keys(overrides)) {
+    if (new RegExp(`!\\s*${name}\\b`).test(rewritten)) {
+      throw new Error(
+        `${name} is a wgsl:override constant, and glslang turns "!${name}" into an ` +
+          `OpSpecConstantOp that naga refuses without naming the line: branch on ${name} itself.`,
+      );
+    }
+  }
+  return { source: rewritten, overrides };
+}
+
+/**
  * Where each stage's bindings start, so the two stages of one pipeline cannot collide.
  *
  * **The two stages are compiled separately and both would otherwise land on binding 0.** A
@@ -476,10 +518,16 @@ export function transform(source, stage = 'fragment') {
     bases.samplers,
   );
   const fetchable = requestSamplerlessExtension(separated);
-  const defined = hoistDefines(fetchable);
+  const { source: specialised, overrides } = overridableConstants(fetchable);
+  const defined = hoistDefines(specialised);
   const { source: blocked, bindings: uniformBindings } = hoistUniformBlock(defined, bases.uniforms);
   return {
     source: mapLocations(blocked),
-    bindings: { ...uniformBindings, ...samplerBindings },
+    /* Only where a shader has one, so no other shader's generated bindings change shape. */
+    bindings: {
+      ...uniformBindings,
+      ...samplerBindings,
+      ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+    },
   };
 }

@@ -82,6 +82,8 @@ export interface StageBindings {
     >
   >;
   readonly textures: Readonly<Record<string, TextureBinding>>;
+  /** Each pipeline-overridable constant's id, by the GLSL name it was declared under. */
+  readonly overrides?: Readonly<Record<string, number>>;
 }
 
 /*
@@ -188,6 +190,20 @@ export function flatFragmentBindings(variant: FlatVariant): StageBindings {
   return found;
 }
 
+/**
+ * The lit fragment stage's constants, set from the cache: the glass switch, keyed by its **id**.
+ *
+ * Not by its name, because an override declared with `@id` answers to the id alone — WebGPU's
+ * "pipeline-overridable constant identifier string" — and naga writes one on every specialisation
+ * constant. Keyed by name, Chrome refused every lit pipeline: *Pipeline overridable constant
+ * "GLASS_SHADOWS" not found*, and the frame drew nothing.
+ */
+function flatFragmentConstants(variant: FlatVariant, cache: PipelineCache): Record<string, number> {
+  const id = flatFragmentBindings(variant).overrides?.['GLASS_SHADOWS'];
+  if (id === undefined) throw new Error(`flatPass: variant "${variant}" has no glass switch`);
+  return { [String(id)]: cache.glassShadows ? 1 : 0 };
+}
+
 /** The depth format both backends compare with. */
 /* Re-exported so the twenty passes that already import it from here do not each learn a new
    module; `depthConvention.ts` is where the decision lives and why. */
@@ -272,8 +288,11 @@ export function createFlatBindGroupLayout(
     const integer = texture.type === 'usampler2D' || texture.type === 'usampler3D';
     /* DriftLight's brick index and atlas, the lit pass's only volumes. See `driftLight.ts`. */
     const volume = texture.type === 'sampler3D' || texture.type === 'usampler3D';
+    /* Glass tints are colour, mipmapped and filtered: a frosted pane is read at a coarser level. */
+    const tint = name.endsWith('GlassTints');
     const isShadow =
-      integer || (name !== 'uEnvironment' && (name.endsWith('ShadowMap') || cube || array));
+      integer ||
+      (!tint && name !== 'uEnvironment' && (name.endsWith('ShadowMap') || cube || array));
     entries.push({
       binding: texture.texture,
       visibility: VISIBILITY_FRAGMENT,
@@ -603,6 +622,8 @@ function flatDescriptor(
         code: FLAT_FRAG_WGSL[variant] ?? '',
       }),
       entryPoint: 'main',
+      /* Every variant declares it, so every lit pipeline may set it: see `PipelineCache`. */
+      constants: flatFragmentConstants(variant, cache),
       targets: [
         oitTarget(oit) ??
           (translucent

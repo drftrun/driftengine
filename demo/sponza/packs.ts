@@ -25,8 +25,10 @@
  */
 import { DrftLoader, writePartMaterial } from '@driftengine/assets';
 import { STONE_ALBEDO, paleFloor, stoneSurface } from './stone';
+import { lanternGlass } from './glass';
 import type { DrftLight } from '@driftengine/drft';
 import type {
+  GlassOptions,
   GlobalFieldInstance,
   MeshInstances,
   RendererApi,
@@ -46,8 +48,9 @@ const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
  * it, and a pier seen edge-on at dusk wore a clear band its whole height, 12 px of 1,930, which read
  * as a gap between the pier and the gallery. The stone behind each sheet already holds the sky off,
  * which is all a blended surface writes depth for. What it gives up is an order between overlapping
- * sheets, which blend in the order the file lists them; what would make it wrong is a blended part
- * standing in the open, like a pane of glass, which this model has none of.
+ * sheets, which blend in the order the file lists them. The lanterns' panes are the one blended part
+ * standing in the open, and they are glass (`glass.ts`): a haze marching through a pane to the vault
+ * behind it is what glass is, so they write no depth either.
  */
 const BLENDED: TranslucentMeshOptions = { depthWrite: false };
 
@@ -94,7 +97,11 @@ export class SponzaPacks {
   /** One material, rewritten per part, so the part loop allocates nothing. */
   private readonly material: SurfaceMaterial<SurfaceTextureHandle> = {};
   /** The same, for the shadow casters, which run inside a pass the draw loop is not in. */
-  private readonly casterMaterial: SurfaceMaterial<SurfaceTextureHandle> = {};
+  private readonly casterMaterial: SurfaceMaterial<SurfaceTextureHandle> & {
+    glass?: GlassOptions | undefined;
+  } = {};
+  /** A glass part's draw options, one per glass its loader made, so a frame builds none. */
+  private readonly glassDraws = new Map<GlassOptions, TranslucentMeshOptions>();
   /** Every pack's parts, for the sun's map and every probe face. */
   readonly casters: ShadowCasters;
 
@@ -113,7 +120,9 @@ export class SponzaPacks {
         uploadsPerFrame: 24,
         uploadMsPerFrame: 8,
         revealSec: 0,
-        ...(pack === 'base' ? { surface: stoneSurface, transform: paleFloor } : {}),
+        ...(pack === 'base'
+          ? { surface: (m) => lanternGlass(m) ?? stoneSurface(m), transform: paleFloor }
+          : {}),
       });
       /* Not awaited: the scene draws from the first frame and each pack appears when it lands. */
       void loader.load(`sponza-${pack}-${cap}.drft`, { fit: 'none' });
@@ -129,9 +138,12 @@ export class SponzaPacks {
         if (presence <= 0) continue;
         const textures = loader.textures;
         for (const part of loader.parts) {
-          /* A blended part here is a dirt decal off the stone, which would shadow the stone. */
-          if (part.blend) continue;
+          /* A blended part here is a dirt decal off the stone, which would shadow the stone; a
+             lantern's glass is offered as glass, which lets its flame's light through in its own
+             colour — or casts nothing, where glass shadows are off. */
+          if (part.blend && part.glass === null) continue;
           writePartMaterial(part, textures, material);
+          material.glass = part.glass ?? undefined;
           if (part.instances !== null) {
             sink.instanced?.(part.instances.batch, part.instances.data, material);
           } else {
@@ -279,6 +291,16 @@ export class SponzaPacks {
     return placed;
   }
 
+  /** The options a glass part draws with: blended as `BLENDED`, and glass as its loader says. */
+  private glassDraw(glass: GlassOptions): TranslucentMeshOptions {
+    let options = this.glassDraws.get(glass);
+    if (options === undefined) {
+      options = { ...BLENDED, glass };
+      this.glassDraws.set(glass, options);
+    }
+    return options;
+  }
+
   /**
    * Draw every part with its whole material. Returns the draws issued.
    *
@@ -309,7 +331,8 @@ export class SponzaPacks {
         const opacity = part.opacity * part.reveal;
         /* A blended part is drawn translucent whatever its opacity: its alpha is in its texture. */
         const translucent = opacity < 1 || part.blend;
-        const options = part.blend ? BLENDED : undefined;
+        const options =
+          part.glass !== null ? this.glassDraw(part.glass) : part.blend ? BLENDED : undefined;
         /* A mesh the file draws many times goes through the instanced path, every copy one draw. */
         if (part.instances !== null) {
           if (translucent) {

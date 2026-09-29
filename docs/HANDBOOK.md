@@ -580,6 +580,71 @@ A file that carries _both_ blocks — some exporters write a metallic-roughness 
 extension — is read as the core one, because that exporter did the conversion with the texels in
 hand and could produce the `metallicRoughnessTexture` this reader cannot.
 
+### Glass, and a file that cannot say it
+
+Since 4.5.0 a material can be glass: `transmission` (how much light passes), `frost` (how milky)
+and `tint` (the colour it takes), carried by `.drft` 1.19 and handed to a translucent draw as
+`TranslucentMeshOptions.glass`. A glass pane shows what is behind it, blurred by its frost, keeps
+its own highlight, glows with the lights behind it, and **casts its colour rather than a shadow** —
+so a lantern's flame lights the room through its panes, warm where they are warm, rather than the
+inside of its own glass. A pane is the same seen from either side.
+
+**From glTF it is read, not guessed.** `KHR_materials_transmission` makes a material glass;
+`KHR_materials_diffuse_transmission` raises its frost and gives its tint, and
+`KHR_materials_volume`'s attenuation colour tints it where no diffuse colour is stated. A
+transmissive material's roughness raises its frost too, because rough glass _is_ frosted glass —
+unless a map carries the roughness, where the factor only scales the map and says nothing. A
+material stating diffuse transmission alone stays opaque: that is a leaf or a sheet of paper, and
+glass would draw it see-through and drop its shadow.
+
+**Most bought models cannot say it**, because their format or their exporter had no word for glass:
+the panes arrive as an opaque grey. Declare them by name in the loader's `surface` override, which
+the loader keys and merges on like any other field and hands back as `DrftPart.glass`:
+
+```ts
+const loader = new DrftLoader(renderer, {
+  surface: (material) =>
+    /^lamp_glass/.test(material?.name ?? '')
+      ? { transmission: 0.85, frost: 0.55, tint: [1, 0.93, 0.82] }
+      : undefined,
+});
+// …and draw a blended part with its glass:
+renderer.drawTranslucentMesh(part.mesh, model, 1, {
+  depthWrite: false,
+  glass: part.glass ?? undefined,
+});
+```
+
+A glass part is always `blend`, so a loop that already draws blended parts translucent needs only
+the `glass` option. Build that options object once per `part.glass` rather than per frame: the parts
+of one merged group share it.
+
+**Offer glass to the shadow casters, with its glass.** A caster loop that skips blended parts — a
+dirt decal would shadow the stone under it — should still hand over the glass ones, with the glass
+on the material it passes:
+
+```ts
+for (const part of loader.parts) {
+  if (part.blend && part.glass === null) continue;
+  writePartMaterial(part, loader.textures, material);
+  material.glass = part.glass ?? undefined;
+  sink.mesh(part.mesh, model, material);
+}
+```
+
+A glass caster writes no depth; with `RenderQualityOptions.glassShadows` on (the default,
+`'full'`) it tints the light through it instead, for the sun and for every lamp and rectangle that
+casts. **It costs memory only once glass reaches a map** — the sun's two maps 78 MB, a lamp's layer
+9.8 MB, `'half'` roughly halving the tints — and a lamp wholly inside frosted glass tints everything
+it lights, which is a lookup per lit pixel: measure it. `'off'` is glass as it was before it had a
+colour, and compiles the lookup out of the lit shader — **a world that never casts through glass
+should say `'off'`**, because a lookup that finds nothing still costs the lit pass its registers
+(0.27–0.42 ms at 720p on the courtyard at night). **A pane is one surface**: give two-sided glass `doubleSided`, because a second copy of its
+triangles is a second pane to the light, and tints it twice.
+
+**Not every pane should be declared.** A window with nothing modelled behind it shows the void past
+the wall once it lets the eye through; leave it opaque.
+
 ---
 
 ## 5. Proving two bakes agree

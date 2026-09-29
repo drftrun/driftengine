@@ -3,7 +3,7 @@
 A video to a playable scene, on the player's own device — no service, no account, and a runtime
 that never fetches.
 
-**68,821 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**68,875 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/capture-only.ts`. Optional: nothing in `@driftengine/core` imports it.
 
 ## What is here so far

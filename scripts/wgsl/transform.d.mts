@@ -14,6 +14,8 @@ export interface Bindings {
   readonly textures?: Readonly<
     Record<string, { readonly texture: number; readonly sampler: number; readonly type: string }>
   >;
+  /** Each `// wgsl:override` constant's specialisation id, by name; absent where there are none. */
+  readonly overrides?: Readonly<Record<string, number>>;
 }
 
 export function raiseVersion(source: string): string;
@@ -32,4 +34,8 @@ export function separateSamplers(
   source: string,
   firstBinding?: number,
 ): { source: string; bindings: Bindings };
+export function overridableConstants(source: string): {
+  source: string;
+  overrides: Record<string, number>;
+};
 export function transform(source: string): { source: string; bindings: Bindings };

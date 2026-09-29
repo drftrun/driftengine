@@ -37,6 +37,9 @@ export type ShadowFilterTaps = 4 | 8 | 12;
 export type DirectionalShadowDepthLayers = 1 | 2;
 export type WaterReflectionFilterTaps = 1 | 5 | 9;
 
+/** How light through glass is coloured: see `RenderQuality.glassShadows`. */
+export type GlassShadows = 'full' | 'half' | 'off';
+
 export interface RenderQuality {
   /**
    * The transfer curve applied at the end of every shaded pass.
@@ -149,6 +152,25 @@ export interface RenderQuality {
   readonly lightVolumeSamples: number;
   /** Independently composited static sun depths; two preserves common overlaps. */
   readonly directionalShadowDepthLayers: DirectionalShadowDepthLayers;
+  /**
+   * Whether light through glass takes the glass's colour, and at what size.
+   *
+   * **`'full'`, the default**: every shadow a glass caster reaches gains a layer holding the depth of
+   * the nearest pane and a tint layer holding what the panes let through, at the size of the depth
+   * map beside it — 8 bytes a texel, so 32 MB for a 2048 sun map and 8 MB for a 1024 lamp layer.
+   * **`'half'`** halves the tint layers only (the glass depth must match its array): 20 MB and 5 MB,
+   * and a coloured patch softer than an opaque shadow's edge. **`'off'`** is glass before this
+   * existed: a pane casts nothing at all.
+   *
+   * Nothing is allocated until a glass caster first reaches a shadow, so a scene with no glass pays
+   * no memory and no pass whatever this says. **The lit shader is the exception**: `'full'` and
+   * `'half'` compile the glass lookup into it, and a lookup that finds no glass and returns at its
+   * first line still costs the lit pass its registers — measured on the courtyard at night, 0.27 ms
+   * at 720p on WebGPU, 0.42 ms on WebGL2 and 1.2 ms at 4K. `'off'` compiles none of it, so a world
+   * that never casts through glass is that much faster for saying so. What would make `'full'` wrong
+   * is a phone budget with a lot of glass; that is what `'half'` is for. See `glassShadow.ts`.
+   */
+  readonly glassShadows: GlassShadows;
   /** Horizontal world-space reach over which a directional shadow dissolves. */
   readonly directionalShadowMaxDistance: number;
   /** Maximum horizontal projection per vertical metre before low-angle shadows vanish. */
@@ -556,6 +578,20 @@ export interface RenderQuality {
    * the render is a quarter of the output and no reconstruction holds an edge through that. A
    * negative number is off, not a clamp to the bottom: it cannot mean "a little".
    *
+   * **What it needs from you.** A `createMover()` per moving object, passed with that object's
+   * draws where `drawMesh` takes last frame's matrix — the renderer keeps last frame's model and,
+   * for a skinned draw, last frame's pose. Instanced batches and meshes rewritten with
+   * `updateMesh` need nothing: the batch and the mesh are their own identity. And `cameraCut()` at
+   * every cut, because nothing detects one: without it a cut blends the previous shot into the
+   * next. Blended draws — translucent meshes, particles, plumes, film, bolts, lines, world text —
+   * are drawn after the upscale at the output size and need nothing either; light volumes stay in
+   * the reconstructed picture, being a march that keeps its history.
+   *
+   * **What it cannot give back** is the resolution it draws at: an edge that never moves is softer
+   * than a native frame's at any ratio, because two thirds of the pixels at 1.5 are a guess made
+   * sharp. Measured on `demo/dev/ghost.html` against a native frame at four samples, still edges
+   * err by about 8 levels where a native frame at one sample errs by 3.
+   *
    * `?recon=` is how it gets A/B'd in one reload.
    */
   readonly reconstruction: number;
@@ -838,6 +874,7 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   shadowFilterTaps: MAX_SHADOW_FILTER_TAPS,
   lightVolumeSamples: 32,
   directionalShadowDepthLayers: 2,
+  glassShadows: 'full',
   directionalShadowMaxDistance: 6,
   directionalShadowMaxSlope: 3,
   pointShadowRebakeDistance: 0.001,
@@ -998,6 +1035,7 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     lightVolumeSamples: options.lightVolumeSamples ?? DEFAULT_RENDER_QUALITY.lightVolumeSamples,
     directionalShadowDepthLayers:
       options.directionalShadowDepthLayers ?? DEFAULT_RENDER_QUALITY.directionalShadowDepthLayers,
+    glassShadows: options.glassShadows ?? DEFAULT_RENDER_QUALITY.glassShadows,
     directionalShadowMaxDistance:
       options.directionalShadowMaxDistance ?? DEFAULT_RENDER_QUALITY.directionalShadowMaxDistance,
     directionalShadowMaxSlope:
@@ -1126,6 +1164,15 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
   if (quality.directionalShadowDepthLayers !== 1 && quality.directionalShadowDepthLayers !== 2) {
     throw new Error(
       `RenderQuality.directionalShadowDepthLayers must be 1 or 2, got ${quality.directionalShadowDepthLayers}`,
+    );
+  }
+  if (
+    quality.glassShadows !== 'full' &&
+    quality.glassShadows !== 'half' &&
+    quality.glassShadows !== 'off'
+  ) {
+    throw new Error(
+      `RenderQuality.glassShadows must be 'full', 'half' or 'off', got ${String(quality.glassShadows)}`,
     );
   }
   if (quality.plumeNoiseOctaves > 3) {

@@ -34,6 +34,16 @@ export class PipelineCache {
    */
   readonly sampleCount: number;
 
+  /**
+   * Whether the lit pipelines here read glass in their shadows: `glassShadows` other than `'off'`.
+   *
+   * **Carried by the cache for the reason the format is**: one value every lit pipeline is built
+   * with, chosen once by the renderer. It is the `GLASS_SHADOWS` override the generated lit shader
+   * branches on (see `FlatShaderOptions.glassShadows`), so off specialises the lookups away rather
+   * than leaving code that returns at its first line and still costs the pass its registers.
+   */
+  readonly glassShadows: boolean;
+
   private readonly device: GPUDevice;
   private readonly pipelines = new Map<string, GPURenderPipeline>();
   /**
@@ -52,10 +62,11 @@ export class PipelineCache {
    */
   private readonly compiling = new Map<string, Promise<GPURenderPipeline>>();
 
-  constructor(device: GPUDevice, format: GPUTextureFormat, sampleCount = 1) {
+  constructor(device: GPUDevice, format: GPUTextureFormat, sampleCount = 1, glassShadows = true) {
     this.device = device;
     this.format = format;
     this.sampleCount = sampleCount;
+    this.glassShadows = glassShadows;
   }
 
   /** How many distinct pipelines have been built. Read by tests and diagnostics. */

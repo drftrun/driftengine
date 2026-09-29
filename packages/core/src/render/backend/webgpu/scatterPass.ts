@@ -334,7 +334,8 @@ export function createScatterDepthBindGroupLayout(
       {
         binding: previous.texture,
         visibility: VISIBILITY_FRAGMENT,
-        texture: { sampleType: 'unfilterable-float' },
+        /* The depth program's peel read, an array since the sun's maps became one. */
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' },
       },
       {
         binding: previous.sampler,

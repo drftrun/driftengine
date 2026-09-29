@@ -8,6 +8,7 @@ import { MATERIAL_SLOTS, MATERIAL_TABLE_WGSL } from './materialTable.wgsl.ts';
 import { MESH_TRANSFORM_WGSL } from './meshTransform.wgsl.ts';
 import { ENVIRONMENT_WGSL } from './environment.wgsl.ts';
 import { SHADE_SHADOW_WGSL } from './shadow.wgsl.ts';
+import { SUN_GLASS_WGSL } from './sunGlass.wgsl.ts';
 
 /**
  * Rebuilding a pixel's surface from the triangle it recorded, on the device.
@@ -514,6 +515,14 @@ struct Job {
 @group(0) @binding(12) var environmentMap: texture_2d_array<f32>;
 @group(0) @binding(13) var environmentSampler: sampler;
 ${decodeResourcesWgsl({ group: 0, latents: 14, clampSampler: 15, repeatSampler: 16, nodes: 17, weights: 18 })}
+/*
+ * **What the sun keeps through glass: the nearest pane's depth and what the panes let through**,
+ * which the pass draws from the sun after its opaque map. Where no material is glass the depth is
+ * the opaque map again and the tint a single white texel, which sunGlassAt reads as none.
+ */
+@group(0) @binding(19) var glassDepthMap: texture_depth_2d;
+@group(0) @binding(20) var glassTints: texture_2d<f32>;
+@group(0) @binding(21) var glassSampler: sampler;
 
 fn decodeLatentSize() -> f32 {
   return frame.size.w;
@@ -545,6 +554,45 @@ fn shadowDepthAt(u: f32, v: f32) -> f32 {
   return textureLoad(shadowMap, vec2<i32>(x, y), 0);
 }
 ${SHADE_SHADOW_WGSL}
+
+/* sunGlass.wgsl.ts's three reads, as the opaque map is read: nearest by integer coordinate. */
+fn glassDepthAt(u: f32, v: f32) -> f32 {
+  let size = frame.shadow.y;
+  let x = i32(clamp(floor(u * size), 0.0, size - 1.0));
+  let y = i32(clamp(floor(v * size), 0.0, size - 1.0));
+  return textureLoad(glassDepthMap, vec2<i32>(x, y), 0);
+}
+
+fn glassTintTexel(u: f32, v: f32) -> vec4<f32> {
+  let size = f32(textureDimensions(glassTints, 0).x);
+  let x = i32(clamp(floor(u * size), 0.0, size - 1.0));
+  let y = i32(clamp(floor(v * size), 0.0, size - 1.0));
+  return textureLoad(glassTints, vec2<i32>(x, y), 0);
+}
+
+/* The tint over a spread, from the chain: the level whose texel is the spread's width. */
+fn glassTintAround(u: f32, v: f32, radius: f32) -> vec4<f32> {
+  let size = f32(textureDimensions(glassTints, 0).x);
+  return textureSampleLevel(glassTints, glassSampler, vec2<f32>(u, v), log2(max(radius * size, 1.0)));
+}
+${SUN_GLASS_WGSL}
+
+/*
+ * The sun's colour at this receiver after the panes between it and the sun: white where no glass
+ * cast, and faded with the opaque shadow's own strength. The map's scale in metres comes off the
+ * light's matrix, which is orthographic: a compute invocation has no derivatives to take it from.
+ */
+fn sunGlassAt(lightPos: vec3<f32>) -> vec3<f32> {
+  if (textureDimensions(glassTints, 0).x <= 1u || frame.shadow.x <= 0.0) { return vec3<f32>(1.0); }
+  let m = frame.lightViewProj;
+  var settings: SunGlassSettings;
+  settings.mapSize = frame.shadow.y;
+  settings.depthSpan = frame.shadow.z;
+  settings.uvPerMetre = 0.5 * length(vec3<f32>(m[0][0], m[1][0], m[2][0]));
+  settings.taps = frame.shadowLimits.y;
+  let tint = sunGlass(lightPos.x * 0.5 + 0.5, lightPos.y * 0.5 + 0.5, lightPos.z, settings);
+  return mix(vec3<f32>(1.0), tint, frame.shadow.x);
+}
 ${ENVIRONMENT_WGSL}
 ${FOG_WGSL}
 
@@ -737,7 +785,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   var room: LitEnvironment;
   room.lightDir = frame.lightDir.xyz;
-  room.lightColour = frame.lightColour.xyz;
+  /* The sun's colour through whatever glass stands between it and here, as flat/main.ts's is. */
+  room.lightColour = frame.lightColour.xyz * sunGlassAt(lightPos);
   room.sky = frame.sky.xyz;
   room.ground = frame.ground.xyz;
   /*

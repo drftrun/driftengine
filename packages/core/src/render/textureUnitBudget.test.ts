@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { MAX_LIGHTS_PER_CLUSTER } from './clusteredLights.ts';
+import { flatFrag } from './shaders/flat/index.ts';
 import {
   CLUSTER_TABLE_TEXTURE_UNIT,
   COOKIE_ATLAS_TEXTURE_UNIT,
@@ -107,7 +108,15 @@ test('the normal map sits directly above the surface texture', () => {
   expect(ENVIRONMENT_TEXTURE_UNIT).toBe(EMISSIVE_TEXTURE_UNIT + 1);
 });
 
-test('the full configuration leaves one of the guaranteed sixteen units free', () => {
+test("THE SUN'S THREE MAPS ARE ONE BINDING, as the lamps' twelve became one", () => {
+  /*
+   * Static, peeled and moving: three sampler2Ds until 4.5.0, one sampler2DArray since, which is
+   * what paid for glass's two tints. The same move `POINT_SHADOW_UNITS` records, one family over.
+   */
+  expect(DIRECTIONAL_SHADOW_UNITS).toBe(1);
+});
+
+test('the full configuration leaves three of the guaranteed sixteen units free', () => {
   /*
    * **This test used to assert the opposite** — `toBe(GUARANTEED_UNITS)`, an exact fill with
    * nothing to spare — and the comment under it said that one more sampler genuinely would not
@@ -132,12 +141,12 @@ test('the full configuration leaves one of the guaranteed sixteen units free', (
    * sixteen — see `SKIN_PALETTE_TEXTURE_UNIT` for the reading that said otherwise and what the
    * driver answered.
    */
-  expect(UNITS_WITH_EVERYTHING).toBe(15);
+  expect(UNITS_WITH_EVERYTHING).toBe(13);
   expect(
     GUARANTEED_UNITS - UNITS_WITH_EVERYTHING,
     'free units, with every material map, the probe, the froxel table, the IES atlas, the joint ' +
       'palette, the morph deltas, the cookie atlas and the refraction snapshot bound',
-  ).toBe(1);
+  ).toBe(3);
 });
 
 test('the light count costs layers rather than texture units', () => {
@@ -220,4 +229,28 @@ test('the photometric atlas sits directly above the froxel table, with no gap', 
 test('the refraction snapshot takes the second-to-last guaranteed unit', () => {
   expect(REFRACT_SCENE_TEXTURE_UNIT).toBe(COOKIE_ATLAS_TEXTURE_UNIT + 1);
   expect(REFRACT_SCENE_TEXTURE_UNIT).toBeLessThan(GUARANTEED_UNITS);
+});
+
+test('THE LIT STAGE KEEPS ONE OF THE SIXTEEN GUARANTEED FRAGMENT SAMPLERS SPARE, glass tints and all', () => {
+  /*
+   * Counted from the widest lit shader itself rather than from unit numbers: a unit number is a
+   * place in the combined pool, where the vertex stage's palette and morph deltas also live, and
+   * `MAX_TEXTURE_IMAGE_UNITS` bounds how many samplers a *stage* declares. This is that count.
+   * The sun's three maps became one array to afford the glass tints, the sun's and the lamps'; the
+   * sixteenth stays free, and the next sampler has to fold into a binding rather than take it.
+   */
+  const source = flatFrag({
+    pointShadows: true,
+    directionalShadows: true,
+    environmentProbe: true,
+    nightEmissive: true,
+  });
+  const samplers = [
+    ...source.matchAll(/^\s*uniform\s+(?:highp\s+|mediump\s+|lowp\s+)?[iu]?sampler\w+\s+(\w+)/gm),
+  ].map((match) => match[1]);
+  expect(samplers).toContain('uSunGlassTints');
+  /* And the lamps' tint, the fifteenth: the last a stage can take and keep one spare. */
+  expect(samplers).toContain('uPointGlassTints');
+  expect(samplers).toHaveLength(15);
+  expect(GUARANTEED_UNITS - samplers.length).toBeGreaterThanOrEqual(1);
 });

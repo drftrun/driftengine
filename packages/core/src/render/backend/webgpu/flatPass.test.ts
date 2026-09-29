@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 import { DEPTH_OFFSET_SIGN, OVERLAY_DEPTH_UNITS } from '../../depthConvention.ts';
 import { PipelineCache } from './pipelineCache.ts';
 import { flatPipeline, flatVertexBindings, flatVertexKey } from './flatPass.ts';
-import { FLAT_BINDINGS } from '../../shaders/generated/flat.wgsl.ts';
+import { FLAT_BINDINGS, FLAT_FRAG_WGSL } from '../../shaders/generated/flat.wgsl.ts';
 
 /**
  * The depth state a blended draw is built with, which on this backend is pipeline state.
@@ -45,7 +45,7 @@ function blended(
     cache,
     device,
     {} as unknown as GPUBindGroupLayout,
-    'lit',
+    'none',
     'flat:s0:u0|blend',
     {},
     true,
@@ -156,4 +156,33 @@ test('every variant that can bend declares the wind, and the instanced one decla
   }
   const instanced = FLAT_BINDINGS.flatVert.instanced.fields;
   for (const name of wind) expect(Object.keys(instanced)).not.toContain(name);
+});
+
+/*
+ * **Glass shadows off specialises the glass lookup out of every lit pipeline.** The generated WGSL
+ * is one string for both values: the lookups branch on `GLASS_SHADOWS`, an override, and a
+ * pipeline sets it from the renderer's option, carried by the cache as the format is. Every
+ * variant declares it, because a pipeline naming an override its module lacks fails validation
+ * and drops the frame — the permutations without shadows included, which read it nowhere.
+ */
+test('EVERY LIT VARIANT DECLARES THE GLASS SWITCH ITS PIPELINES SET', () => {
+  const variants = Object.entries(FLAT_FRAG_WGSL);
+  expect(variants.length).toBe(16);
+  for (const [variant, wgsl] of variants) {
+    expect(wgsl, variant).toMatch(/@id\(0\) override GLASS_SHADOWS: bool = true;/);
+    const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
+    expect(bindings?.overrides, variant).toEqual({ GLASS_SHADOWS: 0 });
+  }
+});
+
+test('A LIT PIPELINE SETS THE GLASS SWITCH FROM ITS CACHE, off where glass shadows are off', () => {
+  for (const glassShadows of [true, false]) {
+    const { device, descriptors } = fakeDevice();
+    const cache = new PipelineCache(device, 'bgra8unorm', 1, glassShadows);
+    flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
+    /* By its id, 0, not its name: Chrome refuses the name of an override declared with an id. */
+    expect(descriptors[0]?.fragment?.constants, String(glassShadows)).toEqual({
+      '0': glassShadows ? 1 : 0,
+    });
+  }
 });

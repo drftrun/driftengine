@@ -83,6 +83,11 @@ export const MAIN_GLSL = `void main() {
    * the branch below builds a shaded result on top of it.
    */
   vec3 lit = albedo;
+  /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
+     over the see-through at the end. Stays zero for anything that is not glass. See glass.ts. */
+  vec3 glassGlow = vec3(0.0);
+  float glassTransmission = uSeeThrough.z;
+  float glassFrost = uSeeThrough.w;
 
   if (uLightingEnabled != 0) {
     vec3 n = normalize(vNormal);
@@ -94,7 +99,13 @@ export const MAIN_GLSL = `void main() {
      * back of the sheet; what that gives up is a sliver at a curved silhouette, where a front face's
      * interpolated normal already leans away and is lit as the back.
      */
-    bool backFace = uDoubleSided != 0 && dot(n, uCameraPos - vWorldPos) < 0.0;
+    /*
+     * **Glass is two-sided whatever its material says**: a pane is symmetric, so from behind the
+     * side the eye sees is the one lit, and the light on its far side is what glows through it.
+     * Taken from the stored normal alone, a pane seen from behind glowed with the light on the
+     * eye's side and not with the sun shining through it.
+     */
+    bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;
     /*
      * The authored normal, before either relief perturbs it.
      *
@@ -313,9 +324,13 @@ export const MAIN_GLSL = `void main() {
     float surfaceNdl = dot(surfaceN, uDirectionalDir);
 #if DIRECTIONAL_SHADOWS
     float sunShade = shadowFactor(max(surfaceNdl, 0.0));
+    /* What the sun keeps through any glass on its way here: see sunGlassLookup. */
+    vec3 sunGlass = sunGlassTint(max(surfaceNdl, 0.0));
 #else
     float sunShade = 1.0;
+    vec3 sunGlass = vec3(1.0);
 #endif
+    vec3 sunColor = uDirectionalColor * sunGlass;
     /*
      * **How much sky this vertex can see, applied to the sun and to nothing else.**
      *
@@ -343,6 +358,8 @@ export const MAIN_GLSL = `void main() {
      */
     float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);
     float direct = ndl * sunShade * sunFacing;
+    /* Glass: the sun on the far side of a pane lights it through the glass. See glassGlow. */
+    if (glassTransmission > 0.0) glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;
 
     /*
      * Hemispheric: sky above, ground below, mixed by which way the surface looks. An
@@ -389,7 +406,7 @@ export const MAIN_GLSL = `void main() {
      * smallest change available in a shader with a documented history of shared subexpressions
      * rounding differently when their neighbours move. See the night-emissive term.
      */
-    lit = albedo * (ambient + uDirectionalColor * direct * (1.0 - metal));
+    lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
 
     /*
      * A sun highlight, for the few surfaces that ask for one.
@@ -451,7 +468,7 @@ export const MAIN_GLSL = `void main() {
      * before: \`sunSpec\` is \`vec3(vSpecular)\` at metal 0 and \`vSpecular\` defaults to 0.
      */
     vec3 sunHighlight =
-      uDirectionalColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
+      sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
      * below dims it by exactly the reflectance it always dimmed it by. The metal's share is added
@@ -1023,7 +1040,14 @@ export const MAIN_GLSL = `void main() {
       }
       if (falloff <= 0.0) continue;
       float ndl = max(dot(n, toLight / max(dist, 1e-4)), 0.0);
-      if (ndl <= 0.0) continue;
+      /*
+       * **A lamp behind a pane is not skipped when the surface is glass**: it lights the pane through
+       * the glass, shaped and shadowed like any lamp, and is added to glassGlow once its shape is
+       * known below. For everything else a lamp behind the surface is skipped here, as always.
+       */
+      float backNdl =
+        glassTransmission > 0.0 ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
+      if (ndl <= 0.0 && backNdl <= 0.0) continue;
 
       /*
        * Normal-offset bias.
@@ -1076,7 +1100,17 @@ export const MAIN_GLSL = `void main() {
        */
       int shadowRead = clamp(shadowSlot, 0, MAX_LIGHTS - 1);
       int layer = shadowSlot >= 0 && shadowSlot < MAX_LIGHTS ? uPointShadowLayer[shadowRead] : -1;
+      /* What the panes between this receiver and the lamp let through, per map: lampGlass.ts. */
+      vec3 staticGlass = vec3(1.0);
+      vec3 liveGlass = vec3(1.0);
       if (layer >= 0 && shadowWeight > POINT_SHADOW_MIN_WEIGHT) {
+        staticGlass = pointGlassTint(
+          float(layer),
+          receiverPoint - uPointShadowProjection[shadowRead].xyz,
+          uPointShadowProjection[shadowRead].w,
+          uPointShadowNear[shadowRead],
+          uPointShadowSize[shadowRead]
+        );
         occl = mix(
           1.0,
           pointShadow(
@@ -1116,10 +1150,20 @@ export const MAIN_GLSL = `void main() {
           uLivePointShadowSize[shadowRead]
         );
         liveWeight = uLivePointShadowWeight[shadowRead];
+        liveGlass = pointGlassTint(
+          float(liveLayer),
+          receiverPoint - uLivePointShadowProjection[shadowRead].xyz,
+          uLivePointShadowProjection[shadowRead].w,
+          uLivePointShadowNear[shadowRead],
+          uLivePointShadowSize[shadowRead]
+        );
       }
       occl *= mix(1.0, liveOccl, liveWeight);
+      /* Each map's glass faded in by that map's presence, as its occlusion is. */
+      vec3 lampGlass = mix(vec3(1.0), staticGlass, uPointShadowWeight[shadowRead]) * mix(vec3(1.0), liveGlass, liveWeight);
 #else
       float occl = 1.0;
+      vec3 lampGlass = vec3(1.0);
 #endif
 
       // Blend occlusion out as the light fades, so a shadow can never be more
@@ -1240,6 +1284,8 @@ export const MAIN_GLSL = `void main() {
       float photometric = mix(1.0, iesGain, step(0.0, iesProfile));
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
+      glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;
+      if (ndl <= 0.0) continue;
       /*
        * The cookie tints rather than scales, because a mask may be coloured — a stained window is
        * the case that makes the difference — and a greyscale one is exactly a scale. Applied to
@@ -1278,7 +1324,7 @@ export const MAIN_GLSL = `void main() {
        */
       vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);
       lampOpen += lampDiffuse;
-      lampShadowed += lampDiffuse * shaded;
+      lampShadowed += lampDiffuse * shaded * lampGlass;
 
       /*
        * A lamp reflected in a polished surface, which point lights could not do at all.
@@ -1313,7 +1359,7 @@ export const MAIN_GLSL = `void main() {
           lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
           * lampSpec * shape * lightWeight;
         lampOpen += lampHighlight;
-        lampShadowed += lampHighlight * shaded;
+        lampShadowed += lampHighlight * shaded * lampGlass;
       }
       /*
        * The most any light in range shadows this point, for the emissive term below —
@@ -1374,7 +1420,11 @@ export const MAIN_GLSL = `void main() {
        */
       float signedForm = quadFormFactor(n, vWorldPos, c0, c1, c2, c3);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
-      if (form <= 0.0) continue;
+      /* The form factor is linear in the normal, so the one seen from behind is its negation. */
+      float backForm = glassTransmission > 0.0
+        ? mix(max(0.0, -signedForm), abs(signedForm), uAreaLightTwoSided[a])
+        : 0.0;
+      if (form <= 0.0 && backForm <= 0.0) continue;
 
       /*
        * **How much of the rectangle this fragment can actually see past whatever is in the way.**
@@ -1401,6 +1451,7 @@ export const MAIN_GLSL = `void main() {
        * is a constant nobody has measured. \`docs/IMPROVEMENTS.md\` carries the row.
        */
       float areaOccl = 1.0;
+      vec3 areaGlass = vec3(1.0);
 #if POINT_SHADOWS
       /*
        * The sample position is pushed along the surface normal before the lookup, and it scales
@@ -1441,6 +1492,12 @@ export const MAIN_GLSL = `void main() {
           ),
           uAreaShadowWeight[a]
         );
+        /* What the panes before the rectangle let through, faded in as its occlusion is. */
+        areaGlass = mix(
+          vec3(1.0),
+          areaGlassTint(float(areaLayer), areaShadowFrom, uAreaShadowFar[a], uAreaShadowNear[a], right, up, halfSize),
+          uAreaShadowWeight[a]
+        );
       }
       int areaLiveLayer = uLiveAreaShadowLayer[a];
       if (areaLiveLayer >= 0) {
@@ -1458,13 +1515,28 @@ export const MAIN_GLSL = `void main() {
           ),
           uLiveAreaShadowWeight[a]
         );
+        areaGlass *= mix(
+          vec3(1.0),
+          areaGlassTint(
+            float(areaLiveLayer),
+            areaShadowFrom,
+            uLiveAreaShadowFar[a],
+            uLiveAreaShadowNear[a],
+            right,
+            up,
+            halfSize
+          ),
+          uLiveAreaShadowWeight[a]
+        );
       }
 #endif
 
+      glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;
+      if (form <= 0.0) continue;
       /* Held back with the point lamps', and shadowed by the same term it always was. */
       vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
       lampOpen += areaDiffuse;
-      lampShadowed += areaDiffuse * areaOccl;
+      lampShadowed += areaDiffuse * areaOccl * areaGlass;
 
       if (vSpecular > 0.0 || metal > 0.0) {
         /*
@@ -1491,7 +1563,7 @@ export const MAIN_GLSL = `void main() {
           vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
           vec3 areaHighlight = areaSpec * uAreaLightColor[a] * coverage;
           lampOpen += areaHighlight;
-          lampShadowed += areaHighlight * areaOccl;
+          lampShadowed += areaHighlight * areaOccl * areaGlass;
         }
       }
     }
@@ -1551,6 +1623,9 @@ export const MAIN_GLSL = `void main() {
      * \`driftLight.ts\`.
      */
     if (driftShare > 0.0) {
+      if (glassTransmission > 0.0) {
+        glassGlow += driftLightIrradiance(vWorldPos, -n) * (driftShare * uDriftLight.w);
+      }
       lit += albedo * driftLightIrradiance(vWorldPos, n) * (driftShare * uDriftLight.w) * (1.0 - metal);
     }
 
@@ -1738,14 +1813,39 @@ export const MAIN_GLSL = `void main() {
    * splitting the specular out before the fog, which is a larger change to the one shader every
    * draw uses.
    */
-  if (uRefractStrength > 0.0) {
+  if (uSeeThrough.x > 0.0 || glassTransmission > 0.0) {
     vec3 refractN = normalize(vNormal);
     vec3 refractV = normalize(uCameraPos - vWorldPos);
-    vec2 screenUv = gl_FragCoord.xy / vec2(textureSize(uRefractScene, 0));
-    vec2 bent = clamp(screenUv + refractN.xy * uRefractStrength, vec2(0.0), vec2(1.0));
-    vec3 behind = texture(uRefractScene, bent).rgb;
-    float pathLength = uRefractThickness * vThickness / max(dot(refractN, refractV), 0.05);
-    shaded = behind * pow(uRefractTint, vec3(pathLength));
+    ivec2 snapSize = textureSize(uRefractScene, 0);
+    vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
+    vec2 bent = clamp(screenUv + refractN.xy * uSeeThrough.x, vec2(0.0), vec2(1.0));
+    /*
+     * **An explicit level, and frost is what picks it** — the 2026-08-07 rule, and the reason a
+     * frosted pane blurs rather than fades: the copy carries a mip chain on a frame that draws glass,
+     * so a milkier pane reads a coarser level of it. Level 0 on a copy with one level is exactly what
+     * \`texture()\` read here before, so plain refraction draws as it did.
+     */
+    /* Two short of the last level: a fully frosted pane still shows the large light and dark of what
+       is behind it, where the chain's last level is one texel, the whole frame's average. */
+    float levels = max(floor(log2(float(max(snapSize.x, snapSize.y)))) - 2.0, 0.0);
+    vec3 behind = textureLod(uRefractScene, bent, glassFrost * levels).rgb;
+    /* Unsigned: a pane passes the same light seen from either side, and so does its Fresnel. */
+    float cosView = max(abs(dot(refractN, refractV)), 0.05);
+    float pathLength = uSeeThrough.y * vThickness / cosView;
+    vec3 seen = behind * pow(uRefractTint, vec3(pathLength));
+    if (glassTransmission > 0.0) {
+      /*
+       * **Glass keeps its own surface and shows what is behind over it**, by how much it lets
+       * through and how little it reflects at this angle — Schlick's Fresnel at 0.04, the arithmetic
+       * \`glass.ts\` states. So a clear pane keeps its highlight, and a pane seen edge-on is a mirror.
+       * The glow of the lights behind it is added last, by how frosted it is.
+       */
+      float fresnel = 0.04 + 0.96 * pow(1.0 - cosView, 5.0);
+      shaded = mix(shaded, seen * uGlassTint, glassTransmission * (1.0 - fresnel)) +
+        applyOutputTransform(glassGlow * uGlassTint * (glassFrost * glassTransmission) * (1.0 - fog));
+    } else {
+      shaded = seen;
+    }
   }
   /*
    * The per-vertex alpha lane, folded in here rather than given an expression of its own so the

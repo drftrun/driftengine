@@ -525,11 +525,15 @@ Each entry, within its `stride` bytes:
 72   4    f32        cutout, the alpha below which a fragment is discarded, 0 to discard nothing
 76   4    u32        flags — bit 0: the material blends, its alpha in its texture; bit 1: both faces
                      are seen, glTF's doubleSided (1.18)
+80   4    f32        glass transmission, the share of light that passes, 0 not glass to 1 clear (1.19)
+84   4    f32        glass frost, 0 see-through to 1 fully diffusing (1.19)
+88   12   f32 x 3    glass tint, the colour light takes through it, linear; white is clear (1.19)
 ```
 
-So the stride a current writer declares is **80**. The flags word is the newest field: an entry
-written before 1.18 is 76 bytes and reads as not blending, which is what every material that
-reached a reader before then was drawn as. `reflectivity` is the worked example of why the
+So the stride a current writer declares is **100**. Glass is the newest field: an entry written
+before 1.19 is 80 bytes and reads as transmission 0, frost 0 and a white tint — not glass, which is
+what every material that reached a reader before then was drawn as. The flags word came before it:
+an entry written before 1.18 is 76 bytes and reads as not blending. `reflectivity` is the worked example of why the
 stride is written down: a reader that predates it steps by 48 anyway, takes the ten fields it knows
 and defaults reflectivity to 0, which is what a surface that never claimed to mirror anything
 should be. This line was missing from this table for a while and the writer was emitting the field
