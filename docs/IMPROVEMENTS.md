@@ -48,6 +48,40 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### The lit shader's `main` is stored once per permutation
+
+**What the shared WGSL did not reach.** `scripts/wgsl/share.mjs` stores every distinct top-level item
+of the generated WGSL once, and every helper function now is; `main` differs between permutations
+and is stored twenty-one times, about 1.1 MB raw of the 1.4 MB module. Measured 2026-09-30: stripping
+naga's mangled function-name suffixes as well would save **6 KB** gzipped, not worth a rename.
+**What would close it**: splitting `main` into functions along the lines the permutations do not
+touch, so the shared part is an item of its own — measured against `core-only` before it is done.
+
+### DriftLight's fine level, if the band past the exact lights reads wrong
+
+The world volume stands in past the exact radius at 4–8 m a sample. The planned fine level of 1 m
+bricks around the eye was measured out (about 2 GB for a 256 m window at the reference city's lamp
+density). **What would reopen it** is a measurement on the real city of the band between the exact
+radius and the volume's resolution — a pool of light seen at a few dozen pixels looking wrong — and
+the cheapest answer then is a sparse `LightField` of the lights just past the choice, re-centred as
+the eye moves, which would cost one sampler and one uniform row the lit stage does not have spare.
+
+### Exact-light selection through a grid is a modest win
+
+`selectGridLights` makes the full scan's choice field for field and is **20–30% faster** on 20,000
+lights over 2 km (204 → 145 µs at 180 m, 244 → 200 at 400 m). Most of what remains is choosing among
+the lights in range, which a grid cannot avoid. **What would move it**: a quickselect over fewer
+candidates — a tighter reach per light rather than the largest radius for all.
+
+### `buildProxy` cannot coarsen a block of towers
+
+Measured on `demo/dev/hlod.html`: one block of sixteen towers is 7,608 triangles, and its
+occupancy outline is 21,280 at 32 cells — so it refuses itself — and 3,352 at 16, nine times the
+towers without their fins (384). A boundary of grid cells is surface area, and towers are nearly all
+surface. A city's coarse levels come from its own simpler templates. **What would change it**: an
+outline that merges coplanar cell faces into rectangles, which would make a box of cells twelve
+triangles however many cells it spans.
+
 ### A cutout surface on the GPU-driven pipeline casts the shadow of its whole quad
 
 **The row `visbufferRaster.wgsl.ts` has cited since the cutout landed, and which did not exist

@@ -47,12 +47,17 @@ const SKIP = new Set([
 ]);
 
 /*
- * Directories skipped at the root only. **`models/` holds fetched checkpoints and bought assets**,
- * gitignored because they are their authors' to distribute, so nothing in it ships — and since a
- * tokenizer's vocabulary is fetched there too, it holds every English word, names and nouns
+ * Directories skipped by their path from the root. **`models/` holds fetched checkpoints and bought
+ * assets**, gitignored because they are their authors' to distribute, so nothing in it ships — and
+ * since a tokenizer's vocabulary is fetched there too, it holds every English word, names and nouns
  * included. Anchored rather than by name, because `packages/capture/src/models/` is source.
+ *
+ * **`demo/dev/public/` is the same directory for the demos**, and AGENTS.md says so: a baked model
+ * or a reference's source dropped there is gitignored and never committed. Unskipped, a reference's
+ * own scripts and a session's notes about them — which name their world, and carry the machine's
+ * home directory in a path — turned both guards below red in every checkout that held them.
  */
-const SKIP_AT_ROOT = new Set(['models']);
+const SKIP_PATHS = new Set(['models', 'demo/dev/public'].map((p) => path.join(ROOT, p)));
 
 /**
  * The archive directory that this exempted is gone, and so is the exemption. It held files that
@@ -76,8 +81,8 @@ const FUTURE_NAMES = new Set(['PRIORITY.md', 'ASSESSMENT.md', 'ROADMAP.md']);
 
 export function walk(dir, filter, out = []) {
   for (const entry of readdirSync(dir)) {
-    if (SKIP.has(entry) || (dir === ROOT && SKIP_AT_ROOT.has(entry))) continue;
     const full = path.join(dir, entry);
+    if (SKIP.has(entry) || SKIP_PATHS.has(full)) continue;
     if (statSync(full).isDirectory()) walk(full, filter, out);
     else if (filter(full)) out.push(full);
   }

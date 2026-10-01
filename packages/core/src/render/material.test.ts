@@ -26,7 +26,7 @@ import type { SurfaceMaterial, SurfaceTexture } from './surfaceTexture.ts';
 
 /** A `SurfaceTexture` far enough to be bound, with no device behind it. */
 function fakeTexture(): SurfaceTexture {
-  return { bind: vi.fn() } as unknown as SurfaceTexture;
+  return { bind: vi.fn(), bindEffects: vi.fn() } as unknown as SurfaceTexture;
 }
 
 function bindMock(texture: SurfaceTexture): ReturnType<typeof vi.fn> {

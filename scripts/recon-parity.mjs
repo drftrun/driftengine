@@ -66,6 +66,7 @@ const { DEFAULT_DISOCCLUSION } = await import(
   `${ROOT}packages/core/src/render/recon/disocclusion.ts`
 );
 const { jitterOffset } = await import(`${ROOT}packages/core/src/render/recon/jitter.ts`);
+const { flickerRule } = await import(`${ROOT}packages/core/src/render/temporalAa.ts`);
 const { RECON_PARAM_FLOATS, RECON_WORKGROUP, reconResolveParityWgsl } = await import(
   `${ROOT}packages/core/src/render/shaders/recon/resolve.wgsl.ts`
 );
@@ -233,7 +234,17 @@ const worst = new Map([
   ['weight', { off: 0, at: '' }],
 ]);
 /* What the corpus actually visited, because a check that never reached a branch proved nothing. */
-const visited = { objectMotion: 0, cameraMotion: 0, refusedHistory: 0, clipped: 0, bicubicFill: 0 };
+const visited = {
+  objectMotion: 0,
+  cameraMotion: 0,
+  refusedHistory: 0,
+  clipped: 0,
+  bicubicFill: 0,
+  provenStill: 0,
+  swingKept: 0,
+};
+/** The anti-flicker's period in the cases that carry records: the reconstruction's at 1.5. */
+const FLICKER_PHASES = 18;
 
 function check(what, at, want, got, tolerance) {
   compared += 1;
@@ -277,6 +288,13 @@ function packParams(frame) {
   f[69] = frame.disocclusion.motionScale;
   f[70] = frame.disocclusion.normalFloor;
   f[71] = frame.disocclusion.normalCeiling;
+  const rule = flickerRule(frame.flickerPhases ?? FLICKER_PHASES);
+  u[72] = frame.periodStart === true ? 1 : 0;
+  u[73] = frame.flicker === undefined ? 0 : 1;
+  f[74] = rule.memory;
+  f[75] = rule.width;
+  /* Multiplied here in double precision, as the renderer multiplies it. */
+  f.set(mat4.multiply(new Float64Array(16), frame.previousViewProj, frame.inverseViewProj), 76);
   return Array.from(u);
 }
 
@@ -329,17 +347,45 @@ function textures(frame) {
       values: Array.from(frame.history),
     },
     { kind: 'uniform', type: 'u32', values: packParams(frame) },
-    { length: outputTexels * 4, read: true },
+    { length: outputTexels * 9, read: true },
+    {
+      kind: 'texture2d',
+      width: frame.outputWidth,
+      height: frame.outputHeight,
+      format: 'rgba32float',
+      values: Array.from(frame.flicker ?? new Float32Array(outputTexels * 4)),
+    },
+    {
+      kind: 'texture2d',
+      width: frame.outputWidth,
+      height: frame.outputHeight,
+      format: 'r32float',
+      values: Array.from(frame.depthSwing ?? new Float32Array(outputTexels)),
+    },
   ];
 }
 
 /** What the corpus reached, counted from the reference so the shader cannot flatter itself. */
 function countVisits(frame) {
   const out = new Float32Array(4);
+  const record = new Float32Array(4);
   for (let y = 0; y < frame.outputHeight; y += 1) {
     for (let x = 0; x < frame.outputWidth; x += 1) {
-      resolvePixel(frame, x, y, out);
+      resolvePixel(frame, x, y, out, record);
       if (out[3] < 1) visited.bicubicFill += 1;
+      /* A record carried out still and repeating is one the proof held for this frame. */
+      if (frame.flicker !== undefined && record[3] > 0.75) visited.provenStill += 1;
+      /* And a pixel whose history the held depth swing kept, which without it was refused. */
+      if (frame.depthSwing !== undefined) {
+        const kept = out[3];
+        resolvePixel(
+          { ...frame, depthSwing: new Float32Array(frame.depthSwing.length) },
+          x,
+          y,
+          out,
+        );
+        if (Math.abs(out[3] - kept) > 1e-3) visited.swingKept += 1;
+      }
     }
   }
   for (let i = 3; i < frame.motion.length; i += 4) {
@@ -382,6 +428,26 @@ try {
   const wasSphere = { centre: vec3.fromValues(-0.35, 1.05, 0.2), radius: 1.2 };
 
   const cases = [
+    {
+      /*
+       * **A still camera over ground the sphere has uncovered**, further from where the sphere now
+       * stands than the dilation reaches: still pixels whose last frame held the sphere, where the
+       * depth test refuses the history unless the pixel's held swing says its depth has jumped that
+       * far before. Unjittered at two to one, where no rounding sits on a tie.
+       */
+      name: 'a still camera over ground a sphere has uncovered',
+      render: [18, 14],
+      output: [36, 28],
+      hasHistory: true,
+      unjittered: true,
+      wasCentre: [2.03, 1.05, -1.64],
+      records: { spread: 0.4, repeated: 1, periodStart: false },
+      previousEye: [3.4, 2.6, 4.2],
+      eye: [3.4, 2.6, 4.2],
+      centre: [0, 1, 0],
+      previousCentre: [0, 1, 0],
+      frameIndex: 2,
+    },
     {
       name: 'first frame, no history',
       render: [24, 18],
@@ -442,6 +508,8 @@ try {
       output: [36, 27],
       hasHistory: true,
       historyWeight: 12,
+      /* And records at a period's start whose two periods repeat: the count carried up to two. */
+      records: { spread: 0.4, repeated: 0.5, periodStart: true },
       previousEye: [3.4, 2.6, 4.2],
       eye: [2.7, 3.1, 3.3],
       centre: [0.35, 1.1, -0.2],
@@ -476,6 +544,11 @@ try {
       render: [18, 14],
       output: [36, 28],
       hasHistory: true,
+      /* A still camera over a moving sphere, mid-period: the ground proven and still, its box widened
+         and more of its history kept — a converged history's twelve, past the ordinary cap of nine —
+         and the sphere moving and helped by none of it. */
+      records: { spread: 0.4, repeated: 1, periodStart: false },
+      historyWeight: 12,
       unjittered: true,
       previousEye: [3.4, 2.6, 4.2],
       eye: [3.4, 2.6, 4.2],
@@ -501,11 +574,15 @@ try {
       jitterOffset(one.frameIndex - 1, phases, previousJitter);
     }
 
+    const was =
+      one.wasCentre === undefined
+        ? wasSphere
+        : { centre: vec3.fromValues(...one.wasCentre), radius: 1.2 };
     const current = renderFrame(
       camera,
       previousCamera,
       sphere,
-      wasSphere,
+      was,
       renderWidth,
       renderHeight,
       jitter,
@@ -513,8 +590,8 @@ try {
     const before = renderFrame(
       previousCamera,
       null,
-      wasSphere,
-      wasSphere,
+      was,
+      was,
       renderWidth,
       renderHeight,
       previousJitter,
@@ -554,6 +631,25 @@ try {
     if (one.historyWeight !== undefined) {
       for (let i = 3; i < history.length; i += 4) history[i] = one.historyWeight;
     }
+    /* Records whose means are each pixel's own history luma, so every one is within its reach, and
+       whose period so far has summed to the same, so the two periods repeat. */
+    let flicker;
+    if (one.records !== undefined) {
+      flicker = new Float32Array(outputWidth * outputHeight * 4);
+      for (let i = 0; i < outputWidth * outputHeight; i += 1) {
+        const luma =
+          history[i * 4] * 0.2126 + history[i * 4 + 1] * 0.7152 + history[i * 4 + 2] * 0.0722;
+        flicker[i * 4] = one.records.spread;
+        flicker[i * 4 + 1] = luma;
+        flicker[i * 4 + 2] = luma;
+        flicker[i * 4 + 3] = one.records.repeated;
+      }
+    }
+    /* Swings of a third of the depth everywhere: enough to change the depth test where still. */
+    const depthSwing =
+      one.records === undefined
+        ? undefined
+        : new Float32Array(outputWidth * outputHeight).fill(0.3);
 
     const frame = {
       renderWidth,
@@ -575,6 +671,14 @@ try {
       previousJitter,
       quality: DEFAULT_RECON_QUALITY,
       disocclusion: DEFAULT_DISOCCLUSION,
+      ...(flicker === undefined
+        ? {}
+        : {
+            flicker,
+            depthSwing,
+            periodStart: one.records.periodStart,
+            flickerPhases: FLICKER_PHASES,
+          }),
     };
     countVisits(frame);
 
@@ -592,20 +696,39 @@ try {
     const device = resolved[6];
 
     const want = new Float32Array(4);
+    const wantRecord = new Float32Array(4);
+    const wantSwing = new Float32Array(1);
     const nextHistory = new Float32Array(outputWidth * outputHeight * 4);
     for (let y = 0; y < outputHeight; y += 1) {
       for (let x = 0; x < outputWidth; x += 1) {
-        resolvePixel(frame, x, y, want);
+        resolvePixel(frame, x, y, want, wantRecord, wantSwing);
         nextHistory.set(want, (y * outputWidth + x) * 4);
         for (let c = 0; c < 4; c += 1) {
           check(
             `${one.name} resolve`,
             `(${x}, ${y}) channel ${c}`,
             want[c],
-            device[(y * outputWidth + x) * 4 + c],
+            device[(y * outputWidth + x) * 9 + c],
             c === 3 ? WEIGHT_TOLERANCE : COLOUR_TOLERANCE,
           );
         }
+        if (flicker === undefined) continue;
+        for (let c = 0; c < 4; c += 1) {
+          check(
+            `${one.name} record`,
+            `(${x}, ${y}) channel ${c}`,
+            wantRecord[c],
+            device[(y * outputWidth + x) * 9 + 4 + c],
+            COLOUR_TOLERANCE,
+          );
+        }
+        check(
+          `${one.name} swing`,
+          `(${x}, ${y})`,
+          wantSwing[0],
+          device[(y * outputWidth + x) * 9 + 8],
+          COLOUR_TOLERANCE,
+        );
       }
     }
 
@@ -632,7 +755,9 @@ try {
 console.log(`compared ${compared} values over ${frames} frames`);
 console.log(
   `visited: ${visited.objectMotion} texels of drawn-object motion, ${visited.cameraMotion} of camera motion, ` +
-    `${visited.bicubicFill} output pixels below one sample of gathered weight`,
+    `${visited.bicubicFill} output pixels below one sample of gathered weight, ` +
+    `${visited.provenStill} still pixels proven to repeat, ` +
+    `${visited.swingKept} whose history a held depth swing kept`,
 );
 for (const [kind, { off, at }] of worst) {
   console.log(`worst relative disagreement in a ${kind}: ${off.toExponential(2)} at ${at}`);

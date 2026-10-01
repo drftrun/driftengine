@@ -33,6 +33,8 @@ import {
   ATTR_TANGENT,
   ATTR_UVS,
   ATTR_WEIGHTS,
+  ATTR_LAYERS,
+  ATTR_CHANNEL,
   DrftError,
   align,
 } from './drftFormat.ts';
@@ -60,7 +62,9 @@ type Name =
   | 'relief'
   | 'tangents'
   | 'joints'
-  | 'weights';
+  | 'weights'
+  | 'layers'
+  | 'channel';
 
 /** The frozen order `MESH` uses, with each optional array's bit: `FORMAT.md` §4.3. */
 const ORDER: readonly {
@@ -82,6 +86,9 @@ const ORDER: readonly {
   { name: 'tangents', width: 4, bit: ATTR_TANGENT, kind: 'direction' },
   { name: 'joints', width: 4, bit: ATTR_JOINTS, kind: 'exact' },
   { name: 'weights', width: 4, bit: ATTR_WEIGHTS, kind: 'value' },
+  /* Whole numbers naming an image, so exact: a layer quantised onto its neighbour is another picture. */
+  { name: 'layers', width: 1, bit: ATTR_LAYERS, kind: 'exact' },
+  { name: 'channel', width: 4, bit: ATTR_CHANNEL, kind: 'value' },
 ];
 
 /** A growing little-endian byte list, for the writer: offline, so it may allocate. */

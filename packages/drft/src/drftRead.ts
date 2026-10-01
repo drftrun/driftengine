@@ -31,6 +31,8 @@ import {
   ATTR_SPECULAR,
   ATTR_UVS,
   ATTR_WEIGHTS,
+  ATTR_LAYERS,
+  ATTR_CHANNEL,
   CHUNK_ENTRY_BYTES,
   CHUNK_HEAD,
   CHUNK_LODM,
@@ -55,8 +57,12 @@ import {
   CHUNK_ANIM,
   CHUNK_NODE,
   CHUNK_INST,
+  CHUNK_REGN,
+  CHUNK_LVOL,
   CHUNK_LITE,
   CHUNK_MSHQ,
+  CHUNK_KITS,
+  CHUNK_MSHC,
   CHUNK_SKIN,
   CHUNK_MORP,
   CHUNK_NNET,
@@ -74,6 +80,13 @@ import { type NavPolyMesh, readNavm } from './navm.ts';
 import { type DrftNetwork, type DrftNnet, readNnet } from './nnet.ts';
 import { type DrftGraph, readNgrf } from './ngrf.ts';
 import { readColliders } from './drftColliders.ts';
+import { RegionLedger, readRegion } from './drftRegions.ts';
+import { expandAssembly } from './assemble.ts';
+import { checkCopies, readAssembly, readKit } from './drftAssembly.ts';
+import type { DrftAssembly } from './drftAssembly.ts';
+import { readLightVolume } from './drftLightVolume.ts';
+import type { DrftLightVolume } from './drftLightVolume.ts';
+import type { DrftRegion } from './drftRegions.ts';
 import { readInstances } from './drftInstances.ts';
 import type { DrftInstanceGroup } from './drftInstances.ts';
 import { readLights } from './drftLights.ts';
@@ -208,6 +221,24 @@ export interface DrftAsset {
    * ```
    */
   readonly colliders: readonly Float32Array[];
+  /**
+   * The regions of a streamed world, in the order they were written, or empty. `REGN`, defined at
+   * 1.21: each names the meshes it draws at every level, its props, occluders and collision.
+   */
+  readonly regions: readonly DrftRegion[];
+  /** A world's summed lights, or null for a file carrying no `LVOL`. Defined at 1.22. */
+  readonly lightVolume: DrftLightVolume | null;
+  /**
+   * The meshes that are kit pieces, ascending, or empty. `KITS`, defined at 1.23. A piece is in
+   * `meshes` like any other, and is drawn only as copies inside the assemblies.
+   */
+  readonly kit: readonly number[];
+  /**
+   * Each `MSHC` mesh as the file carried it, by ordinal, or empty. Its slot in `meshes` holds it
+   * expanded — which for a world built from a kit is most of a gigabyte, so a consumer of such a
+   * file streams it (`DrftStream.onAssembly`) rather than reading it whole.
+   */
+  readonly assemblies: ReadonlyMap<number, DrftAssembly>;
   /** Optional chunks this reader did not understand, in file order. Diagnostics only. */
   readonly skipped: readonly string[];
   readonly versionMajor: number;
@@ -290,6 +321,10 @@ export function readMesh(buffer: ArrayBuffer, chunk: DrftChunk): MeshData {
      writer set only one bit is rejected rather than half-skinned. See ATTR_JOINTS. */
   const joints = (attributes & ATTR_JOINTS) !== 0 ? floats(vertices * 4, 'joints') : undefined;
   const weights = (attributes & ATTR_WEIGHTS) !== 0 ? floats(vertices * 4, 'weights') : undefined;
+  /* Texture-array layers, 1.20, one float a vertex and last. See ATTR_LAYERS. */
+  const layers = (attributes & ATTR_LAYERS) !== 0 ? floats(vertices, 'layers') : undefined;
+  /* Sway, sky and opacity, 1.23, four floats a vertex and last. See ATTR_CHANNEL. */
+  const channel = (attributes & ATTR_CHANNEL) !== 0 ? floats(vertices * 4, 'channel') : undefined;
 
   const indexBytes = indexCount * 4;
   if (at + indexBytes > limit) {
@@ -312,6 +347,8 @@ export function readMesh(buffer: ArrayBuffer, chunk: DrftChunk): MeshData {
     ...(tangents === undefined ? {} : { tangents }),
     ...(joints === undefined ? {} : { joints }),
     ...(weights === undefined ? {} : { weights }),
+    ...(layers === undefined ? {} : { layers }),
+    ...(channel === undefined ? {} : { channel }),
   };
 
   /*
@@ -324,6 +361,15 @@ export function readMesh(buffer: ArrayBuffer, chunk: DrftChunk): MeshData {
 }
 
 /** Decode a `.drft` from a buffer. Throws `DrftError` on anything it cannot read. */
+/** A slot held for an assembly until its pieces are in hand. Never returned. */
+const EMPTY_MESH: MeshData = {
+  positions: new Float32Array(0),
+  normals: new Float32Array(0),
+  colors: new Float32Array(0),
+  emissive: new Float32Array(0),
+  indices: new Uint32Array(0),
+};
+
 export function readDrft(buffer: ArrayBuffer): DrftAsset {
   if (buffer.byteLength < HEADER_BYTES) {
     throw new DrftError(`a file is at least ${HEADER_BYTES} bytes, got ${buffer.byteLength}`);
@@ -382,6 +428,10 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
   let colliders: readonly Float32Array[] = [];
   /* Read once every mesh is counted, because a group is checked against the mesh count. */
   let instanceChunk: { offset: number; byteLength: number } | null = null;
+  const regionChunks: { offset: number; byteLength: number }[] = [];
+  let lightVolume: DrftLightVolume | null = null;
+  let kitChunk: { offset: number; byteLength: number } | null = null;
+  const assemblies = new Map<number, DrftAssembly>();
   let lights: DrftLight[] = [];
   const skipped: string[] = [];
   let head: DrftHead | null = null;
@@ -427,6 +477,11 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     /* A mesh like any other, in the same ordinal sequence: see `drftQuantised.ts`. */
     else if (chunk.code === CHUNK_MSHQ)
       meshes.push(decodeQuantisedMesh(buffer, chunk.offset, chunk.byteLength));
+    else if (chunk.code === CHUNK_MSHC) {
+      /* Its slot held, and filled once every piece is in hand. */
+      assemblies.set(meshes.length, readAssembly(buffer, chunk.offset, chunk.byteLength));
+      meshes.push(EMPTY_MESH);
+    } else if (chunk.code === CHUNK_KITS) kitChunk = chunk;
     /* A level of detail is a mesh payload under another code, so it takes the same reader. */
     else if (chunk.code === CHUNK_LODM)
       levels.push({ level: chunk.index, mesh: readMesh(buffer, chunk) });
@@ -443,6 +498,10 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     else if (chunk.code === CHUNK_ENTS) entities = readEnts(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_NODE) nodes = readNodes(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_INST) instanceChunk = chunk;
+    /* Read once every mesh is counted, since a region names meshes that follow it. */
+    else if (chunk.code === CHUNK_REGN) regionChunks.push(chunk);
+    else if (chunk.code === CHUNK_LVOL)
+      lightVolume = readLightVolume(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_LITE) lights = readLights(buffer, chunk.offset, chunk.byteLength);
     else if (chunk.code === CHUNK_SKIN)
       skins.push(readSkin(buffer, chunk.offset, chunk.byteLength));
@@ -530,6 +589,39 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     };
   }
 
+  const kit =
+    kitChunk === null ? [] : readKit(buffer, kitChunk.offset, kitChunk.byteLength, meshes.length);
+  const pieces = new Set(kit);
+  for (const o of kit) {
+    if (assemblies.has(o)) throw new DrftError(`mesh ${o} is a kit piece and an assembly`);
+  }
+  for (const [ordinal, assembly] of assemblies) {
+    checkCopies(assembly, ordinal, pieces, (o) => meshes[o]);
+    meshes[ordinal] = expandAssembly(assembly, (o) => meshes[o] as MeshData);
+  }
+
+  const ledger = new RegionLedger();
+  const regions = regionChunks.map((chunk) => {
+    const region = readRegion(buffer, chunk.offset, chunk.byteLength, meshes.length);
+    ledger.admit(region);
+    return region;
+  });
+  const instances =
+    instanceChunk === null
+      ? []
+      : readInstances(buffer, instanceChunk.offset, instanceChunk.byteLength, meshes.length);
+  /* A mesh placed by `INST` across the whole file and also a region's would be drawn twice. */
+  for (const group of instances) {
+    if (ledger.names(group.mesh)) {
+      throw new DrftError(`mesh ${group.mesh} is placed by INST and is also a region's`);
+    }
+    if (pieces.has(group.mesh))
+      throw new DrftError(`mesh ${group.mesh} is a kit piece and is placed by INST`);
+  }
+  for (const o of kit) {
+    if (ledger.names(o)) throw new DrftError(`mesh ${o} is a kit piece and a region's`);
+  }
+
   /* By the ordinal the file gave them rather than by where they sat, coarsest first. */
   levels.sort((a, b) => a.level - b.level);
   const lods = levels.map((entry) => entry.mesh);
@@ -540,10 +632,7 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     lods,
     levels: discreteLevels,
     nodes,
-    instances:
-      instanceChunk === null
-        ? []
-        : readInstances(buffer, instanceChunk.offset, instanceChunk.byteLength, meshes.length),
+    instances,
     lights,
     skins,
     clips,
@@ -554,6 +643,10 @@ export function readDrft(buffer: ArrayBuffer): DrftAsset {
     networks: nnet?.networks ?? [],
     graphs,
     colliders,
+    regions,
+    lightVolume,
+    kit,
+    assemblies,
     dtex,
     navigation,
     entities,

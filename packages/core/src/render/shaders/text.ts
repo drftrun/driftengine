@@ -27,7 +27,7 @@ uniform vec2 uViewport;
 /** Where the string's baseline-left sits, in pixels from the top left. */
 uniform vec2 uOrigin;
 uniform float uCellSize;
-/** Distance from the virtual camera; larger flattens the perspective. */
+/** How far each cell is seen from, head-on; larger flattens the perspective. */
 uniform float uDepth;
 
 /** 0 before a character has arrived, 1 once it has settled. */
@@ -105,14 +105,23 @@ void main() {
   vec2 cell = aCell * uCellSize;
   float bob = sin(uTime * 3.1 + aCharIndex * 0.7) * uBob;
 
-  // Pixels, y down from the top-left corner of the viewport.
-  vec2 screen = uOrigin + vec2(cell.x, -cell.y) + vec2(0.0, rise - bob);
-  vec3 view = vec3(screen + local3.xy, -uDepth + local3.z);
+  // The cell's centre in pixels, y down from the top-left corner of the viewport.
+  vec2 centre = uOrigin + vec2(cell.x, -cell.y) + vec2(0.0, rise - bob);
 
-  // A hand-built perspective divide. The near plane is the viewport itself, so
-  // a cell at depth uDepth is exactly its pixel size on screen.
-  float invDepth = uDepth / max(0.001, -view.z);
-  vec2 ndc = ((view.xy * invDepth) / uViewport) * 2.0 - 1.0;
+  // A hand-built perspective divide about the cell's own centre, so every cube
+  // is seen head-on: its front face at depth zero is exactly its cell, and at
+  // rest its sides are behind it wherever on the screen it is drawn.
+  //
+  // It divided about the viewport's top-left corner until 2026-09-30, which
+  // shifted a front face by its distance from that corner times z / uDepth and
+  // showed the side it uncovered. Near the corner that was nothing; across the
+  // screen it widened every stroke by up to a pixel either side and closed the
+  // one-cell gaps a 5x7 face reads by. What this gives up is the extruded look
+  // text far from the corner had at rest; what would make it wrong is a caller
+  // wanting that look, which is then one offset for every cell, not a position.
+  float invDepth = uDepth / max(0.001, uDepth - local3.z);
+  vec2 screen = centre + local3.xy * invDepth;
+  vec2 ndc = (screen / uViewport) * 2.0 - 1.0;
   // Depth from the cube's own extrusion, mapped into a narrow slice of the
   // range so a message sorts against itself without ever reaching the scene.
   float depth = clamp(-local3.z / max(1.0, uCellSize * 2.0), -1.0, 1.0) * 0.4;

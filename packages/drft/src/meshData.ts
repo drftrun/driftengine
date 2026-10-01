@@ -108,6 +108,25 @@ export interface MeshData {
    */
   relief?: Float32Array;
   /**
+   * Which image of a texture array each vertex's face wears: one whole number a vertex, 0 the first
+   * layer. Absent means layer 0, which is the only layer a plain texture has.
+   *
+   * **What it is for is a merged mesh wearing many images in one draw.** A block of forty buildings
+   * with forty facades is forty materials — forty draws, forty material changes — when each image
+   * is its own texture; with the facades as the layers of one array and each face naming its layer,
+   * it is one. `Renderer.createSurfaceTextureArray` builds the array, and every map of a material
+   * (albedo, normal, ORM, emissive) is read at the same layer, so an albedo and its emissive twin
+   * share an index.
+   *
+   * **It travels in the texture-coordinate attribute, as its third component**, because all
+   * sixteen of WebGL2's guaranteed vertex locations are spent in the instanced variant. So it needs
+   * `uvs` beside it and is refused without them: a layer with no coordinates addresses nothing.
+   *
+   * Whole numbers, checked, because the shader rounds to the nearest layer and a 1.5 would land on
+   * whichever side rounding favoured on that device.
+   */
+  layers?: Float32Array;
+  /**
    * Four floats per vertex, and the only attribute whose lanes mean four different things.
    *
    * `.x` **sway**: how far the shared wind moves this vertex, along the wind's own direction.
@@ -235,6 +254,25 @@ export function validateMeshData(data: MeshData): void {
   check('grain', data.grain, 1);
   check('relief', data.relief, 1);
   check('channel', data.channel, 4);
+  check('layers', data.layers, 1);
+  if (data.layers !== undefined) {
+    if (data.uvs === undefined) {
+      throw new Error(
+        'Mesh: layers without uvs — a texture-array layer travels as the third texture coordinate, ' +
+          'so a mesh that names layers has to supply the two it rides with',
+      );
+    }
+    const layers = data.layers;
+    for (let v = 0; v < layers.length; v++) {
+      const layer = layers[v] as number;
+      if (!(layer >= 0) || Math.floor(layer) !== layer) {
+        throw new Error(
+          `Mesh: layer ${layer} at vertex ${v} — a texture-array layer is a whole number at or ` +
+            'above zero, and anything else lands on whichever layer the device rounds it to',
+        );
+      }
+    }
+  }
   /*
    * `tangents` was declared optional on 2026-08-22 and was not checked here until 2026-08-25, which
    * made the widest optional attribute in the format the one a short buffer could reach a driver

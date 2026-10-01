@@ -25,7 +25,8 @@ export class LatePass {
   private readonly layout: GPUBindGroupLayout;
   private readonly pipeline: GPURenderPipeline;
   private readonly sizes: GPUBuffer;
-  private readonly sizeStaging = new Float32Array(4);
+  /** The render size and the output size, then the frame's jitter in render texels. */
+  private readonly sizeStaging = new Float32Array(8);
   private group: GPUBindGroup | null = null;
   private groupSource: GPUTextureView | null = null;
 
@@ -49,7 +50,7 @@ export class LatePass {
     });
     this.sizes = device.createBuffer({
       label: 'recon.lateDepth.sizes',
-      size: 16,
+      size: 32,
       usage: 0x40 | 0x8, // UNIFORM | COPY_DST
     });
   }
@@ -69,7 +70,10 @@ export class LatePass {
     return this.depthTextureView as GPUTextureView;
   }
 
-  /** Fill the output-size depth from `source`, the render's single-sample depth. */
+  /**
+   * Fill the output-size depth from `source`, the render's single-sample depth, drawn jittered by
+   * (`jitterX`, `jitterY`) render texels — which the fill takes back out (`recon/lateDepth.ts`).
+   */
   upscale(
     encoder: GPUCommandEncoder,
     source: GPUTextureView,
@@ -77,12 +81,16 @@ export class LatePass {
     renderHeight: number,
     outputWidth: number,
     outputHeight: number,
+    jitterX: number,
+    jitterY: number,
   ): void {
     const target = this.depthView(outputWidth, outputHeight);
     this.sizeStaging[0] = renderWidth;
     this.sizeStaging[1] = renderHeight;
     this.sizeStaging[2] = outputWidth;
     this.sizeStaging[3] = outputHeight;
+    this.sizeStaging[4] = jitterX;
+    this.sizeStaging[5] = jitterY;
     this.device.queue.writeBuffer(this.sizes, 0, this.sizeStaging);
     if (this.group === null || this.groupSource !== source) {
       this.group = this.device.createBindGroup({
@@ -120,6 +128,7 @@ export class LatePass {
     command.indexBuffer = null;
     command.indexed = false;
     command.instances = 1;
+    command.indirect = null;
     return command;
   }
 

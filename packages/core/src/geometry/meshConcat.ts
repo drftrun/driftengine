@@ -28,6 +28,7 @@ const OPTIONAL = [
   ['channel', 4],
   ['joints', 4],
   ['weights', 4],
+  ['layers', 1],
 ] as const;
 
 /**

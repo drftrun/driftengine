@@ -553,3 +553,31 @@ describe('the completeness radius', () => {
     expect(Array.from(mixed.weights.subarray(0, 2))).toEqual([-1, 1]);
   });
 });
+
+/**
+ * **Two lamps exactly as far away take the shadow list in the order they were listed.**
+ *
+ * The list's ranks were single precision and the distance they were compared against double, so an
+ * exact tie was decided by rounding: 1.1 m along x and along y is 1.2100000000000002 squared, which
+ * rounds up to 1.2100000381 in single, so the second lamp compared as nearer than the first and took
+ * the first slot. The shaded list has always broken a tie by the order the sources were listed; the
+ * shadow list now does too, whatever order it meets them in.
+ */
+test('A TIE FOR A SHADOW MAP GOES TO THE LAMP LISTED FIRST, not to the way its distance rounded', () => {
+  const lamp = (x: number, y: number): PointLightSource => ({
+    x,
+    y,
+    z: 0,
+    r: 1,
+    g: 1,
+    b: 1,
+    radius: 5,
+    flicker: 0,
+    shadowNear: 0.1,
+    sourceRadius: 0.1,
+  });
+  const out = createPointLightBuffer();
+  selectPointLights([lamp(1.1, 0), lamp(0, 1.1)], 0, 0, 0, out);
+  expect(out.shadowCount).toBe(2);
+  expect([out.shadowIndex[0], out.shadowIndex[1]]).toEqual([0, 1]);
+});

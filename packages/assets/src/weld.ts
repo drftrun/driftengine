@@ -64,6 +64,12 @@ const ATTRIBUTES = {
    * tip merged into the trunk it grows from would stop moving.
    */
   channel: 4,
+  /*
+   * The texture-array layer. In the key for the same reason as the channel: two vertices at one
+   * position on two faces wearing different images are two vertices, and welding them would put one
+   * face on the other's picture.
+   */
+  layers: 1,
 } as const satisfies Record<PerVertexAttribute, number>;
 
 /**

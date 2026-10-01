@@ -542,6 +542,23 @@ function closestOnPolytope(
       bestPlane = f;
     }
   }
+  /*
+   * **One face is a surface, not a solid: behind it is inside only where the point projects onto
+   * it.** A mesh's triangle arrives here as a polytope of one face, and "behind every face" is then
+   * the whole half-space behind the triangle's plane — so a capsule standing on a kerb, its axis a
+   * few centimetres past the kerb's front face, was "inside" that face's triangles half a metre above
+   * them, pushed back along the face normal and stopped dead on top of the kerb. Where the point
+   * projects outside the triangle the closest point is on its boundary, which the outside path finds
+   * and the mesh's one-sided rule then sorts. Behind the triangle and over it is still inside, which
+   * is what holds a sphere that has dipped a little through a floor.
+   */
+  if (
+    inside &&
+    faces === 1 &&
+    !projectsOntoFace(shape, world, planes, px, py, pz, bestPlane, bestPlaneDist)
+  ) {
+    inside = false;
+  }
   if (inside) {
     const nx = planes[bestPlane * 4] ?? 0;
     const ny = planes[bestPlane * 4 + 1] ?? 0;
@@ -596,6 +613,54 @@ function closestOnPolytope(
 }
 
 const TRI = new Float64Array(3);
+
+/**
+ * Whether `p`, `distance` from face `face`'s plane along its normal, projects inside that face: the
+ * closest point on the face to its projection is the projection itself.
+ */
+function projectsOntoFace(
+  shape: ConvexShape,
+  world: Float32Array,
+  planes: Float32Array,
+  px: number,
+  py: number,
+  pz: number,
+  face: number,
+  distance: number,
+): boolean {
+  const n = faceVertices(shape, face, loop);
+  /* The world plane the distance was measured against, so a rotated mesh projects correctly. */
+  const nx = planes[face * 4] ?? 0;
+  const ny = planes[face * 4 + 1] ?? 0;
+  const nz = planes[face * 4 + 2] ?? 0;
+  const qx = px - nx * distance;
+  const qy = py - ny * distance;
+  const qz = pz - nz * distance;
+  const a = (loop[0] ?? 0) * 3;
+  for (let i = 1; i + 1 < n; i++) {
+    const b = (loop[i] ?? 0) * 3;
+    const c = (loop[i + 1] ?? 0) * 3;
+    closestOnTriangle(
+      qx,
+      qy,
+      qz,
+      world[a] ?? 0,
+      world[a + 1] ?? 0,
+      world[a + 2] ?? 0,
+      world[b] ?? 0,
+      world[b + 1] ?? 0,
+      world[b + 2] ?? 0,
+      world[c] ?? 0,
+      world[c + 1] ?? 0,
+      world[c + 2] ?? 0,
+    );
+    const dx = qx - TRI[0];
+    const dy = qy - TRI[1];
+    const dz = qz - TRI[2];
+    if (dx * dx + dy * dy + dz * dz < 1e-12) return true;
+  }
+  return false;
+}
 
 /** Closest point on a triangle to `p`, by the standard barycentric region test. */
 function closestOnTriangle(

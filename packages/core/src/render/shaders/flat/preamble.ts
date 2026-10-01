@@ -1,5 +1,6 @@
 /** Version, inputs, uniforms and the defines the rest of the fragment shader is written against. */
 import { COOKIE_TILE } from '../../lightBudget.ts';
+import { IES_ATLAS_WIDTH } from '../../iesProfile.ts';
 import {
   CLUSTER_TEXELS,
   CLUSTER_X,
@@ -51,7 +52,7 @@ in vec3 vWorldPos;
 in float vEmissive;
 in float vSpecular;
 in vec4 vLightPos;
-in vec2 vUv;
+in vec3 vUv;
 in vec3 vEmissiveColor;
 in float vRoughness;
 /*
@@ -136,7 +137,7 @@ flat in int vHasTangents;
  * biome recolours a whole world without a second texture, and a mesh whose texture is
  * white shades identically to one with no texture at all.
  */
-uniform sampler2D uAlbedo;
+uniform mediump sampler2DArray uAlbedo;
 /** 0 leaves every textured path unevaluated, for the majority of geometry with no image. */
 uniform int uAlbedoEnabled;
 /**
@@ -152,6 +153,12 @@ uniform int uAlbedoEnabled;
  * else changes.
  */
 uniform float uAlbedoCutout;
+/**
+ * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
+ * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
+ * as no effects at all. See \`surfaceEffects.ts\` for the layout.
+ */
+uniform mediump sampler2D uSurfaceEffects;
 
 /**
  * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
@@ -169,7 +176,7 @@ uniform int uDoubleSided;
  * display values bends every normal toward the surface and reads as a green tint over everything.
  * SurfaceTextureOptions.colorSpace already defaults to linear and says why.
  */
-uniform highp sampler2D uNormalMap;
+uniform highp sampler2DArray uNormalMap;
 /**
  * How hard the map turns the shading normal. 0 is no map at all, and gates the whole block.
  *
@@ -191,7 +198,7 @@ uniform float uNormalStrength;
  * Sampled linear and never sRGB. These three numbers *are* the data, not a picture of it, and
  * decoding them as display values would bend every one of them toward its floor.
  */
-uniform highp sampler2D uOrmMap;
+uniform highp sampler2DArray uOrmMap;
 /**
  * 1 when a map is bound. Gates the whole block, following uAlbedoEnabled.
  *
@@ -237,7 +244,7 @@ uniform float uEnvironmentPrefiltered;
  * above, and now with a number behind them: a fifth flag was built and measured at 49% of the
  * bundle. See \`ARCHITECTURE.md\` §1.
  */
-uniform highp sampler2D uEmissiveMap;
+uniform highp sampler2DArray uEmissiveMap;
 /** 1 when a map is bound. Gates the sample, following uOrmEnabled. */
 uniform int uEmissiveMapEnabled;
 /**
@@ -313,9 +320,21 @@ uniform vec3 uAmbient;
 uniform vec3 uAmbientGround;
 ${FOG_GLSL}
 uniform vec3 uCameraPos;
-/** Optional world plane; reflection passes retain only the viewer's side. */
+/**
+ * Optional world plane; reflection passes retain only the viewer's side.
+ *
+ * **Zero is off, and there is no flag beside it.** A zero plane gives \`dot(p, 0) = 0\`, which is
+ * never below zero, so it discards nothing — the \`uClipEnabled\` int that stood here said nothing
+ * the plane could not, and a scalar is a whole uniform row on WebGL2. Its row paid for
+ * \`uSurfaceScene\`. Other programs keep their own flags; this is the lit stage's alone.
+ */
 uniform vec4 uClipPlane;
-uniform int uClipEnabled;
+/**
+ * The scene's surface clock and weather, from the environment: x seconds on the caller's clock, y
+ * how wet the world is, z the share of facade windows lit, w the share that stays lit however late.
+ * One row for all four, paid for by the flag the clip plane no longer needs.
+ */
+uniform vec4 uSurfaceScene;
 uniform float uEmissiveGain;
 uniform float uNightFactor;
 #if NIGHT_EMISSIVE
@@ -345,22 +364,47 @@ uniform float uNightEmissive;
 uniform float uOpacity;
 
 /**
- * Whether this draw is accumulating into the order-independent transparency buffers, and
- * therefore weights its own output. 0 is every draw that is not, which is every draw on every
+ * Two per-draw switches on how a fragment is *written* rather than what colour it is, sharing one
+ * row: on WebGL2 every scalar uniform takes a row of its own, and the eight-light rung stands at 255
+ * of the 256 an Adreno 740 offers (\`uniformVectorBudget.test.ts\`), so a second scalar would have
+ * spent the last row and the next uniform anybody added would drop that part to four lights.
+ *
+ * **\`.x\` — whether this draw is accumulating into the order-independent transparency buffers**,
+ * and therefore weights its own output. 0 is every draw that is not, which is every draw on every
  * published scene.
  *
- * **A uniform rather than a permutation, and the cost is why.** Writing the accumulation and the
+ * A uniform rather than a permutation, and the cost is why. Writing the accumulation and the
  * revealage from one pass needs a second fragment output, which is another \`flatFrag\` axis —
  * measured in \`scripts/wgsl.ts\` at about 247 KB gzipped, doubling the sixteen fragment variants,
  * and paid by every consumer whether or not they ever switch this on. A branch on a uniform costs
  * a compare, and the geometry is submitted twice instead. See \`orderIndependent.ts\`.
  *
- * **The revealage pass does not read this.** It draws with this at 0 and a blend of
+ * The revealage pass does not read it. It draws with it at 0 and a blend of
  * \`(ZERO, ONE_MINUS_SRC_ALPHA)\`, so the colour it computes is multiplied away and only its alpha
  * reaches the target — which is exactly the point: both passes run the same code to decide what
  * alpha this fragment has, so they cannot disagree about it.
+ *
+ * **\`.y\` — how much of this draw survives a screen-door dither**, for a crossfade between two
+ * levels of detail of one thing. 0 is off, and every draw that never asked for it. Positive keeps
+ * that share of an 8×8 Bayer pattern's cells; negative keeps the complement — the cells a draw at
+ * the positive amount leaves out — so two draws at \`t\` and \`-t\` cover every pixel exactly once,
+ * whatever \`t\` is. Keyed on the framebuffer's own pixel, whose y runs the other way on WebGPU, so
+ * the grain is mirrored between backends and nothing else about it differs. What it gives up: a
+ * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
+ * draw that asks for it is dithered too, since the test is a discard.
  */
-uniform float uOitWeighted;
+uniform vec2 uWriteMode;
+
+/** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
+bool ditherKeeps(float amount) {
+  uvec2 p = uvec2(gl_FragCoord.xy) & 7u;
+  uint a = p.x ^ p.y;
+  uint b = p.y;
+  uint cell = ((a & 1u) << 5) | ((b & 1u) << 4) | ((a & 2u) << 2) | ((b & 2u) << 1) |
+    ((a & 4u) >> 1) | ((b & 4u) >> 2);
+  float threshold = (float(cell) + 0.5) / 64.0;
+  return amount > 0.0 ? threshold < amount : threshold >= -amount;
+}
 
 /**
  * Whether the fragment stage runs any lighting: ambient, the sun, point lights, specular,
@@ -384,10 +428,11 @@ uniform float uOitWeighted;
  */
 uniform int uLightingEnabled;
 /**
- * Whether this draw recedes into the medium: the atmospheric haze and the underwater tint
- * both, folded together because both are the *camera's* medium rather than a property of the
- * surface — see \`mediumFog\`/\`mediumColor\` in \`fog.ts\`. 1 keeps both, matching every draw
- * before this existed.
+ * How this draw meets the medium: the atmospheric haze and the underwater tint both, folded
+ * together because both are the *camera's* medium rather than a property of the surface — see
+ * \`mediumFog\`/\`mediumColor\` in \`fog.ts\`. 1 recedes into it, matching every draw before this
+ * existed; 2 fades in it without taking its colour, which is what an additive draw is given; 0
+ * keeps out of it. The rule is \`fogModeOf\` in \`backend/drawFog.ts\`.
  *
  * **Independent of \`uLightingEnabled\`, and that is the point of it being a second uniform
  * rather than the same one.** "Unlit but still fading into the haze" is a real thing to
@@ -737,15 +782,15 @@ uniform vec3 uLightIesAxis[MAX_LIGHTS];
  */
 uniform float uLightCookie[MAX_LIGHTS];
 /**
- * Photometric profiles: one row per fixture, a fixture's intensity by vertical angle across it.
+ * Photometric profiles: one row per fixture, a fixture's intensity by vertical angle across it, in
+ * the bottom band of the fixture atlas below.
  *
  * **Every row spans the same 0 to 180 degree arc**, whatever the file measured, which is what lets
  * a light carry only a row index — see \`iesProfile.ts\`. With no profile loaded this holds a
  * single row of ones, the multiplicative identity, because a declared sampler needs a complete
  * texture whether or not the branch reads it and a row of zeros would switch off every light.
  */
-uniform sampler2D uIesAtlas;
-/** Rows in the atlas, so a row index becomes a coordinate. At least 1. */
+/** Rows of profile in the fixture atlas, below its cookies. At least 1. */
 uniform float uIesAtlasRows;
 /**
  * Horizontal planes each profile occupies, so a row is \`profile * planes + plane\`.
@@ -765,8 +810,14 @@ uniform float uIesPlaneCount;
  * identity, because a declared sampler needs a complete texture whether or not the branch reads it
  * and a black stand-in would switch off every light that reached it.
  */
-uniform sampler2D uCookieAtlas;
 uniform float uCookieTiles;
+/**
+ * Both tables in one texture: the cookies' row of tiles in the top band, the profiles' rows below.
+ * One sampler for the two since 2026-09-30, because the lit stage bound fifteen of the sixteen
+ * WebGL2 guarantees; see \`fixtureAtlas.ts\`. The bands are found from \`textureSize\` and
+ * \`uIesAtlasRows\`, so the fold cost no uniform.
+ */
+uniform sampler2D uFixtureAtlas;
 /**
  * Half a texel of a tile, so a cookie's edge cannot reach its neighbour in the atlas.
  *
@@ -775,6 +826,10 @@ uniform float uCookieTiles;
  * cookie. Derived from \`COOKIE_TILE\` rather than written twice.
  */
 #define COOKIE_INSET (0.5 / ${COOKIE_TILE}.0)
+/** Texels across a profile's row, where a vertical angle of 0 to 180 degrees is laid. */
+#define IES_WIDTH ${IES_ATLAS_WIDTH}.0
+/** Texels a cookie's tile spans, on both axes. */
+#define COOKIE_SPAN ${COOKIE_TILE}.0
 /**
  * Rectangular area lights, and how many of them are live.
  *

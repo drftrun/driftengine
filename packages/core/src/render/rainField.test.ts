@@ -230,3 +230,41 @@ test('and the shutter time does too, so a downpour can smear without falling fas
   field.update(DT, 0, 0, 0);
   expect((field.segments.to[1] ?? 0) - (field.segments.from[1] ?? 0)).toBeCloseTo(0.9, 5);
 });
+
+/** How near the streak `i` comes to (x, y, z): the distance to the segment, not to an end. */
+function nearest(field: RainField, i: number, x: number, y: number, z: number): number {
+  const f = field.segments.from;
+  const t = field.segments.to;
+  const ax = (f[i * 3] ?? 0) - x;
+  const ay = (f[i * 3 + 1] ?? 0) - y;
+  const az = (f[i * 3 + 2] ?? 0) - z;
+  const dx = (t[i * 3] ?? 0) - (f[i * 3] ?? 0);
+  const dy = (t[i * 3 + 1] ?? 0) - (f[i * 3 + 1] ?? 0);
+  const dz = (t[i * 3 + 2] ?? 0) - (f[i * 3 + 2] ?? 0);
+  const s = Math.min(
+    Math.max(-(ax * dx + ay * dy + az * dz) / (dx * dx + dy * dy + dz * dz), 0),
+    1,
+  );
+  return Math.hypot(ax + dx * s, ay + dy * s, az + dz * s);
+}
+
+test('A DROP FALLING PAST THE EYE IS NOT DRAWN, where its streak would be a bar across the frame', () => {
+  /* A slab two metres about the eye, dense enough that drops pass through the metre around it. */
+  const options = { count: 4000, radiusM: 2, heightM: 2, speedMps: 15, streakSec: 0.06 };
+  const near = (field: RainField): number => {
+    let n = 0;
+    for (let i = 0; i < field.segments.count; i++) if (nearest(field, i, 0, 0, 0) < 1) n++;
+    return n;
+  };
+  /* The control: with no clearance, plenty of streaks come within a metre of the eye. */
+  const bare = new RainField({ ...options, clearM: 0 });
+  bare.update(DT, 0, 0, 0);
+  expect(near(bare)).toBeGreaterThan(100);
+  /* By default none does, and the rest of the slab still rains. */
+  const field = new RainField(options);
+  for (let tick = 0; tick < 30; tick++) {
+    field.update(DT, 0, 0, 0);
+    expect(near(field)).toBe(0);
+  }
+  expect(field.segments.count).toBeGreaterThan(2000);
+});

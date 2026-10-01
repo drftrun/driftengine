@@ -213,3 +213,13 @@ test('a negative zero is the same number as a zero, and NaN is the same as NaN',
   };
   expect(weldMesh(mesh).positions).toHaveLength(pairs * 2 * 3);
 });
+
+test('A TEXTURE-ARRAY LAYER DECIDES IDENTITY: corners on two layers stay two vertices', () => {
+  const uvs = new Float32Array([0.25, 0.5, 0.25, 0.5]);
+  const apart = weldMesh({ ...pair(), uvs, layers: new Float32Array([2, 7]) });
+  expect(apart.positions, 'two faces wearing two images keep their own corners').toHaveLength(6);
+  expect(apart.layers).toEqual(new Float32Array([2, 7]));
+  const merged = weldMesh({ ...pair(), uvs, layers: new Float32Array([4, 4]) });
+  expect(merged.positions, 'one image, one corner').toHaveLength(3);
+  expect(merged.layers).toEqual(new Float32Array([4]));
+});

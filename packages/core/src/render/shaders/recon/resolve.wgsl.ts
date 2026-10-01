@@ -34,12 +34,16 @@
  * fn reconMotion(x: i32, y: i32) -> vec4<f32>         // uv, previous view depth, flag
  * fn reconHistory(x: i32, y: i32) -> vec4<f32>        // output size, colour and gathered weight
  * fn reconHistoryBilinear(p: vec2<f32>) -> vec4<f32>
+ * fn reconFlicker(x: i32, y: i32) -> vec4<f32>        // output size, last frame's flicker record
+ * fn reconSwing(x: i32, y: i32) -> f32                // output size, last frame's held depth swing
  * ```
  *
  * and the uniform `recon: ReconParams`, whose struct this module declares.
  */
 import { wgslSceneDepthToNdc } from '../../depthConvention.ts';
 import { PLANAR_FROM, PLANAR_TO } from '../../recon/disocclusion.ts';
+import { DEPTH_SWING_WIDTH } from '../../recon/resolve.ts';
+import { FLICKER_BLEND, FLICKER_REPEAT, STILL_FROM, STILL_TO } from '../../temporalAa.ts';
 
 /**
  * The parameters one resolve reads, as `ResolveFrame` minus its images.
@@ -66,11 +70,16 @@ struct ReconParams {
   motionScale: f32,
   normalFloor: f32,
   normalCeiling: f32,
+  periodStart: u32,
+  antiFlicker: u32,
+  flickerMemory: f32,
+  flickerWidth: f32,
+  reprojection: mat4x4<f32>,
 }
 `;
 
 /** Floats in `ReconParams`, which is what a caller sizes its uniform buffer by. */
-export const RECON_PARAM_FLOATS = 72;
+export const RECON_PARAM_FLOATS = 92;
 
 /** `SAMPLE_SPREAD` and `CONFIDENT_WEIGHT`, which the reference exports and this must not restate. */
 export const RECON_SAMPLE_SPREAD = 0.47;
@@ -91,8 +100,8 @@ export const RECON_WORKGROUP = 8;
 export const RECON_HISTORY_FORMAT: GPUTextureFormat = 'rgba16float';
 
 /**
- * The arithmetic, as text. Defines `reconResolvePixel(ox, oy) -> vec4<f32>` — the next history's
- * colour and the weight it has gathered — and `reconSharpenAt(ox, oy) -> vec3<f32>`, the picture
+ * The arithmetic, as text. Defines `reconResolvePixel(ox, oy) -> ReconResolved` — the next
+ * history's colour and the weight it has gathered, and the pixel's next flicker record — and `reconSharpenAt(ox, oy) -> vec3<f32>`, the picture
  * shown, which reads the history the first has already written.
  */
 export const RECON_RESOLVE_CORE_WGSL = /* wgsl */ `
@@ -100,6 +109,11 @@ const RECON_SAMPLE_SPREAD: f32 = ${RECON_SAMPLE_SPREAD};
 const RECON_CONFIDENT_WEIGHT: f32 = ${RECON_CONFIDENT_WEIGHT}.0;
 const RECON_PLANAR_FROM: f32 = ${PLANAR_FROM};
 const RECON_PLANAR_TO: f32 = ${PLANAR_TO};
+const RECON_FLICKER_BLEND: f32 = ${FLICKER_BLEND};
+const RECON_FLICKER_REPEAT: f32 = ${FLICKER_REPEAT};
+const RECON_STILL_FROM: f32 = ${STILL_FROM};
+const RECON_STILL_TO: f32 = ${STILL_TO};
+const RECON_DEPTH_SWING_WIDTH: f32 = ${DEPTH_SWING_WIDTH}.0;
 
 fn reconClampTexel(value: i32, size: i32) -> i32 {
   return clamp(value, 0, size - 1);
@@ -467,6 +481,10 @@ fn reconSurfaceAt(previous: bool, x: i32, y: i32, centre: f32) -> ReconSurface {
 struct ReconHistory {
   weight: f32,
   colour: vec4<f32>,
+  /* How far the surface moved, in output pixels; read only where the weight is not zero. */
+  moved: f32,
+  /* How far, relative, last frame's depth missed the one expected there; -1 where none was held. */
+  missed: f32,
 }
 
 /*
@@ -474,10 +492,12 @@ struct ReconHistory {
  * behind last frame's eye or off its picture, and otherwise what it gathered, scaled by whether it
  * is the same surface.
  */
-fn reconHistoryWeight(u: f32, v: f32, dx: i32, dy: i32) -> ReconHistory {
+fn reconHistoryWeight(u: f32, v: f32, dx: i32, dy: i32, swing: f32) -> ReconHistory {
   var out: ReconHistory;
   out.weight = 0.0;
   out.colour = vec4<f32>(0.0);
+  out.moved = 0.0;
+  out.missed = -1.0;
   if (recon.hasHistory == 0u) { return out; }
   let rw = f32(recon.renderSize.x);
   let rh = f32(recon.renderSize.y);
@@ -490,20 +510,24 @@ fn reconHistoryWeight(u: f32, v: f32, dx: i32, dy: i32) -> ReconHistory {
     mv = motion.y;
     expected = motion.z;
   } else {
-    let here = reconWorldAt(false, dx, dy);
-    if (!(here.depth > 0.0)) { return out; }
-    let clip = recon.previousViewProj * vec4<f32>(here.position, 1.0);
+    /* Through the one reprojection matrix the renderer multiplied: see resolve.ts. */
+    let du = (f32(dx) + 0.5 - recon.jitter.x) / rw;
+    let dv = (f32(dy) + 0.5 - recon.jitter.y) / rh;
+    let ndc = vec4<f32>(du * 2.0 - 1.0, dv * 2.0 - 1.0, reconDepth(dx, dy), 1.0);
+    let m = recon.inverseViewProj;
+    let hw = m[0][3] * ndc.x + m[1][3] * ndc.y + m[2][3] * ndc.z + m[3][3];
+    if (!(hw > 1e-12)) { return out; }
+    let clip = recon.reprojection * ndc;
     /*
      * A surface behind last frame's eye has a w that is not positive: the disocclusion trusts no
      * such depth, so it needs no refusal of its own here.
      */
-    expected = clip.w;
-    let du = (f32(dx) + 0.5 - recon.jitter.x) / rw;
-    let dv = (f32(dy) + 0.5 - recon.jitter.y) / rh;
-    mu = (clip.x / expected) * 0.5 + 0.5 - du;
-    mv = (clip.y / expected) * 0.5 + 0.5 - dv;
+    expected = clip.w / hw;
+    mu = (clip.x / clip.w) * 0.5 + 0.5 - du;
+    mv = (clip.y / clip.w) * 0.5 + 0.5 - dv;
   }
 
+  out.moved = length(vec2<f32>(mu * f32(recon.outputSize.x), mv * f32(recon.outputSize.y)));
   let pu = u + mu;
   let pv = v + mv;
   if (!(pu >= 0.0 && pu <= 1.0 && pv >= 0.0 && pv <= 1.0)) { return out; }
@@ -550,13 +574,41 @@ fn reconHistoryWeight(u: f32, v: f32, dx: i32, dy: i32) -> ReconHistory {
       normalDot = 1.0 - planar * (1.0 - dot(hereNormal.normal, thereNormal.normal));
     }
   }
-  let trust = reconDisocclusion(expected, held, length(vec2<f32>(mu, mv)), normalDot, here.slope);
+  if (held > 0.0 && expected > 0.0) { out.missed = abs(held - expected) / expected; }
+  /* A still pixel's own held depth swing: see resolve.ts. */
+  var swung = 0.0;
+  if (swing > 0.0) {
+    swung = RECON_DEPTH_SWING_WIDTH * swing *
+      (1.0 - reconSmoothstep(RECON_STILL_FROM, RECON_STILL_TO, out.moved));
+  }
+  let trust = reconDisocclusion(
+    expected,
+    held,
+    length(vec2<f32>(mu, mv)),
+    normalDot,
+    here.slope + swung,
+  );
   out.weight = out.colour.w * trust;
   return out;
 }
 
-/* One output pixel: the history's next colour, before sharpening, and the weight it has gathered. */
-fn reconResolvePixel(ox: i32, oy: i32) -> vec4<f32> {
+/* temporalAa.ts's repeats: whether two periods' means are the same, one to zero. */
+fn reconRepeats(mean: f32, previous: f32) -> f32 {
+  let apart = abs(mean - previous) / max(max(mean, previous), 1.0 / 255.0);
+  return 1.0 - reconSmoothstep(RECON_FLICKER_REPEAT, 2.0 * RECON_FLICKER_REPEAT, apart);
+}
+
+struct ReconResolved {
+  /* The history's next colour, before sharpening, and the weight it has gathered. */
+  colour: vec4<f32>,
+  /* The pixel's next flicker record: spread, this period's sum, last period's mean, repeats. */
+  record: vec4<f32>,
+  /* And its next held depth swing. */
+  swing: f32,
+}
+
+/* One output pixel: the history's next colour and weight, and its next flicker record. */
+fn reconResolvePixel(ox: i32, oy: i32) -> ReconResolved {
   let rw = i32(recon.renderSize.x);
   let rh = i32(recon.renderSize.y);
   let ow = i32(recon.outputSize.x);
@@ -604,18 +656,68 @@ fn reconResolvePixel(ox: i32, oy: i32) -> vec4<f32> {
   accum = accum / gathered;
 
   /* The history, and the weight it still deserves; a tenth of each frame is always new. */
-  let cap = (1.0 - recon.alpha) / recon.alpha;
-  let history = reconHistoryWeight(u, v, dx, dy);
+  var swing = 0.0;
+  if (recon.antiFlicker != 0u) { swing = reconSwing(ox, oy); }
+  let history = reconHistoryWeight(u, v, dx, dy, swing);
+  var cap = (1.0 - recon.alpha) / recon.alpha;
+  var low = box.low;
+  var high = box.high;
+  var out: ReconResolved;
+  out.record = vec4<f32>(0.0);
+  out.swing = 0.0;
+  /* The anti-flicker, operation for operation resolve.ts's: see temporalAa.ts. */
+  if (recon.antiFlicker != 0u) {
+    let seen = dot(accum, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let memory = recon.flickerMemory;
+    let width = recon.flickerWidth;
+    var held = vec4<f32>(0.0, seen * memory, seen, 0.0);
+    if (history.weight > 0.0) { held = reconFlicker(ox, oy); }
+    var still = 0.0;
+    if (history.weight > 0.0) {
+      still = 1.0 - reconSmoothstep(RECON_STILL_FROM, RECON_STILL_TO, history.moved);
+    }
+    let apart = abs(seen - held.z);
+    let within = apart <= width * held.x + 1.0 / 255.0;
+    let proven = held.w > 0.75 && within;
+    var widen = 0.0;
+    let base = 1.0 - recon.alpha;
+    var keep = base;
+    if (proven) {
+      widen = width * held.x * still;
+      keep = base + (RECON_FLICKER_BLEND - base) * still;
+    }
+    low = low - vec3<f32>(widen);
+    high = high + vec3<f32>(widen);
+    cap = keep / (1.0 - keep);
+    var sum = held.y;
+    var mean = held.z;
+    var repeated = 0.0;
+    if (within) { repeated = held.w; }
+    if (recon.periodStart != 0u) {
+      if (reconRepeats(sum, mean) > 0.5) { repeated = min(1.0, repeated + 0.5); } else { repeated = 0.0; }
+      mean = sum;
+      sum = 0.0;
+    }
+    out.record = vec4<f32>(
+      held.x + (apart - held.x) * memory,
+      sum + seen * memory,
+      mean,
+      repeated * still,
+    );
+    /* The peak carried on, halving over a period, whatever the test said. */
+    if (history.missed >= 0.0) { out.swing = max(history.missed, swing * pow(0.5, memory)); }
+  }
   let kept = min(cap, history.weight);
 
   let total = kept + gathered;
   var mixed = accum;
   if (kept > 0.0) {
-    let clipped = reconClipToBox(reconToYCoCg(history.colour.xyz), box.low, box.high);
+    let clipped = reconClipToBox(reconToYCoCg(history.colour.xyz), low, high);
     mixed = reconAccumulate(accum, reconFromYCoCg(clipped), 1.0, gathered / total);
   }
   let known = min(1.0, total / RECON_CONFIDENT_WEIGHT);
-  return vec4<f32>(sample * (1.0 - known) + mixed * known, total);
+  out.colour = vec4<f32>(sample * (1.0 - known) + mixed * known, total);
+  return out;
 }
 
 /*
@@ -655,8 +757,9 @@ fn reconSharpenAt(ox: i32, oy: i32) -> vec3<f32> {
  * doing its own bilinear so the comparison is arithmetic rather than a tolerance on the device's
  * sampler.
  *
- * Two entry points over one set of bindings. `resolveMain` writes four floats a pixel — the next
- * history — and `sharpenMain` reads that history back at binding 4 and writes three.
+ * Two entry points over one set of bindings. `resolveMain` writes nine floats a pixel — the next
+ * history, the next flicker record and the next depth swing — and `sharpenMain` reads that history back at binding 4
+ * and writes three.
  */
 export function reconResolveParityWgsl(): string {
   return /* wgsl */ `
@@ -668,6 +771,16 @@ export function reconResolveParityWgsl(): string {
 ${RECON_PARAMS_WGSL}
 @group(0) @binding(5) var<uniform> recon: ReconParams;
 @group(0) @binding(6) var<storage, read_write> output: array<f32>;
+@group(0) @binding(7) var flickerTexture: texture_2d<f32>;
+@group(0) @binding(8) var swingTexture: texture_2d<f32>;
+
+fn reconFlicker(x: i32, y: i32) -> vec4<f32> {
+  return textureLoad(flickerTexture, vec2<i32>(x, y), 0);
+}
+
+fn reconSwing(x: i32, y: i32) -> f32 {
+  return textureLoad(swingTexture, vec2<i32>(x, y), 0).x;
+}
 
 fn reconScene(x: i32, y: i32) -> vec3<f32> {
   return textureLoad(sceneTexture, vec2<i32>(x, y), 0).xyz;
@@ -725,11 +838,16 @@ ${RECON_RESOLVE_CORE_WGSL}
 fn resolveMain(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= recon.outputSize.x || id.y >= recon.outputSize.y) { return; }
   let value = reconResolvePixel(i32(id.x), i32(id.y));
-  let at = (id.y * recon.outputSize.x + id.x) * 4u;
-  output[at] = value.x;
-  output[at + 1u] = value.y;
-  output[at + 2u] = value.z;
-  output[at + 3u] = value.w;
+  let at = (id.y * recon.outputSize.x + id.x) * 9u;
+  output[at] = value.colour.x;
+  output[at + 1u] = value.colour.y;
+  output[at + 2u] = value.colour.z;
+  output[at + 3u] = value.colour.w;
+  output[at + 4u] = value.record.x;
+  output[at + 5u] = value.record.y;
+  output[at + 6u] = value.record.z;
+  output[at + 7u] = value.record.w;
+  output[at + 8u] = value.swing;
 }
 
 @compute @workgroup_size(${RECON_WORKGROUP}, ${RECON_WORKGROUP})
@@ -780,6 +898,12 @@ ${RECON_PARAMS_WGSL}
 @group(0) @binding(6) var<uniform> recon: ReconParams;
 @group(0) @binding(7) var resolved: texture_storage_2d<rgba16float, write>;
 /* Not "target": it is a reserved keyword in WGSL, as "meta" was in the cluster cull. */
+/* Last frame's flicker records, and where this frame's go: a pair beside the histories. */
+@group(0) @binding(8) var flickerTexture: texture_2d<f32>;
+@group(0) @binding(9) var flickerOut: texture_storage_2d<rgba16float, write>;
+/* And each pixel's held depth swing, a pair of its own. */
+@group(0) @binding(10) var swingTexture: texture_2d<f32>;
+@group(0) @binding(11) var swingOut: texture_storage_2d<r32float, write>;
 
 /* Rows flip here: the reference's row 0 is the bottom one and a texture's is the top. */
 fn reconRenderRow(y: i32) -> i32 {
@@ -812,6 +936,14 @@ fn reconHistory(x: i32, y: i32) -> vec4<f32> {
   return textureLoad(historyTexture, vec2<i32>(x, reconOutputRow(y)), 0);
 }
 
+fn reconFlicker(x: i32, y: i32) -> vec4<f32> {
+  return textureLoad(flickerTexture, vec2<i32>(x, reconOutputRow(y)), 0);
+}
+
+fn reconSwing(x: i32, y: i32) -> f32 {
+  return textureLoad(swingTexture, vec2<i32>(x, reconOutputRow(y)), 0).x;
+}
+
 /* A texel coordinate becomes the uv of its centre, with the row taken from the other end. */
 fn reconSceneBilinear(p: vec2<f32>) -> vec3<f32> {
   let size = vec2<f32>(f32(recon.renderSize.x), f32(recon.renderSize.y));
@@ -831,7 +963,9 @@ fn resolveMain(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= recon.outputSize.x || id.y >= recon.outputSize.y) { return; }
   let y = i32(recon.outputSize.y) - 1 - i32(id.y);
   let value = reconResolvePixel(i32(id.x), y);
-  textureStore(resolved, vec2<i32>(i32(id.x), i32(id.y)), value);
+  textureStore(resolved, vec2<i32>(i32(id.x), i32(id.y)), value.colour);
+  textureStore(flickerOut, vec2<i32>(i32(id.x), i32(id.y)), value.record);
+  textureStore(swingOut, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(value.swing, 0.0, 0.0, 0.0));
 }
 
 @compute @workgroup_size(${RECON_WORKGROUP}, ${RECON_WORKGROUP})

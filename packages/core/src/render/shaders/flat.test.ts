@@ -74,7 +74,7 @@ test('a surface texture reaches every lighting term, not just the ambient one', 
    * extend this list.
    */
   expect(source, 'the texture is sampled once into a single local').toContain(
-    'vec4 texel = texture(uAlbedo, vUv);',
+    'vec4 texel = texture(uAlbedo, surfaceAt);',
   );
   expect(source, 'and multiplied in, not substituted').toContain('albedo *= texel.rgb;');
   /*
@@ -145,7 +145,7 @@ test('a glowing surface is shadowed by lamps and by the sky', () => {
    * Losing either half puts a shadow back under a glowing surface.
    */
   expect(source).toContain(
-    'lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE);',
+    'lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;',
   );
 });
 
@@ -499,13 +499,6 @@ test('every uniform the flat shader declares is uploaded somewhere', async () =>
     'uOrmMap',
     'uOrmEnabled',
     'uOrmScale',
-    /*
-     * Written per *pass* rather than per draw or at bind: the order-independent accumulation sets
-     * it to one for the whole replay and back to zero after, in `endFrame`. It is in this list for
-     * the same reason the material entries above are — the mesh pass is not where it belongs, and
-     * a uniform nothing writes is a zero, which for this one is the correct default anyway.
-     */
-    'uOitWeighted',
   ]);
 
   const declared = [...full.matchAll(/^uniform\s+(?:highp\s+|lowp\s+|mediump\s+)?\w+\s+(\w+)/gm)]
@@ -689,10 +682,10 @@ test('texture relief is centred, gated on the texture, and cannot turn a face in
    * compile, draw plausible bumps, and quietly break one backend.
    */
   expect(source, 'the x slope is sampled either side of the pen').toContain(
-    'surfaceHeight(texture(uAlbedo, vUv + duvdx).rgb) - surfaceHeight(texture(uAlbedo, vUv - duvdx).rgb)',
+    'surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdx, surfaceAt.z)).rgb) - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdx, surfaceAt.z)).rgb)',
   );
   expect(source, 'and so is the y slope').toContain(
-    'surfaceHeight(texture(uAlbedo, vUv + duvdy).rgb) - surfaceHeight(texture(uAlbedo, vUv - duvdy).rgb)',
+    'surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdy, surfaceAt.z)).rgb) - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdy, surfaceAt.z)).rgb)',
   );
 
   /*
@@ -798,13 +791,16 @@ test('the varying selects between two frames rather than branching on one', () =
 });
 
 /*
- * The UVs are scaled once. `FLAT_VERT` already does `vUv = aUv * uUvScale`, so a fragment that
+ * The UVs are scaled once. `FLAT_VERT` already scales `aUv.xy` by `uUvScale`, so a fragment that
  * multiplied again would tile the normal map at the square of the material's density — visible
  * only on a material whose scale is not 1, which is most of them and none of the defaults.
  */
 test('the normal map reads the UVs the vertex stage already scaled', () => {
-  expect(source).toContain('texture(uNormalMap, vUv)');
-  expect(source, 'not scaled twice').not.toContain('texture(uNormalMap, vUv * uUvScale)');
+  expect(source).toContain('texture(uNormalMap, surfaceAt)');
+  expect(source, 'read where every map is read').toContain(
+    'vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));',
+  );
+  expect(source, 'not scaled twice').not.toContain('vUv.xy * uUvScale');
 });
 
 /*
@@ -815,11 +811,11 @@ test('the normal map reads the UVs the vertex stage already scaled', () => {
  */
 test('the ORM map is sampled under a uniform branch, before lighting is decided', () => {
   expect(source).toContain('if (uOrmEnabled != 0) {');
-  expect(source).toContain('texture(uOrmMap, vUv)');
-  expect(source, 'not scaled twice — FLAT_VERT already does vUv = aUv * uUvScale').not.toContain(
-    'texture(uOrmMap, vUv * uUvScale)',
+  expect(source).toContain('texture(uOrmMap, surfaceAt)');
+  expect(source, 'not scaled twice — FLAT_VERT already scales aUv.xy by uUvScale').not.toContain(
+    'vUv.xy * uUvScale',
   );
-  const sampledAt = source.indexOf('texture(uOrmMap, vUv)');
+  const sampledAt = source.indexOf('texture(uOrmMap, surfaceAt)');
   const lightingAt = source.indexOf('if (uLightingEnabled != 0) {');
   expect(sampledAt).toBeGreaterThan(0);
   expect(sampledAt, 'sampled before the lighting branch opens').toBeLessThan(lightingAt);
@@ -1565,5 +1561,17 @@ test('A PANE SEEN FROM BEHIND IS LIT FROM THE EYE S SIDE, and glows with the lig
      lit, and the light on its far side is what glows through — as the second pipeline draws it. */
   expect(source).toContain(
     'bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
+  );
+});
+
+/*
+ * **Added light fades in the medium and takes none of its colour.** Both backends write 2 for an
+ * additive draw (`drawFog.ts`); mixed toward the medium and then added, a glow put the haze into the
+ * frame twice — grey cones under every street lamp on a hazy morning. The surface rule is the
+ * other arm, so every draw that is not additive shades exactly as it did.
+ */
+test('ADDED LIGHT FADES IN THE MEDIUM, a surface still recedes into it', () => {
+  expect(source).toContain(
+    'vec3 shaded = applyOutputTransform( uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));',
   );
 });

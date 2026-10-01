@@ -1,5 +1,56 @@
 [
  {
+  "version": "4.6.0",
+  "date": "2026-10-01",
+  "entries": [
+   {
+    "kind": "added",
+    "short": "A whole city streamed from one container: regions arrive near the eye first, each drawn at the detail its distance asks for, with its collision, navigation and entities.",
+    "text": "**Container 1.23 carries a world built from a kit.** An assembly is painted copies of kit pieces rather than its own vertices, a region (`REGN`) names the assemblies, instance groups, occluders and collision of one square of the world, and a world's finest level is paged: `writeDrft` writes the regions nearest a starting point first, and `texturesFirst` puts the pictures ahead of the geometry so every region can wear them as it lands. `buildKit`, `buildAssembly`, `expandAssembly` and `planRegions` are the format's halves, and a mesh's sway, sky and opacity channel now survives a bake.\n\n**`DrftLoader` hands a streamed world over a region at a time**, never merged into its parts, as `LoadedRegion`s with their levels, collision, navigation and entities; `onMesh` takes the meshes no region holds and `onImage` each picture as it decodes. `StaticRegions` collides a scene's scenery a region at a time. **`HlodSet` picks each region's level of detail by its geometric error on screen**, with a band no still eye can cross, and `setDitherFade` crossfades two levels with a screen-door dither on both backends.\n\nMeasured on a two-kilometre city of 484 regions and 18.8 million triangles at its finest: the 14 regions within 150 m of the start are whole after 13 MB of a 130 MB file."
+   },
+   {
+    "kind": "added",
+    "short": "Instancing that culls: a batch spread across a city is tested against the view and the occluders whole, then instance by instance on the GPU, and small batches are drawn whole.",
+    "text": "**`createInstanced(mesh, capacity, { cull: true })`** tests the whole batch against the view and the declared box occluders (`occludedBox`) on the CPU, then keeps each instance only where its sphere meets the view: as compute into an indirect draw on WebGPU, on the CPU on WebGL2. A scene may hold as many batches of one mesh as it has regions.\n\n**A batch too small to repay that is drawn whole** (`cullsInstances`, 16,384 indices). Chrome's GPU process validates each indirect draw at about 8 µs, so a per-instance cull of a few lamps cost more than drawing them: on a city street, 633 indirect draws a frame became 108 and the frame went from 19.5 to 10.8 ms, pixel-identical. Shadow, motion and blended draws still see every instance."
+   },
+   {
+    "kind": "added",
+    "short": "Texture arrays per face, and per-layer surface effects: rooms behind windows, windows lit by night, wear, scrolling and flickering signs, and rain: a whole block of facades in one draw.",
+    "text": "**`createSurfaceTextureArray(sources, { effects })`**: every surface texture is an array, and a mesh names which layer each face wears, so one merged mesh wearing many images is one draw. Each layer may carry a `SurfaceLayerEffect`: **rooms behind its windows** (interior mapping from a room layer in the same array), **windows lit by night** (`Environment.litWindows`, with `lateWindows` the share that stays lit latest, and the light itself carried per building on the vertices so a style shared by forty facades still lights each its own way), **wear** (dust, grime, streaks), **animation** (scroll, pulse, flicker, flipbook frames and a fade with distance, on the caller's `surfaceTime` so a held clock holds it) and **rain** (`Environment.wetness`, with `dry` for a covered surface).\n\nThe effects are a texel row per layer (`packSurfaceEffects`, `SURFACE_EFFECT_TEXELS`), the same on both backends."
+   },
+   {
+    "kind": "added",
+    "short": "Every lamp in a city lit: a world's lights summed offline into one dense volume read past the exact lights, and the exact ones chosen through a grid instead of a scan.",
+    "text": "**`bakeDenseField`** sums a whole world's fixed lights offline into one dense volume, sample for sample what the bricks hold, carried in the container as `LVOL` in runs of dark, solid and lit samples. **`WorldLightField`** (`createWorldLightField`) takes it whole and lights every surface past the exact lights on both backends, so a street three blocks away is lit by its own lamps without spending a shadow or a slot on them.\n\n**`createLightGrid` and `selectGridLights`** find the frame's exact lights through a grid, choosing exactly what the full scan chose field for field, so a city of seven thousand lamps picks its nearest without visiting them all. A tie for a shadow map now goes to the lamp listed first rather than to the way its distance rounded."
+   },
+   {
+    "kind": "added",
+    "short": "Solids and booleans: closed, outward solids from a box to a torus, transforms that keep normals true, and exact booleans that split only what the other operand reaches.",
+    "text": "**Solids in the barrel**: `solidBox`, `solidCylinder`, `solidSphere`, `solidTorus`, `solidLathe`, `solidExtrude`, `solidSweep` and the rest, each closed and wound outward, with `transformSolid` keeping normals true under any scale, `mergeSolids`, `smoothSolidNormals` and `solidToMesh`.\n\n**Booleans**: `solidUnion`, `solidSubtract` and `solidIntersect` through a BSP that splits only what the other operand reaches, and `solidBoxBoolean` exact on axis-aligned boxes, which is most of what a building is cut from."
+   },
+   {
+    "kind": "added",
+    "short": "A translucent draw can add its light instead of covering, and a glow lying on a surface can be reconstructed with it; added light now fades in fog instead of greying.",
+    "text": "**`TranslucentMeshOptions.additive`**: the surface's colour times its opacity is added and nothing is darkened, as a glow or a pool of light under a lamp is. Order does not matter to a sum, so an additive draw is never held for the order-independent pass. **Added light fades in the medium** (`uFogEnabled` at 2): mixed toward the fog's colour and then added, a glow put the haze into the frame twice, and every lamp's light cone drew by day as a grey solid, greyer the thicker the air.\n\n**`TranslucentMeshOptions.reconstructed`**: a translucent surface that moves with what it lies on, such as a glow on a wall or a pane in a window, is drawn into the picture the reconstruction resolves rather than after it, so it is resolved with the edge it lies against. A street's glows went from 34,757 pixels changing between still frames to 2,999 (2,470 with the reconstruction off)."
+   },
+   {
+    "kind": "fixed",
+    "short": "Still frames hold still under reconstruction: thin edges, rails and glows no longer shimmer, bloom halos and ambient occlusion no longer pulse with the jitter.",
+    "text": "**DriftTR keeps the temporal resolve's anti-flicker, over its own period.** Each output pixel keeps a record of its gathered luma, and once two periods running repeat while still its box widens by its own spread and it keeps more history; the width follows the period (`flickerRule`), since eighteen phases wear a spread down further between catches than eight. **A still pixel whose depth has been seen to swing is not a disocclusion**: a held peak of how far last frame's depth missed widens its depth tolerance, so a rail finer than a texel no longer drops its history every period. **The camera's motion goes through one reprojection matrix multiplied in double precision**: the single-precision round trip through a world position read a few hundredths of a pixel of motion on a still camera, crept every still history and kept every pixel from counting as still. A still city view: 1,156 pixels changing between frames to 355 (184 native).\n\n**Glows and panes after the upscale** are tested against each render texel's surface carried to the pixel's centre, not the nearest of four, which let a glow along an edge through on one frame in two. **A reconstruction blooms the resolved picture**, not the jittered render, whose sub-texel bright points pulsed their halos. **The composite reads ambient occlusion where the frame's jitter put it**, under the temporal resolve and the reconstruction alike. **An interface drawn after the present is not jittered and opens no temporal frame**: every consumer drawing its HUD after `endFrame` had half the temporal resolve's jitter sequence and no anti-flicker at all."
+   },
+   {
+    "kind": "changed",
+    "short": "The generated WGSL stores each shared function once: core's WebGPU shaders are 185 KB smaller.",
+    "text": "**Each shared item of the generated WGSL is stored once** and renumbered per function, where every permutation carried its own copy: the lit-shader helpers cost once, and core's WebGPU shader source is 185 KB smaller. Nothing about what a device compiles changes."
+   },
+   {
+    "kind": "fixed",
+    "short": "Smaller fixes: one-cell pixel-font strokes, a WebGPU inset after the present, materials on instanced batches, a kerb a character walks off, and no rain bars across the frame.",
+    "text": "- **The pixel font's strokes are one cell wide wherever the line is drawn**, and its brackets are whole; text under a perspective tilt divides about each cell's centre.\n- **An inset opened after the present on WebGPU** draws, as it did on WebGL2.\n- **A material setter reaches every WebGL2 flat program**, so an instanced batch wears what its caller set rather than the defaults.\n- **A material with no maps leaves an array stand-in on every WebGL2 surface unit**, and sprites borrow the last unit of the pool, not one the lit pass binds.\n- **A character stands on a triangle mesh's kerb and walks on**, and a round body near a mesh edge reports its real gap.\n- **A raindrop passing the eye is not drawn** (`RainFieldOptions.clearM`, a metre by default): a streak is a world-space width, so a drop 30 cm from the camera drew fourteen pixels thick and as long as the frame. It keeps falling, as a sheltered drop does; pass 0 to draw drops in macro."
+   }
+  ]
+ },
+ {
   "version": "4.5.0",
   "date": "2026-09-29",
   "entries": [

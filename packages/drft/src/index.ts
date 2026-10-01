@@ -70,6 +70,46 @@ export { buildInstances, readInstances } from './drftInstances.ts';
 export { buildLights, readLights } from './drftLights.ts';
 export type { DrftLight, DrftLightKind } from './drftLights.ts';
 export type { DrftInstanceGroup } from './drftInstances.ts';
+export {
+  REGION_MAX_LEVELS,
+  RegionLedger,
+  buildRegion,
+  planRegions,
+  readRegion,
+} from './drftRegions.ts';
+/* A mesh carried as painted copies of kit pieces, expanded where it is needed. The attribute bits
+   are a MESH's, which is what an assembly declares its optional arrays with. */
+export {
+  ATTR_CHANNEL,
+  ATTR_EMISSIVE_COLOR,
+  ATTR_GRAIN,
+  ATTR_LAYERS,
+  ATTR_RELIEF,
+  ATTR_ROUGHNESS,
+  ATTR_SPECULAR,
+  ATTR_TANGENT,
+  ATTR_UVS,
+} from './drftFormat.ts';
+export {
+  ASSEMBLY_ATTRIBUTES,
+  COPY_MATRIX_FLOATS,
+  COPY_UV_FLOATS,
+  SURFACE,
+  SURFACE_FLOATS,
+  buildAssembly,
+  buildKit,
+  checkAssembly,
+  checkCopies,
+  isAssembly,
+  readAssembly,
+  readKit,
+} from './drftAssembly.ts';
+export type { DrftAssembly } from './drftAssembly.ts';
+export { assemblyBounds, expandAssembly } from './assemble.ts';
+export type { PieceLookup } from './assemble.ts';
+export type { DrftRegion, DrftRegionCollision, DrftRegionLevel } from './drftRegions.ts';
+export { buildLightVolume, readLightVolume } from './drftLightVolume.ts';
+export type { DrftLightVolume } from './drftLightVolume.ts';
 /*
  * **`DTEX`: a material as a decode program over a latent, rather than as pictures.** The chunk
  * carries no semantics — this package is the container and does not know what a channel means —

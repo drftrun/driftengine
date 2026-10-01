@@ -274,41 +274,50 @@ test('an absent attribute reaches the driver with every component the table gave
   ]);
 });
 
-test('A MESH WITH AN INSTANCED BATCH STILL DRAWS WITH ITS OWN CHANNEL, not the batch’s matrix', () => {
+test('A BATCH DRAWS THROUGH A VERTEX ARRAY OF ITS OWN, so a plain draw sees no instance column and two batches never share one', () => {
   /*
-   * **`attachInstances` claims locations 11 to 14 for the model matrix, and 13 is the channel.**
-   * A `Mesh` owns one vertex array, so enabling the instance attributes on it leaves them enabled
-   * for the *plain* draw as well — and location 13 then reads the third column of instance zero's
-   * matrix instead of the absent-attribute constant `[0, 1, 1, 1]`. For a placement with no
-   * rotation that column is `(0, 0, 1, 0)`, so `aChannel.y` is **zero**, and
-   * `vSkyDirect = aChannel.y` scales the directional term to nothing: the mesh renders lit by the
-   * hemispheric ambient alone, with correct normals, correct albedo and no error anywhere.
-   *
-   * Measured on `demo/instancing.ts`, which draws two ranks of one box — thirty `drawMesh` calls
-   * against one `drawInstanced` — so that the two must match. With a constant tint of
-   * (1, 0.5, 0.25) the `drawMesh` rank's top face read (51, 30, 21) against the other rank's
-   * (218, 110, 59), and 51 *is* the ambient. WebGPU has no vertex array to share and drew them
-   * alike, which is how it was found.
-   *
-   * The shader already refuses the pair — `flatVert` throws on channel-with-instancing rather than
-   * dropping the attribute — and this is the same refusal one layer down, where the vertex array
-   * was quietly allowing it.
+   * **The mesh's own array used to carry the instance columns**, and location 13 — the channel —
+   * then read the third column of instance zero's matrix on a plain draw: `aChannel.y` was zero,
+   * `vSkyDirect` scaled the sun to nothing, and the `drawMesh` rank of `demo/instancing.ts` read
+   * (51, 30, 21) against the instanced rank's (218, 110, 59), 51 being the ambient alone. It was
+   * patched by disabling the columns around each plain draw, and one array per mesh also meant one
+   * batch per mesh. Each batch now builds an array of its own from the mesh's recorded attributes.
    */
   const { gl, calls } = recordingGl();
   const mesh = new Mesh(gl, base);
-  mesh.attachInstances(gl, gl.createBuffer() as WebGLBuffer, 76);
+  const first = gl.createBuffer() as WebGLBuffer;
+  const second = gl.createBuffer() as WebGLBuffer;
+  const a = mesh.createInstanceArray(gl, first, 80);
+  calls.length = 0;
+  const b = mesh.createInstanceArray(gl, second, 80);
+  expect(b, 'a second batch gets a second array').not.toBe(a);
+  /* Its columns point into its own buffer: the last buffer bound before location 11 is set. */
+  const at11 = calls.findIndex((c) => c.name === 'vertexAttribPointer' && c.args[0] === 11);
+  const bound = calls
+    .slice(0, at11)
+    .filter((c) => c.name === 'bindBuffer')
+    .at(-1);
+  expect(bound?.args[1], 'the second batch reads the second buffer').toBe(second);
+  expect(
+    calls.some((c) => c.name === 'vertexAttribPointer' && c.args[0] === 0),
+    'and the geometry is bound into it too',
+  ).toBe(true);
 
   calls.length = 0;
   mesh.draw(gl);
-  const disabled = calls
-    .filter((call) => call.name === 'disableVertexAttribArray')
-    .map((call) => call.args[0]);
-  expect(disabled, 'the instance columns are left enabled over a plain draw').toContain(13);
+  expect(
+    calls.find((c) => c.name === 'bindVertexArray')?.args[0],
+    'the plain draw binds the mesh’s array',
+  ).not.toBe(a);
+  expect(
+    calls.some(
+      (c) => c.name === 'enableVertexAttribArray' || c.name === 'disableVertexAttribArray',
+    ),
+    'and touches no instance column',
+  ).toBe(false);
 
   calls.length = 0;
-  mesh.drawInstances(gl, 3);
-  const enabled = calls
-    .filter((call) => call.name === 'enableVertexAttribArray')
-    .map((call) => call.args[0]);
-  expect(enabled, 'the instance columns are not put back for the instanced draw').toContain(13);
+  mesh.drawInstancesThrough(gl, b, 3);
+  expect(calls.find((c) => c.name === 'bindVertexArray')?.args[0]).toBe(b);
+  expect(calls.find((c) => c.name === 'drawElementsInstanced')?.args[4]).toBe(3);
 });

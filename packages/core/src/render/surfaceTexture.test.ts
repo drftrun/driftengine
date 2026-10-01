@@ -8,6 +8,7 @@ function stubGl() {
   const gl = {
     UNPACK_FLIP_Y_WEBGL: 37440,
     TEXTURE_2D: 3553,
+    TEXTURE_2D_ARRAY: 35866,
     RGBA: 6408,
     SRGB8_ALPHA8: 35907,
     UNSIGNED_BYTE: 5121,
@@ -24,6 +25,8 @@ function stubGl() {
     createTexture: vi.fn(() => ({}) as WebGLTexture),
     bindTexture: vi.fn(),
     texImage2D: vi.fn(),
+    texImage3D: vi.fn(),
+    texSubImage3D: vi.fn(),
     texParameteri: vi.fn(),
     generateMipmap: vi.fn(),
     deleteTexture: vi.fn(),
@@ -66,20 +69,42 @@ describe('uploading a surface texture', () => {
     const { gl, raw } = stubGl();
 
     const texture = new SurfaceTexture(gl, SOURCE, {});
+    /* Allocated as a one-layer array, then the image written into layer 0. */
+    expect(raw.texImage3D.mock.calls[0]?.[5], 'one layer').toBe(1);
+    expect(raw.texSubImage3D.mock.calls[0]?.[10]).toBe(SOURCE);
     texture.update(gl, SOURCE);
+    expect(raw.texImage3D.mock.calls[1]?.[9], 'the new pixels').toBe(SOURCE);
+  });
 
-    expect(raw.texImage2D).toHaveBeenCalledTimes(2);
+  it('AN ARRAY WRITES EVERY IMAGE AT ITS OWN LAYER, and refuses images of two sizes', () => {
+    const { gl, raw } = stubGl();
+    const images = [0, 1, 2].map(() => ({ width: 8, height: 4 }) as unknown as TexImageSource);
+    const array = new SurfaceTexture(gl, images, {});
+    expect(array.layers).toBe(3);
+    expect(raw.texImage3D.mock.calls[0]?.slice(3, 6), 'one allocation, three deep').toEqual([
+      8, 4, 3,
+    ]);
+    expect(raw.texSubImage3D.mock.calls.map((call) => [call[4], call[10]])).toEqual([
+      [0, images[0]],
+      [1, images[1]],
+      [2, images[2]],
+    ]);
+    const odd = [images[0], { width: 4, height: 4 } as unknown as TexImageSource];
+    expect(() => new SurfaceTexture(gl, odd as TexImageSource[], {})).toThrow(
+      /layer 1 is 4×4 and layer 0 is 8×4/,
+    );
+    expect(() => array.update(gl, images[0] as TexImageSource)).toThrow(/array of 3 layers/);
   });
 
   /* sRGB is a format decision and stays one: the shader must not decode a second time. */
   it('asks for an sRGB internal format only when the caller says the pixels are display values', () => {
     const linear = stubGl();
     new SurfaceTexture(linear.gl, SOURCE, {});
-    expect(linear.raw.texImage2D.mock.calls[0]?.[2]).toBe(6408);
+    expect(linear.raw.texImage3D.mock.calls[0]?.[2]).toBe(6408);
 
     const srgb = stubGl();
     new SurfaceTexture(srgb.gl, SOURCE, { colorSpace: 'srgb' });
-    expect(srgb.raw.texImage2D.mock.calls[0]?.[2]).toBe(35907);
+    expect(srgb.raw.texImage3D.mock.calls[0]?.[2]).toBe(35907);
   });
 });
 

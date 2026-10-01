@@ -128,6 +128,7 @@ export class MeshBuilder {
    * inverse transpose, and nothing here has wanted that yet.
    */
   addMesh(mesh: MeshData, x: number, y: number, z: number, scale = 1): this {
+    refuseLayers(mesh);
     const base = this.vertexCount;
     const count = mesh.positions.length / 3;
     for (let i = 0; i < count; i++) {
@@ -199,6 +200,7 @@ export class MeshBuilder {
     forward: Vec3,
     scale = 1,
   ): this {
+    refuseLayers(mesh);
     assertOrthonormal(right, up, forward);
     const base = this.vertexCount;
     const count = mesh.positions.length / 3;
@@ -1399,3 +1401,16 @@ const CORNERS = [
   [1, 1],
   [-1, 1],
 ] as const;
+
+/**
+ * A builder has no layer channel, so merging a layered mesh would keep its texture coordinates and
+ * silently put every face on layer 0 — the first image of the array, which reads as the wrong
+ * facade everywhere rather than as an error. Refused instead; `concatMeshes` joins layered meshes.
+ */
+function refuseLayers(mesh: MeshData): void {
+  if (mesh.layers === undefined) return;
+  throw new Error(
+    'MeshBuilder: this mesh names texture-array layers, which a builder does not carry — merging ' +
+      'it here would put every face on layer 0. Join layered meshes with concatMeshes instead.',
+  );
+}

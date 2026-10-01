@@ -619,3 +619,12 @@ test('a box along a vertical says which method to use instead', () => {
     new MeshBuilder().addOrientedBox([0, 0, 0], [1, 1, 1], [0, 0, 0], [1, 1, 1]),
   ).toThrow(/no direction/);
 });
+
+test('A BUILDER REFUSES A LAYERED MESH rather than merging it without its layers', () => {
+  const layered = new MeshBuilder().addSphere([0, 0, 0], 1, [1, 1, 1], 0, 6, 4).build();
+  const withLayers = { ...layered, layers: new Float32Array(layered.positions.length / 3).fill(2) };
+  expect(() => new MeshBuilder().addMesh(withLayers, 0, 0, 0)).toThrow(/concatMeshes/);
+  expect(() =>
+    new MeshBuilder().addOrientedMesh(withLayers, [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]),
+  ).toThrow(/concatMeshes/);
+});

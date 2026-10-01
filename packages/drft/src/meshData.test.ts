@@ -117,3 +117,38 @@ describe('the per-vertex channel', () => {
     expect(() => validateMeshData({ ...base(), channel: new Float32Array(12) })).not.toThrow();
   });
 });
+
+/*
+ * Texture-array layers: one whole number a vertex, naming which image of an array the vertex's
+ * face wears. Each refusal is a mesh that would otherwise draw the wrong picture without an error.
+ */
+describe('texture-array layers', () => {
+  const uvs = new Float32Array(6);
+
+  it('refuses layers without texture coordinates, which would have nothing to address', () => {
+    expect(() => validateMeshData({ ...base(), layers: new Float32Array(3) })).toThrow(
+      /layers without uvs/,
+    );
+  });
+
+  it('refuses a layers array that is not one float a vertex', () => {
+    expect(() => validateMeshData({ ...base(), uvs, layers: new Float32Array(2) })).toThrow(
+      /layers has 2 floats for 3 vertices/,
+    );
+  });
+
+  it('refuses a layer that is not a whole number at or above zero', () => {
+    expect(() =>
+      validateMeshData({ ...base(), uvs, layers: new Float32Array([0, 1.5, 2]) }),
+    ).toThrow(/layer 1.5 at vertex 1/);
+    expect(() =>
+      validateMeshData({ ...base(), uvs, layers: new Float32Array([0, -1, 2]) }),
+    ).toThrow(/layer -1 at vertex 1/);
+  });
+
+  it('accepts whole-number layers alongside texture coordinates', () => {
+    expect(() =>
+      validateMeshData({ ...base(), uvs, layers: new Float32Array([0, 3, 255]) }),
+    ).not.toThrow();
+  });
+});

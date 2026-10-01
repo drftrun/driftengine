@@ -142,7 +142,12 @@ export function createSdfTextBindGroupLayout(device: GPUDevice): GPUBindGroupLay
         visibility: VISIBILITY_FRAGMENT,
         buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: SDF_TEXT_FRAG_SIZE },
       },
-      { binding: ATLAS.texture, visibility: VISIBILITY_FRAGMENT, texture: {} },
+      /* The atlas is a surface texture, and every surface texture is a `2d-array` view. */
+      {
+        binding: ATLAS.texture,
+        visibility: VISIBILITY_FRAGMENT,
+        texture: { viewDimension: '2d-array' },
+      },
       { binding: ATLAS.sampler, visibility: VISIBILITY_FRAGMENT, sampler: {} },
     ],
   });

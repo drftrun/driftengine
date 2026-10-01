@@ -90,3 +90,19 @@ export function packInstances(instances: MeshInstances, out: Float32Array): void
     out[at + 18] = tints[t + 2] as number;
   }
 }
+
+/** How a batch made by `createInstanced` behaves. */
+export interface InstancedOptions {
+  /**
+   * Cull the camera draw: the whole batch skipped when its instances' sphere is out of view or behind
+   * the declared occluders, and otherwise each instance kept only where its sphere meets the view —
+   * on the CPU on WebGL2, as compute into an indirect draw on WebGPU — once the batch is large enough
+   * to repay that (`cullsInstances`); a smaller one is drawn whole. Shadow, mirror-free motion and
+   * blended draws still see every instance. Off by default, because a batch small enough to draw whole
+   * pays for nothing it would save.
+   *
+   * **For a batch spread over space** — a prop across a region, a crowd, traffic. A batch in one
+   * place gains only the whole-batch test, which it could as well do itself.
+   */
+  readonly cull?: boolean;
+}

@@ -205,6 +205,49 @@ export const FLICKER_MEMORY = 1 / JITTER_PERIOD;
 export const FLICKER_WIDTH = 6;
 
 /**
+ * The two numbers the proof takes from the jitter's period: how much of a period one frame is, and
+ * how many spreads a proven pixel's box widens by. This resolve's are `FLICKER_MEMORY` and
+ * `FLICKER_WIDTH`; a reconstruction jitters along a longer sequence and needs its own.
+ */
+export interface FlickerRule {
+  readonly memory: number;
+  readonly width: number;
+}
+
+/** The temporal resolve's own: eight phases. */
+export const TEMPORAL_FLICKER: FlickerRule = { memory: FLICKER_MEMORY, width: FLICKER_WIDTH };
+
+/**
+ * The running spread of the hardest thread — one caught in a single phase of `phases` — just before
+ * its catch, as a share of its contrast: the steady state `FLICKER_WIDTH`'s comment solves for eight
+ * phases, solved for any. With m one over the period and r = (1 − m)^(p − 1), the seven, or p − 1,
+ * misses that wear it down: a = (m + ((p − 1)m² − m)·r) / (1 − (1 − m)·r).
+ */
+function hardestSpread(phases: number): number {
+  const m = 1 / phases;
+  const r = (1 - m) ** (phases - 1);
+  return (m + ((phases - 1) * m * m - m) * r) / (1 - (1 - m) * r);
+}
+
+/** How many of those spreads the hardest thread's catch lands from its period's mean. */
+function widthNeeded(phases: number): number {
+  return (1 - 1 / phases) / hardestSpread(phases);
+}
+
+/**
+ * The rule for a jitter of `phases` positions. **The width keeps the room `FLICKER_WIDTH` leaves over
+ * what eight phases need** — 4.8 — in proportion: a longer period wears the spread down further
+ * between catches, so over eighteen phases the hardest thread needs eleven spreads, and a box that
+ * reached six reset the count of exactly the pixels this is for.
+ */
+export function flickerRule(phases: number): FlickerRule {
+  return {
+    memory: 1 / phases,
+    width: (FLICKER_WIDTH * widthNeeded(phases)) / widthNeeded(JITTER_PERIOD),
+  };
+}
+
+/**
  * How far apart two periods' means may be, relative to the larger, and still repeat: fully below
  * this, not at all at twice it. Above an eight-bit record's rounding and a lamp's slow breathing; far
  * below what anything crossing the pixel does to it.
@@ -292,9 +335,13 @@ export interface Flicker {
  * record of another surface is no record**, so the resolve starts one over wherever last frame's
  * depth says the surface is not the one it followed, before this frame widens by anything.
  */
-export function freshFlicker(out: Flicker, sample: number): Flicker {
+export function freshFlicker(
+  out: Flicker,
+  sample: number,
+  rule: FlickerRule = TEMPORAL_FLICKER,
+): Flicker {
   out.spread = 0;
-  out.sum = sample * FLICKER_MEMORY;
+  out.sum = sample * rule.memory;
   out.mean = sample;
   out.repeated = 0;
   return out;
@@ -320,23 +367,38 @@ export function stillness(motionPixels: number): number {
  * lands within the reach of the box it would widen to. A sample beyond that reach is something
  * arriving, and it disqualifies the frame it lands in as well as the count it carries out.
  */
-export function proven(record: Flicker, sample: number): boolean {
-  return record.repeated > 0.75 && within(record, sample);
+export function proven(
+  record: Flicker,
+  sample: number,
+  rule: FlickerRule = TEMPORAL_FLICKER,
+): boolean {
+  return record.repeated > 0.75 && within(record, sample, rule);
 }
 
 /** Whether this frame's sample lands inside the reach of the box the record would widen to. */
-function within(record: Flicker, sample: number): boolean {
-  return Math.abs(sample - record.mean) <= FLICKER_WIDTH * record.spread + 1 / 255;
+function within(record: Flicker, sample: number, rule: FlickerRule): boolean {
+  return Math.abs(sample - record.mean) <= rule.width * record.spread + 1 / 255;
 }
 
 /** How far a pixel's box widens this frame: by its spread, once proven, and only while still. */
-export function flickerWidening(record: Flicker, sample: number, still: number): number {
-  return proven(record, sample) ? FLICKER_WIDTH * record.spread * still : 0;
+export function flickerWidening(
+  record: Flicker,
+  sample: number,
+  still: number,
+  rule: FlickerRule = TEMPORAL_FLICKER,
+): number {
+  return proven(record, sample, rule) ? rule.width * record.spread * still : 0;
 }
 
 /** How much of the history this frame keeps: the base blend, or more once proven. */
-export function flickerBlend(base: number, record: Flicker, sample: number, still: number): number {
-  return proven(record, sample) ? base + (FLICKER_BLEND - base) * still : base;
+export function flickerBlend(
+  base: number,
+  record: Flicker,
+  sample: number,
+  still: number,
+  rule: FlickerRule = TEMPORAL_FLICKER,
+): number {
+  return proven(record, sample, rule) ? base + (FLICKER_BLEND - base) * still : base;
 }
 
 /** Whether two periods' means are the same, one to zero. */
@@ -349,7 +411,8 @@ export function repeats(mean: number, previous: number): number {
  * The record carried out, from the one carried in and this frame's sample in luma. `periodStart`
  * is the first frame of the jitter's period, where the period just gathered is compared with the
  * one before. Forgotten in proportion to motion — a moving pixel's record would be a record of
- * somewhere else.
+ * somewhere else. `rule` is this resolve's eight phases unless a caller jitters along another
+ * sequence, as a reconstruction does.
  */
 export function nextFlicker(
   out: Flicker,
@@ -357,17 +420,18 @@ export function nextFlicker(
   sample: number,
   still: number,
   periodStart: boolean,
+  rule: FlickerRule = TEMPORAL_FLICKER,
 ): Flicker {
   const apart = Math.abs(sample - previous.mean);
   let { sum, mean, repeated } = previous;
-  if (apart > FLICKER_WIDTH * previous.spread + 1 / 255) repeated = 0;
+  if (apart > rule.width * previous.spread + 1 / 255) repeated = 0;
   if (periodStart) {
     repeated = repeats(sum, mean) > 0.5 ? Math.min(1, repeated + 0.5) : 0;
     mean = sum;
     sum = 0;
   }
-  out.spread = previous.spread + (apart - previous.spread) * FLICKER_MEMORY;
-  out.sum = sum + sample * FLICKER_MEMORY;
+  out.spread = previous.spread + (apart - previous.spread) * rule.memory;
+  out.sum = sum + sample * rule.memory;
   out.mean = mean;
   out.repeated = repeated * still;
   return out;

@@ -94,3 +94,24 @@ export async function compileToWgsl(glsl, stage, label = 'shader') {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
+
+/**
+ * Throw, naming the shader, unless naga accepts `wgsl` as it stands: for text the generator built
+ * rather than naga wrote, such as a shader reassembled from shared items.
+ */
+export function validateWgsl(wgsl, label = 'shader') {
+  const scratch = mkdtempSync(path.join(tmpdir(), 'wgsl-valid-'));
+  try {
+    const file = path.join(scratch, 's.wgsl');
+    writeFileSync(file, wgsl);
+    try {
+      execFileSync('naga', [file], { stdio: 'pipe' });
+    } catch (error) {
+      throw new Error(
+        `${label}: naga refused the WGSL as reassembled. ${String(error?.stderr ?? error)}`,
+      );
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}

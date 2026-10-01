@@ -57,69 +57,92 @@ export function bakeBrick(
   for (let k = 0; k < BRICK_SAMPLES; k++) {
     for (let j = 0; j < BRICK_SAMPLES; j++) {
       for (let i = 0; i < BRICK_SAMPLES; i++) {
-        const texel = (i + BRICK_SAMPLES * (j + BRICK_SAMPLES * k)) * 4;
-        const px = bx + i * spacing;
-        const py = by + j * spacing;
-        const pz = bz + k * spacing;
-        light.fill(0, texel, texel + 4);
-        direction.fill(0, texel, texel + 4);
-        if (distance !== null && distance(px, py, pz) < 0) continue;
-
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let towardX = 0;
-        let towardY = 0;
-        let towardZ = 0;
-        let weight = 0;
-        for (let listed = first; listed < last; listed++) {
-          const source = lights[layout.lights[listed] as number];
-          if (source === undefined) continue;
-          const dx = source.x - px;
-          const dy = source.y - py;
-          const dz = source.z - pz;
-          const dist = Math.hypot(dx, dy, dz);
-          if (dist >= source.radius) continue;
-          const shape = pointLightShape(dist, source.radius, falloff);
-          if (shape <= 0) continue;
-          const seen =
-            distance === null
-              ? 1
-              : softVisibility(
-                  distance,
-                  px,
-                  py,
-                  pz,
-                  source.x,
-                  source.y,
-                  source.z,
-                  source.sourceRadius,
-                );
-          if (seen <= 0) continue;
-          const lr = source.r * shape * seen;
-          const lg = source.g * shape * seen;
-          const lb = source.b * shape * seen;
-          r += lr;
-          g += lg;
-          b += lb;
-          const bright = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
-          if (dist > 1e-6 && bright > 0) {
-            towardX += (bright * dx) / dist;
-            towardY += (bright * dy) / dist;
-            towardZ += (bright * dz) / dist;
-            weight += bright;
-          }
-        }
-        light[texel] = r;
-        light[texel + 1] = g;
-        light[texel + 2] = b;
-        light[texel + 3] = 1;
-        if (weight > 0) {
-          direction[texel] = towardX / weight;
-          direction[texel + 1] = towardY / weight;
-          direction[texel + 2] = towardZ / weight;
-        }
+        sampleFieldLight(
+          bx + i * spacing,
+          by + j * spacing,
+          bz + k * spacing,
+          lights,
+          layout.lights,
+          first,
+          last,
+          falloff,
+          distance,
+          light,
+          direction,
+          (i + BRICK_SAMPLES * (j + BRICK_SAMPLES * k)) * 4,
+        );
       }
     }
+  }
+}
+
+/**
+ * One sample: the light arriving at (px, py, pz) from `lights[candidates[first..last)]`, written at
+ * `texel` in `light` (colour, then 1 for a sample and 0 for one inside solid geometry) and in
+ * `direction` (the brightness-weighted way it arrives from). Shared by every bake, so a brick and a
+ * dense volume cannot come to disagree about what a sample is.
+ */
+export function sampleFieldLight(
+  px: number,
+  py: number,
+  pz: number,
+  lights: readonly FieldLight[],
+  candidates: ArrayLike<number>,
+  first: number,
+  last: number,
+  falloff: PointLightFalloff,
+  distance: DistanceAt | null,
+  light: Float32Array,
+  direction: Float32Array,
+  texel: number,
+): void {
+  light.fill(0, texel, texel + 4);
+  direction.fill(0, texel, texel + 4);
+  if (distance !== null && distance(px, py, pz) < 0) return;
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let towardX = 0;
+  let towardY = 0;
+  let towardZ = 0;
+  let weight = 0;
+  for (let listed = first; listed < last; listed++) {
+    const source = lights[candidates[listed] as number];
+    if (source === undefined) continue;
+    const dx = source.x - px;
+    const dy = source.y - py;
+    const dz = source.z - pz;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist >= source.radius) continue;
+    const shape = pointLightShape(dist, source.radius, falloff);
+    if (shape <= 0) continue;
+    const seen =
+      distance === null
+        ? 1
+        : softVisibility(distance, px, py, pz, source.x, source.y, source.z, source.sourceRadius);
+    if (seen <= 0) continue;
+    const lr = source.r * shape * seen;
+    const lg = source.g * shape * seen;
+    const lb = source.b * shape * seen;
+    r += lr;
+    g += lg;
+    b += lb;
+    const bright = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    if (dist > 1e-6 && bright > 0) {
+      towardX += (bright * dx) / dist;
+      towardY += (bright * dy) / dist;
+      towardZ += (bright * dz) / dist;
+      weight += bright;
+    }
+  }
+  light[texel] = r;
+  light[texel + 1] = g;
+  light[texel + 2] = b;
+  light[texel + 3] = 1;
+  if (weight > 0) {
+    direction[texel] = towardX / weight;
+    direction[texel + 1] = towardY / weight;
+    direction[texel + 2] = towardZ / weight;
   }
 }

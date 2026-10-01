@@ -53,6 +53,17 @@ export interface RainFieldOptions {
   streakSec?: number;
   /** The ground drops land on, and the roofs they do not fall through. */
   ground?: GroundSurface;
+  /**
+   * How near the viewer a streak may pass and still be drawn, metres. Default 1.
+   *
+   * **A drop that close is out of any focus a camera holds**, and drawn sharp it was a bar across
+   * the frame: a streak is a world-space width, so a 6 mm drop 30 cm from the eye drew fourteen
+   * pixels thick and as long as the frame, from a city seen from the air in the rain. A streak
+   * whose nearest point is inside this distance is not drawn; the drop keeps falling, as a
+   * sheltered one does. What it gives up is rain on a lens or a visor, which this field never
+   * drew as such anyway. What would make it wrong is a view that wants drops in macro: pass 0.
+   */
+  clearM?: number;
 }
 
 export class RainField {
@@ -97,6 +108,8 @@ export class RainField {
    */
   streakSec: number;
   private readonly ground: GroundSurface | null;
+  /** How near the viewer a streak may pass and still be drawn, squared. */
+  private readonly clear2: number;
   /** Drops not drawn this update because something was over them. */
   private sheltered = 0;
   /**
@@ -125,6 +138,8 @@ export class RainField {
     this.speedMps = options.speedMps ?? 9;
     this.streakSec = options.streakSec ?? 0.04;
     this.ground = options.ground ?? null;
+    const clear = options.clearM ?? 1;
+    this.clear2 = clear * clear;
     this.segments = createLineSegments(options.count);
     this.x = new Float32Array(options.count);
     this.y = new Float32Array(options.count);
@@ -212,15 +227,34 @@ export class RainField {
         continue;
       }
 
+      /* Where it was a shutter-time ago, which is the streak: down by its fall and back along the
+         wind, so a gust leans every drop at the same angle without anything trigonometric. */
+      const backX = -windX * this.streakSec;
+      const backY = this.speedMps * this.streakSec;
+      const backZ = -windZ * this.streakSec;
+      /* Too near the eye to be drawn (`clearM`): the streak's nearest point to the viewer. */
+      if (this.clear2 > 0) {
+        const ox = dropX - viewerX;
+        const oy = dropY - viewerY;
+        const oz = dropZ - viewerZ;
+        const length2 = backX * backX + backY * backY + backZ * backZ;
+        const along =
+          length2 > 0
+            ? Math.min(Math.max(-(ox * backX + oy * backY + oz * backZ) / length2, 0), 1)
+            : 0;
+        const nx = ox + backX * along;
+        const ny = oy + backY * along;
+        const nz = oz + backZ * along;
+        if (nx * nx + ny * ny + nz * nz < this.clear2) continue;
+      }
+
       const at = this.segments.count;
       this.segments.from[at * 3] = dropX;
       this.segments.from[at * 3 + 1] = dropY;
       this.segments.from[at * 3 + 2] = dropZ;
-      /* Where it was a shutter-time ago, which is the streak: down by its fall and back along the
-         wind, so a gust leans every drop at the same angle without anything trigonometric. */
-      this.segments.to[at * 3] = dropX - windX * this.streakSec;
-      this.segments.to[at * 3 + 1] = dropY + this.speedMps * this.streakSec;
-      this.segments.to[at * 3 + 2] = dropZ - windZ * this.streakSec;
+      this.segments.to[at * 3] = dropX + backX;
+      this.segments.to[at * 3 + 1] = dropY + backY;
+      this.segments.to[at * 3 + 2] = dropZ + backZ;
       this.segments.count = at + 1;
     }
     this.primed = true;

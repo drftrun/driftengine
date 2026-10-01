@@ -29,7 +29,7 @@
 export const DRIFT_LIGHT_GLSL = /* glsl */ `
 /** x how much of the summed light is in the frame (0 off), y the radius, z the band, w the scale. */
 uniform vec4 uDriftLight;
-/** xyz the first brick's first sample; w metres between samples, a third of a brick. */
+/** xyz the first sample; w metres between samples — a third of a brick, or negated for a dense volume. */
 uniform vec4 uDriftLightOrigin;
 uniform highp usampler3D uDriftLightIndex;  // wgsl:share shadow
 uniform highp sampler3D uDriftLightAtlas;
@@ -41,9 +41,38 @@ float driftLightShare(vec3 world) {
   return smoothstep(uDriftLight.y - uDriftLight.z, uDriftLight.y, away) * uDriftLight.x;
 }
 
-/** The summed light arriving on a surface at \`world\` facing \`n\`. */
+/**
+ * A sample's light and direction turned into the light on a surface facing \`n\`: Lambert for a
+ * single light, a quarter for light arriving from everywhere (see \`bake.ts\`). One statement for
+ * both kinds of volume.
+ */
+vec3 driftLightFacing(vec4 light, vec4 toward, vec3 n) {
+  vec3 arriving = light.rgb / light.a;
+  vec3 from = toward.xyz / light.a;
+  float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;
+  return arriving * facing;
+}
+
+/**
+ * The same from a dense volume: one sample a texel, the light in the lower half of y and its
+ * direction in the upper. A lookup kept inside the samples never filters across the halves.
+ */
+vec3 driftLightDense(vec3 world, vec3 n, float spacing) {
+  ivec3 size = textureSize(uDriftLightAtlas, 0);
+  vec3 dims = vec3(float(size.x), float(size.y / 2), float(size.z));
+  vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / spacing;
+  if (any(lessThan(at, vec3(0.0))) || any(greaterThan(at, dims - 1.0))) return vec3(0.0);
+  vec3 uvw = (at + 0.5) / vec3(dims.x, dims.y * 2.0, dims.z);
+  vec4 light = textureLod(uDriftLightAtlas, uvw, 0.0);
+  if (light.a < 1e-3) return vec3(0.0);
+  vec4 toward = textureLod(uDriftLightAtlas, uvw + vec3(0.0, 0.5, 0.0), 0.0);
+  return driftLightFacing(light, toward, n);
+}
+
+/** The summed light arriving on a surface at \`world\` facing \`n\`. A negative spacing is dense. */
 vec3 driftLightIrradiance(vec3 world, vec3 n) {
   float spacing = uDriftLightOrigin.w;
+  if (spacing < 0.0) return driftLightDense(world, n, -spacing);
   vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / (3.0 * spacing);
   ivec3 cell = ivec3(floor(at));
   if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, textureSize(uDriftLightIndex, 0)))) {
@@ -66,10 +95,6 @@ vec3 driftLightIrradiance(vec3 world, vec3 n) {
   vec4 light = textureLod(uDriftLightAtlas, (corner + inside) * texel, 0.0);
   if (light.a < 1e-3) return vec3(0.0);
   vec4 toward = textureLod(uDriftLightAtlas, (corner + vec3(4.0, 0.0, 0.0) + inside) * texel, 0.0);
-  vec3 arriving = light.rgb / light.a;
-  vec3 from = toward.xyz / light.a;
-  /* Lambert for a single light, a quarter for light arriving from everywhere: see \`bake.ts\`. */
-  float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;
-  return arriving * facing;
+  return driftLightFacing(light, toward, n);
 }
 `;

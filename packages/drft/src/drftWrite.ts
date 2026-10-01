@@ -25,6 +25,8 @@ import {
   ATTR_SPECULAR,
   ATTR_UVS,
   ATTR_WEIGHTS,
+  ATTR_LAYERS,
+  ATTR_CHANNEL,
   CHUNK_ENTRY_BYTES,
   CHUNK_HEAD,
   CHUNK_ANIM,
@@ -36,8 +38,12 @@ import {
   CHUNK_MORP,
   CHUNK_NODE,
   CHUNK_INST,
+  CHUNK_REGN,
+  CHUNK_LVOL,
   CHUNK_LITE,
   CHUNK_MSHQ,
+  CHUNK_KITS,
+  CHUNK_MSHC,
   CHUNK_SKIN,
   CHUNK_SPLT,
   SPLAT_BLOCK_PREFIX,
@@ -70,10 +76,32 @@ import { type NavPolyMesh, buildNavm } from './navm.ts';
 import { type DrftGraph, buildNgrf } from './ngrf.ts';
 import { buildColliders } from './drftColliders.ts';
 import { buildInstances } from './drftInstances.ts';
+import { buildRegion, planRegions } from './drftRegions.ts';
+import { buildLightVolume } from './drftLightVolume.ts';
+import type { DrftLightVolume } from './drftLightVolume.ts';
+import type { DrftRegion } from './drftRegions.ts';
+
+/** Whether a region names a mesh, as a level or a prop. */
+function regionNames(region: DrftRegion, mesh: number): boolean {
+  return (
+    region.levels.some((level) => level.meshes.includes(mesh)) ||
+    region.instances.some((group) => group.mesh === mesh)
+  );
+}
 import type { DrftInstanceGroup } from './drftInstances.ts';
 import { buildLights } from './drftLights.ts';
 import type { DrftLight } from './drftLights.ts';
 import { encodeQuantisedMesh } from './drftQuantised.ts';
+import { assemblyBounds } from './assemble.ts';
+import {
+  buildAssembly,
+  buildKit,
+  checkAssembly,
+  checkCopies,
+  checkKit,
+  isAssembly,
+} from './drftAssembly.ts';
+import type { DrftAssembly } from './drftAssembly.ts';
 
 /** An image to embed, already compressed, with what its own header said about it. */
 export interface DrftTextureSource {
@@ -94,7 +122,18 @@ export interface DrftTextureSource {
 /** What a caller hands over to be baked. */
 export interface DrftSource {
   readonly head?: Partial<DrftHead>;
-  readonly meshes: readonly MeshData[];
+  /**
+   * The meshes by ordinal. An assembly — painted copies of kit pieces — stands in a slot like any
+   * mesh and is written as one required `MSHC` chunk; see `drftAssembly.ts`.
+   */
+  readonly meshes: readonly (MeshData | DrftAssembly)[];
+  /**
+   * The ordinals of the meshes that are kit pieces, ascending: drawn only as copies inside the
+   * assemblies, never on their own. One required `KITS` chunk, ahead of the geometry. A piece
+   * comes before every assembly that copies it, is never an assembly itself, and is neither placed
+   * by `INST` nor named by a region.
+   */
+  readonly kit?: readonly number[];
   /**
    * One material per mesh, by ordinal, or absent for an asset that names none.
    *
@@ -168,6 +207,19 @@ export interface DrftSource {
    * a group names holds one copy; see `drftInstances.ts`.
    */
   readonly instances?: readonly DrftInstanceGroup[];
+  /**
+   * The regions of a streamed world: one required `REGN` chunk each, written just ahead of the
+   * meshes it introduces. The meshes no region names come first, then each region's new meshes in
+   * region order — the writer refuses any other order rather than renumbering what the regions and
+   * the materials point at. See `drftRegions.ts`.
+   */
+  readonly regions?: readonly DrftRegion[];
+  /**
+   * A world's fixed lights summed offline into one dense volume: one optional `LVOL` chunk, after
+   * the geometry, since the world draws lit by its exact lights until it lands. See
+   * `drftLightVolume.ts`.
+   */
+  readonly lightVolume?: DrftLightVolume;
   /** The lights the scene was authored with: one `LITE` chunk, optional. See `drftLights.ts`. */
   readonly lights?: readonly DrftLight[];
   /**
@@ -211,6 +263,13 @@ export interface DrftSource {
    * carry geometry with no scene at all — which is every baked model this format has ever held.
    */
   readonly entities?: EntsScene;
+  /**
+   * The textures ahead of the geometry rather than after it. A model wants its outline before its
+   * pictures, so a viewer sees a shape early; a world whose every region wears the same texture
+   * arrays wants the pictures before its first region, or that region waits for the file's end.
+   * What it costs a model that asks: its first part arrives later by the size of its pictures.
+   */
+  readonly texturesFirst?: boolean;
 }
 
 /**
@@ -315,8 +374,9 @@ function encodeString(value: string): Uint8Array {
 
 function buildHead(
   head: Partial<DrftHead> | undefined,
-  meshes: readonly MeshData[],
+  meshes: readonly (MeshData | DrftAssembly)[],
   instances: readonly DrftInstanceGroup[] = [],
+  kit: ReadonlySet<number> = new Set(),
 ): PendingChunk {
   /*
    * Bounds are computed rather than taken on trust. A caller that gets them wrong would
@@ -331,8 +391,23 @@ function buildHead(
   let maxZ = -Infinity;
   const placed = new Map<number, Float32Array>();
   for (const group of instances) placed.set(group.mesh, group.transforms);
+  const pieceAt = (o: number): MeshData => meshes[o] as MeshData;
   for (let m = 0; m < meshes.length; m++) {
-    const mesh = meshes[m] as MeshData;
+    /* A kit piece is drawn only where it is copied, and its copies are counted with them. */
+    if (kit.has(m)) continue;
+    const slot = meshes[m] as MeshData | DrftAssembly;
+    if (isAssembly(slot)) {
+      const b = assemblyBounds(slot, pieceAt);
+      if (!((b[0] as number) <= (b[3] as number))) continue;
+      minX = Math.min(minX, b[0] as number);
+      minY = Math.min(minY, b[1] as number);
+      minZ = Math.min(minZ, b[2] as number);
+      maxX = Math.max(maxX, b[3] as number);
+      maxY = Math.max(maxY, b[4] as number);
+      maxZ = Math.max(maxZ, b[5] as number);
+      continue;
+    }
+    const mesh = slot;
     const transforms = placed.get(m);
     if (transforms === undefined) {
       for (let at = 0; at + 2 < mesh.positions.length; at += 3) {
@@ -446,6 +521,8 @@ function buildMesh(mesh: MeshData, code = CHUNK_MESH, flags = CHUNK_REQUIRED): P
      these two bits are always set together and the reader may rely on it. */
   if (mesh.joints !== undefined) attributes |= ATTR_JOINTS;
   if (mesh.weights !== undefined) attributes |= ATTR_WEIGHTS;
+  if (mesh.layers !== undefined) attributes |= ATTR_LAYERS;
+  if (mesh.channel !== undefined) attributes |= ATTR_CHANNEL;
 
   /* Order is frozen: mandatory arrays, then optional ones by ascending bit. */
   const arrays: (Float32Array | Uint32Array)[] = [
@@ -465,6 +542,10 @@ function buildMesh(mesh: MeshData, code = CHUNK_MESH, flags = CHUNK_REQUIRED): P
      container validated this pair for four minor versions while writing neither of them. */
   if (mesh.joints !== undefined) arrays.push(mesh.joints);
   if (mesh.weights !== undefined) arrays.push(mesh.weights);
+  /* Newest of all, 1.20, so last. See ATTR_LAYERS. */
+  if (mesh.layers !== undefined) arrays.push(mesh.layers);
+  /* And newer still, 1.23. See ATTR_CHANNEL. */
+  if (mesh.channel !== undefined) arrays.push(mesh.channel);
   arrays.push(mesh.indices);
 
   const PREFIX = 16;
@@ -628,7 +709,30 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
    * same asset less its textures rather than a refusal. Moving it earlier in the file changes
    * nothing about that, because a chunk is found through the table rather than by position.
    */
-  const chunks: PendingChunk[] = [buildHead(source.head, source.meshes, source.instances)];
+  const kit = new Set(source.kit ?? []);
+  checkKit(source.kit ?? [], source.meshes.length);
+  source.meshes.forEach((slot, ordinal) => {
+    if (!isAssembly(slot)) return;
+    checkAssembly(slot, `mesh ${ordinal}`);
+    checkCopies(slot, ordinal, kit, (o) => {
+      const piece = source.meshes[o];
+      return piece === undefined || isAssembly(piece) ? undefined : piece;
+    });
+  });
+  for (const o of kit) {
+    if (isAssembly(source.meshes[o] as MeshData | DrftAssembly)) {
+      throw new DrftError(`mesh ${o} is a kit piece and an assembly; a piece is vertices`);
+    }
+    if ((source.instances ?? []).some((g) => g.mesh === o)) {
+      throw new DrftError(`mesh ${o} is a kit piece and is placed by INST`);
+    }
+    if ((source.regions ?? []).some((r) => regionNames(r, o))) {
+      throw new DrftError(
+        `mesh ${o} is a kit piece and a region's; a piece is drawn only as copies`,
+      );
+    }
+  }
+  const chunks: PendingChunk[] = [buildHead(source.head, source.meshes, source.instances, kit)];
   /*
    * The outline first, ahead of even the paint. It is the one thing that puts a recognisable
    * whole object on screen, it is a few hundred kilobytes against tens of megabytes, and the
@@ -677,6 +781,11 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
       bytes: buildInstances(source.instances as readonly DrftInstanceGroup[]),
     });
   }
+  /* The kit ahead of the geometry, for the placements' reason: a streaming consumer must know a
+     mesh is a piece before it lands, or it has already drawn it at the origin. */
+  if (kit.size > 0) {
+    chunks.push({ code: CHUNK_KITS, flags: CHUNK_REQUIRED, bytes: buildKit(source.kit ?? []) });
+  }
   /* Small, and ahead of the geometry, so a streaming consumer can place its lamps early. */
   if ((source.lights?.length ?? 0) > 0) {
     chunks.push({ code: CHUNK_LITE, flags: 0, bytes: buildLights(source.lights ?? []) });
@@ -707,7 +816,22 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
   if (source.entities !== undefined) {
     chunks.push({ code: CHUNK_ENTS, flags: 0, bytes: buildEnts(source.entities) });
   }
+  if (source.texturesFirst === true) {
+    for (const texture of source.textures ?? []) chunks.push(buildTexture(texture));
+  }
+  const regionsBefore = planRegions(source.regions ?? [], source.meshes.length, (m) => {
+    const mesh = source.meshes[m];
+    return mesh !== undefined && isAssembly(mesh) ? mesh.pieces : undefined;
+  });
+  for (const group of source.instances ?? []) {
+    if ((source.regions ?? []).some((r) => regionNames(r, group.mesh))) {
+      throw new DrftError(`mesh ${group.mesh} is placed by INST and is also a region's`);
+    }
+  }
   source.meshes.forEach((mesh, ordinal) => {
+    for (const region of regionsBefore[ordinal] ?? []) {
+      chunks.push({ code: CHUNK_REGN, flags: CHUNK_REQUIRED, bytes: buildRegion(region) });
+    }
     /*
      * **Its deltas immediately before it, not after.** A streaming consumer uploads a mesh the
      * moment its chunk lands, so deltas arriving afterwards are deltas for geometry already on the
@@ -715,6 +839,10 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
      * them in hand when it builds. The mesh ordinal in the payload still does the pairing, so a
      * reader meeting them in another order is unaffected.
      */
+    if (isAssembly(mesh)) {
+      chunks.push({ code: CHUNK_MSHC, flags: CHUNK_REQUIRED, bytes: buildAssembly(mesh) });
+      return;
+    }
     if (mesh.morphTargets !== undefined && mesh.morphTargetCount !== undefined) {
       chunks.push({
         code: CHUNK_MORP,
@@ -733,7 +861,15 @@ export function writeDrft(source: DrftSource): ArrayBuffer {
       chunks.push(buildMesh(mesh));
     }
   });
-  for (const texture of source.textures ?? []) chunks.push(buildTexture(texture));
+  for (const region of regionsBefore[source.meshes.length] ?? []) {
+    chunks.push({ code: CHUNK_REGN, flags: CHUNK_REQUIRED, bytes: buildRegion(region) });
+  }
+  if (source.lightVolume !== undefined) {
+    chunks.push({ code: CHUNK_LVOL, flags: 0, bytes: buildLightVolume(source.lightVolume) });
+  }
+  if (source.texturesFirst !== true) {
+    for (const texture of source.textures ?? []) chunks.push(buildTexture(texture));
+  }
   /* One `SUBS` for the file, and only where something was labelled — an empty chunk would cost
      sixteen bytes to say nothing, and rule 2 already covers its absence. */
   if ((source.substances?.length ?? 0) > 0) {

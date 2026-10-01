@@ -19,9 +19,17 @@ import {
   CHUNK_ANIM,
   CHUNK_NODE,
   CHUNK_INST,
+  CHUNK_REGN,
+  CHUNK_LVOL,
   CHUNK_LITE,
   CHUNK_SDFV,
+  CHUNK_COLL,
+  CHUNK_NAVM,
+  CHUNK_ENTS,
   CHUNK_MSHQ,
+  CHUNK_KITS,
+  CHUNK_MSHC,
+  isMeshChunk,
   CHUNK_SKIN,
   CHUNK_MORP,
 } from './drftFormat.ts';
@@ -39,6 +47,17 @@ import { readSdfv } from './sdfv.ts';
 import type { DrftSdfvEntry } from './sdfv.ts';
 import type { DrftLight } from './drftLights.ts';
 import { decodeQuantisedMesh } from './drftQuantised.ts';
+import { readColliders } from './drftColliders.ts';
+import { expandAssembly } from './assemble.ts';
+import type { PieceLookup } from './assemble.ts';
+import { checkCopies, readAssembly, readKit } from './drftAssembly.ts';
+import type { DrftAssembly } from './drftAssembly.ts';
+import { RegionLedger, readRegion } from './drftRegions.ts';
+import { readLightVolume } from './drftLightVolume.ts';
+import type { DrftLightVolume } from './drftLightVolume.ts';
+import type { DrftRegion } from './drftRegions.ts';
+import { type NavPolyMesh, readNavm } from './navm.ts';
+import { type EntsScene, readEnts } from './ents.ts';
 
 /**
  * What the file says is coming, known from the first few kilobytes.
@@ -93,8 +112,25 @@ export interface DrftStreamHandlers {
    * stop drawing it in the same frame it starts drawing the model, or the two are both there.
    */
   readonly onLod?: (mesh: MeshData, level: number) => void;
-  /** One mesh, in the order the file lays them out, with its ordinal in that order. */
+  /**
+   * One mesh, in the order the file lays them out, with its ordinal in that order. A kit piece is
+   * not one — it goes to `onPiece` — and an assembly is one only where `onAssembly` is absent, in
+   * which case it arrives here expanded.
+   */
   readonly onMesh?: (mesh: MeshData, ordinal: number) => void;
+  /**
+   * The ordinals of the kit's pieces, once, when `KITS` lands — ahead of the geometry, so a
+   * consumer knows which meshes are drawn only as copies before any of them arrives.
+   */
+  readonly onKit?: (pieces: readonly number[]) => void;
+  /** One kit piece, as it lands. The stream keeps it for the assemblies that copy it. */
+  readonly onPiece?: (mesh: MeshData, ordinal: number) => void;
+  /**
+   * One assembly as the file carried it, with a lookup for its pieces, which have all arrived. A
+   * consumer that pages its world keeps it this small and expands it (`expandAssembly`) when it is
+   * needed; without this handler the stream expands it and calls `onMesh`.
+   */
+  readonly onAssembly?: (assembly: DrftAssembly, ordinal: number, piece: PieceLookup) => void;
   /**
    * One block of a Gaussian splat capture, with its ordinal.
    *
@@ -117,6 +153,13 @@ export interface DrftStreamHandlers {
    * puts it, so a consumer knows a mesh is drawn many times before that mesh arrives.
    */
   readonly onInstances?: (groups: readonly DrftInstanceGroup[]) => void;
+  /**
+   * One region of a streamed world, when its `REGN` lands — ahead of the meshes it introduces, so
+   * a consumer knows a mesh is a region's level or prop before it arrives. See `drftRegions.ts`.
+   */
+  readonly onRegion?: (region: DrftRegion) => void;
+  /** A world's summed lights, once, when `LVOL` lands. See `drftLightVolume.ts`. */
+  readonly onLightVolume?: (volume: DrftLightVolume) => void;
   /** The lights the scene was authored with, once, when `LITE` lands. See `drftLights.ts`. */
   readonly onLights?: (lights: readonly DrftLight[]) => void;
   /**
@@ -136,6 +179,18 @@ export interface DrftStreamHandlers {
    * the geometry so this is usually possible.
    */
   readonly onClip?: (clip: AnimationClip, ordinal: number) => void;
+  /**
+   * The convex hulls the asset collides as, once, when `COLL` lands. See `drftColliders.ts`.
+   *
+   * These three — collision, the navigation mesh and the entities — were `readDrft`'s alone, so a
+   * scene that streamed its geometry had to fetch the file again, whole, to learn where it could
+   * walk and what stood in it.
+   */
+  readonly onColliders?: (hulls: readonly Float32Array[]) => void;
+  /** The navigation mesh, once, when `NAVM` lands. See `navm.ts`. */
+  readonly onNavigation?: (navigation: NavPolyMesh) => void;
+  /** The serialised entities, once, when `ENTS` lands. See `ents.ts`. */
+  readonly onEntities?: (entities: EntsScene) => void;
   readonly onMaterials?: (materials: readonly DrftMaterial[]) => void;
   readonly onTexture?: (texture: DrftTexture, ordinal: number) => void;
 }
@@ -171,10 +226,20 @@ export class DrftStream {
   private preludeBytes = 0;
   private received = 0;
   private chunks: DrftChunk[] = [];
+  /** What the regions so far claim, so a second claim on a mesh is refused as `readDrft` refuses it. */
+  private readonly regions = new RegionLedger();
   /** How many table entries have been reported complete, in table order. */
   private settled = 0;
   private meshOrdinal = 0;
   private textureOrdinal = 0;
+  /** The kit's pieces once `KITS` lands, and each piece as it arrives. */
+  private kit: Set<number> | null = null;
+  private readonly pieces = new Map<number, MeshData>();
+  private readonly pieceAt: PieceLookup = (o) => {
+    const piece = this.pieces.get(o);
+    if (piece === undefined) throw new DrftError(`kit piece ${o} has not arrived`);
+    return piece;
+  };
   private head: DrftHead | null = null;
   private meshCount = 0;
   private materialCount = 0;
@@ -350,7 +415,7 @@ export class DrftStream {
        * counted in `meshCount`, which is the number of parts — an outline is not a part, and
        * a readout saying "1 of 188 parts" would be counting the model twice.
        */
-      if (chunk.code === CHUNK_MESH || chunk.code === CHUNK_MSHQ || chunk.code === CHUNK_LODM) {
+      if (isMeshChunk(chunk.code) || chunk.code === CHUNK_LODM) {
         meshBytes += chunk.byteLength;
       }
       if (chunk.code === CHUNK_TEXS) textureBytes += chunk.byteLength;
@@ -371,7 +436,7 @@ export class DrftStream {
     this.manifestSent = true;
     this.handlers.onManifest?.({
       totalBytes: this.buffer.byteLength,
-      meshCount: this.chunks.filter((c) => c.code === CHUNK_MESH || c.code === CHUNK_MSHQ).length,
+      meshCount: this.chunks.filter((c) => isMeshChunk(c.code)).length,
       textureCount: this.chunks.filter((c) => c.code === CHUNK_TEXS).length,
       lodCount: this.chunks.filter((c) => c.code === CHUNK_LODM).length,
       splatBlockCount: this.chunks.filter((c) => c.code === CHUNK_SPLT).length,
@@ -400,7 +465,36 @@ export class DrftStream {
             ? readMesh(this.buffer, chunk)
             : decodeQuantisedMesh(this.buffer, chunk.offset, chunk.byteLength);
         this.meshCount++;
-        this.handlers.onMesh?.(mesh, this.meshOrdinal++);
+        const ordinal = this.meshOrdinal++;
+        if (this.kit?.has(ordinal) === true) {
+          this.pieces.set(ordinal, mesh);
+          this.handlers.onPiece?.(mesh, ordinal);
+        } else {
+          this.handlers.onMesh?.(mesh, ordinal);
+        }
+      } else if (chunk.code === CHUNK_MSHC) {
+        const assembly = readAssembly(this.buffer, chunk.offset, chunk.byteLength);
+        this.meshCount++;
+        const ordinal = this.meshOrdinal++;
+        if (this.kit?.has(ordinal) === true) {
+          throw new DrftError(`mesh ${ordinal} is a kit piece and an assembly`);
+        }
+        checkCopies(assembly, ordinal, this.kit ?? new Set(), (o) => this.pieces.get(o));
+        if (this.handlers.onAssembly !== undefined) {
+          this.handlers.onAssembly(assembly, ordinal, this.pieceAt);
+        } else {
+          this.handlers.onMesh?.(expandAssembly(assembly, this.pieceAt), ordinal);
+        }
+      } else if (chunk.code === CHUNK_KITS) {
+        const meshes = this.chunks.filter((c) => isMeshChunk(c.code)).length;
+        const kit = readKit(this.buffer, chunk.offset, chunk.byteLength, meshes);
+        /* A piece already handed over as a mesh has been drawn; the writer puts the kit first. */
+        const early = kit.find((o) => o < this.meshOrdinal);
+        if (early !== undefined) {
+          throw new DrftError(`KITS arrives after mesh ${early}, one of its pieces`);
+        }
+        this.kit = new Set(kit);
+        this.handlers.onKit?.(kit);
       } else if (chunk.code === CHUNK_SPLT) {
         /* The ordinal the file gave it, so blocks append in the writer's order however they
            arrived — which for a sequential fetch is the same order, and for a range-fetching
@@ -417,12 +511,23 @@ export class DrftStream {
       } else if (chunk.code === CHUNK_NODE) {
         this.handlers.onNodes?.(readNodes(this.buffer, chunk.offset, chunk.byteLength));
       } else if (chunk.code === CHUNK_INST) {
-        const meshes = this.chunks.filter(
-          (c) => c.code === CHUNK_MESH || c.code === CHUNK_MSHQ,
-        ).length;
+        const meshes = this.chunks.filter((c) => isMeshChunk(c.code)).length;
         this.handlers.onInstances?.(
           readInstances(this.buffer, chunk.offset, chunk.byteLength, meshes),
         );
+      } else if (chunk.code === CHUNK_REGN) {
+        const meshes = this.chunks.filter((c) => isMeshChunk(c.code)).length;
+        const region = readRegion(this.buffer, chunk.offset, chunk.byteLength, meshes);
+        this.regions.admit(region);
+        this.handlers.onRegion?.(region);
+      } else if (chunk.code === CHUNK_LVOL) {
+        this.handlers.onLightVolume?.(readLightVolume(this.buffer, chunk.offset, chunk.byteLength));
+      } else if (chunk.code === CHUNK_COLL) {
+        this.handlers.onColliders?.(readColliders(this.buffer, chunk.offset, chunk.byteLength));
+      } else if (chunk.code === CHUNK_NAVM) {
+        this.handlers.onNavigation?.(readNavm(this.buffer, chunk.offset, chunk.byteLength));
+      } else if (chunk.code === CHUNK_ENTS) {
+        this.handlers.onEntities?.(readEnts(this.buffer, chunk.offset, chunk.byteLength));
       } else if (chunk.code === CHUNK_LITE) {
         this.handlers.onLights?.(readLights(this.buffer, chunk.offset, chunk.byteLength));
       } else if (chunk.code === CHUNK_SDFV) {

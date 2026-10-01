@@ -47,7 +47,7 @@ test('A CUT-OUT PANE CASTS ITS COLOUR ONLY WHERE IT CASTS ITS DEPTH', () => {
   const tint = flat(GLASS_TINT_CUTOUT_FRAG);
   const depth = flat(DEPTH_CUTOUT_FRAG);
   const coverage =
-    'float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));';
+    'float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));';
   expect(depth).toContain(coverage);
   expect(tint).toContain(coverage);
   expect(tint).toContain('if (alpha < vAlphaCutout) discard;');

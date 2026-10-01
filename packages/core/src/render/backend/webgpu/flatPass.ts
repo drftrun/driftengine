@@ -8,6 +8,14 @@ import { vertexBufferLayouts } from './buffers.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
 
+/** The material maps the flat pass reads: `2d-array` colour, filtered, not shadow maps. */
+const SURFACE_MAPS: ReadonlySet<string> = new Set([
+  'uAlbedo',
+  'uNormalMap',
+  'uOrmMap',
+  'uEmissiveMap',
+]);
+
 /**
  * The flat pipeline: the shader that draws the world.
  *
@@ -290,9 +298,20 @@ export function createFlatBindGroupLayout(
     const volume = texture.type === 'sampler3D' || texture.type === 'usampler3D';
     /* Glass tints are colour, mipmapped and filtered: a frosted pane is read at a coarser level. */
     const tint = name.endsWith('GlassTints');
+    /*
+     * **The four material maps are arrays too, and they are colour.** Every surface texture is a
+     * `2d-array` view since texture arrays landed, so the rule below — an array is a shadow map —
+     * would declare albedo unfilterable and bind a non-filtering sampler to it, which reads as
+     * every textured surface going nearest-neighbour and losing its mip chain. Named, as
+     * `uEnvironment` is, because a pattern wide enough to catch them catches the shadow arrays.
+     */
+    const surface = SURFACE_MAPS.has(name);
     const isShadow =
       integer ||
-      (!tint && name !== 'uEnvironment' && (name.endsWith('ShadowMap') || cube || array));
+      (!tint &&
+        !surface &&
+        name !== 'uEnvironment' &&
+        (name.endsWith('ShadowMap') || cube || array));
     entries.push({
       binding: texture.texture,
       visibility: VISIBILITY_FRAGMENT,
@@ -462,8 +481,11 @@ export function flatPipeline(
    * `depthMask` alone and only turns blending on. A translucent part of a loaded model is a
    * pane of glass in a solid object, not a particle, and it has to occlude what is behind it
    * for the rest of the model to sort correctly.
+   *
+   * `'additive'` adds instead: colour times alpha onto the target, its alpha kept. The key must
+   * carry it (`|add`).
    */
-  translucent = false,
+  translucent: boolean | 'additive' = false,
   /** Whether this pipeline reads a joint palette. See `FlatVertexOptions`. */
   skinned = false,
   /** Whether this pipeline reads morph deltas. See `FlatVertexOptions`. */
@@ -576,7 +598,7 @@ function flatDescriptor(
   variant: FlatVariant,
   key: string,
   present: Readonly<Record<string, boolean>>,
-  translucent: boolean,
+  translucent: boolean | 'additive',
   /** Whether this pipeline reads a joint palette. See `FlatVertexOptions`. */
   skinned: boolean,
   /** Whether this pipeline reads morph deltas. See `FlatVertexOptions`. */
@@ -626,19 +648,27 @@ function flatDescriptor(
       constants: flatFragmentConstants(variant, cache),
       targets: [
         oitTarget(oit) ??
-          (translucent
+          (translucent === 'additive'
             ? {
                 format: cache.format,
                 blend: {
-                  color: {
-                    srcFactor: 'src-alpha',
-                    dstFactor: 'one-minus-src-alpha',
-                    operation: 'add',
-                  },
-                  alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+                  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
                 },
               }
-            : { format: cache.format }),
+            : translucent
+              ? {
+                  format: cache.format,
+                  blend: {
+                    color: {
+                      srcFactor: 'src-alpha',
+                      dstFactor: 'one-minus-src-alpha',
+                      operation: 'add',
+                    },
+                    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  },
+                }
+              : { format: cache.format }),
       ],
     },
     primitive: { topology: 'triangle-list', cullMode: doubleSided ? 'none' : 'back' },

@@ -4,7 +4,7 @@ import type { ReadonlyMat4 } from 'gl-matrix';
 import type { MeshData } from '../mesh.ts';
 import type { ProbeBakeOptions } from '../reflectionProbe.ts';
 import type { Renderer, TranslucentMeshOptions } from './webgl2/renderer.ts';
-import type { MeshInstances } from '../instances.ts';
+import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
 import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
@@ -282,6 +282,7 @@ export type RendererApi = Omit<
   | 'drawSdfText'
   | 'disposeSdfText'
   | 'createSurfaceTexture'
+  | 'createSurfaceTextureArray'
   | 'updateSurfaceTexture'
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
@@ -290,6 +291,24 @@ export type RendererApi = Omit<
   /** Upload a caller's image. See `SurfaceTextureHandle` for the boundary this guards. */
   createSurfaceTexture(
     source: TexImageSource,
+    options?: Parameters<Renderer['createSurfaceTexture']>[1],
+  ): SurfaceTextureHandle;
+
+  /**
+   * Upload several images of one size as the layers of one array texture.
+   *
+   * The same handle a single image returns — every surface texture is an array, and a plain image
+   * is an array of one — so it goes wherever a texture goes: any map of `setMaterial`. A mesh picks
+   * its image per vertex with `MeshData.layers`, and every map of the material is read at that
+   * layer, so an albedo array and an emissive array built in one order pair image with glow by
+   * index. **A merged mesh wearing many images is then one draw and one material change.**
+   *
+   * Every image must be the same size: the device allocates one size for every layer, and the
+   * refusal names the first image that differs. A layer past the end reads the last one.
+   * `updateSurfaceTexture` refuses an array.
+   */
+  createSurfaceTextureArray(
+    sources: readonly TexImageSource[],
     options?: Parameters<Renderer['createSurfaceTexture']>[1],
   ): SurfaceTextureHandle;
 
@@ -548,7 +567,7 @@ export type RendererApi = Omit<
    * would wear one expression. Both are refused where the variant is built rather than dropped
    * quietly.
    */
-  createInstanced(mesh: MeshHandle, capacity: number): InstancedHandle;
+  createInstanced(mesh: MeshHandle, capacity: number, options?: InstancedOptions): InstancedHandle;
 
   /**
    * Push placement and colour to the device. Only `data.count` instances are written.

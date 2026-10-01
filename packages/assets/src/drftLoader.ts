@@ -3,7 +3,7 @@
 import type { MeshData } from '@driftengine/drft';
 import type { MeshHandle, RendererApi } from '@driftengine/core';
 import type { GlassOptions, SurfaceTextureHandle } from '@driftengine/core';
-import { MeshBuilder, concatMeshes, createMeshInstances, placeMesh } from '@driftengine/core';
+import { MeshBuilder, concatMeshes, placeMesh } from '@driftengine/core';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { DrftSdfvEntry } from '@driftengine/drft';
 import { placeFields } from './fieldPlacement.ts';
@@ -19,9 +19,13 @@ import {
   CODEC_RAW,
   CODEC_WEBP,
   DrftError,
+  expandAssembly,
 } from '@driftengine/drft';
 import type { AnimationClip, DrftLight, DrftMorph, DrftNode, DrftSkin } from '@driftengine/drft';
+import type { DrftLightVolume, EntsScene, NavPolyMesh } from '@driftengine/drft';
 import type { DrftLoadProgress, DrftPart } from './loadProgress.ts';
+import { RegionStore, fitCopies } from './regionStore.ts';
+import type { LoadedRegion } from './regionStore.ts';
 import {
   DEFAULT_REVEAL_SEC,
   DEFAULT_UPLOAD_MS_PER_FRAME,
@@ -178,6 +182,23 @@ export interface DrftLoaderOptions {
    * of the file — which is why it is an option a caller weighs rather than a default.
    */
   readonly texturePreview?: number;
+  /**
+   * Take each image as it decodes, by the name its `TEXS` chunk gives it, and upload none: for a
+   * consumer that builds its own textures — a world packing every picture into a layer of an
+   * array — where a surface texture of each as well would spend the memory twice. On the same
+   * frame clock as an upload, one a frame; `null` for an image that did not decode. Materials in
+   * the file that name an image then draw untextured, which is the consumer's to answer.
+   */
+  readonly onImage?: (name: string, image: ImageBitmap | null) => void;
+  /**
+   * Offered each mesh no region holds as it arrives, by its ordinal in the file; return true to
+   * take it, and it is neither uploaded as a part nor merged. For a consumer that draws some of a
+   * file's meshes its own way — a crowd of kinds it instances and moves every frame — which a part
+   * cannot be, since the merge bakes a part into a static group by the image it wears. Counted as
+   * arrived, so a loading bar still finishes. What it gives up: the loader's upload budget and
+   * fade, which a taken mesh leaves to the consumer.
+   */
+  readonly onMesh?: (mesh: MeshData, ordinal: number) => boolean;
 }
 
 /**
@@ -213,9 +234,19 @@ export class DrftLoader {
   /** Arrived, not yet uploaded. Drained by `update` at the budget. */
   private readonly queue: {
     mesh: MeshData;
+    ordinal: number;
     material: DrftMaterial | undefined;
     /** Sixteen floats a copy when the file draws this mesh many times, else null. */
     instances: Float32Array | null;
+  }[] = [];
+  /**
+   * Paged region meshes asked for and not yet up, drained after `queue` on the same clock: each is
+   * an expansion from the copies the file carried, then an upload.
+   */
+  private pageQueue: {
+    ordinal: number;
+    material: DrftMaterial | undefined;
+    expand: () => MeshData;
   }[] = [];
   /** `INST`'s placements by mesh ordinal, in hand before the meshes they place arrive. */
   private readonly loadedInstances = new Map<number, Float32Array>();
@@ -305,6 +336,10 @@ export class DrftLoader {
    */
   private loadedNodes: readonly DrftNode[] = [];
   private loadedLights: readonly DrftLight[] = [];
+  private loadedColliders: readonly Float32Array[] = [];
+  private loadedNavigation: NavPolyMesh | null = null;
+  private loadedEntities: EntsScene | null = null;
+  private loadedLightVolume: DrftLightVolume | null = null;
   private loadedFields: readonly DrftSdfvEntry[] = [];
   /** The fields placed, built once the fit and the fields are both known. See `fields`. */
   private placedFields: readonly DrftFieldPlacement[] | null = null;
@@ -337,10 +372,13 @@ export class DrftLoader {
   private merged = false;
   private disposed = false;
   private arrived = 0;
+  /** A streamed world's regions, kept apart from the parts and never merged. See `regionStore.ts`. */
+  private readonly regionStore: RegionStore;
 
   constructor(renderer: RendererApi, options: DrftLoaderOptions = {}) {
     this.renderer = renderer;
     this.options = options;
+    this.regionStore = new RegionStore(renderer, () => this.fit);
   }
 
   get progress(): DrftLoadProgress {
@@ -382,6 +420,97 @@ export class DrftLoader {
    */
   get lights(): readonly DrftLight[] {
     return this.loadedLights;
+  }
+
+  /**
+   * The convex hulls the asset collides as, in the file's own space and unfitted, or empty. Handed
+   * on for the caller to build shapes from, as `hullShape` takes them.
+   */
+  get colliders(): readonly Float32Array[] {
+    return this.loadedColliders;
+  }
+
+  /** The asset's navigation mesh, unfitted, or null for a file carrying no `NAVM`. */
+  get navigation(): NavPolyMesh | null {
+    return this.loadedNavigation;
+  }
+
+  /**
+   * The asset's serialised entities, or null for a file carrying no `ENTS` — handed on as
+   * `deserializeWorld` takes them, because what an entity is belongs to the caller's schemas.
+   */
+  get entities(): EntsScene | null {
+    return this.loadedEntities;
+  }
+
+  /**
+   * A streamed world's regions by id, each filling as its meshes and props upload — `pending` is 0
+   * once one is whole. Their meshes are never among `parts`: a region's levels are alternatives,
+   * drawn one at a time through `HlodSet`, and its batches cull instance by instance.
+   */
+  get regions(): ReadonlyMap<number, LoadedRegion> {
+    return this.regionStore.regions;
+  }
+
+  /** One mesh to draw, from the stream or expanded from an assembly, queued for upload. */
+  private take(mesh: MeshData, ordinal: number): void {
+    if (this.disposed) return;
+    /* A region's own meshes are known by now: a region is written ahead of what it introduces. */
+    if (!this.regionStore.owns(ordinal) && this.options.onMesh?.(mesh, ordinal) === true) {
+      this.arrived++;
+      this.set({ phase: 'geometry', partsDone: this.arrived });
+      return;
+    }
+    const material = this.materials[ordinal];
+    /*
+     * Deltas onto the mesh they name, before it is queued for upload. The container writes a
+     * `MORP` immediately ahead of its `MESH` so this is in hand; a file that puts them the
+     * other way round still opens, and that mesh simply does not morph — a defined
+     * degradation rather than a wrong picture.
+     */
+    const morph = this.loadedMorphs.find((entry) => entry.mesh === ordinal);
+    const withMorph =
+      morph === undefined
+        ? mesh
+        : { ...mesh, morphTargets: morph.deltas, morphTargetCount: morph.targetCount };
+    this.queue.push({
+      mesh: withMorph,
+      ordinal,
+      material,
+      instances: this.loadedInstances.get(ordinal) ?? null,
+    });
+    this.arrived++;
+    this.set({ phase: 'geometry', partsDone: this.arrived });
+  }
+
+  /**
+   * Bring a region's paged level up, or free it. A level that arrived as assemblies (`paged`) is
+   * held as the copies the file carried; asked for, each mesh is expanded and uploaded on the
+   * loader's clocked queue in later `update`s, and `resident` turns true when the last is up. Freed,
+   * its meshes go and the copies stay. A level that is not paged ignores this.
+   *
+   * The caller decides from what it will draw: page in the levels `HlodSet` is choosing or about
+   * to, draw a coarser one until the fine one is resident, and page out what the eye has left.
+   */
+  pageRegion(id: number, level: number, resident: boolean): void {
+    const changes = this.regionStore.page(id, level, resident);
+    if (resident) {
+      for (const { ordinal, expand } of changes) {
+        this.pageQueue.push({ ordinal, material: this.materials[ordinal], expand });
+      }
+      return;
+    }
+    if (changes.length === 0) return;
+    const released = new Set(changes.map((c) => c.ordinal));
+    this.pageQueue = this.pageQueue.filter((item) => !released.has(item.ordinal));
+  }
+
+  /**
+   * A world's summed lights, unfitted, or null until `LVOL` lands and for a file carrying none.
+   * Handed straight to `createWorldLightField`, whose volume it is shaped as.
+   */
+  get lightVolume(): DrftLightVolume | null {
+    return this.loadedLightVolume;
   }
 
   /**
@@ -563,12 +692,28 @@ export class DrftLoader {
         onLights: (lights) => {
           this.loadedLights = lights;
         },
+        onColliders: (hulls) => {
+          this.loadedColliders = hulls;
+        },
+        onNavigation: (navigation) => {
+          this.loadedNavigation = navigation;
+        },
+        onEntities: (entities) => {
+          this.loadedEntities = entities;
+        },
         onFields: (fields) => {
           this.loadedFields = fields;
           this.placedFields = null;
         },
         onInstances: (groups) => {
           for (const group of groups) this.loadedInstances.set(group.mesh, group.transforms);
+        },
+        onLightVolume: (volume) => {
+          this.loadedLightVolume = volume;
+        },
+        onRegion: (region) => {
+          if (this.disposed) return;
+          this.regionStore.admit(region);
         },
         onSkin: (skin) => {
           this.loadedSkins.push(skin);
@@ -638,27 +783,22 @@ export class DrftLoader {
           this.set({ phase: 'materials' });
         },
 
-        onMesh: (mesh, ordinal) => {
+        onKit: (pieces) => {
+          /* A piece is drawn only as copies: it is not a part, and the count said it was. */
+          this.set({ partsTotal: Math.max(0, this.state.partsTotal - pieces.length) });
+        },
+        onAssembly: (assembly, ordinal, piece) => {
           if (this.disposed) return;
-          const material = this.materials[ordinal];
-          /*
-           * Deltas onto the mesh they name, before it is queued for upload. The container writes a
-           * `MORP` immediately ahead of its `MESH` so this is in hand; a file that puts them the
-           * other way round still opens, and that mesh simply does not morph — a defined
-           * degradation rather than a wrong picture.
-           */
-          const morph = this.loadedMorphs.find((entry) => entry.mesh === ordinal);
-          const withMorph =
-            morph === undefined
-              ? mesh
-              : { ...mesh, morphTargets: morph.deltas, morphTargetCount: morph.targetCount };
-          this.queue.push({
-            mesh: withMorph,
-            material,
-            instances: this.loadedInstances.get(ordinal) ?? null,
-          });
-          this.arrived++;
-          this.set({ phase: 'geometry', partsDone: this.arrived });
+          if (this.regionStore.isLevelMesh(ordinal)) {
+            this.regionStore.hold(ordinal, assembly, piece);
+            this.arrived++;
+            this.set({ phase: 'geometry', partsDone: this.arrived });
+            return;
+          }
+          this.take(expandAssembly(assembly, piece), ordinal);
+        },
+        onMesh: (mesh, ordinal) => {
+          this.take(mesh, ordinal);
         },
 
         onTexture: (texture, ordinal) => {
@@ -794,7 +934,27 @@ export class DrftLoader {
     ) {
       const next = this.queue.shift();
       if (next === undefined) break;
-      if (this.uploadOne(next.mesh, next.material, next.instances)) changed = true;
+      if (this.uploadOne(next.mesh, next.material, next.instances, next.ordinal)) changed = true;
+      begun++;
+    }
+    /* Paged region meshes, after the stream's own: an expansion from the copies, then an upload. */
+    while (
+      this.pageQueue.length > 0 &&
+      mayBeginMore(begun, performance.now() - startedMs, msBudget)
+    ) {
+      const next = this.pageQueue.shift();
+      if (next === undefined) break;
+      if (this.uploadOne(next.expand(), next.material, null, next.ordinal)) changed = true;
+      begun++;
+    }
+    /* A region's prop batches, on the same clock: each is an allocation and an upload. Drained
+       before the merge below can begin, which is what lets `ready` not wait on them separately. */
+    while (
+      this.regionStore.busy &&
+      mayBeginMore(begun, performance.now() - startedMs, msBudget) &&
+      this.regionStore.buildNext()
+    ) {
+      changed = true;
       begun++;
     }
 
@@ -807,7 +967,9 @@ export class DrftLoader {
     ) {
       const ordinal = this.imageQueue.shift();
       if (ordinal !== undefined) {
-        this.rebuildTextures(ordinal);
+        const take = this.options.onImage;
+        if (take === undefined) this.rebuildTextures(ordinal);
+        else take(this.chunks[ordinal]?.name ?? '', this.images[ordinal] ?? null);
         /*
          * Counted here, once, and only for the image itself.
          *
@@ -884,6 +1046,7 @@ export class DrftLoader {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.regionStore.dispose();
     /*
      * Everything this class ever made, each disposed once.
      *
@@ -986,6 +1149,7 @@ export class DrftLoader {
     mesh: MeshData,
     material: DrftMaterial | undefined,
     instances: Float32Array | null,
+    ordinal: number,
   ): boolean {
     const fit = this.fit;
     if (fit === null) return false;
@@ -1017,6 +1181,37 @@ export class DrftLoader {
       blend,
       doubleSided,
     } = g;
+
+    /*
+     * A region's mesh — a level or a prop's prototype — is one part of its own, never grouped: the
+     * merge would weld a region's levels together and one region to the next. See `regionStore.ts`.
+     */
+    if (this.regionStore.owns(ordinal)) {
+      try {
+        this.regionStore.arrived(ordinal, {
+          mesh: this.renderer.createMesh(placed),
+          albedo,
+          orm,
+          normal,
+          emissive,
+          opacity,
+          reflectivity,
+          roughnessScale,
+          metallicScale,
+          occlusionStrength,
+          cutout,
+          blend,
+          doubleSided,
+          glass: glassOf(g),
+          reveal: 1,
+          instances: null,
+        });
+        return true;
+      } catch (error) {
+        console.warn(`DrftLoader: region mesh ${ordinal} would not upload and was skipped`, error);
+        return false;
+      }
+    }
 
     /*
      * Added to its merged group here, while there is a budget governing how much of this happens
@@ -1123,10 +1318,9 @@ export class DrftLoader {
   /**
    * A mesh the file draws many times: uploaded once, placed by a batch, and kept out of the merge.
    *
-   * **The fit is conjugated into each placement.** The prototype is uploaded with the fit already
-   * applied, as every part is, so a copy's matrix M becomes F·M·F⁻¹: the same turn, and a translation
-   * of t − R·t + s·u for the fit's scale s and offset t and the copy's own translation u. A fitted
-   * model's copies then land where its geometry does, and are not scaled twice.
+   * **The fit is conjugated into each placement** by `fitCopies`, which a region's props share: the
+   * prototype is uploaded with the fit already applied, so the copies land where its geometry does
+   * and are not scaled twice.
    */
   private uploadInstanced(
     prototype: MeshData,
@@ -1136,36 +1330,8 @@ export class DrftLoader {
   ): boolean {
     try {
       const uploaded = this.renderer.createMesh(prototype);
-      const count = instances.length / 16;
-      const batch = this.renderer.createInstanced(uploaded, count);
-      const data = createMeshInstances(count);
-      const s = fit.scale;
-      for (let k = 0; k < count; k++) {
-        const at = k * 16;
-        for (let i = 0; i < 12; i++) data.models[at + i] = instances[at + i] as number;
-        const ux = instances[at + 12] as number;
-        const uy = instances[at + 13] as number;
-        const uz = instances[at + 14] as number;
-        /* R·t, with R the copy's own 3×3 read column-major. */
-        const rtx =
-          (instances[at] as number) * fit.x +
-          (instances[at + 4] as number) * fit.y +
-          (instances[at + 8] as number) * fit.z;
-        const rty =
-          (instances[at + 1] as number) * fit.x +
-          (instances[at + 5] as number) * fit.y +
-          (instances[at + 9] as number) * fit.z;
-        const rtz =
-          (instances[at + 2] as number) * fit.x +
-          (instances[at + 6] as number) * fit.y +
-          (instances[at + 10] as number) * fit.z;
-        data.models[at + 12] = fit.x - rtx + s * ux;
-        data.models[at + 13] = fit.y - rty + s * uy;
-        data.models[at + 14] = fit.z - rtz + s * uz;
-        data.models[at + 15] = 1;
-      }
-      data.tints.fill(1);
-      data.count = count;
+      const data = fitCopies(instances, fit);
+      const batch = this.renderer.createInstanced(uploaded, data.count);
       this.renderer.uploadInstanced(batch, data);
       const part: DrftPart = { mesh: uploaded, ...surface, reveal: 0, instances: { batch, data } };
       this.revealed.push(part);

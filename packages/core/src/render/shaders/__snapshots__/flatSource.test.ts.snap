@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "8005497d:185300",
-  "directionalShadows+environmentProbe": "54a5a3c4:211313",
-  "directionalShadows+environmentProbe+nightEmissive": "c30b87a2:213799",
-  "directionalShadows+nightEmissive": "daff8fc5:187786",
-  "environmentProbe": "c2cc44d9:191350",
-  "environmentProbe+nightEmissive": "7bf9ef2b:193836",
-  "nightEmissive": "3309db7a:167823",
-  "none": "49325262:165337",
-  "pointShadows": "13082c68:204545",
-  "pointShadows+directionalShadows": "3bf1d0af:224508",
-  "pointShadows+directionalShadows+environmentProbe": "513e9812:250521",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "c96fba58:253007",
-  "pointShadows+directionalShadows+nightEmissive": "be81b68f:226994",
-  "pointShadows+environmentProbe": "e94a985b:230558",
-  "pointShadows+environmentProbe+nightEmissive": "476114c5:233044",
-  "pointShadows+nightEmissive": "c670c938:207031",
+  "directionalShadows": "68e7f929:198329",
+  "directionalShadows+environmentProbe": "372f8400:224342",
+  "directionalShadows+environmentProbe+nightEmissive": "875d87e0:226828",
+  "directionalShadows+nightEmissive": "2e3f74cb:200815",
+  "environmentProbe": "35999e29:204379",
+  "environmentProbe+nightEmissive": "c4ed808d:206865",
+  "nightEmissive": "7a256764:180852",
+  "none": "9083a2aa:178366",
+  "pointShadows": "b1bce18e:217574",
+  "pointShadows+directionalShadows": "994c83cd:237537",
+  "pointShadows+directionalShadows+environmentProbe": "dcea28d4:263550",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "406fd03c:266036",
+  "pointShadows+directionalShadows+nightEmissive": "b4cd5d17:240023",
+  "pointShadows+environmentProbe": "6c35e93d:243587",
+  "pointShadows+environmentProbe+nightEmissive": "78501b09:246073",
+  "pointShadows+nightEmissive": "2e716da0:220060",
 }
 `;
 
@@ -37,7 +37,7 @@ in vec3 vWorldPos;
 in float vEmissive;
 in float vSpecular;
 in vec4 vLightPos;
-in vec2 vUv;
+in vec3 vUv;
 in vec3 vEmissiveColor;
 in float vRoughness;
 /*
@@ -122,7 +122,7 @@ flat in int vHasTangents;
  * biome recolours a whole world without a second texture, and a mesh whose texture is
  * white shades identically to one with no texture at all.
  */
-uniform sampler2D uAlbedo;
+uniform mediump sampler2DArray uAlbedo;
 /** 0 leaves every textured path unevaluated, for the majority of geometry with no image. */
 uniform int uAlbedoEnabled;
 /**
@@ -138,6 +138,12 @@ uniform int uAlbedoEnabled;
  * else changes.
  */
 uniform float uAlbedoCutout;
+/**
+ * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
+ * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
+ * as no effects at all. See \`surfaceEffects.ts\` for the layout.
+ */
+uniform mediump sampler2D uSurfaceEffects;
 
 /**
  * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
@@ -155,7 +161,7 @@ uniform int uDoubleSided;
  * display values bends every normal toward the surface and reads as a green tint over everything.
  * SurfaceTextureOptions.colorSpace already defaults to linear and says why.
  */
-uniform highp sampler2D uNormalMap;
+uniform highp sampler2DArray uNormalMap;
 /**
  * How hard the map turns the shading normal. 0 is no map at all, and gates the whole block.
  *
@@ -177,7 +183,7 @@ uniform float uNormalStrength;
  * Sampled linear and never sRGB. These three numbers *are* the data, not a picture of it, and
  * decoding them as display values would bend every one of them toward its floor.
  */
-uniform highp sampler2D uOrmMap;
+uniform highp sampler2DArray uOrmMap;
 /**
  * 1 when a map is bound. Gates the whole block, following uAlbedoEnabled.
  *
@@ -223,7 +229,7 @@ uniform float uEnvironmentPrefiltered;
  * above, and now with a number behind them: a fifth flag was built and measured at 49% of the
  * bundle. See \`ARCHITECTURE.md\` §1.
  */
-uniform highp sampler2D uEmissiveMap;
+uniform highp sampler2DArray uEmissiveMap;
 /** 1 when a map is bound. Gates the sample, following uOrmEnabled. */
 uniform int uEmissiveMapEnabled;
 /**
@@ -358,9 +364,21 @@ float mediumFog(float dist, float pointY) {
 }
 
 uniform vec3 uCameraPos;
-/** Optional world plane; reflection passes retain only the viewer's side. */
+/**
+ * Optional world plane; reflection passes retain only the viewer's side.
+ *
+ * **Zero is off, and there is no flag beside it.** A zero plane gives \`dot(p, 0) = 0\`, which is
+ * never below zero, so it discards nothing — the \`uClipEnabled\` int that stood here said nothing
+ * the plane could not, and a scalar is a whole uniform row on WebGL2. Its row paid for
+ * \`uSurfaceScene\`. Other programs keep their own flags; this is the lit stage's alone.
+ */
 uniform vec4 uClipPlane;
-uniform int uClipEnabled;
+/**
+ * The scene's surface clock and weather, from the environment: x seconds on the caller's clock, y
+ * how wet the world is, z the share of facade windows lit, w the share that stays lit however late.
+ * One row for all four, paid for by the flag the clip plane no longer needs.
+ */
+uniform vec4 uSurfaceScene;
 uniform float uEmissiveGain;
 uniform float uNightFactor;
 /**
@@ -388,22 +406,47 @@ uniform float uNightEmissive;
 uniform float uOpacity;
 
 /**
- * Whether this draw is accumulating into the order-independent transparency buffers, and
- * therefore weights its own output. 0 is every draw that is not, which is every draw on every
+ * Two per-draw switches on how a fragment is *written* rather than what colour it is, sharing one
+ * row: on WebGL2 every scalar uniform takes a row of its own, and the eight-light rung stands at 255
+ * of the 256 an Adreno 740 offers (\`uniformVectorBudget.test.ts\`), so a second scalar would have
+ * spent the last row and the next uniform anybody added would drop that part to four lights.
+ *
+ * **\`.x\` — whether this draw is accumulating into the order-independent transparency buffers**,
+ * and therefore weights its own output. 0 is every draw that is not, which is every draw on every
  * published scene.
  *
- * **A uniform rather than a permutation, and the cost is why.** Writing the accumulation and the
+ * A uniform rather than a permutation, and the cost is why. Writing the accumulation and the
  * revealage from one pass needs a second fragment output, which is another \`flatFrag\` axis —
  * measured in \`scripts/wgsl.ts\` at about 247 KB gzipped, doubling the sixteen fragment variants,
  * and paid by every consumer whether or not they ever switch this on. A branch on a uniform costs
  * a compare, and the geometry is submitted twice instead. See \`orderIndependent.ts\`.
  *
- * **The revealage pass does not read this.** It draws with this at 0 and a blend of
+ * The revealage pass does not read it. It draws with it at 0 and a blend of
  * \`(ZERO, ONE_MINUS_SRC_ALPHA)\`, so the colour it computes is multiplied away and only its alpha
  * reaches the target — which is exactly the point: both passes run the same code to decide what
  * alpha this fragment has, so they cannot disagree about it.
+ *
+ * **\`.y\` — how much of this draw survives a screen-door dither**, for a crossfade between two
+ * levels of detail of one thing. 0 is off, and every draw that never asked for it. Positive keeps
+ * that share of an 8×8 Bayer pattern's cells; negative keeps the complement — the cells a draw at
+ * the positive amount leaves out — so two draws at \`t\` and \`-t\` cover every pixel exactly once,
+ * whatever \`t\` is. Keyed on the framebuffer's own pixel, whose y runs the other way on WebGPU, so
+ * the grain is mirrored between backends and nothing else about it differs. What it gives up: a
+ * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
+ * draw that asks for it is dithered too, since the test is a discard.
  */
-uniform float uOitWeighted;
+uniform vec2 uWriteMode;
+
+/** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
+bool ditherKeeps(float amount) {
+  uvec2 p = uvec2(gl_FragCoord.xy) & 7u;
+  uint a = p.x ^ p.y;
+  uint b = p.y;
+  uint cell = ((a & 1u) << 5) | ((b & 1u) << 4) | ((a & 2u) << 2) | ((b & 2u) << 1) |
+    ((a & 4u) >> 1) | ((b & 4u) >> 2);
+  float threshold = (float(cell) + 0.5) / 64.0;
+  return amount > 0.0 ? threshold < amount : threshold >= -amount;
+}
 
 /**
  * Whether the fragment stage runs any lighting: ambient, the sun, point lights, specular,
@@ -427,10 +470,11 @@ uniform float uOitWeighted;
  */
 uniform int uLightingEnabled;
 /**
- * Whether this draw recedes into the medium: the atmospheric haze and the underwater tint
- * both, folded together because both are the *camera's* medium rather than a property of the
- * surface — see \`mediumFog\`/\`mediumColor\` in \`fog.ts\`. 1 keeps both, matching every draw
- * before this existed.
+ * How this draw meets the medium: the atmospheric haze and the underwater tint both, folded
+ * together because both are the *camera's* medium rather than a property of the surface — see
+ * \`mediumFog\`/\`mediumColor\` in \`fog.ts\`. 1 recedes into it, matching every draw before this
+ * existed; 2 fades in it without taking its colour, which is what an additive draw is given; 0
+ * keeps out of it. The rule is \`fogModeOf\` in \`backend/drawFog.ts\`.
  *
  * **Independent of \`uLightingEnabled\`, and that is the point of it being a second uniform
  * rather than the same one.** "Unlit but still fading into the haze" is a real thing to
@@ -778,15 +822,15 @@ uniform vec3 uLightIesAxis[MAX_LIGHTS];
  */
 uniform float uLightCookie[MAX_LIGHTS];
 /**
- * Photometric profiles: one row per fixture, a fixture's intensity by vertical angle across it.
+ * Photometric profiles: one row per fixture, a fixture's intensity by vertical angle across it, in
+ * the bottom band of the fixture atlas below.
  *
  * **Every row spans the same 0 to 180 degree arc**, whatever the file measured, which is what lets
  * a light carry only a row index — see \`iesProfile.ts\`. With no profile loaded this holds a
  * single row of ones, the multiplicative identity, because a declared sampler needs a complete
  * texture whether or not the branch reads it and a row of zeros would switch off every light.
  */
-uniform sampler2D uIesAtlas;
-/** Rows in the atlas, so a row index becomes a coordinate. At least 1. */
+/** Rows of profile in the fixture atlas, below its cookies. At least 1. */
 uniform float uIesAtlasRows;
 /**
  * Horizontal planes each profile occupies, so a row is \`profile * planes + plane\`.
@@ -806,8 +850,14 @@ uniform float uIesPlaneCount;
  * identity, because a declared sampler needs a complete texture whether or not the branch reads it
  * and a black stand-in would switch off every light that reached it.
  */
-uniform sampler2D uCookieAtlas;
 uniform float uCookieTiles;
+/**
+ * Both tables in one texture: the cookies' row of tiles in the top band, the profiles' rows below.
+ * One sampler for the two since 2026-09-30, because the lit stage bound fifteen of the sixteen
+ * WebGL2 guarantees; see \`fixtureAtlas.ts\`. The bands are found from \`textureSize\` and
+ * \`uIesAtlasRows\`, so the fold cost no uniform.
+ */
+uniform sampler2D uFixtureAtlas;
 /**
  * Half a texel of a tile, so a cookie's edge cannot reach its neighbour in the atlas.
  *
@@ -816,6 +866,10 @@ uniform float uCookieTiles;
  * cookie. Derived from \`COOKIE_TILE\` rather than written twice.
  */
 #define COOKIE_INSET (0.5 / 128.0)
+/** Texels across a profile's row, where a vertical angle of 0 to 180 degrees is laid. */
+#define IES_WIDTH 128.0
+/** Texels a cookie's tile spans, on both axes. */
+#define COOKIE_SPAN 128.0
 /**
  * Rectangular area lights, and how many of them are live.
  *
@@ -2718,7 +2772,7 @@ float cutoutAlpha(float alpha, vec2 texels) {
 
 /** x how much of the summed light is in the frame (0 off), y the radius, z the band, w the scale. */
 uniform vec4 uDriftLight;
-/** xyz the first brick's first sample; w metres between samples, a third of a brick. */
+/** xyz the first sample; w metres between samples — a third of a brick, or negated for a dense volume. */
 uniform vec4 uDriftLightOrigin;
 uniform highp usampler3D uDriftLightIndex;  // wgsl:share shadow
 uniform highp sampler3D uDriftLightAtlas;
@@ -2730,9 +2784,38 @@ float driftLightShare(vec3 world) {
   return smoothstep(uDriftLight.y - uDriftLight.z, uDriftLight.y, away) * uDriftLight.x;
 }
 
-/** The summed light arriving on a surface at \`world\` facing \`n\`. */
+/**
+ * A sample's light and direction turned into the light on a surface facing \`n\`: Lambert for a
+ * single light, a quarter for light arriving from everywhere (see \`bake.ts\`). One statement for
+ * both kinds of volume.
+ */
+vec3 driftLightFacing(vec4 light, vec4 toward, vec3 n) {
+  vec3 arriving = light.rgb / light.a;
+  vec3 from = toward.xyz / light.a;
+  float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;
+  return arriving * facing;
+}
+
+/**
+ * The same from a dense volume: one sample a texel, the light in the lower half of y and its
+ * direction in the upper. A lookup kept inside the samples never filters across the halves.
+ */
+vec3 driftLightDense(vec3 world, vec3 n, float spacing) {
+  ivec3 size = textureSize(uDriftLightAtlas, 0);
+  vec3 dims = vec3(float(size.x), float(size.y / 2), float(size.z));
+  vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / spacing;
+  if (any(lessThan(at, vec3(0.0))) || any(greaterThan(at, dims - 1.0))) return vec3(0.0);
+  vec3 uvw = (at + 0.5) / vec3(dims.x, dims.y * 2.0, dims.z);
+  vec4 light = textureLod(uDriftLightAtlas, uvw, 0.0);
+  if (light.a < 1e-3) return vec3(0.0);
+  vec4 toward = textureLod(uDriftLightAtlas, uvw + vec3(0.0, 0.5, 0.0), 0.0);
+  return driftLightFacing(light, toward, n);
+}
+
+/** The summed light arriving on a surface at \`world\` facing \`n\`. A negative spacing is dense. */
 vec3 driftLightIrradiance(vec3 world, vec3 n) {
   float spacing = uDriftLightOrigin.w;
+  if (spacing < 0.0) return driftLightDense(world, n, -spacing);
   vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / (3.0 * spacing);
   ivec3 cell = ivec3(floor(at));
   if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, textureSize(uDriftLightIndex, 0)))) {
@@ -2755,15 +2838,152 @@ vec3 driftLightIrradiance(vec3 world, vec3 n) {
   vec4 light = textureLod(uDriftLightAtlas, (corner + inside) * texel, 0.0);
   if (light.a < 1e-3) return vec3(0.0);
   vec4 toward = textureLod(uDriftLightAtlas, (corner + vec3(4.0, 0.0, 0.0) + inside) * texel, 0.0);
-  vec3 arriving = light.rgb / light.a;
-  vec3 from = toward.xyz / light.a;
-  /* Lambert for a single light, a quarter for light arriving from everywhere: see \`bake.ts\`. */
-  float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;
-  return arriving * facing;
+  return driftLightFacing(light, toward, n);
+}
+
+
+/*
+ * The layer's six rows, and what every effect reads beside them, filled once at the top of main.
+ * Globals rather than arguments, because naga passes every argument through a pointer and a copy,
+ * and in sixteen permutations that traffic was most of what the effects cost in bytes.
+ */
+vec4 fx0;
+vec4 fx1;
+vec4 fx2;
+vec4 fx3;
+vec4 fx4;
+vec4 fx5;
+vec3 fxNormal;
+float fxDistance;
+
+/** Fill the rows for this layer, or leave them zero where the array carries no table. */
+void fxLoad(int layer) {
+  fx0 = vec4(0.0);
+  fx1 = vec4(0.0);
+  fx2 = vec4(0.0);
+  fx3 = vec4(0.0);
+  fx4 = vec4(0.0);
+  fx5 = vec4(0.0);
+  ivec2 size = textureSize(uSurfaceEffects, 0);
+  if (size.x < 6 || layer < 0 || layer >= size.y) return;
+  fx0 = texelFetch(uSurfaceEffects, ivec2(0, layer), 0);
+  fx1 = texelFetch(uSurfaceEffects, ivec2(1, layer), 0);
+  fx2 = texelFetch(uSurfaceEffects, ivec2(2, layer), 0);
+  fx3 = texelFetch(uSurfaceEffects, ivec2(3, layer), 0);
+  fx4 = texelFetch(uSurfaceEffects, ivec2(4, layer), 0);
+  fx5 = texelFetch(uSurfaceEffects, ivec2(5, layer), 0);
+}
+
+/** A cell and a seed to 0..1, the same on every device. */
+float fxHash(vec2 cell, float seed) {
+  uvec2 q = uvec2(ivec2(cell)) + uvec2(uint(seed) * 7919u, uint(seed) * 104729u);
+  uint h = (q.x * 1597334677u) ^ (q.y * 3812015801u);
+  h = (h ^ (h >> 16)) * 2246822519u;
+  h ^= h >> 13;
+  return float(h & 16777215u) / 16777216.0;
+}
+
+float fxNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 u = smoothstep(0.0, 1.0, fract(p));
+  return mix(
+    mix(fxHash(i, 0.0), fxHash(i + vec2(1.0, 0.0), 0.0), u.x),
+    mix(fxHash(i + vec2(0.0, 1.0), 0.0), fxHash(i + vec2(1.0, 1.0), 0.0), u.x),
+    u.y);
+}
+
+/** Scroll and flipbook, on the caller's clock. \`fract\` keeps a long clock from eating precision. */
+vec3 fxAnimate(vec3 at) {
+  float time = uSurfaceScene.x;
+  at.xy += fract(fx4.xy * time);
+  if (fx5.y > 0.0) at.z += mod(floor(time * fx5.z), fx5.y);
+  return at;
+}
+
+/** Pulse, flicker and fade with distance, as a factor on the emission. */
+float fxEmission(float layer) {
+  float time = uSurfaceScene.x;
+  float e = 1.0 - fx4.w * (0.5 + 0.5 * sin(6.2831853 * fract(fx4.z * time)));
+  e *= 1.0 - fx5.x * step(0.7, fxHash(vec2(floor(time * 14.0), layer), 3.0));
+  if (fx5.w > 0.0) e *= 1.0 - smoothstep(fx5.w * 0.7, fx5.w, fxDistance);
+  return e;
+}
+
+/** Dust, grime and streaks, then the scene's rain: the colour in xyz, the roughness in w. */
+vec4 fxWeather(vec3 world, vec3 albedo, float roughness) {
+  float fade = fx3.w > 0.0 ? 1.0 - smoothstep(fx3.w * 0.5, fx3.w, fxDistance) : 1.0;
+  if (fx3.x + fx3.y + fx3.z > 0.0) {
+    float blotch = fxNoise(world.xz * 0.35 + world.y * 0.2);
+    float dust = fx3.x * smoothstep(0.35, 0.9, fxNormal.y) * (0.5 + 0.5 * blotch) * fade;
+    float grime = fx3.y * (0.55 - 0.55 * smoothstep(0.0, 2.5, world.y) + 0.45 * blotch) * fade;
+    float streak = fx3.z * (1.0 - abs(fxNormal.y))
+      * fxNoise(vec2((world.x + world.z) * 2.5, world.y * 0.15)) * fade;
+    albedo = mix(albedo, vec3(0.56, 0.53, 0.48), dust * 0.6) * (1.0 - 0.5 * grime - 0.35 * streak);
+    roughness = mix(roughness, 1.0, clamp(0.5 * (dust + grime), 0.0, 1.0));
+  }
+  float wet = uSurfaceScene.y * (1.0 - fx2.w) * mix(0.35, 1.0, smoothstep(0.2, 0.8, fxNormal.y));
+  return vec4(albedo * (1.0 - 0.45 * wet), mix(roughness, 0.08, wet));
+}
+
+/**
+ * Windows and the rooms behind them: the glow a lit window adds to the emission in xyz, and in w
+ * how much of the surface is glass, which the caller mixes toward the room's dim colour. The room
+ * itself is returned through \`fxRoom\`. \`mask\` is the albedo's alpha, and a window is a hole in the
+ * wall's picture: glass where it is 0. The other way round would lose the wall's colour, which does
+ * not survive an upload at alpha 0.
+ *
+ * **A building's own light, where its vertices name one.** The table is per layer, and every
+ * facade of one style shares a layer, so a light that differs from building to building — its
+ * colour and its strength — cannot live there. A window layer's vertex emissive is otherwise unused
+ * (its windows glow here, not through the emissive term), so the vertex's emissive colour, strength
+ * folded in, is that light: the window's colour where there is no room, a tint on the room where
+ * there is. An absent colour reads negative and leaves both exactly as the table says.
+ */
+vec3 fxRoom;
+vec4 fxWindows(vec3 at, vec2 dx, vec2 dy, float mask) {
+  float glass = fx0.z > 0.0 ? 1.0 - mask : 1.0;
+  vec2 g = at.xy * fx0.xy;
+  vec2 local = fract(g);
+  float share = floor(max(uSurfaceScene.z, uSurfaceScene.w) * 10.0 + 0.5) / 10.0;
+  float lit = fxHash(floor(g), fx0.w) < share * (fx1.x > 0.0 ? fx1.z : 1.0) ? 1.0 : 0.0;
+  fxRoom = fx2.rgb;
+  bool own = vEmissiveColor.r >= 0.0;
+  vec3 glow = own ? vEmissiveColor : fx2.rgb;
+  float tangentLength = length(vTangent.xyz);
+  if (fx1.x > 0.0 && tangentLength > 1e-4) {
+    vec3 t = vTangent.xyz / tangentLength;
+    vec3 v = normalize(vWorldPos - uCameraPos);
+    vec3 d = vec3(dot(v, t), dot(v, cross(fxNormal, t)) * sign(vTangent.w + 0.5),
+      min(dot(v, fxNormal), -1e-3) / max(fx1.y, 0.05));
+    vec2 across = (step(0.0, d.xy) - local) / (sign(d.xy + 1e-9) * max(abs(d.xy), 1e-5));
+    float travel = min(min(across.x, across.y), -1.0 / d.z);
+    float depth = min(-d.z * travel, 1.0);
+    vec2 picture = 0.5 + (local + d.xy * travel - 0.5) / (1.0 + depth);
+    fxRoom = textureGrad(uAlbedo, vec3(picture, fx1.x - 1.0), dx * fx0.xy * 0.5, dy * fx0.xy * 0.5).rgb;
+    glow = own ? fxRoom * vEmissiveColor : fxRoom;
+  }
+  return vec4(glow * (lit * fx1.w * glass), glass);
 }
 
 void main() {
-  if (uClipEnabled != 0 && dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
+  /*
+   * Where every material map is read: the texture coordinate, and the layer of the array the face
+   * wears, rounded here so an interpolated 2.9999 lands on layer 3 however the generated WGSL
+   * turns a float into an array index. A plain texture is an array of one, so layer 0.
+   */
+  vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));
+  if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
+  /*
+   * The layer's surface effects, zeros where the albedo array carries no table — see
+   * surfaceEffects.ts. Scroll and flipbook move surfaceAt before any map reads it, so every map of
+   * the material moves together. The gradients are taken here, outside every branch, for the room
+   * a window samples through textureGrad further down.
+   */
+  fxLoad(int(surfaceAt.z));
+  surfaceAt = fxAnimate(surfaceAt);
+  vec2 fxDx = dFdx(surfaceAt.xy);
+  vec2 fxDy = dFdy(surfaceAt.xy);
+  if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
 
   /*
    * Surface colour and its coverage, resolved before anything else — including before it is
@@ -2797,13 +3017,13 @@ void main() {
    */
   float coverage = 1.0;
   if (uAlbedoEnabled != 0) {
-    vec4 texel = texture(uAlbedo, vUv);
+    vec4 texel = texture(uAlbedo, surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
     if (uAlbedoCutout > 0.0) {
-      float tested = cutoutAlpha(texel.a, vUv * vec2(textureSize(uAlbedo, 0)));
+      float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
       if (tested < uAlbedoCutout) discard;
     }
     albedo *= texel.rgb;
@@ -2832,7 +3052,7 @@ void main() {
   float ormRoughness = vRoughness;
   float metal = 0.0;
   if (uOrmEnabled != 0) {
-    vec3 t = texture(uOrmMap, vUv).rgb;
+    vec3 t = texture(uOrmMap, surfaceAt).rgb;
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
     metal = clamp(t.b * uOrmScale.b, 0.0, 1.0);
@@ -2844,6 +3064,22 @@ void main() {
    * \`uLightingEnabled\` at 0 keeps to the end, and the value every lit draw starts from before
    * the branch below builds a shaded result on top of it.
    */
+  /*
+   * Wear, rain and windows, on the colour and roughness everything below shades. Each is exactly
+   * nothing where its numbers are zero, which is every surface of a scene that names no effect.
+   */
+  fxNormal = normalize(vNormal);
+  fxDistance = distance(vWorldPos, uCameraPos);
+  vec4 weathered = fxWeather(vWorldPos, albedo, ormRoughness);
+  albedo = weathered.rgb;
+  ormRoughness = weathered.w;
+  vec3 windowGlow = vec3(0.0);
+  if (fx0.x > 0.0) {
+    vec4 window = fxWindows(surfaceAt, fxDx, fxDy, coverage);
+    albedo = mix(albedo, fxRoom * 0.35, window.w);
+    windowGlow = window.rgb;
+  }
+
   vec3 lit = albedo;
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
      over the see-through at the end. Stays zero for anything that is not glass. See glass.ts. */
@@ -2885,8 +3121,8 @@ void main() {
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
     if (uNormalStrength > 0.0) {
-      vec3 mapped = texture(uNormalMap, vUv).xyz * 2.0 - 1.0;
-      mat3 tbn = tangentFrame(n, vWorldPos, vUv, vTangent, vHasTangents);
+      vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
+      mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
       n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
     }
 
@@ -3006,14 +3242,14 @@ void main() {
        * antisymmetric, the cancellation holds, and it is the more accurate estimate besides: a
        * forward difference reports the slope half a step away from the point it is used at.
        */
-      vec2 duvdx = dFdx(vUv);
-      vec2 duvdy = dFdy(vUv);
+      vec2 duvdx = dFdx(vUv.xy);
+      vec2 duvdy = dFdy(vUv.xy);
       /* Half, because a centred difference spans two steps and three.js's number means one. */
       float reliefPerStep = uTextureRelief * 0.5;
-      float dHdx = (surfaceHeight(texture(uAlbedo, vUv + duvdx).rgb)
-                  - surfaceHeight(texture(uAlbedo, vUv - duvdx).rgb)) * reliefPerStep;
-      float dHdy = (surfaceHeight(texture(uAlbedo, vUv + duvdy).rgb)
-                  - surfaceHeight(texture(uAlbedo, vUv - duvdy).rgb)) * reliefPerStep;
+      float dHdx = (surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdx, surfaceAt.z)).rgb)
+                  - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdx, surfaceAt.z)).rgb)) * reliefPerStep;
+      float dHdy = (surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdy, surfaceAt.z)).rgb)
+                  - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdy, surfaceAt.z)).rgb)) * reliefPerStep;
 
       vec3 dpdx = dFdx(vWorldPos);
       vec3 dpdy = dFdy(vWorldPos);
@@ -3657,6 +3893,9 @@ void main() {
         * CLUSTER_TEXELS;
     int clusterLights = uClustered == 1 ? int(clusterTexel(clusterBaseTexel).x) : 0;
 
+    /* The fixture atlas's size, asked once: its cookie band and its profile rows are found from it. */
+    vec2 fixtureSize = vec2(textureSize(uFixtureAtlas, 0));
+
     // Point lights. Inverse-square-ish falloff clipped to a finite radius, so a
     // light can be culled without a visible seam.
     for (int slot = 0; slot < LIGHT_LOOP_MAX; slot++) {
@@ -3946,7 +4185,9 @@ void main() {
       vec3 iesRay = -toLight / max(dist, 1e-4);
       /* The angle from the fixture's axis, as a fraction of the 0-to-180 arc every row spans. */
       float iesAngle = acos(clamp(dot(iesRay, lightDir), -1.0, 1.0));
-      float iesU = iesAngle / PI_IES;
+      /* Clamped to the row's first and last texel centres, which is what the edge clamp of a
+         texture exactly one row wide gave; the atlas can be wider now, with cookies beside it. */
+      float iesU = clamp(iesAngle / PI_IES * IES_WIDTH, 0.5, IES_WIDTH - 0.5) / fixtureSize.x;
       /*
        * **The azimuth about the fixture's own axis**, behind a branch on a uniform so a scene whose
        * profiles are all axially symmetric pays none of this arithmetic. A \`uniform float\` is
@@ -4000,13 +4241,14 @@ void main() {
              */
             float cookieTile = max(cookie, 0.0);
             vec2 cookieAt = vec2(
-              (cookieTile + clamp(cookieUv.x, COOKIE_INSET, 1.0 - COOKIE_INSET)) / uCookieTiles,
-              clamp(cookieUv.y, COOKIE_INSET, 1.0 - COOKIE_INSET));
+              (cookieTile + clamp(cookieUv.x, COOKIE_INSET, 1.0 - COOKIE_INSET)) * COOKIE_SPAN
+                / fixtureSize.x,
+              clamp(cookieUv.y, COOKIE_INSET, 1.0 - COOKIE_INSET) * COOKIE_SPAN / fixtureSize.y);
             /* Unconditional and \`textureLod\`, and selected with a \`mix\` afterwards: the light
                loop is not provably uniform control flow — the clustered arm reads its index from a
                texture — so a branch on the *light's* cookie index around a sample is what the
                2026-08-07 rule forbids. */
-            vec3 cookieSample = textureLod(uCookieAtlas, cookieAt, 0.0).rgb;
+            vec3 cookieSample = textureLod(uFixtureAtlas, cookieAt, 0.0).rgb;
             cookieTint = mix(vec3(1.0), cookieSample, step(0.0, cookie));
           }
         }
@@ -4021,10 +4263,12 @@ void main() {
        * bytes on \`core-only\`** across the sixteen fragment permutations.
        */
       float iesBase = iesRow * (uIesPlaneCount + 1.0);
+      /* The profiles are the atlas's bottom rows, below any cookies. */
+      float iesTop = fixtureSize.y - uIesAtlasRows;
       float iesV = uIesAtlasRows <= 1.0
-        ? 0.5
-        : (iesBase + iesTurns * uIesPlaneCount + 0.5) / uIesAtlasRows;
-      float iesGain = textureLod(uIesAtlas, vec2(iesU, iesV), 0.0).r;
+        ? (iesTop + 0.5) / fixtureSize.y
+        : (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
+      float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
       float photometric = mix(1.0, iesGain, step(0.0, iesProfile));
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
@@ -4437,10 +4681,14 @@ void main() {
      */
     vec3 emissiveMapped = vec3(1.0);
     if (uEmissiveMapEnabled != 0) {
-      emissiveMapped = texture(uEmissiveMap, vUv).rgb * uEmissiveScale;
+      emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
     }
+    /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
+    float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
     lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor
-      * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE);
+      * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
+    /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
+    lit += windowGlow * uEmissiveGain;
 
     /*
      * And the same emission again, weighted by how far this surface faces away from the sun.
@@ -4512,7 +4760,14 @@ void main() {
     fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
   }
 
-  vec3 shaded = applyOutputTransform(mix(lit, mediumColor(), fog));
+  /*
+   * A surface recedes into the medium; light added to the frame fades in it (\`uFogEnabled\` at 2,
+   * \`drawFog.ts\`). What is behind an additive draw is already fogged, so mixing the draw toward
+   * the medium's colour and adding it puts the haze into the frame twice — a glow by day drew as
+   * a grey shape of itself, greyer the thicker the air.
+   */
+  vec3 shaded = applyOutputTransform(
+    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));
 
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**
@@ -4609,7 +4864,7 @@ void main() {
    * up holding the weighted sum of colour and the weighted sum of alpha. The revealage pass draws
    * the same geometry with this at 0, where the branch below is not taken at all.
    */
-  if (uOitWeighted != 0.0) {
+  if (uWriteMode.x != 0.0) {
     float z = distance(vWorldPos, uCameraPos) / 200.0;
     float falloff = 0.03 / (1e-5 + z * z * z * z);
     float w = alpha * clamp(falloff, 1e-2, 3e3);
@@ -4629,7 +4884,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -4712,7 +4967,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -4780,7 +5035,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -4803,7 +5058,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -4921,7 +5176,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -4989,7 +5244,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5011,7 +5266,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -5172,7 +5427,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -5251,7 +5506,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5273,7 +5528,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -5426,7 +5681,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -5494,7 +5749,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5516,7 +5771,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -5712,7 +5967,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -5791,7 +6046,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;

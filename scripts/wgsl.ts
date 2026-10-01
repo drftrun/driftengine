@@ -20,9 +20,10 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { shareItems } from './wgsl/share.mjs';
 import path from 'node:path';
 
-import { compileToWgsl, hasNaga } from './wgsl/compile.mjs';
+import { compileToWgsl, hasNaga, validateWgsl } from './wgsl/compile.mjs';
 import { stageOf } from './wgsl/stage.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -203,17 +204,46 @@ function render(file: string, entries: (Source & { wgsl: string; bindings: unkno
     lines.push(`export const ${entry.name}_WGSL = ${JSON.stringify(entry.wgsl)};\n`);
   }
 
-  for (const name of new Set(permuted.map((entry) => entry.name))) {
-    const mine = permuted.filter((entry) => entry.name === name);
-    const constant = `${name.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()}_WGSL`;
-    lines.push(
-      `/** One entry per permutation, keyed by the flags that are on. See \`variantKey\`. */\n` +
-        `export const ${constant}: Readonly<Record<string, string>> = {\n` +
-        mine
-          .map((entry) => `  ${JSON.stringify(entry.variant)}: ${JSON.stringify(entry.wgsl)},`)
-          .join('\n') +
-        '\n};\n',
+  /*
+   * Permuted shaders share their items: each distinct top-level item once, each permutation a list
+   * of indices joined on first use. See `wgsl/share.mjs` for why, and `main` below for the naga
+   * validation of every shader as it will be reassembled.
+   */
+  if (permuted.length > 0) {
+    const { parts, index } = shareItems(
+      Object.fromEntries(permuted.map((entry) => [`${entry.name}:${entry.variant}`, entry.wgsl])),
     );
+    lines.push(
+      `/** Every distinct top-level item of the permutations below, once. See \`wgsl/share.mjs\`. */\n` +
+        `const PARTS: readonly string[] = ${JSON.stringify(parts)};\n\n` +
+        `/** A permutation from its items, joined the first time it is asked for and kept. */\n` +
+        `function permutations(table: Readonly<Record<string, readonly number[]>>): Readonly<Record<string, string>> {\n` +
+        `  const out: Record<string, string> = {};\n` +
+        `  for (const [key, at] of Object.entries(table)) {\n` +
+        `    let text: string | null = null;\n` +
+        `    Object.defineProperty(out, key, {\n` +
+        `      enumerable: true,\n` +
+        `      get: () => (text ??= at.map((i) => PARTS[i] as string).join('\\n\\n')),\n` +
+        `    });\n` +
+        `  }\n` +
+        `  return out;\n` +
+        `}\n`,
+    );
+    for (const name of new Set(permuted.map((entry) => entry.name))) {
+      const mine = permuted.filter((entry) => entry.name === name);
+      const constant = `${name.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()}_WGSL`;
+      lines.push(
+        `/** One entry per permutation, keyed by the flags that are on. See \`variantKey\`. */\n` +
+          `export const ${constant}: Readonly<Record<string, string>> = permutations({\n` +
+          mine
+            .map(
+              (entry) =>
+                `  ${JSON.stringify(entry.variant)}: ${JSON.stringify(index[`${entry.name}:${entry.variant}`])},`,
+            )
+            .join('\n') +
+          '\n});\n',
+      );
+    }
   }
 
   /*
@@ -327,6 +357,22 @@ async function main(): Promise<void> {
 
       /* `flat/index.ts` writes `flat.wgsl.ts`: the directory is the shader's name. */
       const target = path.join(OUT, `${stemOf(file)}.wgsl.ts`);
+      /*
+       * Every permuted shader validated as it will be reassembled — cut into items, temporaries
+       * renumbered, joined — before anything is written, so the sharing can only ever emit what
+       * naga accepts. See `wgsl/share.mjs`.
+       */
+      const permutedEntries = entries.filter((entry) => entry.variant !== undefined);
+      if (permutedEntries.length > 0) {
+        const { rebuilt } = shareItems(
+          Object.fromEntries(
+            permutedEntries.map((entry) => [`${entry.name}:${entry.variant}`, entry.wgsl]),
+          ),
+        );
+        for (const [key, text] of Object.entries(rebuilt as Record<string, string>)) {
+          validateWgsl(text, `${file} ${key}`);
+        }
+      }
       const next = render(file, entries);
       let current: string | null = null;
       try {

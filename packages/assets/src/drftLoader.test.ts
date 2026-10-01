@@ -600,6 +600,86 @@ test('every image decodes premultiplied and with no colour conversion, preview a
 });
 
 /*
+ * **A consumer that builds its own arrays takes the images, and nothing is uploaded twice.** A world
+ * whose regions wear texture arrays packs every picture into a layer; a surface texture made of
+ * each as well would be the memory spent twice on textures nothing draws.
+ */
+test('A CONSUMER TAKING THE IMAGES GETS EACH BY NAME, AND THE LOADER UPLOADS NONE', async () => {
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn(() => Promise.resolve({ width: 4, height: 4, close: () => {} })),
+  );
+  try {
+    let created = 0;
+    const renderer = {
+      ...fakeRenderer(),
+      createSurfaceTexture: () => {
+        created++;
+        return { id: created };
+      },
+    } as unknown as RendererApi;
+    const taken: [string, boolean][] = [];
+    const loader = new DrftLoader(renderer, {
+      onImage: (name, image) => taken.push([name, image !== null]),
+    });
+    const drft = writeDrft({
+      head: { name: 'arrays' },
+      meshes: [triangle()],
+      materials: [material({ name: 'painted', albedo: 0 })],
+      textures: [
+        { name: 'facade.webp', codec: CODEC_PNG, width: 4, height: 4, bytes: new Uint8Array(8) },
+        { name: 'roof.webp', codec: CODEC_PNG, width: 4, height: 4, bytes: new Uint8Array(8) },
+      ],
+    });
+    await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let frame = 0; frame < 8; frame++) loader.update(1 / 60);
+    expect(taken.sort()).toEqual([
+      ['facade.webp', true],
+      ['roof.webp', true],
+    ]);
+    expect(created).toBe(0);
+    /* Counted as done, as an uploaded image is, so a loading bar still finishes. */
+    expect(loader.progress.imagesDone).toBe(2);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+/*
+ * **A consumer that draws some meshes its own way takes them, and they never become parts.** A
+ * world's movers — each vehicle and walker kind a mesh the consumer instances per frame — would
+ * otherwise be uploaded as parts and then merged into a static group by the image they wear.
+ */
+test('A CONSUMER TAKING A MESH GETS IT BY ORDINAL, AND IT IS NEITHER A PART NOR MERGED', async () => {
+  const taken: number[] = [];
+  const loader = new DrftLoader(fakeRenderer(), {
+    onMesh: (_mesh, ordinal) => {
+      if (ordinal !== 1) return false;
+      taken.push(ordinal);
+      return true;
+    },
+  });
+  const drft = writeDrft({
+    head: { name: 'movers' },
+    meshes: [triangle(), triangle(), triangle()],
+    /* The one taken is the only translucent one, so a blended part can only be it. */
+    materials: [
+      material({ name: 'a' }),
+      material({ name: 'b', opacity: 0.5 }),
+      material({ name: 'c' }),
+    ],
+  });
+  await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+  for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+  expect(taken).toEqual([1]);
+  /* The other two arrived and merged into one group; the one taken is not a part at all. */
+  expect(loader.parts.map((p) => p.blend)).toEqual([false]);
+  /* Counted as arrived, as an uploaded part is, so a loading bar still finishes. */
+  expect(loader.progress.partsDone).toBe(3);
+});
+
+/*
  * **A mesh the file draws many times arrives as one part with its placements, never merged.** A
  * merge would bake one copy's geometry into a group and lose the other ten thousand; an instanced
  * part draws them all from one mesh and one upload.

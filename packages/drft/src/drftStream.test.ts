@@ -258,6 +258,31 @@ test('paint arrives before the geometry it paints', () => {
   expect(order.at(-1)).toBe('texture');
 });
 
+test('A WORLD THAT ASKS FOR ITS PICTURES FIRST GETS THEM AHEAD OF ITS GEOMETRY', () => {
+  /*
+   * The other layout, for a file whose every region wears the same texture arrays: its first
+   * region cannot be drawn until the pictures are in, so a stream that met them last would draw
+   * nothing until the file's end.
+   */
+  const box = new MeshBuilder();
+  box.addBox([0, 0, 0], [1, 1, 1], [0.5, 0.5, 0.5], 0, 0);
+  const buffer = writeDrft({
+    meshes: [box.build()],
+    textures: [
+      { name: 'one.raw', codec: CODEC_RAW, width: 2, height: 2, bytes: new Uint8Array(16) },
+    ],
+    texturesFirst: true,
+  });
+  const order: string[] = [];
+  const stream = new DrftStream({
+    onMesh: () => order.push('mesh'),
+    onTexture: () => order.push('texture'),
+  });
+  feed(stream, buffer, 16);
+  stream.end();
+  expect(order).toEqual(['texture', 'mesh']);
+});
+
 test('an outline arrives before the paint, and is not counted as a part', () => {
   /*
    * The stage order §4.6 argues for, from the front: outline, paint, elements, texture. The
@@ -371,4 +396,60 @@ test('A STREAM HANDS ON THE DISTANCE FIELDS ITS FILE CARRIES', () => {
   feed(stream, drft, 97);
   stream.end();
   expect(got).toEqual([{ mesh: 0xffffffff, samples: Array.from(field) }]);
+});
+
+test('A STREAM HANDS OVER COLLISION, NAVIGATION AND ENTITIES, exactly what a whole-file read finds', () => {
+  /*
+   * These three were read by `readDrft` alone, so a scene that streamed its geometry had to fetch
+   * the file a second time, whole, to learn where it could walk and what stood in it.
+   */
+  const triangle: MeshData = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    colors: new Float32Array(9).fill(1),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const buffer = writeDrft({
+    meshes: [triangle],
+    colliders: [new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])],
+    navigation: {
+      vertices: Int32Array.from([0, 0, 4, 0, 4, 4, 0, 4]),
+      vertexCount: 4,
+      polys: Int32Array.from([0, 1, 2, 3]),
+      neighbours: Int32Array.from([-1, -1, -1, -1]),
+      polyCount: 1,
+      maxVertsPerPoly: 4,
+      polyRegion: Int32Array.from([1]),
+      originX: 2,
+      originZ: -3,
+      cellSize: 0.5,
+    },
+    entities: {
+      version: 1,
+      schemas: { stop: { name: 'stop', fields: [{ id: 'city::x', name: 'x', type: 'f32' }] } },
+      entities: [{ components: { stop: { x: 7 } } }],
+    },
+  });
+  const whole = readDrft(buffer);
+  let colliders: readonly Float32Array[] = [];
+  let navigation: unknown = null;
+  let entities: unknown = null;
+  const stream = new DrftStream({
+    onColliders: (c) => {
+      colliders = c;
+    },
+    onNavigation: (n) => {
+      navigation = n;
+    },
+    onEntities: (e) => {
+      entities = e;
+    },
+  });
+  feed(stream, buffer, 7);
+  expect(colliders.map((c) => [...c])).toEqual(whole.colliders.map((c) => [...c]));
+  expect(navigation).toEqual(whole.navigation);
+  expect(entities).toEqual(whole.entities);
+  expect(whole.navigation, 'the fixture carries each of them').not.toBeNull();
+  expect(whole.entities).not.toBeNull();
 });

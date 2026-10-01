@@ -92,6 +92,8 @@
        all of both. */
     "packages/native-host/src",
     "demo/native",
+    /* The city demo's bake reads the reference's source off disk; checked there as well. */
+    "demo/sprawl/bake",
     "packages/package/src/main",
     "packages/package/src/preload/entry.ts",
     "packages/package/src/cli.ts",

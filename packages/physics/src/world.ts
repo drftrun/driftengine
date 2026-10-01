@@ -433,7 +433,12 @@ export class PhysicsWorld implements IslandSolver {
     for (const key of kept) this.ignoredPairs.add(key);
   }
 
-  removeBody(index: number): void {
+  /**
+   * Remove a body, filling its index with the last body — whose index this returns, or −1 when the
+   * removed body was the last. **Every index past the removed one can change**, so a caller keeping
+   * body indices follows the returned one; `StaticRegions` is the worked example.
+   */
+  removeBody(index: number): number {
     this.tree.remove(this.leafOf[index] ?? 0);
     const moved = this.bodies.remove(index);
     this.followRemoval(index, moved);
@@ -445,6 +450,7 @@ export class PhysicsWorld implements IslandSolver {
     this.warm.clear();
     // Every index past the removed one may have moved, so a remembered pair is a lie.
     this.events.clear();
+    return moved;
   }
 
   /** Advance one fixed tick. */

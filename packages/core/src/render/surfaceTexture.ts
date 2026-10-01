@@ -1,4 +1,16 @@
-/** A GPU image the caller supplies, sampled by the flat shader as surface colour. */
+/**
+ * A GPU image the caller supplies, sampled by the flat shader as surface colour — or several, as
+ * the layers of one array.
+ *
+ * **Every surface texture is an array; a plain image is an array of one.** The lit pass has three of
+ * WebGL2's guaranteed sixteen texture units free, so a second set of array samplers beside the 2D
+ * ones was never affordable. Making the one set of samplers arrays costs no unit, and a one-layer
+ * array samples exactly as a 2D texture does. A mesh names its layer per vertex (`MeshData.layers`),
+ * so a merged block wearing forty facades is one draw.
+ */
+import { isSourceList, layerSize, refuseArrayUpdate, sourceSize } from './textureSource.ts';
+import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from './surfaceEffects.ts';
+import type { SurfaceLayerEffect } from './surfaceEffects.ts';
 
 /**
  * How a texture behaves past its edges and between its texels.
@@ -104,6 +116,12 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
 
 export interface SurfaceTextureOptions {
   /**
+   * What each layer does beyond its picture — rooms behind windows, windows lit by night, wear,
+   * animation, staying dry — one entry a layer, `undefined` for a layer with none. Read only where
+   * this texture is a material's albedo. See `surfaceEffects.ts`.
+   */
+  effects?: readonly (SurfaceLayerEffect | undefined)[];
+  /**
    * `repeat` tiles the image, `clamp` stretches its edge texels.
    *
    * Repeat is the default because the case this exists for is a wall: one small image
@@ -189,11 +207,23 @@ export class SurfaceTexture {
   /** Whether the sampler decodes sRGB on fetch. See `colorSpace`. */
   private readonly srgb: boolean;
 
+  /** How many images the array holds: 1 for `createSurfaceTexture`, the list's length otherwise. */
+  readonly layers: number;
+  /** The per-layer effects table, or null for a texture given none. See `surfaceEffects.ts`. */
+  private effectsTable: WebGLTexture | null = null;
+
+  /**
+   * One image, or an array of images that must share one size (`layerSize` refuses otherwise).
+   * Uploaded unflipped either way; see the constructor body for why.
+   */
   constructor(
     gl: WebGL2RenderingContext,
-    source: TexImageSource,
+    source: TexImageSource | readonly TexImageSource[],
     options: SurfaceTextureOptions = {},
   ) {
+    const sources: readonly TexImageSource[] = isSourceList(source) ? source : [source];
+    const { width, height } = layerSize(sources);
+    this.layers = sources.length;
     const texture = gl.createTexture();
     if (texture === null) throw new Error('SurfaceTexture: createTexture failed');
     this.texture = texture;
@@ -202,7 +232,7 @@ export class SurfaceTexture {
 
     const wrap = (options.wrap ?? 'repeat') === 'repeat' ? gl.REPEAT : gl.CLAMP_TO_EDGE;
 
-    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
     /*
      * **Not flipped, and this used to be, which is the bug it is written down for.**
      *
@@ -224,24 +254,45 @@ export class SurfaceTexture {
      *
      * A caller that was mirroring its own canvas to cancel this must stop.
      */
-    gl.texImage2D(
-      gl.TEXTURE_2D,
+    /* Allocated mutable rather than with texStorage3D, so `update` can hand a one-layer texture a
+       new size, as texImage2D always could. Each layer is then written in place. */
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY,
       0,
       this.srgb ? gl.SRGB8_ALPHA8 : gl.RGBA,
+      width,
+      height,
+      sources.length,
+      0,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      source,
+      null,
     );
+    for (let layer = 0; layer < sources.length; layer++) {
+      gl.texSubImage3D(
+        gl.TEXTURE_2D_ARRAY,
+        0,
+        0,
+        0,
+        layer,
+        width,
+        height,
+        1,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        sources[layer] as TexImageSource,
+      );
+    }
 
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, wrap);
     /* Nearest where the caller said their pixels are the subject; see `filter`. The mip chain is
        still blended between levels, because that is minification and this option is about
        magnification. */
     const nearest = options.filter === 'nearest';
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, nearest ? gl.NEAREST : gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, nearest ? gl.NEAREST : gl.LINEAR);
     gl.texParameteri(
-      gl.TEXTURE_2D,
+      gl.TEXTURE_2D_ARRAY,
       gl.TEXTURE_MIN_FILTER,
       this.mipmapped
         ? nearest
@@ -252,9 +303,41 @@ export class SurfaceTexture {
           : gl.LINEAR,
     );
 
-    if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D);
+    if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     applyAnisotropy(gl, options.anisotropy ?? DEFAULT_ANISOTROPY);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+    /* Half floats, nearest, clamped: a table read by texelFetch, whose every whole number is under
+       what a half holds exactly. */
+    const effects = options.effects ?? [];
+    if (effects.length > 0) {
+      const table = gl.createTexture();
+      if (table === null) throw new Error('SurfaceTexture: createTexture failed');
+      gl.bindTexture(gl.TEXTURE_2D, table);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA16F,
+        SURFACE_EFFECT_TEXELS,
+        effects.length,
+        0,
+        gl.RGBA,
+        gl.FLOAT,
+        packSurfaceEffects(effects),
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      this.effectsTable = table;
+    }
+  }
+
+  /** Bind the effects table to `unit`, or `fallback` for a texture given none. */
+  bindEffects(gl: WebGL2RenderingContext, unit: number, fallback: WebGLTexture): void {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, this.effectsTable ?? fallback);
   }
 
   /**
@@ -270,30 +353,38 @@ export class SurfaceTexture {
    */
   update(gl: WebGL2RenderingContext, source: TexImageSource): void {
     if (this.texture === null) return;
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    refuseArrayUpdate(this.layers);
+    const { width, height } = sourceSize(source);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
     /* Unflipped, matching the constructor. See it for why, and for what it cost. */
-    gl.texImage2D(
-      gl.TEXTURE_2D,
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY,
       0,
       this.srgb ? gl.SRGB8_ALPHA8 : gl.RGBA,
+      width,
+      height,
+      1,
+      0,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
       source,
     );
-    if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
   }
 
   /** Bind to a unit for sampling. Engine-internal: the renderer owns unit assignment. */
   bind(gl: WebGL2RenderingContext, unit: number): void {
     gl.activeTexture(gl.TEXTURE0 + unit);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
   }
 
   dispose(gl: WebGL2RenderingContext): void {
     if (this.texture === null) return;
     gl.deleteTexture(this.texture);
     this.texture = null;
+    if (this.effectsTable !== null) gl.deleteTexture(this.effectsTable);
+    this.effectsTable = null;
   }
 }
 
@@ -311,5 +402,5 @@ function applyAnisotropy(gl: WebGL2RenderingContext, requested: number): void {
     gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic');
   if (ext === null) return;
   const max = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number;
-  gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(requested, max));
+  gl.texParameterf(gl.TEXTURE_2D_ARRAY, ext.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(requested, max));
 }

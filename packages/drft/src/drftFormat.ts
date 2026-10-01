@@ -23,7 +23,7 @@ export const DRFT_VERSION_MAJOR = 1;
  * Additive revisions within a generation: new optional chunks, new attribute bits, new
  * enum values with a defined fallback. Never a changed meaning.
  */
-export const DRFT_VERSION_MINOR = 19;
+export const DRFT_VERSION_MINOR = 23;
 
 /** Bytes before the chunk table. */
 export const HEADER_BYTES = 32;
@@ -272,6 +272,37 @@ export const CHUNK_INST = fourCC('INST');
  */
 export const CHUNK_MSHQ = fourCC('MSHQ');
 
+/**
+ * One region of a streamed world: its levels of detail as mesh ordinals, its prop groups, its
+ * occluders and its collision. **Required**, one chunk per region, written just ahead of the meshes
+ * it introduces; see `drftRegions.ts`. Added in 1.21.
+ */
+export const CHUNK_REGN = fourCC('REGN');
+
+/**
+ * A world's fixed lights summed offline into one dense volume. Optional: a reader that skips it
+ * loses the glow of every light past the ones it shades exactly. See `drftLightVolume.ts`. Added in
+ * 1.22.
+ */
+export const CHUNK_LVOL = fourCC('LVOL');
+
+/**
+ * The meshes that are pieces of a kit, drawn only as copies inside assembled meshes. **Required**,
+ * and written ahead of the geometry; see `drftAssembly.ts`. Added in 1.23.
+ */
+export const CHUNK_KITS = fourCC('KITS');
+
+/**
+ * A mesh carried as painted copies of kit pieces, expanded on read into the `MeshData` a `MESH`
+ * gives. **Required**, and counted as a mesh in every ordinal. See `drftAssembly.ts`. Added in 1.23.
+ */
+export const CHUNK_MSHC = fourCC('MSHC');
+
+/** Whether a chunk is a mesh in the ordinal sequence: plain, quantised or assembled. */
+export function isMeshChunk(code: number): boolean {
+  return code === CHUNK_MESH || code === CHUNK_MSHQ || code === CHUNK_MSHC;
+}
+
 /** Bytes before the records in a `SPLT` payload. See `DrftSplatBlock` for the fields. */
 export const SPLAT_BLOCK_PREFIX = 40;
 
@@ -306,6 +337,10 @@ export const KNOWN_CHUNKS: ReadonlySet<number> = new Set([
   CHUNK_ENTS,
   CHUNK_INST,
   CHUNK_MSHQ,
+  CHUNK_REGN,
+  CHUNK_LVOL,
+  CHUNK_KITS,
+  CHUNK_MSHC,
 ]);
 
 /** Chunk flags. */
@@ -393,6 +428,26 @@ export const ATTR_JOINTS = 1 << 7;
 /** How much each of `ATTR_JOINTS`' four influences moves the vertex. See it for the whole story. */
 export const ATTR_WEIGHTS = 1 << 8;
 
+/**
+ * Added in 1.20: which image of a texture array each vertex's face wears. See `MeshData.layers`.
+ *
+ * Next free bit, appended last, for the reason `grain` gives at length: a 1.19 reader meets the
+ * arrays it knows where it expects them, stops before this one, and draws every face at layer 0 —
+ * the first image of the array, which is what a reader that has never heard of layers should
+ * produce.
+ */
+export const ATTR_LAYERS = 1 << 9;
+
+/**
+ * Added in 1.23: `MeshData.channel`, four floats a vertex — sway, sky, opacity, and a spare lane.
+ *
+ * **The writer dropped it without a word until then**, which is the silent kind of missing: a tree
+ * baked with its sway came back still, and nothing said the lane had not been written. Next free
+ * bit, appended last, so a 1.22 reader meets every array it knows where it expects them, stops
+ * before this one, and draws the mesh planted, sunlit and opaque — the absent lane's own meaning.
+ */
+export const ATTR_CHANNEL = 1 << 10;
+
 /** Everything this version defines, so a reader can spot bits from a later writer. */
 export const ATTR_KNOWN =
   ATTR_SPECULAR |
@@ -403,7 +458,9 @@ export const ATTR_KNOWN =
   ATTR_RELIEF |
   ATTR_TANGENT |
   ATTR_JOINTS |
-  ATTR_WEIGHTS;
+  ATTR_WEIGHTS |
+  ATTR_LAYERS |
+  ATTR_CHANNEL;
 
 /**
  * How a `TEXS` payload is encoded.

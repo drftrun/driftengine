@@ -67,7 +67,14 @@ function sampleMesh(): MeshData {
     weights[v * 4] = 0.75;
     weights[v * 4 + 1] = 0.25;
   }
-  return { ...mesh, tangents, joints, weights };
+  /*
+   * Texture-array layers, one whole number a vertex, which need texture coordinates to mean
+   * anything — so the fixture supplies those too when the builder did not.
+   */
+  const uvs = mesh.uvs ?? new Float32Array(vertices * 2);
+  const layers = new Float32Array(vertices);
+  for (let v = 0; v < vertices; v += 1) layers[v] = v % 5;
+  return { ...mesh, uvs, tangents, joints, weights, layers };
 }
 
 test('a mesh survives a round trip exactly, attribute for attribute', () => {

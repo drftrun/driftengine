@@ -797,3 +797,377 @@ test('THE RESOLVE BUILDS A PICTURE LARGER THAN THE ONE RENDERED, and it converge
   expect(last.box).toBeLessThan(first.box * 0.5);
   expect(last.gaussian).toBeLessThan(first.gaussian * 0.3);
 });
+
+/* ------------------------------------------------------------------------------------------------ */
+
+/**
+ * Thin vertical lines on a dark wall, a third of a render texel wide: the jitter catches each in some
+ * phases and misses it in others, and in a phase that misses it the nine texels about an output
+ * pixel can all miss it at once.
+ */
+const THREADS: Pattern = (x) => ((((x * 4 + 100) % 1) + 1) % 1 < 0.06 ? 1 : 0.05);
+
+/**
+ * Runs `frames` frames of a still camera over `pattern`, the records carried or not, and returns
+ * the largest frame-to-frame swing of any output pixel over the last period, in its first channel —
+ * inside the picture's outer ring unless `inset` is 0, whose clamped texels count one render texel
+ * three times over.
+ */
+function stillSwing(pattern: Pattern, frames: number, records: boolean, inset = 1): number {
+  const cam = camera([0, 0, 5], [0, 0, 0]);
+  const sizes = { rw: 20, rh: 20, ow: 30, oh: 30 };
+  const phases = reconJitterPhases(20, 30);
+  const jitter = new Float32Array(2);
+  const previousJitter = new Float32Array(2);
+  let history: Float32Array = new Float32Array(30 * 30 * 4);
+  let flicker: Float32Array = new Float32Array(30 * 30 * 4);
+  let previousDepth: Float32Array = new Float32Array(20 * 20);
+  let previous: Float32Array | null = null;
+  let swing = 0;
+  for (let f = 0; f < frames; f += 1) {
+    jitterOffset(f, phases, jitter);
+    const frame = render(cam, 20, 20, jitter, pattern);
+    const next = new Float32Array(3600);
+    const shown = new Float32Array(2700);
+    const nextFlicker = new Float32Array(3600);
+    const base = frameOf(
+      cam,
+      cam,
+      frame,
+      previousDepth,
+      history,
+      sizes,
+      jitter,
+      previousJitter,
+      f > 0,
+    );
+    resolveFrame(
+      records ? { ...base, flicker, periodStart: f % phases === 0, flickerPhases: phases } : base,
+      next,
+      shown,
+      records ? nextFlicker : undefined,
+    );
+    if (previous !== null && f >= frames - phases) {
+      for (let y = inset; y < 30 - inset; y += 1) {
+        for (let x = inset; x < 30 - inset; x += 1) {
+          const i = y * 30 + x;
+          swing = Math.max(swing, Math.abs((next[i * 4] as number) - (previous[i * 4] as number)));
+        }
+      }
+    }
+    previous = next;
+    history = next;
+    flicker = nextFlicker;
+    previousDepth = frame.depth;
+    previousJitter.set(jitter);
+  }
+  return swing;
+}
+
+test('A STILL THREAD STOPS FLICKERING once its samples have repeated for two periods', () => {
+  /*
+   * Without the record the box collapses onto the wall in the phases that miss a thread, the
+   * history is clipped back to the wall, and the pixel flashes every period. With it, a pixel whose
+   * samples repeated for two periods running widens its box by its own spread and keeps more of its
+   * history. Measured 2026-10-01 over the sixth period: 0.202 without and 0.047 with — the bound
+   * below is the gap between the two, a third, not either's value.
+   */
+  const frames = 6 * reconJitterPhases(20, 30);
+  const bare = stillSwing(THREADS, frames, false);
+  const held = stillSwing(THREADS, frames, true);
+  expect(bare, 'the threads do flicker without it').toBeGreaterThan(0.15);
+  expect(held, 'and under a third as much with it').toBeLessThan(bare / 3);
+  /*
+   * **And at the border, where the hardest thread is.** A clamped texel counts three times in the
+   * gather, so a thread there is caught in one phase as a point sample would be — the thread the
+   * reconstruction's own width is derived for. Measured: 0.374 without and 0.092 with; six spreads,
+   * the eight-phase width, reset its count every period and left it at 0.335.
+   */
+  const bareAll = stillSwing(THREADS, frames, false, 0);
+  const heldAll = stillSwing(THREADS, frames, true, 0);
+  expect(heldAll, 'the border too').toBeLessThan(bareAll / 3);
+});
+
+test('A MOVING CAMERA RESOLVES EXACTLY AS IT DID WITHOUT THE RECORD', () => {
+  /*
+   * The proof is for a still pixel only: a camera panning a few pixels a frame repeats nothing, its
+   * records are forgotten as fast as they gather, and neither the box nor the blend moves. So the
+   * histories with and without the records are the same numbers, frame after frame.
+   */
+  const sizes = { rw: 20, rh: 20, ow: 30, oh: 30 };
+  const phases = reconJitterPhases(20, 30);
+  const jitter = new Float32Array(2);
+  const previousJitter = new Float32Array(2);
+  const run = (records: boolean): Float32Array => {
+    let history: Float32Array = new Float32Array(3600);
+    let flicker: Float32Array = new Float32Array(3600);
+    let previousDepth: Float32Array = new Float32Array(400);
+    let previous = camera([0, 0, 5], [0, 0, 0]);
+    previousJitter.fill(0);
+    for (let f = 0; f < 2 * phases; f += 1) {
+      const cam = camera([f * 0.04, 0, 5], [f * 0.04, 0, 0]);
+      jitterOffset(f, phases, jitter);
+      const frame = render(cam, 20, 20, jitter, THREADS);
+      const next = new Float32Array(3600);
+      const nextFlicker = new Float32Array(3600);
+      const base = frameOf(
+        cam,
+        previous,
+        frame,
+        previousDepth,
+        history,
+        sizes,
+        jitter,
+        previousJitter,
+        f > 0,
+      );
+      resolveFrame(
+        records ? { ...base, flicker, periodStart: f % phases === 0, flickerPhases: phases } : base,
+        next,
+        new Float32Array(2700),
+        records ? nextFlicker : undefined,
+      );
+      history = next;
+      flicker = nextFlicker;
+      previousDepth = frame.depth;
+      previousJitter.set(jitter);
+      previous = cam;
+    }
+    return history;
+  };
+  expect(Array.from(run(true))).toEqual(Array.from(run(false)));
+});
+
+test('A PROVEN PIXEL THE CAMERA STARTS TO MOVE OVER IS RESOLVED AS IT WOULD BE WITHOUT ITS RECORD', () => {
+  /*
+   * Four periods still prove the rails' pixels and teach them their depth swing; then the camera
+   * pans a third of a pixel. That
+   * frame's motion is past a twentieth of a pixel, so no pixel is still: from the same history, the
+   * frame resolved with the proven records and without any is the same numbers.
+   */
+  const sizes = { rw: 20, rh: 20, ow: 30, oh: 30 };
+  const phases = reconJitterPhases(20, 30);
+  const jitter = new Float32Array(2);
+  const previousJitter = new Float32Array(2);
+  const still = camera([0, 0, 5], [0, 0, 0]);
+  let history: Float32Array = new Float32Array(3600);
+  let flicker: Float32Array = new Float32Array(3600);
+  let depthSwing: Float32Array = new Float32Array(900);
+  let previousDepth: Float32Array = new Float32Array(400);
+  const frames = 4 * phases;
+  for (let f = 0; f < frames; f += 1) {
+    jitterOffset(f, phases, jitter);
+    const frame = renderRails(
+      still,
+      20,
+      20,
+      jitter,
+      1,
+      (x) => (((x * 4 + 100) % 1) + 1) % 1 < 0.06,
+    );
+    const next = new Float32Array(3600);
+    const nextFlicker = new Float32Array(3600);
+    const nextSwing = new Float32Array(900);
+    const base = frameOf(
+      still,
+      still,
+      frame,
+      previousDepth,
+      history,
+      sizes,
+      jitter,
+      previousJitter,
+      f > 0,
+    );
+    resolveFrame(
+      { ...base, flicker, depthSwing, periodStart: f % phases === 0, flickerPhases: phases },
+      next,
+      new Float32Array(2700),
+      nextFlicker,
+      nextSwing,
+    );
+    history = next;
+    flicker = nextFlicker;
+    depthSwing = nextSwing;
+    previousDepth = frame.depth;
+    previousJitter.set(jitter);
+  }
+  let proven = 0;
+  for (let i = 0; i < 900; i += 1) if ((flicker[i * 4 + 3] as number) > 0.75) proven += 1;
+  expect(proven, 'the still frames proved the threads').toBeGreaterThan(100);
+  const moving = camera([0.05, 0, 5], [0.05, 0, 0]);
+  jitterOffset(frames, phases, jitter);
+  const frame = renderRails(moving, 20, 20, jitter, 1, (x) => (((x * 4 + 100) % 1) + 1) % 1 < 0.06);
+  const base = frameOf(
+    moving,
+    still,
+    frame,
+    previousDepth,
+    history,
+    sizes,
+    jitter,
+    previousJitter,
+    true,
+  );
+  const held = new Float32Array(3600);
+  const bare = new Float32Array(3600);
+  resolveFrame(
+    { ...base, flicker, depthSwing, periodStart: frames % phases === 0, flickerPhases: phases },
+    held,
+    new Float32Array(2700),
+    new Float32Array(3600),
+  );
+  resolveFrame(base, bare, new Float32Array(2700));
+  expect(Array.from(held)).toEqual(Array.from(bare));
+});
+
+/**
+ * One frame of bright rails standing in front of a dark wall, point-sampled at each texel's jittered
+ * centre: the rail's colour and depth where the ray meets a rail at `nearZ`, the wall's elsewhere.
+ */
+function renderRails(
+  cam: Camera,
+  width: number,
+  height: number,
+  jitter: ArrayLike<number>,
+  nearZ: number,
+  inFront: (x: number) => boolean,
+): { scene: Float32Array; depth: Float32Array } {
+  const scene = new Float32Array(width * height * 3).fill(0.05);
+  const depth = new Float32Array(width * height).fill(1);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const u = (x + 0.5 - (jitter[0] as number)) / width;
+      const v = (y + 0.5 - (jitter[1] as number)) / height;
+      const near = hit(cam, u, v, nearZ);
+      const onRail = near !== null && inFront(near[0]);
+      const p = onRail ? near : hit(cam, u, v, 0);
+      if (p === null) continue;
+      if (onRail) scene.fill(1, (y * width + x) * 3, (y * width + x + 1) * 3);
+      depth[y * width + x] = clipDepth(cam, p);
+    }
+  }
+  return { scene, depth };
+}
+
+/** As `stillSwing`, over rails a metre in front of the wall, the depth swings carried or not. */
+function railSwing(frames: number, records: boolean): number {
+  const cam = camera([0, 0, 5], [0, 0, 0]);
+  const sizes = { rw: 20, rh: 20, ow: 30, oh: 30 };
+  const phases = reconJitterPhases(20, 30);
+  const rails = (x: number): boolean => (((x * 4 + 100) % 1) + 1) % 1 < 0.06;
+  const jitter = new Float32Array(2);
+  const previousJitter = new Float32Array(2);
+  let history: Float32Array = new Float32Array(3600);
+  let flicker: Float32Array = new Float32Array(3600);
+  let depthSwing: Float32Array = new Float32Array(900);
+  let previousDepth: Float32Array = new Float32Array(400);
+  let previous: Float32Array | null = null;
+  let swing = 0;
+  for (let f = 0; f < frames; f += 1) {
+    jitterOffset(f, phases, jitter);
+    const frame = renderRails(cam, 20, 20, jitter, 1, rails);
+    const next = new Float32Array(3600);
+    const nextFlicker = new Float32Array(3600);
+    const nextSwing = new Float32Array(900);
+    const base = frameOf(
+      cam,
+      cam,
+      frame,
+      previousDepth,
+      history,
+      sizes,
+      jitter,
+      previousJitter,
+      f > 0,
+    );
+    resolveFrame(
+      records
+        ? { ...base, flicker, depthSwing, periodStart: f % phases === 0, flickerPhases: phases }
+        : base,
+      next,
+      new Float32Array(2700),
+      records ? nextFlicker : undefined,
+      records ? nextSwing : undefined,
+    );
+    if (previous !== null && f >= frames - phases) {
+      for (let y = 1; y < 29; y += 1) {
+        for (let x = 1; x < 29; x += 1) {
+          const i = y * 30 + x;
+          swing = Math.max(swing, Math.abs((next[i * 4] as number) - (previous[i * 4] as number)));
+        }
+      }
+    }
+    previous = next;
+    history = next;
+    flicker = nextFlicker;
+    depthSwing = nextSwing;
+    previousDepth = frame.depth;
+    previousJitter.set(jitter);
+  }
+  return swing;
+}
+
+test('A STILL RAIL IN FRONT OF A WALL KEEPS ITS HISTORY once its depth has been seen to swing', () => {
+  /*
+   * A rail a fifth of the depth in front of the wall: the jitter catches it in some phases and the
+   * wall behind it in others, and the depth test, seeing last frame hold the wall where this frame
+   * holds the rail, threw the history away — so the anti-flicker had no history to keep and the rail
+   * flashed. A pixel whose depth has swung that way with nothing moving is not a disocclusion: its
+   * tolerance widens by its own swing while it is still, as the temporal resolve's record does.
+   */
+  const frames = 6 * reconJitterPhases(20, 30);
+  const bare = railSwing(frames, false);
+  const held = railSwing(frames, true);
+  expect(bare, 'the rails do flicker without it').toBeGreaterThan(0.15);
+  expect(held, 'and under a third as much with it').toBeLessThan(bare / 3);
+});
+
+test('A MOVING CAMERA’S DEPTH TEST IS UNTOUCHED BY ANY SWING A PIXEL HELD', () => {
+  /*
+   * A post three metres in front of the wall and a pan of half a metre: the post slides five output
+   * pixels further across the picture than the wall does, uncovering more wall than the search for
+   * last frame's depth reaches across, which the depth test is there to refuse. Every pixel holds a
+   * swing of the whole depth — far more than any post taught it — and the frame resolves exactly as
+   * it does with no records at all, because a swing is tolerated only while still.
+   */
+  const sizes = { rw: 20, rh: 20, ow: 30, oh: 30 };
+  const phases = reconJitterPhases(20, 30);
+  const rails = (x: number): boolean => Math.abs(x - 0.2) < 0.2;
+  const before = camera([0, 0, 5], [0, 0, 0]);
+  const after = camera([0.5, 0, 5], [0.5, 0, 0]);
+  const previousJitter = new Float32Array(2);
+  const jitter = new Float32Array(2);
+  jitterOffset(4, phases, previousJitter);
+  jitterOffset(5, phases, jitter);
+  const was = renderRails(before, 20, 20, previousJitter, 3, rails);
+  const now = renderRails(after, 20, 20, jitter, 3, rails);
+  const history = historyOf(
+    fresh(before, was, sizes).filter((_, i) => i % 4 !== 3),
+    CAP,
+  );
+  const base = frameOf(after, before, now, was.depth, history, sizes, jitter, previousJitter, true);
+  /* Inside the columns the pan keeps on the picture: the wall uncovered, not the edge. */
+  const uncovered = historyLost(base).filter((at) => {
+    const x = Number(at.split(',')[0]);
+    return x > 5 && x < 20;
+  });
+  expect(uncovered.length, 'the pan does uncover the wall').toBeGreaterThan(5);
+  const held = new Float32Array(3600);
+  const bare = new Float32Array(3600);
+  resolveFrame(
+    {
+      ...base,
+      flicker: new Float32Array(3600),
+      depthSwing: new Float32Array(900).fill(1),
+      periodStart: false,
+      flickerPhases: phases,
+    },
+    held,
+    new Float32Array(2700),
+    new Float32Array(3600),
+    new Float32Array(900),
+  );
+  resolveFrame(base, bare, new Float32Array(2700));
+  expect(Array.from(held)).toEqual(Array.from(bare));
+});

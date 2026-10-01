@@ -1,10 +1,10 @@
 import { expect, test } from 'vitest';
 import { MAX_LIGHTS_PER_CLUSTER } from './clusteredLights.ts';
 import { flatFrag } from './shaders/flat/index.ts';
+import * as budget from './lightBudget.ts';
 import {
   CLUSTER_TABLE_TEXTURE_UNIT,
-  COOKIE_ATLAS_TEXTURE_UNIT,
-  IES_ATLAS_TEXTURE_UNIT,
+  FIXTURE_ATLAS_TEXTURE_UNIT,
   REFRACT_SCENE_TEXTURE_UNIT,
   DIRECTIONAL_SHADOW_UNITS,
   EMISSIVE_TEXTURE_UNIT,
@@ -38,50 +38,10 @@ import {
  * adds a sampler, or that makes the light count cost units again, has to come through here.
  */
 
-/** What WebGL2 guarantees, and therefore what has to be survivable. */
+/** What WebGL2 guarantees a stage, and therefore what has to be survivable. */
 const GUARANTEED_UNITS = 16;
-
-/**
- * Everything the flat pass binds with both shadow kinds on.
- *
- * **Derived from the highest unit rather than counted, since 2026-08-24, because counting it got
- * it wrong.** It was `DIRECTIONAL_SHADOW_UNITS + POINT_SHADOW_UNITS + 3` — the three being the
- * surface, normal and ORM maps — which quietly omitted the reflection probe for as long as the
- * probe has existed, and then omitted the froxel table too. The document quoting this said seven
- * used and nine free while the widest permutation was actually binding nine.
- *
- * A literal cannot notice a unit being added. The last unit plus one cannot fail to.
- *
- * **And it did fail to, on 2026-08-25, which is the same lesson one level up.** This read
- * `CLUSTER_TABLE_TEXTURE_UNIT + 1`, and the froxel table stopped being the highest unit the moment
- * the IES atlas landed above it — so "the last unit plus one" quietly became "some unit plus one"
- * and the count was short by one again. Naming *a* unit is the mistake; the fix is to derive from
- * the maximum of every unit this pass binds, which cannot be outgrown by adding another.
- */
-const UNITS_WITH_EVERYTHING =
-  Math.max(
-    DIRECTIONAL_SHADOW_UNITS + POINT_SHADOW_UNITS - 1,
-    SURFACE_TEXTURE_UNIT,
-    /*
-     * The joint palette, which the **vertex** stage reads and which still comes out of this
-     * sixteen. `MAX_VERTEX_TEXTURE_IMAGE_UNITS` and `MAX_TEXTURE_IMAGE_UNITS` bound the two stages
-     * separately, but they bound how many units each may reference rather than numbering them
-     * apart — `activeTexture` selects from one pool. Given unit 0 on the other reading, the palette
-     * landed on the directional shadow map and the driver answered
-     * `two textures of different types use the same sampler location`.
-     */
-    SKIN_PALETTE_TEXTURE_UNIT,
-    /* The vertex stage's second sampler, on the same shared pool. */
-    MORPH_DELTA_TEXTURE_UNIT,
-    NORMAL_TEXTURE_UNIT,
-    ORM_TEXTURE_UNIT,
-    EMISSIVE_TEXTURE_UNIT,
-    ENVIRONMENT_TEXTURE_UNIT,
-    CLUSTER_TABLE_TEXTURE_UNIT,
-    COOKIE_ATLAS_TEXTURE_UNIT,
-    IES_ATLAS_TEXTURE_UNIT,
-    REFRACT_SCENE_TEXTURE_UNIT,
-  ) + 1;
+/** What WebGL2 guarantees the vertex and fragment stages together, whose units share one numbering. */
+const GUARANTEED_COMBINED_UNITS = 32;
 
 test('the surface unit sits directly above the shadow units, with no gap and no overlap', () => {
   /*
@@ -116,37 +76,39 @@ test("THE SUN'S THREE MAPS ARE ONE BINDING, as the lamps' twelve became one", ()
   expect(DIRECTIONAL_SHADOW_UNITS).toBe(1);
 });
 
-test('the full configuration leaves three of the guaranteed sixteen units free', () => {
+test('EVERY UNIT THE LIT PASS NAMES IS ITS OWN, and all of them fit the combined pool', () => {
   /*
-   * **This test used to assert the opposite** — `toBe(GUARANTEED_UNITS)`, an exact fill with
-   * nothing to spare — and the comment under it said that one more sampler genuinely would not
-   * fit. Both were true and both stopped being true when the point-shadow cubes became one
-   * array binding.
+   * **Derived from every exported unit since 2026-09-30, because a list of them went stale.** This
+   * test counted the highest of a hand-kept list of units and asserted thirteen used and three of
+   * sixteen free — while DriftLight's index and atlas and both glass tints sat at units 13 to 16,
+   * named nowhere in the list, and the test stayed green describing a pass four units smaller than
+   * the one that shipped. The fragment stage's own count is the test below, from the shader source;
+   * what this pins is the pool the units are numbered in.
    *
-   * The eleven were what Phase 1.3's material maps came out of. The normal map spent one, the ORM
-   * map the second and the emissive map the third; the froxel table took a fourth, **the IES
-   * atlas a fifth on 2026-08-25**, **the joint palette a sixth and the morph deltas a seventh the
-   * same day**, and **the spot-light cookie atlas an eighth on 2026-08-27**. They are named here
-   * rather than left as a number so that the change which spends one has to read what it is
-   * spending, **and the refraction snapshot a ninth on 2026-09-03**.
-   *
-   * **One remains, and the name of this test said two for a release.** The assertion moved and the
-   * sentence describing it did not, which is the failure this whole file is written against one
-   * level up: a number a person maintains beside a number the code derives will disagree, and the
-   * prose is the half nothing checks. The next sampler is the one that has to find room — by
-   * folding into an existing binding the way the twelve point-shadow cubemaps became one array —
-   * rather than taking the last unit.
-   *
-   * The palette is the first of them the *vertex* stage reads, and it still comes out of this
-   * sixteen — see `SKIN_PALETTE_TEXTURE_UNIT` for the reading that said otherwise and what the
-   * driver answered.
+   * A unit is a place in the combined pool, which WebGL2 guarantees is at least thirty-two, shared by
+   * the vertex stage's palette and morph deltas and the fragment stage's samplers. Two units on one
+   * number bind two textures to one place, which is undefined and reads as a scene losing one of
+   * them depending on the driver — except the SDF text atlas, which is drawn by its own program on
+   * the surface unit by design.
    */
-  expect(UNITS_WITH_EVERYTHING).toBe(13);
-  expect(
-    GUARANTEED_UNITS - UNITS_WITH_EVERYTHING,
-    'free units, with every material map, the probe, the froxel table, the IES atlas, the joint ' +
-      'palette, the morph deltas, the cookie atlas and the refraction snapshot bound',
-  ).toBe(3);
+  const units = Object.entries(budget)
+    .filter(([name, value]) => name.endsWith('_TEXTURE_UNIT') && typeof value === 'number')
+    .filter(([name]) => name !== 'SDF_TEXT_TEXTURE_UNIT') as [string, number][];
+  expect(units.length, 'the units found, so an empty scan cannot pass').toBeGreaterThanOrEqual(10);
+  const taken = new Map<number, string>();
+  for (const [name, unit] of units) {
+    expect(taken.get(unit), `${name} shares unit ${unit}`).toBeUndefined();
+    taken.set(unit, name);
+    expect(unit, `${name} is below the shadow units`).toBeGreaterThanOrEqual(
+      DIRECTIONAL_SHADOW_UNITS + POINT_SHADOW_UNITS,
+    );
+  }
+  const highest = Math.max(...units.map(([, unit]) => unit));
+  /* Below the last unit of the pool, which is left for a pass that borrows one for a draw and
+     releases it: `@driftengine/ui2d`'s sprites, whose unit fourteen was once a lit-pass unit. */
+  expect(highest, 'every unit below the one kept for borrowers').toBeLessThan(
+    GUARANTEED_COMBINED_UNITS - 1,
+  );
 });
 
 test('the light count costs layers rather than texture units', () => {
@@ -208,13 +170,13 @@ test('a froxel holds at least the fixed budget, so the one loop bound covers bot
   expect(MAX_LIGHTS_PER_CLUSTER).toBeGreaterThanOrEqual(MAX_POINT_LIGHTS);
 });
 
-test('the photometric atlas sits directly above the froxel table, with no gap', () => {
+test('the fixture atlas sits directly above the froxel table, with no gap', () => {
   /*
    * Derived rather than a literal, for the reason every unit above is: a gap wastes a unit on a
    * device with none to waste, and an overlap binds two textures of different types to one unit,
    * which is undefined behaviour read as a scene losing one of them depending on the driver.
    */
-  expect(IES_ATLAS_TEXTURE_UNIT).toBe(CLUSTER_TABLE_TEXTURE_UNIT + 1);
+  expect(FIXTURE_ATLAS_TEXTURE_UNIT).toBe(CLUSTER_TABLE_TEXTURE_UNIT + 1);
 });
 
 /*
@@ -227,7 +189,7 @@ test('the photometric atlas sits directly above the froxel table, with no gap', 
  * freed the units everything since has been spending.
  */
 test('the refraction snapshot takes the second-to-last guaranteed unit', () => {
-  expect(REFRACT_SCENE_TEXTURE_UNIT).toBe(COOKIE_ATLAS_TEXTURE_UNIT + 1);
+  expect(REFRACT_SCENE_TEXTURE_UNIT).toBe(MORPH_DELTA_TEXTURE_UNIT + 1);
   expect(REFRACT_SCENE_TEXTURE_UNIT).toBeLessThan(GUARANTEED_UNITS);
 });
 
@@ -249,8 +211,11 @@ test('THE LIT STAGE KEEPS ONE OF THE SIXTEEN GUARANTEED FRAGMENT SAMPLERS SPARE,
     ...source.matchAll(/^\s*uniform\s+(?:highp\s+|mediump\s+|lowp\s+)?[iu]?sampler\w+\s+(\w+)/gm),
   ].map((match) => match[1]);
   expect(samplers).toContain('uSunGlassTints');
-  /* And the lamps' tint, the fifteenth: the last a stage can take and keep one spare. */
   expect(samplers).toContain('uPointGlassTints');
+  /* The cookie and photometric atlases became one fixture atlas, the fold this test asks the next
+     sampler for, and the surface effects table took the sampler it freed: fifteen, one spare. */
+  expect(samplers).toContain('uFixtureAtlas');
+  expect(samplers).toContain('uSurfaceEffects');
   expect(samplers).toHaveLength(15);
   expect(GUARANTEED_UNITS - samplers.length).toBeGreaterThanOrEqual(1);
 });

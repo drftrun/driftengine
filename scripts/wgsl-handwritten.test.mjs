@@ -83,11 +83,15 @@ async function modules() {
     path.join(ROOT, 'packages/core/src/render/shaders/gi/probeTrace.wgsl.ts')
   );
   found.push(['gi/probeTrace.wgsl.ts parity', probeTraceParityWgsl()]);
-  /* And the bake, for the same reason: four entry points over bindings a module supplies. */
-  const { probeBakeParityWgsl } = await import(
+  /* And the bake, for the same reason: four entry points over bindings a module supplies. Both,
+     as the resolve does: the production module is the one carrying DriftLight's lookup and the
+     lamps, which the parity module leaves out, so until 2026-09-30 nothing compiled them before a
+     device did. */
+  const { probeBakeParityWgsl, probeBakeWgsl } = await import(
     path.join(ROOT, 'packages/core/src/render/shaders/gi/probeBake.wgsl.ts')
   );
   found.push(['gi/probeBake.wgsl.ts parity', probeBakeParityWgsl()]);
+  found.push(['gi/probeBake.wgsl.ts production', probeBakeWgsl()]);
   /* The inference kernels are a function of their shapes, so each operator is named at one. */
   const { DEVICE_KERNELS } = await import(
     path.join(ROOT, 'packages/core/src/render/inference/kernels.ts')

@@ -8,6 +8,7 @@ import {
   TemporalHistory,
   clipToNeighbourhood,
   flickerBlend,
+  flickerRule,
   flickerWidening,
   freshFlicker,
   jitterOffset,
@@ -18,7 +19,7 @@ import {
   sameSurface,
   stillness,
 } from './temporalAa.ts';
-import type { Flicker } from './temporalAa.ts';
+import type { Flicker, FlickerRule } from './temporalAa.ts';
 
 /**
  * A perspective projection to jitter, at a shape a camera actually takes.
@@ -556,5 +557,40 @@ describe('the anti-flicker', () => {
     const withIt = resolveGrey(revealed, true, flickering);
     const without = resolveGrey(revealed, false, flickering);
     expect(withIt.shown).toEqual(without.shown);
+  });
+});
+
+describe('the anti-flicker over a longer jitter', () => {
+  it('A PERIOD OF EIGHT IS THIS RESOLVE’S OWN RULE, AND EIGHTEEN WIDENS TO WHAT ITS HARDEST THREAD NEEDS', () => {
+    /*
+     * Eight phases: a tenth-of-a-period memory of 1/8 and the six spreads the record's own comment
+     * derives. Eighteen: the hardest thread's spread just before its catch is the steady state
+     * (m + ((p − 1)m² − m)·r) / (1 − (1 − m)·r) with m = 1/18 and r = (17/18)^17 = 0.378424 —
+     * 0.054387 / 0.642600 = 0.084636 of its contrast — so its catch, 17/18 away, needs 11.1589
+     * spreads; eight phases need 0.875 / 0.181086 = 4.83197, and six over that is the room kept:
+     * 6 × 11.1589 / 4.83197 = 13.856.
+     */
+    const eight = flickerRule(JITTER_PERIOD);
+    expect(eight.memory).toBe(1 / 8);
+    expect(eight.width).toBeCloseTo(6, 12);
+    const eighteen = flickerRule(18);
+    expect(eighteen.memory).toBe(1 / 18);
+    expect(eighteen.width).toBeCloseTo(13.856, 3);
+  });
+
+  /** A record fed `periods` periods of a thread caught once in each period of `phases`. */
+  function caughtOnce(phases: number, periods: number, rule: FlickerRule): Flicker {
+    const record = freshFlicker({ spread: 0, sum: 0, mean: 0, repeated: 0 }, 0, rule);
+    for (let f = 1; f < phases * periods; f += 1) {
+      nextFlicker(record, record, f % phases === phases - 1 ? 1 : 0, 1, f % phases === 0, rule);
+    }
+    return record;
+  }
+
+  it('THE HARDEST THREAD OF AN EIGHTEEN-PHASE JITTER IS PROVEN BY ITS OWN RULE, and never by the eight-phase one', () => {
+    /* Caught in one phase of eighteen at full contrast: its catch lands 17/18 from its mean, which
+       six spreads never reach and 13.9 do — the count it carries out says which. */
+    expect(caughtOnce(18, 8, flickerRule(18)).repeated).toBe(1);
+    expect(caughtOnce(18, 8, flickerRule(JITTER_PERIOD)).repeated).toBe(0);
   });
 });

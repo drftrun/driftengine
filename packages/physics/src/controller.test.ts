@@ -103,6 +103,57 @@ describe('walls and steps', () => {
   });
 });
 
+/**
+ * A box as twelve outward triangles into one soup, so a whole region's scenery can be one mesh body —
+ * the shape a streamed city stands on (`StaticRegions`).
+ */
+function addBoxTriangles(
+  positions: number[],
+  indices: number[],
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): void {
+  const base = positions.length / 3;
+  for (let corner = 0; corner < 8; corner++) {
+    positions.push(
+      corner & 1 ? max[0] : min[0],
+      corner & 2 ? max[1] : min[1],
+      corner & 4 ? max[2] : min[2],
+    );
+  }
+  /* Counter-clockwise from outside: −x, +x, −y, +y, −z, +z. */
+  const faces = [0, 4, 6, 2, 1, 3, 7, 5, 0, 1, 5, 4, 2, 6, 7, 3, 0, 2, 3, 1, 4, 5, 7, 6];
+  for (let f = 0; f < 24; f += 4) {
+    const [a, b, c, d] = [faces[f] ?? 0, faces[f + 1] ?? 0, faces[f + 2] ?? 0, faces[f + 3] ?? 0];
+    indices.push(base + a, base + b, base + c, base + a, base + c, base + d);
+  }
+}
+
+describe('a region of scenery as one triangle mesh', () => {
+  it('STANDS ON IT, CLIMBS A STEP UNDER THE LIMIT, AND IS BLOCKED BY ONE ABOVE IT', () => {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    addBoxTriangles(positions, indices, [-50, -1, -50], [50, 0, 50]);
+    /* A kerb 0.3 m high from x 1 to 5, and a wall 1.5 m high from x 8 to 10. */
+    addBoxTriangles(positions, indices, [1, 0, -2], [5, 0.3, 2]);
+    addBoxTriangles(positions, indices, [8, 0, -2], [10, 1.5, 2]);
+    const world = new PhysicsWorld();
+    world.addBody({
+      type: BODY_STATIC,
+      shape: meshShape(Float32Array.from(positions), Uint32Array.from(indices)),
+    });
+    const c = stand(world, { stepHeight: 0.45 });
+    expect(c.state, 'it stands on the mesh').toBe(GROUNDED);
+    expect(c.y).toBeGreaterThan(0.9);
+    expect(c.y).toBeLessThan(1.05);
+    drive(world, c, 60, { moveX: 4 });
+    expect(c.x, 'onto the kerb').toBeGreaterThan(3);
+    expect(c.y, 'and up by its height').toBeGreaterThan(1.2);
+    drive(world, c, 200, { moveX: 4 });
+    expect(c.x, 'but not up the wall').toBeLessThan(8);
+  });
+});
+
 describe('slopes', () => {
   it('walks up a slope under the limit', () => {
     const world = ground();

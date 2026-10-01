@@ -47,6 +47,7 @@ import { instancing } from './instancing';
 import { dayClock } from './dayClock';
 import { showroom } from './showroom';
 import { sponza } from './sponza';
+import { sprawl } from './sprawl';
 import { gildedChamber } from './gildedChamber';
 import { nightCourt } from './nightCourt';
 import { nightStreet } from './nightStreet';
@@ -159,6 +160,11 @@ export { setUniformStrictMode } from '../packages/core/src/index';
  * rather than something that happens by writing the file.
  */
 export const DRAFT_SCENES: readonly DemoScene[] = [
+  /*
+   * A city streamed from a container its bake makes from data kept outside the tree: a draft
+   * until it can be published with data of its own, and held to frame budget on a phone.
+   */
+  sprawl,
   /*
    * A time-of-day scene being built a milestone at a time. It is published once its bakes are
    * hosted, it has been held to frame budget, and its CC BY line is on screen, and not before.

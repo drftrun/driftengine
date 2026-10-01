@@ -1,4 +1,7 @@
 import type { SurfaceTextureOptions } from '../../surfaceTexture.ts';
+import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from '../../surfaceEffects.ts';
+import { toHalfFloats } from '../../halfFloat.ts';
+import { isSourceList, layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
 
@@ -89,6 +92,8 @@ export function generateMipChain(
   texture: GPUTexture,
   format: GPUTextureFormat,
   levels: number,
+  /** How many array layers to fill, each its own chain. One for a plain texture. */
+  layers = 1,
 ): void {
   if (levels < 2) return;
   const pipeline = mipBlitPipeline(device, pipelines, format);
@@ -98,29 +103,33 @@ export function generateMipChain(
     minFilter: 'linear',
   });
   const encoder = device.createCommandEncoder({ label: 'mip.chain' });
-  for (let level = 1; level < levels; level++) {
-    const source = texture.createView({ baseMipLevel: level - 1, mipLevelCount: 1 });
-    const target = texture.createView({ baseMipLevel: level, mipLevelCount: 1 });
-    const pass = encoder.beginRenderPass({
-      label: `mip.level${level}`,
-      colorAttachments: [
-        { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
-      ],
-    });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(
-      0,
-      device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: source },
-          { binding: 1, resource: sampler },
+  /* One level of one layer at a time: a render target is a single 2D subresource, and the source
+     view is one level of the same layer, so no pass reads what it writes. */
+  for (let layer = 0; layer < layers; layer++)
+    for (let level = 1; level < levels; level++) {
+      const one = { dimension: '2d' as const, baseArrayLayer: layer, arrayLayerCount: 1 };
+      const source = texture.createView({ ...one, baseMipLevel: level - 1, mipLevelCount: 1 });
+      const target = texture.createView({ ...one, baseMipLevel: level, mipLevelCount: 1 });
+      const pass = encoder.beginRenderPass({
+        label: `mip.level${level}`,
+        colorAttachments: [
+          { view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
         ],
-      }),
-    );
-    pass.draw(3);
-    pass.end();
-  }
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(
+        0,
+        device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: source },
+            { binding: 1, resource: sampler },
+          ],
+        }),
+      );
+      pass.draw(3);
+      pass.end();
+    }
   device.queue.submit([encoder.finish()]);
 }
 
@@ -149,19 +158,11 @@ export function mipBlitPipeline(
   }));
 }
 
-function sourceSize(source: TexImageSource): { width: number; height: number } {
-  const candidate = source as {
-    width?: number;
-    height?: number;
-    videoWidth?: number;
-    videoHeight?: number;
-  };
-  const width = candidate.videoWidth ?? candidate.width ?? 0;
-  const height = candidate.videoHeight ?? candidate.height ?? 0;
-  return { width: Math.max(1, width), height: Math.max(1, height) };
-}
-
-/** An image uploaded once and bound per material. */
+/**
+ * An image uploaded once and bound per material — or several of one size, as an array's layers.
+ * Every surface texture is a `2d-array` view, a plain image an array of one; `surfaceTexture.ts`
+ * says why.
+ */
 export class GpuSurfaceTexture {
   readonly sampler: GPUSampler;
 
@@ -172,14 +173,22 @@ export class GpuSurfaceTexture {
   private levels: number;
   private width: number;
   private height: number;
+  /** How many images the array holds. */
+  readonly layers: number;
+  /** The per-layer effects table, or null for a texture given none. See `surfaceEffects.ts`. */
+  private effectsTable: GPUTexture | null = null;
+  /** Its view, which the flat group binds beside this image when it is a material's albedo. */
+  effectsView: GPUTextureView | null = null;
 
   constructor(
     private readonly device: GPUDevice,
     private readonly pipelines: PipelineCache,
-    source: TexImageSource,
+    source: TexImageSource | readonly TexImageSource[],
     options: SurfaceTextureOptions = {},
   ) {
-    const { width, height } = sourceSize(source);
+    const sources: readonly TexImageSource[] = isSourceList(source) ? source : [source];
+    const { width, height } = layerSize(sources);
+    this.layers = sources.length;
     this.mipmapped = options.mipmap ?? true;
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
        place it is correct — `surfaceTexture.ts` makes the argument in full. */
@@ -188,7 +197,7 @@ export class GpuSurfaceTexture {
     this.height = height;
     this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
     this.texture = this.allocate();
-    this.current = this.texture.createView();
+    this.current = this.arrayView(this.texture);
 
     const wrap: GPUAddressMode =
       (options.wrap ?? 'repeat') === 'repeat' ? 'repeat' : 'clamp-to-edge';
@@ -223,7 +232,32 @@ export class GpuSurfaceTexture {
           : 1,
     });
 
-    this.upload(source);
+    this.upload(sources);
+
+    /* Half floats, as `renderer.ts` uploads it: filterable, so the ordinary float layout takes it,
+       and read by `textureLoad` alone, so the filter never runs. */
+    const effects = options.effects ?? [];
+    if (effects.length > 0) {
+      const table = device.createTexture({
+        label: 'surface.effects',
+        size: [SURFACE_EFFECT_TEXELS, effects.length],
+        format: 'rgba16float',
+        usage: 0x4 | 0x2, // TEXTURE_BINDING | COPY_DST
+      });
+      device.queue.writeTexture(
+        { texture: table },
+        toHalfFloats(packSurfaceEffects(effects)),
+        { bytesPerRow: SURFACE_EFFECT_TEXELS * 8, rowsPerImage: effects.length },
+        { width: SURFACE_EFFECT_TEXELS, height: effects.length, depthOrArrayLayers: 1 },
+      );
+      this.effectsTable = table;
+      this.effectsView = table.createView();
+    }
+  }
+
+  /** A view of every layer, as the shaders' `texture_2d_array` bindings read it. */
+  private arrayView(texture: GPUTexture): GPUTextureView {
+    return texture.createView({ dimension: '2d-array', arrayLayerCount: this.layers });
   }
 
   /** The view every binding of this image holds. A new one when `update` changes the size. */
@@ -248,24 +282,25 @@ export class GpuSurfaceTexture {
   update(source: TexImageSource): GPUTexture | null {
     const replaced = this.texture;
     if (replaced === null) return null;
+    refuseArrayUpdate(this.layers);
     const { width, height } = sourceSize(source);
     if (width === this.width && height === this.height) {
-      this.upload(source);
+      this.upload([source]);
       return null;
     }
     this.width = width;
     this.height = height;
     this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
     this.texture = this.allocate();
-    this.current = this.texture.createView();
-    this.upload(source);
+    this.current = this.arrayView(this.texture);
+    this.upload([source]);
     return replaced;
   }
 
   private allocate(): GPUTexture {
     return this.device.createTexture({
       label: 'surface.texture',
-      size: [this.width, this.height],
+      size: [this.width, this.height, this.layers],
       format: this.format,
       mipLevelCount: this.levels,
       /*
@@ -290,9 +325,12 @@ export class GpuSurfaceTexture {
     if (this.texture === null) return;
     this.texture.destroy();
     this.texture = null;
+    this.effectsTable?.destroy();
+    this.effectsTable = null;
+    this.effectsView = null;
   }
 
-  private upload(source: TexImageSource): void {
+  private upload(sources: readonly TexImageSource[]): void {
     const texture = this.texture;
     if (texture === null) return;
     /*
@@ -306,11 +344,13 @@ export class GpuSurfaceTexture {
      * The orientation check that passed this backend was run on a canvas alone, where the two
      * agreed. Measure both source types, or a texture pipeline is half tested.
      */
-    this.device.queue.copyExternalImageToTexture(
-      { source: source as GPUCopyExternalImageSource, flipY: false },
-      { texture },
-      [this.width, this.height],
-    );
+    for (let layer = 0; layer < sources.length; layer++) {
+      this.device.queue.copyExternalImageToTexture(
+        { source: sources[layer] as GPUCopyExternalImageSource, flipY: false },
+        { texture, origin: [0, 0, layer] },
+        [this.width, this.height],
+      );
+    }
     if (this.levels > 1) this.generateMips(texture);
   }
 
@@ -322,6 +362,6 @@ export class GpuSurfaceTexture {
    * an attachment and a resource at once — rejected, and rejected silently enough to matter.
    */
   private generateMips(texture: GPUTexture): void {
-    generateMipChain(this.device, this.pipelines, texture, this.format, this.levels);
+    generateMipChain(this.device, this.pipelines, texture, this.format, this.levels, this.layers);
   }
 }

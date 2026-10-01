@@ -90,6 +90,8 @@ export const ABSENT_ATTRIBUTE: Readonly<Record<string, readonly number[]>> = {
    * the thing being measured.
    */
   channel: [0, 1, 1, 1],
+  /* Layer 0: the only image a plain texture has, and the first of an array. */
+  layers: [0],
 };
 
 /**

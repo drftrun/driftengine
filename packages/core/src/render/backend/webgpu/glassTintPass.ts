@@ -90,7 +90,8 @@ export class GpuGlassTint {
           {
             binding: CUTOUT_MAP.texture,
             visibility: VISIBILITY_FRAGMENT,
-            texture: { sampleType: 'float' },
+            /* A surface texture, and every surface texture is a `2d-array` view. */
+            texture: { sampleType: 'float', viewDimension: '2d-array' },
           },
           {
             binding: CUTOUT_MAP.sampler,

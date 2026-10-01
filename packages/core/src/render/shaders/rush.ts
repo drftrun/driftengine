@@ -104,6 +104,16 @@ uniform float uMotionMax;
  */
 uniform sampler2D uAo;
 uniform float uAoStrength;
+/**
+ * Where this frame's jitter put the picture the occlusion was measured from, in this pass's uv.
+ *
+ * The occlusion is measured from the frame's own depth, which a temporal resolve or a
+ * reconstruction jittered, and it is applied here to a picture those have already taken the jitter
+ * out of — so read at the pixel's own uv it moved by the jitter every frame, and every crevice
+ * shimmered by up to half a render texel. Read where the jitter put it, it holds still. Zero for an
+ * unjittered frame.
+ */
+uniform vec2 uAoOffset;
 
 /**
  * The bloom chain's top level, already thresholded, blurred and summed by its own pass.
@@ -341,7 +351,7 @@ void main() {
    * strength, so the parameter reads as "how much of this occlusion", and 0 is exactly the
    * frame that existed before the effect did.
    */
-  float ao = mix(1.0, textureLod(uAo, vUv, 0.0).r, uAoStrength);
+  float ao = mix(1.0, textureLod(uAo, vUv + uAoOffset, 0.0).r, uAoStrength);
 
   /*
    * Distance from the centre, corrected so the falloff is a circle on screen rather than

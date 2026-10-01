@@ -58,14 +58,6 @@ const ATTR_JOINTS = 11;
  */
 const ATTR_CHANNEL = 13;
 
-/**
- * The locations `attachInstances` claims, which a plain draw through the same array must not read.
- *
- * Eleven to fourteen are the model matrix's columns and fifteen is the tint. **Thirteen is also
- * the channel**, and eleven and twelve are the skinning pair — which cannot collide, because
- * `flatVert` refuses skinning with instancing. See `draw`.
- */
-const INSTANCE_COLUMNS = [11, 12, 13, 14, 15] as const;
 const ATTR_WEIGHTS = 12;
 
 /**
@@ -95,6 +87,9 @@ function applyConstant(
 export class Mesh {
   private readonly vao: WebGLVertexArrayObject;
   private readonly buffers: WebGLBuffer[] = [];
+  /** Every attribute bound from a buffer, so a batch can build a vertex array of its own. */
+  private readonly layout: { location: number; buffer: WebGLBuffer; size: number }[] = [];
+  private indexBuffer: WebGLBuffer | null = null;
   /**
    * The position and normal buffers, kept so `update` can rewrite them.
    *
@@ -104,7 +99,8 @@ export class Mesh {
   private readonly deformable: { positions: WebGLBuffer; normals: WebGLBuffer } | null = null;
   /** How many floats the position buffer holds, so an update of the wrong size is refused. */
   private readonly positionFloats: number;
-  private readonly indexCount: number;
+  /** Indices one draw of it issues; the batch-size rule reads it (`cullsInstances`). */
+  readonly indexCount: number;
   /**
    * The constant values this mesh's *absent* attributes are shaded with, re-applied on
    * every draw.
@@ -227,7 +223,13 @@ export class Mesh {
     if (data.uvs === undefined) {
       gl.disableVertexAttribArray(ATTR_UV);
       this.constants.push({ location: ATTR_UV, value: ABSENT_ATTRIBUTE['uvs'] });
+    } else if (data.layers !== undefined) {
+      /* The texture-array layer rides as the third coordinate — every vertex location is spent —
+         so a layered mesh uploads (u, v, layer) packed. See `MeshData.layers`. */
+      this.attachAttribute(gl, ATTR_UV, packUvLayers(data.uvs, data.layers), 3);
     } else {
+      /* Two components; the shader's vec3 reads z as 0 by the GL rule for a missing component,
+         which is layer 0 — the only layer a plain texture has. */
       this.attachAttribute(gl, ATTR_UV, data.uvs, 2);
     }
 
@@ -313,6 +315,7 @@ export class Mesh {
     if (indexBuffer === null) throw new Error('createBuffer failed');
     this.buffers.push(indexBuffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    this.indexBuffer = indexBuffer;
     this.allocate(gl, gl.ELEMENT_ARRAY_BUFFER, indexBuffer, data.indices, gl.STATIC_DRAW);
 
     gl.bindVertexArray(null);
@@ -322,28 +325,11 @@ export class Mesh {
   draw(gl: WebGL2RenderingContext): void {
     gl.bindVertexArray(this.vao);
     /*
-     * **A mesh with a batch has the instance columns enabled on this very array, and location 13
-     * is the channel.** `attachInstances` claims 11 to 14 for the model matrix and 15 for the
-     * tint; a `Mesh` owns one vertex array, so those bindings are still live for a *plain* draw
-     * through it — and `aChannel` then reads the third column of instance zero's matrix instead
-     * of the absent-attribute constant. For a placement with no rotation that column is
-     * `(0, 0, 1, 0)`, so `aChannel.y` is zero, `vSkyDirect = aChannel.y` scales the directional
-     * term to nothing, and the mesh renders lit by the hemispheric ambient alone — correct
-     * normals, correct albedo, no error, no warning.
-     *
-     * Found on `demo/instancing.ts`, which exists to draw two ranks of one box the two ways and
-     * compare them: the `drawMesh` rank's top face read (51, 30, 21) against the `drawInstanced`
-     * rank's (218, 110, 59), and 51 is exactly the ambient. WebGPU has no array to share and drew
-     * them alike, which is what made it visible at all.
-     *
-     * Disabled here and put back by `drawInstances`, rather than given the batch an array of its
-     * own: that is the larger change this class's own note about two batches already contemplates,
-     * and it wants one for a different reason. Three calls on a mesh that has a batch and none on
-     * a mesh that does not.
+     * No instance columns to disable: a batch draws through a vertex array of its own
+     * (`createInstanceArray`), so this array never carries them. It used to, and location 13 — the
+     * channel — then read the third column of instance zero's matrix on a plain draw, which lit a
+     * mesh by ambient alone on this backend and not the other.
      */
-    if (this.instanced) {
-      for (const location of INSTANCE_COLUMNS) gl.disableVertexAttribArray(location);
-    }
     // The VAO restores the arrays; these it cannot. See `constants`.
     for (const constant of this.constants) {
       const value = constant.value;
@@ -353,35 +339,30 @@ export class Mesh {
   }
 
   /**
-   * Bind one buffer's per-instance attributes to this mesh's vertex array.
+   * A vertex array for one instanced batch: every attribute this mesh binds from a buffer, its index
+   * buffer, and the batch's instance columns — the model matrix at 11 to 14, the tint at 15.
    *
-   * **One batch per mesh, and the vertex array is why.** A `Mesh` owns exactly one, so a second
-   * batch would rebind locations 11 to 15 on the array the first still draws through — and what
-   * comes out is one batch's instances placed by the other's matrices, which reads as a transform
-   * bug in the consumer's own code rather than as a misuse of this.
-   *
-   * **What would make it wrong** is a consumer legitimately wanting two batches of one mesh,
-   * which wants a vertex array per batch rather than a flag here.
+   * **A batch owns its own array**, which is what lets a mesh have more than one batch: a prop drawn
+   * once per region is one mesh and a batch per region. With one array a mesh had one batch, since a
+   * second would rebind the columns the first draws through and place one batch's instances by the
+   * other's matrices. The arrays share every buffer, so a batch costs its instances and nothing of
+   * the geometry. The caller deletes what this returns.
    */
-  attachInstances(gl: WebGL2RenderingContext, buffer: WebGLBuffer, stride: number): void {
-    if (this.instanced) {
-      throw new Error(
-        'Mesh: this mesh already has an instanced batch — a Mesh owns one vertex array, so a ' +
-          'second batch would rebind the attributes the first draws through.',
-      );
+  createInstanceArray(
+    gl: WebGL2RenderingContext,
+    instances: WebGLBuffer,
+    stride: number,
+  ): WebGLVertexArrayObject {
+    const vao = gl.createVertexArray();
+    if (vao === null) throw new Error('createVertexArray failed');
+    gl.bindVertexArray(vao);
+    for (const attribute of this.layout) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, attribute.buffer);
+      gl.enableVertexAttribArray(attribute.location);
+      gl.vertexAttribPointer(attribute.location, attribute.size, gl.FLOAT, false, 0, 0);
     }
-    this.instanced = true;
-    this.instanceBuffer = buffer;
-    this.instanceStride = stride;
-    gl.bindVertexArray(this.vao);
-    this.bindInstanceColumns(gl, buffer);
-    gl.bindVertexArray(null);
-  }
-
-  /** The instance columns, bound. Called at attach and again after a plain draw disabled them. */
-  private bindInstanceColumns(gl: WebGL2RenderingContext, buffer: WebGLBuffer): void {
-    const stride = this.instanceStride;
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, instances);
     /* Four vec4 columns then a vec3 tint: a mat4 is not a vertex attribute in GLSL ES 300. */
     for (let column = 0; column < 4; column += 1) {
       const location = 11 + column;
@@ -392,24 +373,17 @@ export class Mesh {
     gl.enableVertexAttribArray(15);
     gl.vertexAttribPointer(15, 3, gl.FLOAT, false, stride, 64);
     gl.vertexAttribDivisor(15, 1);
+    gl.bindVertexArray(null);
+    return vao;
   }
 
-  private instanceBuffer: WebGLBuffer | null = null;
-  private instanceStride = 0;
-
-  /** Whether `attachInstances` has already claimed locations 11 to 15 on this mesh's array. */
-  private instanced = false;
-
-  /**
-   * Draw `count` instances through the attributes `attachInstances` bound.
-   *
-   * The constants are re-applied exactly as `draw` does — a vertex array restores the arrays and
-   * not the constant attributes, and an absent optional attribute is a constant here.
-   */
-  drawInstances(gl: WebGL2RenderingContext, count: number): void {
-    gl.bindVertexArray(this.vao);
-    /* Put back what `draw` disabled, if a plain draw of this mesh came first. See its note. */
-    if (this.instanceBuffer !== null) this.bindInstanceColumns(gl, this.instanceBuffer);
+  /** Draw `count` instances through a batch's own vertex array. See `createInstanceArray`. */
+  drawInstancesThrough(
+    gl: WebGL2RenderingContext,
+    vao: WebGLVertexArrayObject,
+    count: number,
+  ): void {
+    gl.bindVertexArray(vao);
     for (const constant of this.constants) {
       const value = constant.value;
       applyConstant(gl, constant.location, value);
@@ -472,6 +446,7 @@ export class Mesh {
     this.allocate(gl, gl.ARRAY_BUFFER, buffer, data, usage);
     gl.enableVertexAttribArray(location);
     gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+    this.layout.push({ location, buffer, size });
     return buffer;
   }
 
@@ -578,4 +553,16 @@ export function createMeshIncremental(
 ): IncrementalMesh {
   const mesh = new Mesh(gl, data, dynamic, true);
   return { mesh, upload: mesh.uploads(gl) };
+}
+
+/** Texture coordinates and layers interleaved as (u, v, layer), one row a vertex. */
+export function packUvLayers(uvs: Float32Array, layers: Float32Array): Float32Array {
+  const count = layers.length;
+  const packed = new Float32Array(count * 3);
+  for (let v = 0; v < count; v++) {
+    packed[v * 3] = uvs[v * 2] as number;
+    packed[v * 3 + 1] = uvs[v * 2 + 1] as number;
+    packed[v * 3 + 2] = layers[v] as number;
+  }
+  return packed;
 }

@@ -35,6 +35,7 @@ export type { Manifold, ShapePose } from './manifold.ts';
 export { MAX_CONTACTS, collideShapes, createManifold } from './manifold.ts';
 export type { Parallelism, WorldOptions } from './world.ts';
 export { PhysicsWorld } from './world.ts';
+export { StaticRegions } from './staticRegions.ts';
 export {
   ContactConstraints,
   LINEAR_SLOP,

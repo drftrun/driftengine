@@ -14,12 +14,12 @@
  * from the centre, gets a smaller radius and more of the volume, which is the safe direction.
  */
 
-import type { LightField } from './lightField.ts';
+import type { DriftLightVolumes } from './presence.ts';
 
 export interface DriftLightUniforms {
   /** How much of the summed light is in, the radius, the band, the scale. */
   readonly light: Float32Array;
-  /** The first brick's first sample, and the metres between samples. */
+  /** The first sample, and the metres between samples — negative for a dense volume. */
   readonly origin: Float32Array;
 }
 
@@ -35,16 +35,15 @@ export function createDriftLightUniforms(): DriftLightUniforms {
  * being drawn.
  */
 export function resolveDriftLight(
-  field: LightField | null,
+  field: DriftLightVolumes | null,
   probePass: boolean,
   eye: ArrayLike<number>,
   out: DriftLightUniforms,
 ): void {
-  if (field === null || !field.ready || field.presence <= 0 || field.layout.count === 0) {
+  if (field === null || !field.ready || field.presence <= 0 || field.empty) {
     out.light.fill(0);
     return;
   }
-  const { layout } = field;
   const offset = Math.hypot(
     (eye[0] ?? 0) - (field.centre[0] as number),
     (eye[1] ?? 0) - (field.centre[1] as number),
@@ -54,8 +53,8 @@ export function resolveDriftLight(
   out.light[1] = probePass ? 0 : Math.max(0, field.radius - offset);
   out.light[2] = field.band;
   out.light[3] = field.scale;
-  out.origin[0] = layout.origin[0];
-  out.origin[1] = layout.origin[1];
-  out.origin[2] = layout.origin[2];
-  out.origin[3] = layout.spacing;
+  out.origin[0] = field.sampleOrigin[0];
+  out.origin[1] = field.sampleOrigin[1];
+  out.origin[2] = field.sampleOrigin[2];
+  out.origin[3] = field.signedSpacing;
 }

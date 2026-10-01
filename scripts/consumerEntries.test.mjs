@@ -70,9 +70,24 @@ function sources(dir, out = []) {
   return out;
 }
 
+/**
+ * Every package's `src`, and nothing beside it.
+ *
+ * **This walked all of `packages/` until 2026-09-30**, `dist/` included, and failed about one run
+ * in five with `ENOENT` on a declaration file: `packages.test.mjs` runs `npm pack` in every package
+ * in the same parallel run, each package's `prepack` rebuilds its `dist/`, and a `.d.ts` deleted
+ * between the walk and the read took the gate down. Build output is not source — it holds the same
+ * comments again, compiled — so the scope is what the header above always said it was.
+ */
+function engineSources() {
+  const out = [];
+  for (const entry of readdirSync(PACKAGES)) sources(path.join(PACKAGES, entry, 'src'), out);
+  return out;
+}
+
 test('no engine source cites a consumer report entry by its number', () => {
   const offenders = [];
-  for (const file of sources(PACKAGES)) {
+  for (const file of engineSources()) {
     const source = readFileSync(file, 'utf8');
     for (const [at, text] of comments(source)) {
       const found = text.match(CITATION);

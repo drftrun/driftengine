@@ -51,6 +51,15 @@ gzipped, 49% of `core-only`, on every consumer including those who never enabled
 not absorb it, because deflate's window is 32 KB and a permutation is larger than that, so sixteen
 near-identical copies do not dedupe into one.
 
+**Since 2026-09-30 the generator dedupes them itself**, which changes what a line of the lit shader
+costs but not the rule below. `scripts/wgsl/share.mjs` cuts each permutation into its top-level
+items, renumbers naga's temporaries and each function's own names so an identical function is
+identical text, and stores every distinct item once: **`core-only` 934,919 → 695,924 bytes
+gzipped.** So **a helper function costs once, and code in `main` still costs once per permutation**
+— `main` is where the permutations differ, and it is stored twenty-one times. A new permutation flag
+still doubles every `main`; the 196,910 figure above predates the sharing and would be smaller now,
+and has not been re-measured.
+
 So the mechanism has a second rule, and `scripts/size-gate.test.mjs` is where its arithmetic lives:
 **a feature inside the lit pass becomes a permutation only if it is large enough that carrying it
 compiled-in would cost more than doubling the shader corpus.** Clustered lighting is not — it is a

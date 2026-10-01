@@ -33,6 +33,7 @@ export type { DrftFit, DrftLoaderOptions } from './drftLoader.ts';
 export { drawKeyOf, resolveDrawGrouping } from './drawKey.ts';
 export type { DrawGrouping, DrawSurfaceOverride } from './drawKey.ts';
 export type { DrftLoadPhase, DrftLoadProgress, DrftPart } from './loadProgress.ts';
+export type { LoadedRegion, LoadedRegionLevel } from './regionStore.ts';
 export type { DrftFieldPlacement } from './fieldPlacement.ts';
 /* Addressing a texture by name, so a consumer never holds an ordinal. */
 export { TextureSet, textureColorSpaces } from './drftTextures.ts';

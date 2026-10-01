@@ -170,6 +170,42 @@ describe('a gpu mesh', () => {
   });
 
   /*
+   * A texture-array layer rides as the third texture coordinate, so a layered mesh's UV field is
+   * three floats wide and every field after it moves along by one — the case where a layout that
+   * disagreed with the upload would read every later attribute from the wrong offset.
+   */
+  it('A LAYERED MESH CARRIES (u, v, layer) IN ONE FIELD, and the layout and the rows agree on it', () => {
+    const { device, memory } = fakeDevice();
+    const data: MeshData = {
+      ...triangle(),
+      positions: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      emissive: new Float32Array([0.5, 0.25, 0.125]),
+      uvs: new Float32Array([10, 11, 12, 13, 14, 15]),
+      layers: new Float32Array([0, 6, 9]),
+      tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 0, 0, 1, -1]),
+    };
+    const mesh = createGpuMesh(device, data);
+    const bytes = memory.get(mesh.vertexBuffers[0] as object) as Uint8Array;
+    const floats = [...new Float32Array(bytes.buffer, 0, bytes.byteLength / 4)];
+    /* position, normal, colour, emissive, (u, v, layer), tangent: seventeen floats a vertex. */
+    expect(floats.slice(17, 34)).toEqual([4, 5, 6, 0, 0, 1, 1, 1, 1, 0.25, 12, 13, 6, 0, 1, 0, 1]);
+
+    const layered = vertexBufferLayouts({ uvs: true, tangents: true, layers: true });
+    const plain = vertexBufferLayouts({ uvs: true, tangents: true });
+    const uv = (layouts: GPUVertexBufferLayout[]) =>
+      [...(layouts[0]?.attributes ?? [])].find((a) => a.shaderLocation === 5);
+    expect(uv(layered)?.format).toBe('float32x3');
+    expect(uv(plain)?.format, 'a mesh without layers keeps two floats').toBe('float32x2');
+    expect(layered[0]?.arrayStride).toBe(17 * 4);
+    expect(Number(plain[0]?.arrayStride) + 4).toBe(layered[0]?.arrayStride);
+    const tangent = (layouts: GPUVertexBufferLayout[]) =>
+      [...(layouts[0]?.attributes ?? [])].find((a) => a.shaderLocation === 10)?.offset;
+    expect(tangent(layered), 'the tangent after the widened field moves by four bytes').toBe(
+      13 * 4,
+    );
+  });
+
+  /*
    * **The other backend refused a short attribute and this one drew zeroes for its tail.** WebGL2's
    * mesh has run `validateMeshData` since the validator existed; this path never called it, so a
    * uv array one vertex short was an error on one backend and a stretched texture on the other.

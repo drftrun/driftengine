@@ -56,3 +56,9 @@ test('one mesh joined is that mesh', () => {
   const mesh = triangle(0, false);
   expect(concatMeshes([mesh])).toBe(mesh);
 });
+
+test('JOINED MESHES KEEP THEIR TEXTURE-ARRAY LAYERS, and a member without them wears layer 0', () => {
+  const a = { ...triangle(0, true), layers: new Float32Array([3, 3, 3]) };
+  const joined = concatMeshes([a, triangle(5, true)]);
+  expect([...(joined.layers ?? [])]).toEqual([3, 3, 3, 0, 0, 0]);
+});

@@ -1,7 +1,7 @@
 {
   "name": "@driftengine/workspace",
   "private": true,
-  "version": "4.5.0",
+  "version": "4.6.0",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [
@@ -24,6 +24,7 @@
     "test:scripts": "node --conditions=drift-source --test --test-force-exit scripts/*.test.mjs 'packages/*/src/**/*.test.mjs'",
     "docs:check": "node --test scripts/docs.test.mjs",
     "bake": "npx tsx --conditions=drift-source scripts/bake.ts",
+    "sprawl:bake": "npx tsx --conditions=drift-source demo/sprawl/bake/main.ts",
     "car": "npx tsx --conditions=drift-source scripts/showroom-car.ts",
     "demo": "npx vite demo/dev",
     "editor": "npx vite editor",
@@ -58,9 +59,9 @@
     "native:startup": "node demo/native/startup.mjs"
   },
   "devDependencies": {
-    "@driftengine/assets": "4.5.0",
-    "@driftengine/core": "4.5.0",
-    "@driftengine/drft": "4.5.0",
+    "@driftengine/assets": "4.6.0",
+    "@driftengine/core": "4.6.0",
+    "@driftengine/drft": "4.6.0",
     "@jsquash/jpeg": "1.6.0",
     "@types/node": "^26.2.0",
     "@webgpu/glslang": "^0.0.15",

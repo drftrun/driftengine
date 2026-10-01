@@ -1,0 +1,82 @@
+// What the keys mean in the city: each press this frame becomes an intent, and only where it applies.
+//
+// The host writes the presses into `Keys` and runs this once a frame; it reads `Play` back and acts
+// on it — the maps, the pause screen, a ride, the clock. What a key *does* in the world stays with
+// the host; what it *means*, and when it means nothing, is decided here.
+//
+// Flags are integers, 1 or 0: a component field has a column, and the host reads the same numbers.
+
+component Keys {
+    interact: i32 = 0
+    next: i32 = 0
+    previous: i32 = 0
+    leave: i32 = 0
+    skip: i32 = 0
+    map: i32 = 0
+    north: i32 = 0
+    pause: i32 = 0
+    quality: i32 = 0
+}
+
+component Play {
+    // What persists from frame to frame.
+    paused: i32 = 0
+    mapOpen: i32 = 0
+    northUp: i32 = 0
+    // Written by the host: 1 while the walker waits for or rides a vehicle.
+    riding: i32 = 0
+    // Intents for this frame, which the host acts on.
+    board: i32 = 0
+    choose: i32 = 0
+    getOff: i32 = 0
+    skipHour: i32 = 0
+    nextTier: i32 = 0
+}
+
+system Rules {
+    reads Keys
+    writes Play
+
+    update {
+        for e in query<Keys, Play>() {
+            e.Play.board = 0
+            e.Play.choose = 0
+            e.Play.getOff = 0
+            e.Play.skipHour = 0
+            e.Play.nextTier = 0
+
+            if e.Keys.pause == 1 {
+                e.Play.paused = 1 - e.Play.paused
+            }
+            // Paused, the world holds: only the quality control means anything.
+            if e.Play.paused == 1 {
+                if e.Keys.quality == 1 {
+                    e.Play.nextTier = 1
+                }
+            } else {
+                if e.Keys.map == 1 {
+                    e.Play.mapOpen = 1 - e.Play.mapOpen
+                }
+                if e.Keys.north == 1 {
+                    e.Play.northUp = 1 - e.Play.northUp
+                }
+                if e.Keys.skip == 1 {
+                    e.Play.skipHour = 1
+                }
+                // Boarding is from the street or a platform; a rider already has a vehicle.
+                if e.Keys.interact == 1 && e.Play.riding == 0 {
+                    e.Play.board = 1
+                }
+                if e.Keys.next == 1 {
+                    e.Play.choose = 1
+                }
+                if e.Keys.previous == 1 {
+                    e.Play.choose = -1
+                }
+                if e.Keys.leave == 1 && e.Play.riding == 1 {
+                    e.Play.getOff = 1
+                }
+            }
+        }
+    }
+}

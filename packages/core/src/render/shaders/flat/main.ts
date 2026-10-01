@@ -1,7 +1,24 @@
 /** The fragment entry point, which assembles everything above into a colour. */
 
 export const MAIN_GLSL = `void main() {
-  if (uClipEnabled != 0 && dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
+  /*
+   * Where every material map is read: the texture coordinate, and the layer of the array the face
+   * wears, rounded here so an interpolated 2.9999 lands on layer 3 however the generated WGSL
+   * turns a float into an array index. A plain texture is an array of one, so layer 0.
+   */
+  vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));
+  if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
+  /*
+   * The layer's surface effects, zeros where the albedo array carries no table — see
+   * surfaceEffects.ts. Scroll and flipbook move surfaceAt before any map reads it, so every map of
+   * the material moves together. The gradients are taken here, outside every branch, for the room
+   * a window samples through textureGrad further down.
+   */
+  fxLoad(int(surfaceAt.z));
+  surfaceAt = fxAnimate(surfaceAt);
+  vec2 fxDx = dFdx(surfaceAt.xy);
+  vec2 fxDy = dFdy(surfaceAt.xy);
+  if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
 
   /*
    * Surface colour and its coverage, resolved before anything else — including before it is
@@ -35,13 +52,13 @@ export const MAIN_GLSL = `void main() {
    */
   float coverage = 1.0;
   if (uAlbedoEnabled != 0) {
-    vec4 texel = texture(uAlbedo, vUv);
+    vec4 texel = texture(uAlbedo, surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
     if (uAlbedoCutout > 0.0) {
-      float tested = cutoutAlpha(texel.a, vUv * vec2(textureSize(uAlbedo, 0)));
+      float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
       if (tested < uAlbedoCutout) discard;
     }
     albedo *= texel.rgb;
@@ -70,7 +87,7 @@ export const MAIN_GLSL = `void main() {
   float ormRoughness = vRoughness;
   float metal = 0.0;
   if (uOrmEnabled != 0) {
-    vec3 t = texture(uOrmMap, vUv).rgb;
+    vec3 t = texture(uOrmMap, surfaceAt).rgb;
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
     metal = clamp(t.b * uOrmScale.b, 0.0, 1.0);
@@ -82,6 +99,22 @@ export const MAIN_GLSL = `void main() {
    * \`uLightingEnabled\` at 0 keeps to the end, and the value every lit draw starts from before
    * the branch below builds a shaded result on top of it.
    */
+  /*
+   * Wear, rain and windows, on the colour and roughness everything below shades. Each is exactly
+   * nothing where its numbers are zero, which is every surface of a scene that names no effect.
+   */
+  fxNormal = normalize(vNormal);
+  fxDistance = distance(vWorldPos, uCameraPos);
+  vec4 weathered = fxWeather(vWorldPos, albedo, ormRoughness);
+  albedo = weathered.rgb;
+  ormRoughness = weathered.w;
+  vec3 windowGlow = vec3(0.0);
+  if (fx0.x > 0.0) {
+    vec4 window = fxWindows(surfaceAt, fxDx, fxDy, coverage);
+    albedo = mix(albedo, fxRoom * 0.35, window.w);
+    windowGlow = window.rgb;
+  }
+
   vec3 lit = albedo;
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
      over the see-through at the end. Stays zero for anything that is not glass. See glass.ts. */
@@ -123,8 +156,8 @@ export const MAIN_GLSL = `void main() {
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
     if (uNormalStrength > 0.0) {
-      vec3 mapped = texture(uNormalMap, vUv).xyz * 2.0 - 1.0;
-      mat3 tbn = tangentFrame(n, vWorldPos, vUv, vTangent, vHasTangents);
+      vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
+      mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
       n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
     }
 
@@ -244,14 +277,14 @@ export const MAIN_GLSL = `void main() {
        * antisymmetric, the cancellation holds, and it is the more accurate estimate besides: a
        * forward difference reports the slope half a step away from the point it is used at.
        */
-      vec2 duvdx = dFdx(vUv);
-      vec2 duvdy = dFdy(vUv);
+      vec2 duvdx = dFdx(vUv.xy);
+      vec2 duvdy = dFdy(vUv.xy);
       /* Half, because a centred difference spans two steps and three.js's number means one. */
       float reliefPerStep = uTextureRelief * 0.5;
-      float dHdx = (surfaceHeight(texture(uAlbedo, vUv + duvdx).rgb)
-                  - surfaceHeight(texture(uAlbedo, vUv - duvdx).rgb)) * reliefPerStep;
-      float dHdy = (surfaceHeight(texture(uAlbedo, vUv + duvdy).rgb)
-                  - surfaceHeight(texture(uAlbedo, vUv - duvdy).rgb)) * reliefPerStep;
+      float dHdx = (surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdx, surfaceAt.z)).rgb)
+                  - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdx, surfaceAt.z)).rgb)) * reliefPerStep;
+      float dHdy = (surfaceHeight(texture(uAlbedo, vec3(vUv.xy + duvdy, surfaceAt.z)).rgb)
+                  - surfaceHeight(texture(uAlbedo, vec3(vUv.xy - duvdy, surfaceAt.z)).rgb)) * reliefPerStep;
 
       vec3 dpdx = dFdx(vWorldPos);
       vec3 dpdy = dFdy(vWorldPos);
@@ -908,6 +941,9 @@ export const MAIN_GLSL = `void main() {
         * CLUSTER_TEXELS;
     int clusterLights = uClustered == 1 ? int(clusterTexel(clusterBaseTexel).x) : 0;
 
+    /* The fixture atlas's size, asked once: its cookie band and its profile rows are found from it. */
+    vec2 fixtureSize = vec2(textureSize(uFixtureAtlas, 0));
+
     // Point lights. Inverse-square-ish falloff clipped to a finite radius, so a
     // light can be culled without a visible seam.
     for (int slot = 0; slot < LIGHT_LOOP_MAX; slot++) {
@@ -1202,7 +1238,9 @@ export const MAIN_GLSL = `void main() {
       vec3 iesRay = -toLight / max(dist, 1e-4);
       /* The angle from the fixture's axis, as a fraction of the 0-to-180 arc every row spans. */
       float iesAngle = acos(clamp(dot(iesRay, lightDir), -1.0, 1.0));
-      float iesU = iesAngle / PI_IES;
+      /* Clamped to the row's first and last texel centres, which is what the edge clamp of a
+         texture exactly one row wide gave; the atlas can be wider now, with cookies beside it. */
+      float iesU = clamp(iesAngle / PI_IES * IES_WIDTH, 0.5, IES_WIDTH - 0.5) / fixtureSize.x;
       /*
        * **The azimuth about the fixture's own axis**, behind a branch on a uniform so a scene whose
        * profiles are all axially symmetric pays none of this arithmetic. A \`uniform float\` is
@@ -1256,13 +1294,14 @@ export const MAIN_GLSL = `void main() {
              */
             float cookieTile = max(cookie, 0.0);
             vec2 cookieAt = vec2(
-              (cookieTile + clamp(cookieUv.x, COOKIE_INSET, 1.0 - COOKIE_INSET)) / uCookieTiles,
-              clamp(cookieUv.y, COOKIE_INSET, 1.0 - COOKIE_INSET));
+              (cookieTile + clamp(cookieUv.x, COOKIE_INSET, 1.0 - COOKIE_INSET)) * COOKIE_SPAN
+                / fixtureSize.x,
+              clamp(cookieUv.y, COOKIE_INSET, 1.0 - COOKIE_INSET) * COOKIE_SPAN / fixtureSize.y);
             /* Unconditional and \`textureLod\`, and selected with a \`mix\` afterwards: the light
                loop is not provably uniform control flow — the clustered arm reads its index from a
                texture — so a branch on the *light's* cookie index around a sample is what the
                2026-08-07 rule forbids. */
-            vec3 cookieSample = textureLod(uCookieAtlas, cookieAt, 0.0).rgb;
+            vec3 cookieSample = textureLod(uFixtureAtlas, cookieAt, 0.0).rgb;
             cookieTint = mix(vec3(1.0), cookieSample, step(0.0, cookie));
           }
         }
@@ -1277,10 +1316,12 @@ export const MAIN_GLSL = `void main() {
        * bytes on \`core-only\`** across the sixteen fragment permutations.
        */
       float iesBase = iesRow * (uIesPlaneCount + 1.0);
+      /* The profiles are the atlas's bottom rows, below any cookies. */
+      float iesTop = fixtureSize.y - uIesAtlasRows;
       float iesV = uIesAtlasRows <= 1.0
-        ? 0.5
-        : (iesBase + iesTurns * uIesPlaneCount + 0.5) / uIesAtlasRows;
-      float iesGain = textureLod(uIesAtlas, vec2(iesU, iesV), 0.0).r;
+        ? (iesTop + 0.5) / fixtureSize.y
+        : (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
+      float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
       float photometric = mix(1.0, iesGain, step(0.0, iesProfile));
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
@@ -1697,10 +1738,14 @@ export const MAIN_GLSL = `void main() {
      */
     vec3 emissiveMapped = vec3(1.0);
     if (uEmissiveMapEnabled != 0) {
-      emissiveMapped = texture(uEmissiveMap, vUv).rgb * uEmissiveScale;
+      emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
     }
+    /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
+    float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
     lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor
-      * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE);
+      * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
+    /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
+    lit += windowGlow * uEmissiveGain;
 
 #if NIGHT_EMISSIVE
     /*
@@ -1774,7 +1819,14 @@ export const MAIN_GLSL = `void main() {
     fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
   }
 
-  vec3 shaded = applyOutputTransform(mix(lit, mediumColor(), fog));
+  /*
+   * A surface recedes into the medium; light added to the frame fades in it (\`uFogEnabled\` at 2,
+   * \`drawFog.ts\`). What is behind an additive draw is already fogged, so mixing the draw toward
+   * the medium's colour and adding it puts the haze into the frame twice — a glow by day drew as
+   * a grey shape of itself, greyer the thicker the air.
+   */
+  vec3 shaded = applyOutputTransform(
+    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));
 
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**
@@ -1871,7 +1923,7 @@ export const MAIN_GLSL = `void main() {
    * up holding the weighted sum of colour and the weighted sum of alpha. The revealage pass draws
    * the same geometry with this at 0, where the branch below is not taken at all.
    */
-  if (uOitWeighted != 0.0) {
+  if (uWriteMode.x != 0.0) {
     float z = distance(vWorldPos, uCameraPos) / 200.0;
     float falloff = 0.03 / (1e-5 + z * z * z * z);
     float w = alpha * clamp(falloff, 1e-2, 3e3);

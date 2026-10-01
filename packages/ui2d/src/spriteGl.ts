@@ -6,14 +6,18 @@ import type { SpriteBatch } from './spriteBatch.ts';
 import type { SpriteTextureOptions } from './spriteTexture.ts';
 
 /**
- * The unit this pass borrows for the length of one draw.
+ * The unit this pass borrows for the length of one draw: the last of the thirty-two a program's
+ * stages share, which WebGL2 guarantees, and which core's texture-unit gate keeps every lit-pass
+ * unit below.
  *
- * Fourteen is above every unit `lightBudget.ts` assigns — `COOKIE_ATLAS_TEXTURE_UNIT` is the
- * highest at thirteen — and below the sixteen WebGL2 guarantees. The pass releases it before it
- * returns, because a texture left bound to a unit a later pass attaches is a feedback loop rather
- * than a wrong colour.
+ * **It was fourteen, on the reasoning that fourteen was above every unit the lit pass assigned**, and
+ * that stopped being true when DriftLight's atlas and the glass tints took units thirteen to
+ * sixteen. The pass releases its unit before it returns — a texture left bound where a later pass
+ * attaches is a feedback loop — so sprites drawn between two mesh draws unbound the lit pass's
+ * texture on fourteen, and the next mesh sampled nothing there. A unit per stage is a separate,
+ * smaller guarantee; this program declares one sampler, so the combined pool is the one that binds.
  */
-const SPRITE_UNIT = 14;
+const SPRITE_UNIT = 31;
 
 /** Bytes per instance. Fourteen floats; see `SPRITE_FLOATS`. */
 const STRIDE = SPRITE_FLOATS * 4;

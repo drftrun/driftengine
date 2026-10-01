@@ -323,7 +323,25 @@ export const FLOORS = {
    * packs. `readDrft` has to decode a quantised mesh to read one, so this is the price of reading
    * any file a current baker writes, not an opt-in.
    */
-  'drft-only': 9974,
+  /*
+   * **Raised 2026-09-30 by +1,294, the region chunk.** `REGN`'s reader, its writer's ordering plan
+   * and the ledger both share, all reached by `readDrft` and `writeDrft` whether a file carries
+   * regions or not: a region names meshes that follow it, so the ledger has to exist before the
+   * first one is known, and a reader that refuses a malformed city has to hold every rule a
+   * well-formed one obeys. The refusals are sentences, which is most of the bytes.
+   */
+  /* Raised again 2026-09-30 by +452: `LVOL`, a world's summed lights as runs. */
+  /*
+   * **`KITS` and `MSHC`, 2026-09-30: +2,457**, from 11,720 to 14,177, and split by measurement:
+   * **1,192 is `expandAssembly`** (removed with its import: 12,985), which `readDrft` must call
+   * because its `meshes` are vertices by contract; **1,265 is the two readers and their refusals** —
+   * a copy of a mesh the kit does not name, a piece after its copy, a textured copy of a piece with
+   * no tangents, a matrix flattened to nothing. What it buys is a 2 km city at about 40 MB instead of
+   * about 900. Same answer as every chunk before it about who pays: one entry point, and a separate
+   * export path is the fix when somebody minds.
+   */
+  /* Raised 2026-10-01 by +120: a mesh's channel and an assembly's sway survive a bake. */
+  'drft-only': 14297,
   /*
    * Raised 2026-08-22 by the normal map, and again the same day by the ORM map. Both splits are
    * measured rather than assumed.
@@ -757,7 +775,43 @@ export const FLOORS = {
    * 51 bytes, `capture-only` 54 and `nav-only` 2 above floors that were stale since glass's
    * container fields, and `tools-only` one byte under; all four are the measured number now.
    */
-  'core-only': 908715,
+  /*
+   * **Raised 2026-09-30 by +26,204, with every `core-*` entry by about as much: phases 1 to 6 of the
+   * city programme**, each within 3% on its own and 2.9% together. Measured parts: the world light
+   * volume's lookup is 10,118 of it — 8,894 by reverting the generated WGSL, since the dense branch
+   * is compiled into all sixteen lit permutations, and 1,224 more for sharing the light-to-surface
+   * tail between the two lookups as one function rather than two copies of one rule. The rest is
+   * solids and CSG, texture arrays, instance culling with its compute twin, the dither and
+   * `HlodSet`, all reached through the barrel.
+   */
+  /*
+   * **Lowered 2026-09-30 by 184,832, with every `core-*` entry by as much: the generated WGSL stores
+   * each shared item once.** The sixteen permutations of the lit shader were stored whole, a hundred
+   * kilobytes each, and gzip's thirty-two kilobyte window found nothing one shared with the next —
+   * so every line of it was paid sixteen times. naga numbered its temporaries by their place in the
+   * whole module, which made even an identical function sixteen different texts; renumbered per item
+   * and stored once, the flat module went from 2,464 KB to 1,660 KB raw. See `wgsl/share.mjs`.
+   *
+   * **And by 54,163 more the same day**, when each function's parameters and locals were renumbered
+   * too: naga suffixes those to keep them unique across the module, so an identical function still
+   * differed by `p_4` against `p_5`. The module went to 1,419 KB, and every shared function is stored
+   * once — 239 KB off `core-only` in all, a quarter of it.
+   *
+   * **Then raised by +15,053 for the surface effects** (rooms behind windows, lit windows, wear,
+   * animation, rain), measured: written first as code inside `main`, which is stored per permutation,
+   * they cost 72 KB; as functions reading private globals, each stored once, 15 KB.
+   */
+  /*
+   * **Raised 2026-10-01 by +4,725, with every `core-*` entry by about as much: 4.6.0's engine
+   * fixes**, each within 3% on its own, measured commit by commit against the tree before it. The
+   * fog fade for added light is 1,105, since the lit shader's tail is in every permutation;
+   * DriftTR's anti-flicker record, held depth swing and double-precision reprojection 1,859, all in
+   * the hand-written resolve; occlusion read where the jitter put it 397; the bloom reading the
+   * resolved picture 84. The other 1,250 is the city programme's later fixes: additive and
+   * reconstructed translucent draws, the inset after the present, the pixel font's strokes, small
+   * culling batches drawn whole, and an interface after the present left unjittered.
+   */
+  'core-only': 715702,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -770,7 +824,9 @@ export const FLOORS = {
    * Nothing else moved: `core-only` is unchanged to the byte, so a game that never imports a gizmo
    * pays nothing for one existing.
    */
-  'core-and-gizmo': 913568,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-gizmo': 720697,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -783,7 +839,9 @@ export const FLOORS = {
    * gzipped, 0.32%**. That is the whole of the console, the bus, the three inserts and the two
    * return stages.
    */
-  'core-and-audio': 914945,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-audio': 721996,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -805,7 +863,9 @@ export const FLOORS = {
    * two attributes, a data texture and a vertex permutation — lives in core because `RendererApi`
    * is a surface a package cannot extend.
    */
-  'core-and-animation': 915019,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-animation': 722157,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -840,7 +900,9 @@ export const FLOORS = {
    * but it is why 26.1 KB became 30.5 for thirty capabilities that are themselves object
    * literals.
    */
-  'core-and-script': 946552,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-script': 753915,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -904,7 +966,8 @@ export const FLOORS = {
    * pairs inside each bucket. A kilobyte and a quarter for a tenth off every path an agent walks,
    * and the same answer as above about who pays: a separate export path when somebody minds.
    */
-  'nav-only': 8401,
+  /* Re-measured 2026-10-01, 8 bytes under: drift through its imports, not this package. */
+  'nav-only': 8393,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the
@@ -932,7 +995,8 @@ export const FLOORS = {
    * typed structurally, so the package still depends on nothing new. Named in the fixture in the
    * same commit, which is the whole point of the paragraph above it.
    */
-  'tools-only': 5390,
+  /* Re-measured 2026-10-01, 3 bytes over: drift through its imports, not this package. */
+  'tools-only': 5393,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional
@@ -994,8 +1058,16 @@ export const FLOORS = {
    * **68,567, 2026-09-25**: +2,194, all of it `@driftengine/drft`'s — the `MSHQ` encoder and the
    * `LITE` writer arriving with `writeDrft`. Nothing in this package moved.
    */
-  'capture-only': 68875,
-  'core-and-splats': 925757,
+  /* Raised 2026-09-30 with `core-only`: the city programme's phases 1 to 6. */
+  /*
+   * Raised 2026-10-01 by +1,763, nothing in this package: 1,553 of it `@driftengine/drft`'s
+   * container 1.23 readers, reached through `MeshData`, before the floor that should have taken
+   * them, and 192 since.
+   */
+  'capture-only': 72615,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-splats': 732847,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1012,7 +1084,9 @@ export const FLOORS = {
    * three rows of Track D priced a capability by where it went; this one is the floor of that
    * scale, which is what a package of arithmetic costs.
    */
-  'core-and-terrain': 910131,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-terrain': 717089,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1038,8 +1112,15 @@ export const FLOORS = {
    * the alternative — a `drawSprite` verb beside `fillPanel` — would have put a sampler and a
    * branch into the one shader every draw already uses.
    */
-  'core-and-ui2d': 917652,
-  'core-and-assets': 924973,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-and-ui2d': 724711,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /*
+   * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
+   * regions and kit pieces arriving with container 1.23 while this floor stayed where it was.
+   */
+  'core-and-assets': 738761,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1050,7 +1131,9 @@ export const FLOORS = {
    * the panner source and occlusion are **+1,479 bytes gzipped** over `core-and-audio`, and a
    * consumer that never imports them pays none of it.
    */
-  'core-audio-spatial': 917115,
+  /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
+  /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
+  'core-audio-spatial': 724091,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *
@@ -1259,8 +1342,10 @@ export const FLOORS = {
    * What a game that never enters a session pays is nothing at all: `@driftengine/xr` is a package
    * and `physics-only` and `core-only` are unmoved by it existing.
    */
-  'xr-only': 10850,
-  'physics-only': 46274,
+  /* Re-measured 2026-10-01, 2 bytes under: drift through its imports, not this package. */
+  'xr-only': 10848,
+  /* Raised 2026-10-01 by +240: a kerb a character steps off, and scenery colliding by region. */
+  'physics-only': 46514,
   /**
    * **821 bytes, 2026-09-03, up from 633 when the rewind snapshot landed.**
    *
@@ -1316,7 +1401,8 @@ export const FLOORS = {
    * and a `UiNode` builder. Nothing here touches a shader, so it adds no permutation to the sixteen
    * `flatFrag` already carries at 283.4 KB.
    */
-  'editor-only': 10652,
+  /* Re-measured 2026-10-01, 1 byte over: drift through its imports, not this package. */
+  'editor-only': 10653,
   /*
    * **Measured 2026-08-26 on the commit that created the package**, Track P's CH-0: fifteen
    * elements and their atomic weights, the species registry, the species-by-element matrix,

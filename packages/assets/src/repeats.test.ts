@@ -186,3 +186,11 @@ test('COPIES THAT SHARE THEIR VERTICES DIFFERENTLY ARE STILL FOUND, THROUGH THEI
   /* Copy 1 is moved 4 along x: its matrix is the second block, its translation at float 16 + 12. */
   expect(found?.transforms[28]).toBeCloseTo(4, 5);
 });
+
+test('A COPY ON ANOTHER TEXTURE-ARRAY LAYER IS A DIFFERENT OBJECT, not a repeat', () => {
+  const mesh = merged(2, (k, p) => [p[0] + 3 * k, p[1], p[2]]);
+  const layers = new Float32Array(8).fill(1);
+  expect(findRepeats({ ...mesh, layers }, [2]), 'the same layer throughout repeats').not.toBeNull();
+  layers.fill(5, 4);
+  expect(findRepeats({ ...mesh, layers }, [2])).toBeNull();
+});

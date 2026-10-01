@@ -16,7 +16,7 @@ test('every glyph fits the grid it claims to be on', () => {
    * extra column lands on the next character and the whole line looks subtly
    * smeared without any one letter looking wrong.
    */
-  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:!?-+/()%';
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:!?-+/()[]%';
   for (const character of characters) {
     const rows = glyphRows(character);
     expect(rows.length, `${character} row count`).toBe(GLYPH_HEIGHT);
@@ -93,4 +93,16 @@ test('characters are reported in reading order', () => {
 test('an empty string measures and draws nothing', () => {
   expect(measureText('')).toBe(0);
   expect(countCells('')).toBe(0);
+});
+
+test('THE BRACKETS ARE DRAWN RATHER THAN BOXED, EACH THE OTHER MIRRORED', () => {
+  /* A key hint names `[` and `]`; a box in their place reads as a character the font lost. */
+  expect([hasGlyph('['), hasGlyph(']')]).toEqual([true, true]);
+  const mirror = (row: number): number => {
+    let out = 0;
+    for (let bit = 0; bit < GLYPH_WIDTH; bit++)
+      if (row & (1 << bit)) out |= 1 << (GLYPH_WIDTH - 1 - bit);
+    return out;
+  };
+  expect(glyphRows(']')).toEqual(glyphRows('[').map(mirror));
 });

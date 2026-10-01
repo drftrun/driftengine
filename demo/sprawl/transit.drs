@@ -1,0 +1,65 @@
+// A ride's states: walking, waiting at a platform or a skyport, riding, and set down again.
+//
+// The host answers every question about the world — whether a platform is within reach, whether a
+// train stands at it, whether the ridden vehicle is at the rider's stop — and writes the answers
+// into `Ride` as facts each step. This decides what they mean for the ride, and says so in
+// `boarded`, `getOffNext` and `landed`, which the host acts on.
+//
+// States, as integers: 0 walking, 1 waiting for a train, 2 on the train, 3 waiting for an air
+// taxi, 4 in the air. The host reads the same five numbers.
+
+component Ride {
+    state: i32 = 0
+
+    // Facts, written by the host each step.
+    askedTrain: i32 = 0
+    askedTaxi: i32 = 0
+    vehicleHere: i32 = 0
+    atStop: i32 = 0
+    cancel: i32 = 0
+
+    // Decisions for this step.
+    boarded: i32 = 0
+    getOffNext: i32 = 0
+    landed: i32 = 0
+}
+
+system Transit {
+    reads Ride
+    writes Ride
+
+    update {
+        for e in query<Ride>() {
+            e.Ride.boarded = 0
+            e.Ride.getOffNext = 0
+            e.Ride.landed = 0
+            let s = e.Ride.state
+
+            if s == 0 {
+                // Asked at a platform or a skyport: wait there for what comes.
+                if e.Ride.askedTrain == 1 {
+                    e.Ride.state = 1
+                } else if e.Ride.askedTaxi == 1 {
+                    e.Ride.state = 3
+                }
+            } else if s == 1 || s == 3 {
+                // Waiting: Esc gives up; what arrives is boarded.
+                if e.Ride.cancel == 1 {
+                    e.Ride.state = 0
+                } else if e.Ride.vehicleHere == 1 {
+                    e.Ride.state = s + 1
+                    e.Ride.boarded = 1
+                }
+            } else {
+                // Riding: Esc asks for the next stop; at the rider's stop it is over.
+                if e.Ride.cancel == 1 && s == 2 {
+                    e.Ride.getOffNext = 1
+                }
+                if e.Ride.atStop == 1 {
+                    e.Ride.state = 0
+                    e.Ride.landed = 1
+                }
+            }
+        }
+    }
+}

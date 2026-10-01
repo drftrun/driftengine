@@ -4,6 +4,7 @@ import { collideShapes, createManifold } from './manifold.ts';
 import type { Manifold, ShapePose } from './manifold.ts';
 import type { ConvexShape } from './shape.ts';
 import { shapeBounds } from './shape.ts';
+import { faceCount } from './faces.ts';
 
 /**
  * Contacts between a convex shape and a static triangle mesh.
@@ -108,6 +109,8 @@ export function collideMesh(
   const otherPose = meshIsA ? poseB : poseA;
   /* Two meshes never touch: both are static, so nothing would move if they did. */
   if (isMesh(other)) return 0;
+  /* A sphere or capsule's contacts lie on the triangle, not on it; see `filterInteriorEdge`. */
+  const roundRadius = faceCount(other) === 0 ? other.radius : -1;
 
   /*
    * The moving shape's bounds, carried into the mesh's own frame — because the tree is in that
@@ -141,7 +144,8 @@ export function collideMesh(
       sign * scratch.nx * FACE[0] + sign * scratch.ny * FACE[1] + sign * scratch.nz * FACE[2];
     /* One-sided: a normal pointing into the back of the triangle is a body already through it. */
     if (away <= 0) continue;
-    if (away < FACE_DOT) filterInteriorEdge(mesh, triangle, meshPose, sign);
+    if (away < FACE_DOT && !filterInteriorEdge(mesh, triangle, meshPose, sign, roundRadius))
+      continue;
 
     const target = out[count];
     if (target === undefined) break;
@@ -237,13 +241,24 @@ function worldCorner(
  * The separations are recomputed from the face plane rather than scaled, because the direction has
  * changed and a scaled depth would hold a body off the floor by the cosine of an angle nobody
  * chose.
+ *
+ * **A sphere or capsule is measured from its own centre, not from the contact point.** Its manifold's
+ * points lie on the triangle, so their distance from the face plane is zero whatever the real gap —
+ * and a capsule standing on a kerb, just past the top edge of the kerb's front face, read as touching
+ * that face with the face's normal, which faces backwards along its walk: a wall it had already
+ * stepped over, stopping it dead on top. So the centre that produced each contact is rebuilt from
+ * the edge normal before that normal is replaced, and the separation is its plane distance less the
+ * radius. **A centre behind the face plane drops the contact**, returning false: the one-sided rule,
+ * applied to the geometry after the swap as it is to the geometry before it. A polytope's points lie
+ * on the body, so their plane distance is already the separation, as before.
  */
 function filterInteriorEdge(
   mesh: NonNullable<ConvexShape['triangles']>,
   triangle: number,
   meshPose: ShapePose,
   sign: number,
-): void {
+  roundRadius: number,
+): boolean {
   let deepest = 0;
   for (let i = 1; i < scratch.count; i++) {
     if ((scratch.separations[i] ?? 0) < (scratch.separations[deepest] ?? 0)) deepest = i;
@@ -264,13 +279,33 @@ function filterInteriorEdge(
     }
   }
   /* A convex edge is a real one: the ridge is there and the body should feel it. */
-  if ((convexEdgesOf(mesh, triangle) >> nearest) & 1) return;
+  if ((convexEdgesOf(mesh, triangle) >> nearest) & 1) return true;
+
+  worldPlaneAnchor(mesh, triangle, meshPose, ANCHOR);
+  const plane = FACE[0] * ANCHOR[0] + FACE[1] * ANCHOR[1] + FACE[2] * ANCHOR[2];
+  if (roundRadius >= 0) {
+    /* Mesh-to-body along the old normal, out to the centre: the point plus that much of the gap. */
+    const ux = sign * scratch.nx;
+    const uy = sign * scratch.ny;
+    const uz = sign * scratch.nz;
+    for (let i = 0; i < scratch.count; i++) {
+      const reach = (scratch.separations[i] ?? 0) + roundRadius;
+      const cx = (scratch.points[i * 3] ?? 0) + ux * reach;
+      const cy = (scratch.points[i * 3 + 1] ?? 0) + uy * reach;
+      const cz = (scratch.points[i * 3 + 2] ?? 0) + uz * reach;
+      const height = cx * FACE[0] + cy * FACE[1] + cz * FACE[2] - plane;
+      if (height < 0) return false;
+      scratch.separations[i] = height - roundRadius;
+    }
+    scratch.nx = sign * FACE[0];
+    scratch.ny = sign * FACE[1];
+    scratch.nz = sign * FACE[2];
+    return true;
+  }
 
   scratch.nx = sign * FACE[0];
   scratch.ny = sign * FACE[1];
   scratch.nz = sign * FACE[2];
-  worldPlaneAnchor(mesh, triangle, meshPose, ANCHOR);
-  const plane = FACE[0] * ANCHOR[0] + FACE[1] * ANCHOR[1] + FACE[2] * ANCHOR[2];
   for (let i = 0; i < scratch.count; i++) {
     scratch.separations[i] =
       (scratch.points[i * 3] ?? 0) * FACE[0] +
@@ -278,6 +313,7 @@ function filterInteriorEdge(
       (scratch.points[i * 3 + 2] ?? 0) * FACE[2] -
       plane;
   }
+  return true;
 }
 
 const EDGE = new Float64Array(6);

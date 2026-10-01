@@ -520,8 +520,11 @@ _count_: a street of thirty cars over six models is six draws and six material c
   interleaves them, so dropping them would shift the stride under every other attribute.
 - **No morphing.** It compiles, which is what makes it the worse of the two: a morph weight is per
   draw, so every instance would wear one expression between them.
-- **One batch per mesh.** WebGL2 binds the attributes to the mesh's own vertex array, of which a
-  mesh has one.
+- ~~**One batch per mesh.**~~ **Lifted 2026-09-30.** WebGL2 bound the instance attributes to the
+  mesh's own vertex array, of which a mesh has one. A mesh now records each attribute's buffer,
+  location and size, and each batch builds a vertex array of its own from that record plus its
+  instance columns, so a prop has one batch a region. The mesh's own array never carries instance
+  columns, which is also why `Mesh.draw` stopped disabling them.
 
 **What would make the layout wrong** is a twelfth base attribute. The escape hatch, written into
 the shader's own comment, is to carry the tint in the `w` lanes of the four matrix columns, which
@@ -542,6 +545,62 @@ swapping _which rank is instanced_ and changing nothing else produced a frame id
 704,000 pixels**, which is a stronger statement than any two pictures side by side — the eye sees a
 difference between the ranks that is only the light coming from one side, and it stays put when the
 verbs swap.
+
+## 4e. Surface effects, and the two versions that were wrong about bytes and alpha
+
+**Per layer, not per material, because a city region is one mesh.** Its facades are told apart by
+the layer each vertex carries, so a per-draw uniform cannot vary between two facades of one draw.
+The effects live in a table beside the texture array — six texels a layer, read with `texelFetch`
+at the vertex's layer — and bind whenever the array is a material's albedo. See `surfaceEffects.ts`.
+
+**The first version was right in the shader and wrong in the bundle: 72 KB gzipped.** It was
+written as code inside `main`, and the WebGPU backend ships every lit permutation as generated
+WGSL — so each line was paid sixteen times, and naga, passing every argument through a pointer and
+a copy, made each line long. Pricing it found the larger fault underneath: the generator stored
+every permutation whole, so every _shared_ line of the lit shader was paid sixteen times too. The
+generator now stores each shared item once (`scripts/wgsl/share.mjs`), which took **239 KB** off
+`core-only` on its own; and the effects are functions over private globals, each stored once:
+**15 KB**. The rule it leaves: **code in a helper costs once, code in `main` costs per permutation.**
+
+**The second version put glass where the albedo's alpha is 1.** Reasonable on paper, and it would
+have drawn every wall black: a wall pixel at alpha 0 loses its colour on the way through the
+browser's premultiplied upload. A window is a _hole_ in a facade's picture — glass where alpha is 0
+— which is also how a facade is drawn.
+
+**Interior mapping from one image.** A room is a one-point perspective picture, back wall in its
+centre half. The view ray meets the room's box, and a point on any wall at depth s maps into the
+picture at `0.5 + (xy − 0.5) / (1 + s)`, so one formula serves every wall and the picture carries its
+own shading. It needs a tangent frame, and a hand-built quad whose v runs down the wall has its
+bitangent pointing down — tangent `w` of −1 — or the room turns upside down.
+
+**What a zero costs.** Every effect is `mix(x, y, 0)` or a multiply by exactly 1 where its numbers
+are zero, so a scene naming no effect draws bit for bit what it drew: **0 px** on every published
+scene, both backends.
+
+## 4f. DriftLight at world scale, and the level that was not built
+
+**The spec asked for a two-level clipmap, and the fine level could not be paid for.** At the
+reference city's street lamps — 26 to 40 m of reach, 40 to 60 m apart along every road — light fills
+nearly the whole street volume, so a 256 m window of 1 m bricks is about two million bricks at 1 KB
+each. The exact lights already are a per-pixel fine level: the frame shades up to 320 of them, found
+through a grid. So the world is one **dense** volume baked offline at 4–8 m, read past the exact
+radius; a brick's index and shared faces buy nothing where light is nearly everywhere.
+
+**No new sampler and no new uniform row.** The dense volume binds in the courtyard field's two
+slots, light below direction along y, and a negative spacing is the mode — because the WebGL2
+eight-light rung stands at 255 of 256 rows. **What would change it**: the band between the exact
+radius and the volume's resolution reading wrong on a real city.
+
+## 4g. Crossfading levels of detail with one uniform
+
+**A screen-door dither, and the pair that makes it exact.** `setDitherFade(t)` keeps `t` of an 8×8
+Bayer pattern's cells and `setDitherFade(−t)` the complement, so the level arriving and the one
+leaving cover every pixel exactly once — measured, red plus blue is the whole box at every `t`, on
+WebGPU, WebGL2 over Vulkan and ANGLE-GL. It shares one uniform row with the order-independent
+weight, `uWriteMode`, because a second scalar would have spent the last row of the Adreno 740 rung.
+**What it gives up**: a crossfade reads as grain while it lasts, mirrored between backends because
+WebGPU counts framebuffer y downward; and a held clock never finishes one, so a capture asks
+`fadeSec: 0`.
 
 ## 5. What must stay true
 

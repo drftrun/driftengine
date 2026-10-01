@@ -131,6 +131,14 @@ async function main(): Promise<void> {
   const spin = Number(asked.get('spin') ?? '0');
   const punch = Number(asked.get('punch') ?? '0');
   const reveal = Number(asked.get('reveal') ?? '1');
+  /*
+   * **`?x=` and `?y=` place the line, as fractions of the canvas**, because where a line is drawn
+   * once decided how wide its strokes came out: the cubes were projected about the viewport's top
+   * left corner, so a cell far from it showed its sides. The same line at `x=0.06` and `x=0.75`,
+   * counted in lit pixels, is the control that separates the two.
+   */
+  const lineX = Number(asked.get('x') ?? '0.06');
+  const lineY = Number(asked.get('y') ?? '0.5');
 
   /* Text last, over everything, the way an announcement is drawn. */
   renderer.bindMeshPass(camera, env);
@@ -162,8 +170,8 @@ async function main(): Promise<void> {
       label,
       canvas.width,
       canvas.height,
-      Math.round(canvas.width * 0.06),
-      Math.round(canvas.height * 0.5),
+      Math.round(canvas.width * lineX),
+      Math.round(canvas.height * lineY),
       {
         ...DEFAULT_TEXT_STYLE,
         cellSize: cell,
@@ -182,7 +190,7 @@ async function main(): Promise<void> {
 
   stats.textContent =
     `${created.backend} · ${created.reason} · text "RUIN FOUND" + inset` +
-    ` · cell ${ladder ? '3..12' : cell} · alpha ${textAlpha} · bob ${bob} · spin ${spin} · punch ${punch} · reveal ${reveal}` +
+    ` · cell ${ladder ? '3..12' : cell} at ${lineX}, ${lineY} · alpha ${textAlpha} · bob ${bob} · spin ${spin} · punch ${punch} · reveal ${reveal}` +
     (afterEndFrame ? ' · drawn after endFrame' : '');
   (globalThis as unknown as { __drawn?: boolean }).__drawn = true;
 }

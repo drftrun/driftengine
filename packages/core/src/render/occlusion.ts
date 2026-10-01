@@ -39,6 +39,9 @@ import type { Bounds } from '../math/bounds.ts';
 /** What an unwritten texel holds: the far plane, which occludes nothing. */
 const FAR = 1;
 
+/** Texels a tested rectangle may span at the level it is read from. See `boxBehind`. */
+const TEXELS_ACROSS = 8;
+
 export interface OcclusionOptions {
   /** Texels across. The height follows the aspect. */
   readonly width: number;
@@ -189,15 +192,47 @@ export class OcclusionBuffer {
     const radius = bounds.radius * Math.max(sx, sy, sz);
 
     /* The cube that contains the sphere, which contains the object. Conservative twice over. */
+    return this.boxBehind(x - radius, y - radius, z - radius, x + radius, y + radius, z + radius);
+  }
+
+  /**
+   * Whether a world-space box is entirely behind the declared occluders — the tighter question for
+   * something that is a box, where the cube around its sphere reaches far past it. **A flat region
+   * is the case it exists for**: a city block's sphere is half as deep underground as it is wide,
+   * nothing there occludes it, and the sphere test abstains for every block in the city. False
+   * whenever anything is uncertain, exactly as `occluded`.
+   */
+  occludedBox(min: ArrayLike<number>, max: ArrayLike<number>): boolean {
+    if (this.occluders === 0) return false;
+    if (!this.built) this.buildPyramid();
+    return this.boxBehind(
+      min[0] ?? 0,
+      min[1] ?? 0,
+      min[2] ?? 0,
+      max[0] ?? 0,
+      max[1] ?? 0,
+      max[2] ?? 0,
+    );
+  }
+
+  /** The shared test: a world box's corners projected, its rectangle tested against the pyramid. */
+  private boxBehind(
+    loX: number,
+    loY: number,
+    loZ: number,
+    hiX: number,
+    hiY: number,
+    hiZ: number,
+  ): boolean {
     let minX = Infinity;
     let minY = Infinity;
     let minZ = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
     for (let corner = 0; corner < 8; corner++) {
-      const px = corner & 1 ? x + radius : x - radius;
-      const py = corner & 2 ? y + radius : y - radius;
-      const pz = corner & 4 ? z + radius : z - radius;
+      const px = corner & 1 ? hiX : loX;
+      const py = corner & 2 ? hiY : loY;
+      const pz = corner & 4 ? hiZ : loZ;
       if (!this.project(px, py, pz, 0)) return false;
       minX = Math.min(minX, CORNERS[0] ?? 0);
       maxX = Math.max(maxX, CORNERS[0] ?? 0);
@@ -212,13 +247,22 @@ export class OcclusionBuffer {
     if (minX < 0 || minY < 0 || maxX > width || maxY > height) return false;
 
     /*
-     * The coarsest level whose texel is at least as wide as the rectangle, so the test reads at
-     * most two texels each way. `Math.log2` would say the same thing and is one of the calls this
-     * repository's determinism gate refuses elsewhere; a shift loop says it in integers.
+     * The coarsest level at which the rectangle spans at most `TEXELS_ACROSS` texels, so the test
+     * reads at most that many plus one each way. `Math.log2` would say the same thing and is one of
+     * the calls this repository's determinism gate refuses elsewhere; a shift loop says it in integers.
+     *
+     * **Eight, not one, since 2026-09-30.** At one the level's texel was as wide as the rectangle, and
+     * two such texels aligned to the grid span up to twice it — so anything whose rectangle came near
+     * an occluder's edge, or the buffer's own unwritten border row, read unwritten texels and
+     * abstained. That was every city region behind a row of buildings, whose rectangle sits just
+     * under the skyline; measured on a box seven metres wide behind a wall filling the view, which
+     * one abstained at and eight culls. Reading up to 81 texels instead of 4 costs a few dozen
+     * compares and keeps the answer exactly as conservative: the maximum over every texel the
+     * rectangle touches.
      */
     let level = 0;
     let span = Math.max(maxX - minX, maxY - minY);
-    while (span > 1 && level + 1 < this.levels.length) {
+    while (span > TEXELS_ACROSS && level + 1 < this.levels.length) {
       span *= 0.5;
       level++;
     }

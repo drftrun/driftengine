@@ -30,7 +30,8 @@ precision highp float;
 
 in vec2 vUv;
 
-uniform sampler2D uAtlas;
+/* An array of one: every surface texture is an array, and an atlas is read at layer 0. */
+uniform mediump sampler2DArray uAtlas;
 uniform vec3 uColor;
 uniform float uOpacity;
 /* Texels the field spans, from the atlas metrics. Scales the antialiasing band. */
@@ -52,7 +53,7 @@ float median(vec3 rgb) {
 }
 
 void main() {
-  vec3 sampled = textureLod(uAtlas, vUv, 0.0).rgb;
+  vec3 sampled = textureLod(uAtlas, vec3(vUv, 0.0), 0.0).rgb;
   float distance = median(sampled) - 0.5;
 
   /*

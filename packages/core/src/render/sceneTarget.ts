@@ -755,6 +755,8 @@ export class SceneTarget {
       /** The projection's x and y scales, which turn a world radius into a screen one. */
       readonly projScale: Float32Array;
       readonly invProjection: Float32Array;
+      /** Where the frame's jitter put the occlusion, in uv: see the shader's `uAoOffset`. */
+      readonly offset?: Float32Array;
     },
     bloom?: {
       readonly strength: number;
@@ -1023,6 +1025,8 @@ export class SceneTarget {
       this.uniforms['uAoStrength'] ?? null,
       aoTexture === null ? 0 : (ao?.strength ?? 0),
     );
+    const offset = ao?.offset;
+    gl.uniform2f(this.uniforms['uAoOffset'] ?? null, offset?.[0] ?? 0, offset?.[1] ?? 0);
 
     /* Bloom on its own unit, and the placeholder for the same reason as the one above: a
        driver may fetch a texture's descriptor before it evaluates the branch that skips the

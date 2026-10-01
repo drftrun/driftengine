@@ -11,3 +11,5 @@ export function compileToWgsl(
   stage: 'vertex' | 'fragment',
   label?: string,
 ): Promise<{ wgsl: string; bindings: Bindings }>;
+/** Throw, naming the shader, unless naga accepts `wgsl` as it stands. */
+export function validateWgsl(wgsl: string, label?: string): void;

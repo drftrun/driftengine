@@ -1,9 +1,14 @@
+import { instancesBox } from '../../instanceCull.ts';
 import { INSTANCE_FLOATS, INSTANCE_STRIDE, packInstances } from '../../instances.ts';
+import { destroySlot } from './instanceCullPass.ts';
+import type { CullSlot } from './instanceCullPass.ts';
 import type { MeshInstances } from '../../instances.ts';
 import type { GpuMesh } from './buffers.ts';
 
 /** VERTEX | COPY_DST, spelled the way every other pass here spells it. */
 const USAGE_VERTEX = 0x0020 | 0x0008;
+/** A culling batch's source is read by the cull as storage too. */
+const USAGE_STORAGE = 0x0080;
 
 /**
  * One mesh's per-instance buffer on the device.
@@ -21,9 +26,20 @@ export class GpuInstancedBatch {
   readonly capacity: number;
   private readonly staging: Float32Array;
 
-  constructor(device: GPUDevice, mesh: GpuMesh, capacity: number, label: string) {
+  /** Whether the camera draw culls this batch. See `InstancedOptions.cull`. */
+  readonly cull: boolean;
+  /** The world box around every live instance, fitted at upload. See `instancesBox`. */
+  readonly box = new Float32Array([1, 1, 1, -1, -1, -1]);
+  /** One set of survivors per view drawn this frame. See `InstanceCullPass`. */
+  readonly slots: CullSlot[] = [];
+  /** The frame the slots were last taken in, and how many were taken. */
+  slotFrame = -1;
+  slotsTaken = 0;
+
+  constructor(device: GPUDevice, mesh: GpuMesh, capacity: number, label: string, cull = false) {
     this.mesh = mesh;
     this.capacity = capacity;
+    this.cull = cull;
     this.staging = new Float32Array(capacity * INSTANCE_FLOATS);
     this.buffer = device.createBuffer({
       /*
@@ -31,8 +47,8 @@ export class GpuInstancedBatch {
        * naming the resource it was about, and an unlabelled buffer names nothing.
        */
       label,
-      size: capacity * INSTANCE_STRIDE,
-      usage: USAGE_VERTEX,
+      size: Math.max(1, capacity) * INSTANCE_STRIDE,
+      usage: USAGE_VERTEX | (cull ? USAGE_STORAGE : 0),
     });
   }
 
@@ -55,6 +71,7 @@ export class GpuInstancedBatch {
    * `writeBuffer` copies at the call, so packing afterwards cannot reach that copy.
    */
   upload(queue: GPUQueue, data: MeshInstances, previous: GPUBuffer | null = null): void {
+    if (this.cull) instancesBox(data, this.mesh.bounds, this.box);
     const count = Math.min(data.count, this.capacity);
     if (previous !== null) {
       if (this.liveCount > 0) {
@@ -71,5 +88,6 @@ export class GpuInstancedBatch {
   dispose(): void {
     this.previousBuffer?.destroy();
     this.buffer.destroy();
+    for (const slot of this.slots) destroySlot(slot);
   }
 }

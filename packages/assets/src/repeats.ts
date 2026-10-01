@@ -35,6 +35,7 @@ const EQUAL = [
   'relief',
   'emissiveColor',
   'channel',
+  'layers',
 ] as const;
 
 /**

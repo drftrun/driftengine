@@ -143,22 +143,20 @@ export const ENVIRONMENT_TEXTURE_UNIT = EMISSIVE_TEXTURE_UNIT + 1;
 export const CLUSTER_TABLE_TEXTURE_UNIT = ENVIRONMENT_TEXTURE_UNIT + 1;
 
 /**
- * Where the photometric atlas binds: one row per IES profile, any number of them.
+ * Where the fixture atlas binds: a fixture's spot cookies and its photometric profiles, one texture.
  *
- * **One unit for every profile a world holds, which is the whole reason it is an atlas.** A
- * fixture's distribution is a curve rather than an image, so a row of 128 floats holds one and a
- * texture holds as many as a consumer loads. Per-profile textures would have spent the remaining
- * units on the third fixture.
+ * **Two tables in one binding since 2026-09-30**, which is the fold `textureUnitBudget.test.ts` asks
+ * the next sampler for: the widest lit shader bound fifteen of the sixteen fragment samplers WebGL2
+ * guarantees, and the cookie atlas and the photometric atlas were two small float tables read with
+ * `textureLod`, both 128 texels across. See `fixtureAtlas.ts` for the layout and why cookies sit on
+ * top.
  *
- * **Spent unconditionally, for the same reason the froxel table is**, and the argument is at that
- * declaration: the lookup is a branch on a value rather than a permutation, so the sampler is
- * declared in every profile and a declared sampler needs a complete texture bound whether or not
- * the branch reads it. With no profile loaded that texture is a single row of ones, which is the
- * multiplicative identity — a row of zeros would switch off every light that reached it.
- *
- * The tenth of sixteen. `CAPABILITIES.md` §3 keeps the running count.
+ * **Spent unconditionally, for the reason the froxel table is**: both lookups are branches on values
+ * rather than permutations, so the sampler is declared in every profile and a declared sampler needs
+ * a complete texture. With nothing loaded that is a single row of ones — the multiplicative
+ * identity, since a row of zeros would switch off every light that reached it.
  */
-export const IES_ATLAS_TEXTURE_UNIT = CLUSTER_TABLE_TEXTURE_UNIT + 1;
+export const FIXTURE_ATLAS_TEXTURE_UNIT = CLUSTER_TABLE_TEXTURE_UNIT + 1;
 
 /**
  * The joint palette, read by the **vertex** stage.
@@ -177,7 +175,7 @@ export const IES_ATLAS_TEXTURE_UNIT = CLUSTER_TABLE_TEXTURE_UNIT + 1;
  * What it costs is one of the five units left after the IES atlas. What would make it wrong is
  * the lit pass growing past sixteen, which `textureUnitBudget.test.ts` asserts against.
  */
-export const SKIN_PALETTE_TEXTURE_UNIT = IES_ATLAS_TEXTURE_UNIT + 1;
+export const SKIN_PALETTE_TEXTURE_UNIT = FIXTURE_ATLAS_TEXTURE_UNIT + 1;
 
 /**
  * A mesh's morph deltas, also read by the vertex stage, and also out of this same sixteen.
@@ -187,22 +185,6 @@ export const SKIN_PALETTE_TEXTURE_UNIT = IES_ATLAS_TEXTURE_UNIT + 1;
  * of sixteen spoken for, three free.
  */
 export const MORPH_DELTA_TEXTURE_UNIT = SKIN_PALETTE_TEXTURE_UNIT + 1;
-
-/**
- * Where the spot-light cookie atlas binds: one row of square tiles, one tile a cookie.
- *
- * **The fourteenth of sixteen, and two are left.** `CAPABILITIES.md` §3 keeps the running count —
- * and had been three units stale for as long as the IES atlas, the skin palette and the morph
- * deltas have existed, which is why the number is derived in `textureUnitBudget.test.ts` and only
- * quoted in prose.
- *
- * **Spent unconditionally, for the reason the froxel table and the IES atlas are**: a declared
- * sampler needs a complete texture bound whether or not the branch reads it, so a one-texel white
- * placeholder stands in it when no consumer has loaded a cookie. White rather than black, because
- * it multiplies a light's colour and a black stand-in would switch off every light that reached
- * it — the identity `packIesAtlas` chooses for the same reason.
- */
-export const COOKIE_ATLAS_TEXTURE_UNIT = MORPH_DELTA_TEXTURE_UNIT + 1;
 
 /**
  * The colour the frame had already drawn, for a refracting surface to sample.
@@ -217,7 +199,7 @@ export const COOKIE_ATLAS_TEXTURE_UNIT = MORPH_DELTA_TEXTURE_UNIT + 1;
  * cubemaps became one array, which is what freed the units this one is spending.
  * `textureUnitBudget.test.ts` carries the phone that budget was written for.
  */
-export const REFRACT_SCENE_TEXTURE_UNIT = COOKIE_ATLAS_TEXTURE_UNIT + 1;
+export const REFRACT_SCENE_TEXTURE_UNIT = MORPH_DELTA_TEXTURE_UNIT + 1;
 
 /**
  * DriftLight's brick index and atlas, the lit program's fourteenth and fifteenth fragment samplers.
@@ -238,11 +220,18 @@ export const DRIFT_LIGHT_ATLAS_TEXTURE_UNIT = DRIFT_LIGHT_INDEX_TEXTURE_UNIT + 1
 export const SUN_GLASS_TINT_TEXTURE_UNIT = DRIFT_LIGHT_ATLAS_TEXTURE_UNIT + 1;
 
 /**
- * What each lamp keeps through glass (`pointGlassTint.ts`), the lit program's fifteenth fragment
- * sampler and the last one that leaves a sixteenth spare. Unit sixteen of the combined pool, which
- * WebGL2 guarantees thirty-two of; what a stage may declare is the sixteen, and this is fifteen.
+ * What each lamp keeps through glass (`pointGlassTint.ts`), a fragment sampler of the lit program.
+ * A unit of the combined pool, which WebGL2 guarantees thirty-two of; what a stage may declare is
+ * sixteen, which `textureUnitBudget.test.ts` counts from the shader source.
  */
 export const POINT_GLASS_TINT_TEXTURE_UNIT = SUN_GLASS_TINT_TEXTURE_UNIT + 1;
+
+/**
+ * Each surface layer's effects table (`surfaceEffects.ts`), bound beside the albedo array it
+ * describes. **Paid for by folding**: the cookie and photometric atlases became one fixture atlas
+ * to free the sampler this takes, so the lit stage still keeps one of its sixteen spare.
+ */
+export const SURFACE_EFFECTS_TEXTURE_UNIT = POINT_GLASS_TINT_TEXTURE_UNIT + 1;
 
 /**
  * A cookie's tile, in texels a side.

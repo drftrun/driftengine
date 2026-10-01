@@ -2,11 +2,14 @@ import { mat4 } from 'gl-matrix';
 import type { ProbeBakeOptions } from '../../reflectionProbe.ts';
 import { probeFaceRange } from '../../reflectionProbe.ts';
 import {
+  TEMPORAL_FLICKER,
   TEMPORAL_HISTORY_BLEND,
   TemporalHistory,
+  flickerRule,
   jitterOffset,
   jitterProjection,
 } from '../../temporalAa.ts';
+import type { FlickerRule } from '../../temporalAa.ts';
 import { OIT_MULTISAMPLE_REFUSAL } from '../../orderIndependent.ts';
 import { TranslucentQueue } from '../../translucentQueue.ts';
 import { DEPTH_CLEAR, MAX_DEPTH_LAYER, REVERSED_DEPTH } from '../../depthConvention.ts';
@@ -103,6 +106,8 @@ import { ProbeSweeps } from '../../probeSweeps.ts';
 import { ggxMaxLevelFor, irradianceLevelFor, octahedralEdgeFor } from '../../prefilterEnvMap.ts';
 import { environmentTexels } from './environmentTexels.ts';
 import { packIesAtlas } from '../../iesProfile.ts';
+import { fixtureAtlasLayout, fixtureAtlasTexels } from '../../fixtureAtlas.ts';
+import { resolveSurfaceScene } from '../../surfaceScene.ts';
 import { COOKIE_TILE } from '../../lightBudget.ts';
 import { FULL_LIGHT_BUDGET } from '../../uniformVectorBudget.ts';
 import { toHalfFloats } from '../../halfFloat.ts';
@@ -485,6 +490,7 @@ import {
 import { aimReflection, createGpuReflection, type GpuReflection } from './reflectionPass.ts';
 import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
+import { FOG_RECEDE, fogModeOf } from '../drawFog.ts';
 import { DYNAMIC_ALIGNMENT as DYNAMIC_UNIFORM_ALIGNMENT, UniformRing } from './uniformRing.ts';
 import { DecalQueue, MAX_DRAWN_DECALS } from '../../decalQueue.ts';
 import { DistanceFieldScene } from '../../gi/fieldScene.ts';
@@ -540,6 +546,9 @@ import {
 import { createFrustum, frustumFromViewProjection } from '../../../math/frustum.ts';
 import type { Frustum } from '../../../math/frustum.ts';
 import type { Bounds } from '../../../math/bounds.ts';
+import { batchBoxVisible, cullsInstances } from '../../instanceCull.ts';
+import { InstanceCullPass, MAX_CULL_SLOTS } from './instanceCullPass.ts';
+import type { CullSlot } from './instanceCullPass.ts';
 import { OcclusionBuffer } from '../../occlusion.ts';
 import { boundsVisible } from '../../visibility.ts';
 import { createPassRegistry, drainRegistry, passAt, registerIn, unregisterIn } from '../../pass.ts';
@@ -565,11 +574,15 @@ import type {
 } from '../../pass.ts';
 import type { Arena, FlushSchedule, ScheduledPass } from '../../frame/index.ts';
 import { GpuInstancedBatch } from './instanced.ts';
-import type { MeshInstances } from '../../instances.ts';
+import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
 import type { CutoutCaster } from '../../cutoutCaster.ts';
 import { LightField } from '../../driftLight/lightField.ts';
 import type { LightFieldOptions, LightFieldSource } from '../../driftLight/lightField.ts';
+import type { DriftLightVolumes } from '../../driftLight/presence.ts';
+import type { DenseLightVolume } from '../../driftLight/denseField.ts';
+import { WorldLightField } from '../../driftLight/worldLightField.ts';
+import type { WorldLightFieldOptions } from '../../driftLight/worldLightField.ts';
 import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/uniforms.ts';
 
 /**
@@ -1899,6 +1912,12 @@ export class WebGPURenderer implements RendererApi {
    * what the layout already declares.
    */
   private bloomGroups: GPUBindGroup[] = [];
+  /**
+   * The picture the bloom reads, and its size: the scene target, or while reconstructing the
+   * resolved picture at the drawing buffer's size. See `rebuildBloomGroups`.
+   */
+  private bloomSourceWidth = 1;
+  private bloomSourceHeight = 1;
   private frameWidth = 1;
   private frameHeight = 1;
   /**
@@ -2059,6 +2078,18 @@ export class WebGPURenderer implements RendererApi {
    */
   private reconHistories: (GPUTexture | null)[] = [null, null];
   private reconHistoryViews: (GPUTextureView | null)[] = [null, null];
+  /**
+   * Each output pixel's flicker record, a pair swapped with the histories: the temporal resolve's
+   * anti-flicker, over the reconstruction's own period (`recon/resolve.ts`).
+   */
+  private reconFlickers: (GPUTexture | null)[] = [null, null];
+  private reconFlickerViews: (GPUTextureView | null)[] = [null, null];
+  /** Each output pixel's held depth swing, a pair of its own: see `recon/resolve.ts`. */
+  private reconSwings: (GPUTexture | null)[] = [null, null];
+  private reconSwingViews: (GPUTextureView | null)[] = [null, null];
+  /** The anti-flicker's rule for the period last asked for, kept so a frame makes none. */
+  private reconFlickerPhases = 0;
+  private reconFlickerRule: FlickerRule = TEMPORAL_FLICKER;
   private reconWrite = 0;
   private reconHasHistory = false;
   private reconShown: GPUTexture | null = null;
@@ -2092,6 +2123,9 @@ export class WebGPURenderer implements RendererApi {
   /** Last frame's raw view-projection and its inverse, and the two eyes. */
   private readonly reconPreviousRawViewProj = mat4.create();
   private readonly reconInverseViewProj = mat4.create();
+  /** The inverse and the reprojection, multiplied in double precision. See `runReconstruction`. */
+  private readonly reconInverse64 = new Float64Array(16);
+  private readonly reconReprojection64 = new Float64Array(16);
   private readonly reconPreviousInverseViewProj = mat4.create();
   private readonly reconEye = new Float32Array(3);
   private readonly reconPreviousEye = new Float32Array(3);
@@ -2243,6 +2277,8 @@ export class WebGPURenderer implements RendererApi {
   /** Said once for the whole renderer. See `refuseOitMultisampled`. */
   private oitMultisampleRefused = false;
   private oitReplaying = false;
+  /** `uSurfaceScene`, resolved once a pass. See `surfaceScene.ts`. */
+  private readonly surfaceScene = new Float32Array(4);
   /** Which buffer the replay is filling, which the pipeline key must carry. */
   private oitMode: OitTarget = 'none';
   /**
@@ -2534,6 +2570,8 @@ export class WebGPURenderer implements RendererApi {
   }
 
   private flushRings(): void {
+    /* Culls first: a submit that follows may carry a draw reading what they write. */
+    this.instanceCulls?.flush();
     for (const ring of this.rings()) ring.flush();
   }
 
@@ -2769,6 +2807,14 @@ export class WebGPURenderer implements RendererApi {
     options: SurfaceTextureOptions = {},
   ): GpuSurfaceTexture {
     return new GpuSurfaceTexture(this.surface.device, this.pipelines, source, options);
+  }
+
+  /** Several images of one size as an array's layers. See `RendererApi.createSurfaceTextureArray`. */
+  createSurfaceTextureArray(
+    sources: readonly TexImageSource[],
+    options: SurfaceTextureOptions = {},
+  ): GpuSurfaceTexture {
+    return new GpuSurfaceTexture(this.surface.device, this.pipelines, sources, options);
   }
 
   /**
@@ -3047,6 +3093,19 @@ export class WebGPURenderer implements RendererApi {
     this.material((f) => {
       f[this.materialField('uGrain')] = Math.min(1, Math.max(0, amount));
     });
+  }
+
+  /**
+   * How much of the surfaces drawn next survives a screen-door dither. See `renderer.ts`.
+   *
+   * Written straight into the scratch block rather than through `material()`'s callback, because
+   * this one is called per crossfading region per frame and a closure per call is an allocation.
+   */
+  setDitherFade(amount: number): void {
+    if (this.surface.lost) return;
+    /* The second half of `uWriteMode`, which the order-independent weight shares. */
+    this.perFrameFloats[this.materialField('uWriteMode') + 1] = Math.min(1, Math.max(-1, amount));
+    this.materials.dirty();
   }
 
   /**
@@ -4972,6 +5031,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly waterLayout: GPUBindGroupLayout;
   /** The one-pixel stand-in, kept so the water bind group can be rebuilt without one. */
   private readonly blankView: GPUTextureView;
+  /** The blank texel as a one-layer array: the stand-in every surface-texture binding takes. */
+  private readonly blankSurfaceView: GPUTextureView;
   private readonly blankSampler: GPUSampler;
   /**
    * A slot per body, not one buffer rewritten before each draw.
@@ -6002,6 +6063,9 @@ export class WebGPURenderer implements RendererApi {
      * `uStaticShadowMap` rather than by anything here changing shape.
      */
     const blankView = blank.createView();
+    /* The same texel as a one-layer array, for the four material maps, which are arrays now. */
+    const blankSurfaceView = blank.createView({ dimension: '2d-array' });
+    this.blankSurfaceView = blankSurfaceView;
     const blankSampler = device.createSampler({ label: 'flat.sampler' });
 
     /*
@@ -6188,7 +6252,7 @@ export class WebGPURenderer implements RendererApi {
       if (name === 'uNormalMap') {
         const map = this.normalMap;
         return map === null
-          ? { view: blankView, sampler: blankSampler }
+          ? { view: blankSurfaceView, sampler: blankSampler }
           : { view: map.view, sampler: map.sampler };
       }
       /* The caller's ORM map, or the stand-in, for the reason `uNormalMap` gives just above. */
@@ -6196,20 +6260,25 @@ export class WebGPURenderer implements RendererApi {
       if (name === 'uEmissiveMap') {
         const map = this.emissiveMap;
         return map === null
-          ? { view: blankView, sampler: blankSampler }
+          ? { view: blankSurfaceView, sampler: blankSampler }
           : { view: map.view, sampler: map.sampler };
       }
       if (name === 'uOrmMap') {
         const map = this.ormMap;
         return map === null
-          ? { view: blankView, sampler: blankSampler }
+          ? { view: blankSurfaceView, sampler: blankSampler }
           : { view: map.view, sampler: map.sampler };
       }
       if (name === 'uAlbedo') {
         const albedo = this.albedo;
         return albedo === null
-          ? { view: blankView, sampler: blankSampler }
+          ? { view: blankSurfaceView, sampler: blankSampler }
           : { view: albedo.view, sampler: albedo.sampler };
+      }
+      /* The albedo's effects table, or a one-texel stand-in the shader's size test reads as none.
+         The albedo is the group's key, so its table needs no key of its own. */
+      if (name === 'uSurfaceEffects') {
+        return { view: this.albedo?.effectsView ?? blankView, sampler: blankSampler };
       }
       /*
        * The room, once a bake has filled it. Unbaked reads as the blank cube: nothing to mirror.
@@ -6242,18 +6311,8 @@ export class WebGPURenderer implements RendererApi {
        * this one is a curve sampled between two angles rather than data addressed by index, so
        * interpolation across a row is the point. `postSampler` is linear and clamped.
        */
-      if (name === 'uIesAtlas') {
-        return { view: this.iesView ?? blankView, sampler: iesSampler };
-      }
-      /*
-       * The cookie atlas, or the single white texel a scene with no cookie falls back to.
-       *
-       * A filtering sampler, like the photometric atlas and unlike the froxel table: a cookie is
-       * an image and its whole point is that it is soft at the edges. The shader's own half-texel
-       * inset is what keeps one tile out of the next; a clamp cannot, the seam being interior.
-       */
-      if (name === 'uCookieAtlas') {
-        return { view: this.cookieView ?? blankView, sampler: iesSampler };
+      if (name === 'uFixtureAtlas') {
+        return { view: this.fixtureAtlasView(), sampler: iesSampler };
       }
       /*
        * DriftLight's brick index, read by `texelFetch` alone, so it shares the shadow group's
@@ -7106,6 +7165,8 @@ export class WebGPURenderer implements RendererApi {
       if (!attribute.optional) continue;
       present[String(attribute.name)] = key.includes(`:${String(attribute.name)}`);
     }
+    /* Not a layout entry of its own — it widens `uvs` — so read from the key beside them. */
+    present['layers'] = key.includes(':layers');
     return present;
   }
 
@@ -7118,6 +7179,7 @@ export class WebGPURenderer implements RendererApi {
    * uncaught exceptions a second in somebody's error reporting.
    */
   beginFrame(clearColor: Vec3): void {
+    this.cullFrame += 1;
     /* Whatever an update replaced during the last frame; nothing recorded can read it now. */
     for (const texture of this.retiredTextures) texture.destroy();
     this.retiredTextures.length = 0;
@@ -7380,6 +7442,15 @@ export class WebGPURenderer implements RendererApi {
       present[String(attribute.name)] = supplied;
       key += supplied ? `:${String(attribute.name)}` : '';
     }
+    /*
+     * Texture-array layers widen the UV field to three floats (`LAYERED_UVS`), which is a different
+     * vertex layout, so the key has to say so or a layered and a plain mesh would share a pipeline
+     * and one of them would read every field after the UVs from the wrong offset.
+     */
+    if (data.layers !== undefined) {
+      present['layers'] = true;
+      key += ':layers';
+    }
     const fullKey = `${this.variant}|${key}`;
     /*
      * **For every target this mesh can land on, which is two when the overlay is its own.**
@@ -7605,62 +7676,15 @@ export class WebGPURenderer implements RendererApi {
      * Its sequence is its own: `reconJitterPhases` takes eight positions for every output pixel a
      * render pixel covers, where the temporal resolve's eight are enough at one to one.
      */
-    this.reconstructing = this.reconstructionWanted && !this.reflectionPassActive;
-    if (this.quality.reconstruction > 0 && this.samples > 1 && !this.reconMultisampleSaid) {
-      this.reconMultisampleSaid = true;
-      console.warn(RECONSTRUCTION_MULTISAMPLE_REFUSAL);
-    }
-    if (this.reconstructing) {
-      /*
-       * The offset `settleReconJitter` chose for the frame at `beginFrame`, applied here and not
-       * advanced here: a frame binding its mesh pass twice is one frame of the sequence.
-       *
-       * **The y offset is negated on the way in, and that is not a preference.** This shifts the
-       * *corrected* matrix, whose y `CLIP_CORRECTION` has already negated so that the negation
-       * every generated vertex stage ends with cancels out — §3 row 56. So an offset added here
-       * arrives on screen with its sign reversed, while x, which nothing negates, arrives as
-       * given. The temporal resolve cannot see this because its shader never reads the offset; the
-       * reconstruction reads it at every texel it unprojects, and a sign error there moves every
-       * sample two jitters away from where the depth says it is.
-       */
-      this.viewProj = jitterProjection(
-        this.jitteredViewProj,
-        this.correctedViewProj,
-        this.reconJitter[0] as number,
-        -(this.reconJitter[1] as number),
-        this.renderWidth,
-        this.renderHeight,
-      ) as Float32Array;
-      this.temporalJittering = false;
-      this.temporalHistoryUsable = false;
-    }
-    this.temporalJittering =
-      !this.reconstructing &&
-      this.quality.temporalAa &&
-      this.quality.screenEffects &&
-      !this.reflectionPassActive;
-    if (this.temporalJittering) {
-      /* The scene's size, not the drawing buffer's: the history is a picture of the render. */
-      this.temporalHistoryUsable = this.temporalHistory.openFrame(
-        this.renderWidth,
-        this.renderHeight,
-      );
-      const [jx, jy] = jitterOffset(this.temporalHistory.frameIndex);
-      this.temporalJitterX = jx;
-      this.temporalJitterY = jy;
-      /* A jitter is half a *render* texel, which is what the sequence is spread over. */
-      this.viewProj = jitterProjection(
-        this.jitteredViewProj,
-        this.correctedViewProj,
-        jx,
-        jy,
-        this.renderWidth,
-        this.renderHeight,
-      ) as Float32Array;
-    } else if (!this.reconstructing) {
-      this.temporalHistoryUsable = false;
-      this.viewProj = this.correctedViewProj;
-    }
+    /*
+     * **After the present there is no jitter to add and no temporal frame to open.** A mesh pass
+     * bound then is the interface's, drawn over a picture already resolved: jittered, a map and every
+     * edge of it moved by a fraction of a pixel each frame with nothing to resolve it; and opening a
+     * second temporal frame stepped the sequence twice a frame, so the world saw every other
+     * position and the anti-flicker's period never started.
+     */
+    if (this.framePresented) this.viewProj = this.correctedViewProj;
+    else this.jitterFrame();
     /*
      * The frustum, once a frame, and from the **uncorrected** matrix.
      *
@@ -7760,8 +7784,14 @@ export class WebGPURenderer implements RendererApi {
      * frame either way, because an unwritten one is four zeroes and `dot(p, 0) < 0` is false,
      * so the term would silently pass everything the first time somebody enabled it.
      */
-    i[at('uClipEnabled')] = this.reflectionPassActive ? 1 : 0;
-    f.set(this.reflection?.clipPlane ?? NO_CLIP_PLANE, at('uClipPlane'));
+    /* The mirror's plane in a reflection pass and zero, which clips nothing, in every other: the lit
+       stage has no flag beside the plane. See `uClipPlane` in `flat/preamble.ts`. */
+    f.set(
+      this.reflectionPassActive ? (this.reflection?.clipPlane ?? NO_CLIP_PLANE) : NO_CLIP_PLANE,
+      at('uClipPlane'),
+    );
+    resolveSurfaceScene(env, this.surfaceScene);
+    f.set(this.surfaceScene, at('uSurfaceScene'));
 
     /*
      * The material and grading terms, matching `renderer.ts` value for value.
@@ -7782,6 +7812,9 @@ export class WebGPURenderer implements RendererApi {
      */
     f[at('uGrain')] = 1;
     f[at('uReflectivity')] = 0;
+    /* No weighting and no dither until a pass or a crossfade asks. See `setDitherFade`. */
+    f[at('uWriteMode')] = 0;
+    f[at('uWriteMode') + 1] = 0;
     /* 1, not 0: a multiplier's identity is one. See `setEnvironmentGain`. */
     f[at('uEnvironmentGain')] = 1;
     /*
@@ -8341,7 +8374,7 @@ export class WebGPURenderer implements RendererApi {
      * **Recorded rather than drawn**, when the effect is on and this is not already the replay.
      * Everything is copied — see `TranslucentQueue`, and the scratch matrix that made it necessary.
      */
-    if (this.oitActive && !this.oitReplaying) {
+    if (this.oitActive && !this.oitReplaying && options.additive !== true) {
       this.translucentQueue.record(mesh, model, opacity, options);
       return;
     }
@@ -8404,7 +8437,10 @@ export class WebGPURenderer implements RendererApi {
     }
 
     /* A blended draw landing after the upscale is drawn into an unjittered picture. */
-    const late = blend && (this.drawsLate() || (this.oitReplaying && this.reconstructing));
+    /* Unless it moves with what it lies on, which the resolve reconstructs it with. See
+       `TranslucentMeshOptions.reconstructed`. */
+    const lands = blend && options.reconstructed !== true && this.drawsLate();
+    const late = lands || (blend && this.oitReplaying && this.reconstructing);
     this.perDraw.writeFloats(
       slot,
       FLAT_VERT_FIELDS.uViewProj.offset,
@@ -8443,17 +8479,18 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameFloats[this.materialField('uOpacity')] = opacity;
       /* Material state exactly like `uOpacity`, dirtied for the accumulation pass and restored
          below — the revealage pass draws with it at zero and its colour multiplied away. */
-      this.perFrameFloats[this.materialField('uOitWeighted')] = this.oitMode === 'accum' ? 1 : 0;
+      this.perFrameFloats[this.materialField('uWriteMode')] = this.oitMode === 'accum' ? 1 : 0;
     }
     /* Same shape as `dimmed`: a slot is only worth taking when either differs from the default
        `bindMeshPass` already wrote, and both are put back together once the draw is submitted. */
     const lit = options.lit ?? true;
-    const fog = options.fog ?? true;
+    /* Added light fades in the medium rather than receding into it. See `drawFog.ts`. */
+    const fog = fogModeOf(options.fog ?? true, blend && options.additive === true);
     const toneMapped = options.toneMapped ?? true;
-    const unlitOrUnfogged = !lit || !fog;
+    const unlitOrUnfogged = !lit || fog !== FOG_RECEDE;
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
-      if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 0;
+      this.perFrameInts[this.materialField('uFogEnabled')] = fog;
     }
     /* `1` is sRGB alone: the conversion without the curve. `Math.min` rather than a literal, so
        a renderer asked for `none` stays at none. See `TranslucentMeshOptions.toneMapped`. */
@@ -8498,8 +8535,10 @@ export class WebGPURenderer implements RendererApi {
      */
     const depthWrite = options.depthWrite ?? true;
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
+    /* Added rather than blended over: its own blend state, so its own pipeline. */
+    const adds = blend && options.additive === true;
     const key =
-      `${keyed}${blend ? '|blend' : ''}` +
+      `${keyed}${blend ? (adds ? '|add' : '|blend') : ''}` +
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
       /* The two order-independent buffers are two formats and two blend states, so a draw into
          one must never share a cached pipeline with the same mesh drawn into the other. */
@@ -8529,7 +8568,7 @@ export class WebGPURenderer implements RendererApi {
      * pays the compile it was trying to avoid. That is a slow frame; the alternative is a
      * thrown error in the middle of one.
      */
-    const pipelines = blend ? this.blendedPipelines() : this.targetPipelines();
+    const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
     let pipeline = pipelines.peek(key);
     if (pipeline === undefined) {
       const present = this.meshPresent.get(base);
@@ -8543,7 +8582,7 @@ export class WebGPURenderer implements RendererApi {
         this.variant,
         key,
         present,
-        blend,
+        adds ? 'additive' : blend,
         skinned,
         morphed,
         depthWrite,
@@ -8577,7 +8616,9 @@ export class WebGPURenderer implements RendererApi {
        * the uniform rings are the state arena this design would otherwise have had to build —
        * so the command carries them as its two dynamic offsets.
        */
-      const command = blend ? this.recordBlended(0) : this.recordDraw(0, this.currentTarget());
+      const command = blend
+        ? this.recordBlended(0, lands)
+        : this.recordDraw(0, this.currentTarget());
       if (command !== null) {
         command.pipeline = pipeline;
         command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
@@ -8608,11 +8649,11 @@ export class WebGPURenderer implements RendererApi {
        whether or not this one found a slot to draw with. */
     if (dimmed) {
       this.perFrameFloats[this.materialField('uOpacity')] = 1;
-      this.perFrameFloats[this.materialField('uOitWeighted')] = 0;
+      this.perFrameFloats[this.materialField('uWriteMode')] = 0;
     }
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
-      if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 1;
+      this.perFrameInts[this.materialField('uFogEnabled')] = FOG_RECEDE;
     }
     /* Back to off for every other draw in the frame, exactly as `uOpacity` is: this scratch is
        shared, so a strength left set is worn by everything drawn after it. */
@@ -8638,7 +8679,11 @@ export class WebGPURenderer implements RendererApi {
    * anyway, because WebGL2 *cannot* and a capability one backend has and the other does not is
    * the shape this repository spent a week removing.
    */
-  createInstanced(mesh: GpuMesh, capacity: number): GpuInstancedBatch {
+  createInstanced(
+    mesh: GpuMesh,
+    capacity: number,
+    options: InstancedOptions = {},
+  ): GpuInstancedBatch {
     /*
      * **A skinned mesh cannot be instanced, and the reason is the vertex layout rather than the
      * shader.** An instanced pipeline reclaims locations 11 and 12 from the joint indices and
@@ -8668,24 +8713,20 @@ export class WebGPURenderer implements RendererApi {
           'instanced pipeline.',
       );
     }
-    if (this.instanced.has(mesh)) {
-      throw new Error(
-        'WebGPU: this mesh already has an instanced batch — a mesh may have one, because the ' +
-          "other backend binds the attributes to the mesh's own vertex array.",
-      );
-    }
     const batch = new GpuInstancedBatch(
       this.surface.device,
       mesh,
       capacity,
       `flat.instances:${(mesh as GpuMesh & { key?: string }).key ?? 'mesh'}`,
+      options.cull ?? false,
     );
-    this.instanced.set(mesh, batch);
     return batch;
   }
 
-  /** Which meshes already carry a batch, so a second is refused rather than silently shared. */
-  private readonly instanced = new Map<GpuMesh, GpuInstancedBatch>();
+  /** The device instance culls, built on the first culling draw. See `InstanceCullPass`. */
+  private instanceCulls: InstanceCullPass | null = null;
+  /** Counts frames, so a batch knows when its cull slots were last taken. */
+  private cullFrame = 0;
 
   /** Push placement and colour. Only the live prefix; see `GpuInstancedBatch.upload`. */
   uploadInstanced(batch: GpuInstancedBatch, data: MeshInstances): void {
@@ -8733,7 +8774,6 @@ export class WebGPURenderer implements RendererApi {
 
   /** Release the placement. The mesh is the caller's and is not released. */
   disposeInstanced(batch: GpuInstancedBatch): void {
-    this.instanced.delete(batch.mesh);
     batch.dispose();
   }
 
@@ -8788,6 +8828,37 @@ export class WebGPURenderer implements RendererApi {
    * **What it gives up** against `drawMesh` is skinning and morphing, refused where the variant
    * is built, and a per-instance opacity: `opacity` here dims the whole batch.
    */
+  /**
+   * The next of a batch's cull slots this frame, with its cull queued against the current view; null
+   * when the batch has drawn from `MAX_CULL_SLOTS` views already or the frame's job ring is full,
+   * and the draw then takes every instance.
+   */
+  private takeCullSlot(batch: GpuInstancedBatch, count: number): CullSlot | null {
+    if (batch.slotFrame !== this.cullFrame) {
+      batch.slotFrame = this.cullFrame;
+      batch.slotsTaken = 0;
+    }
+    if (batch.slotsTaken >= MAX_CULL_SLOTS) return null;
+    this.instanceCulls ??= new InstanceCullPass(this.surface.device);
+    let slot = batch.slots[batch.slotsTaken];
+    if (slot === undefined) {
+      slot = this.instanceCulls.createSlot(batch.buffer, batch.capacity, 'flat.instances');
+      batch.slots.push(slot);
+    }
+    const bounds = batch.mesh.bounds;
+    const queued = this.instanceCulls.queue(
+      slot,
+      this.frustum,
+      bounds.centre,
+      bounds.radius,
+      count,
+      batch.mesh.indexCount,
+    );
+    if (!queued) return null;
+    batch.slotsTaken += 1;
+    return slot;
+  }
+
   private submitInstanced(
     batch: GpuInstancedBatch,
     data: MeshInstances,
@@ -8800,6 +8871,14 @@ export class WebGPURenderer implements RendererApi {
     if (!mesh.complete) return;
     const count = Math.min(data.count, batch.capacity);
     if (count === 0) return;
+    /* A culling batch's camera draw: the whole batch against the view and the occluders on the CPU,
+       then instance by instance on the device into an indirect draw. Blended draws keep every
+       instance and their order. See `InstancedOptions.cull`. */
+    const culling = !blend && batch.cull;
+    if (culling && !batchBoxVisible(batch.box, this.frustum, this.occlusion)) return;
+    const cut =
+      culling && cullsInstances(count, mesh.indexCount) ? this.takeCullSlot(batch, count) : null;
+    const instanceBuffer = cut === null ? batch.buffer : cut.instances;
 
     const slot = this.perDraw.allocate();
     if (slot === null) {
@@ -8812,10 +8891,12 @@ export class WebGPURenderer implements RendererApi {
       return;
     }
 
+    /* Late unless it moves with what it lies on. See `TranslucentMeshOptions.reconstructed`. */
+    const lands = blend && options.reconstructed !== true && this.drawsLate();
     this.perDraw.writeFloats(
       slot,
       FLAT_VERT_FIELDS.uViewProj.offset,
-      blend && this.drawsLate() ? this.correctedViewProj : this.viewProj,
+      lands ? this.correctedViewProj : this.viewProj,
     );
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvScale.offset, this.uvScale);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uLightViewProj.offset, this.lightViewProj);
@@ -8826,12 +8907,12 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameFloats[this.materialField('uOpacity')] = opacity;
     }
     const lit = options.lit ?? true;
-    const fog = options.fog ?? true;
+    const fog = fogModeOf(options.fog ?? true, blend && options.additive === true);
     const toneMapped = options.toneMapped ?? true;
-    const unlitOrUnfogged = !lit || !fog;
+    const unlitOrUnfogged = !lit || fog !== FOG_RECEDE;
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
-      if (!fog) this.perFrameInts[this.materialField('uFogEnabled')] = 0;
+      this.perFrameInts[this.materialField('uFogEnabled')] = fog;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.gradeCode(), 1);
@@ -8847,12 +8928,13 @@ export class WebGPURenderer implements RendererApi {
     /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
        a third vertex buffer and a different vertex module, and sharing a cache entry with the
        plain one would hand a draw the wrong layout. */
+    const adds = blend && options.additive === true;
     const key =
-      `${base}|inst${blend ? '|blend' : ''}` +
+      `${base}|inst${blend ? (adds ? '|add' : '|blend') : ''}` +
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
       `${this.materialDoubleSided ? '|2s' : ''}`;
 
-    const pipelines = blend ? this.blendedPipelines() : this.targetPipelines();
+    const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
     let pipeline = pipelines.peek(key);
     if (pipeline === undefined) {
       const present = this.meshPresent.get(base);
@@ -8866,7 +8948,7 @@ export class WebGPURenderer implements RendererApi {
         this.variant,
         key,
         present,
-        blend,
+        adds ? 'additive' : blend,
         false,
         false,
         depthWrite,
@@ -8879,7 +8961,9 @@ export class WebGPURenderer implements RendererApi {
 
     const material = this.materialSlotForDraw();
     if (material !== null) {
-      const command = blend ? this.recordBlended(0) : this.recordDraw(0, this.currentTarget());
+      const command = blend
+        ? this.recordBlended(0, lands)
+        : this.recordDraw(0, this.currentTarget());
       if (command !== null) {
         command.pipeline = pipeline;
         command.bindGroup = this.flatBindGroupFor(false, false, null);
@@ -8890,12 +8974,13 @@ export class WebGPURenderer implements RendererApi {
         for (; index < mesh.vertexBuffers.length; index++) {
           command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
         }
-        command.vertexBuffers[index] = batch.buffer;
+        command.vertexBuffers[index] = instanceBuffer;
         command.vertexCount = mesh.vertexBuffers.length + 1;
         command.indexBuffer = mesh.indexBuffer;
         command.indexed = true;
         command.count = mesh.indexCount;
         command.instances = count;
+        command.indirect = cut === null ? null : cut.args;
       } else {
         const pass = this.openPass();
         if (pass === null) return;
@@ -8905,9 +8990,10 @@ export class WebGPURenderer implements RendererApi {
         for (; index < mesh.vertexBuffers.length; index++) {
           pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
         }
-        pass.setVertexBuffer(index, batch.buffer);
+        pass.setVertexBuffer(index, instanceBuffer);
         pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
-        pass.drawIndexed(mesh.indexCount, count);
+        if (cut === null) pass.drawIndexed(mesh.indexCount, count);
+        else pass.drawIndexedIndirect(cut.args, 0);
       }
     }
     /* Back to the defaults, unconditionally and for the reason `drawMesh` gives at length: this
@@ -8918,7 +9004,7 @@ export class WebGPURenderer implements RendererApi {
     }
     if (unlitOrUnfogged) {
       this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
-      this.perFrameInts[this.materialField('uFogEnabled')] = 1;
+      this.perFrameInts[this.materialField('uFogEnabled')] = FOG_RECEDE;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
@@ -10456,6 +10542,23 @@ export class WebGPURenderer implements RendererApi {
     f[at('uMotionStrength')] = motionStrength;
     f[at('uMotionMax')] = MOTION_BLUR_MAX_UV;
     f[at('uAoStrength')] = this.frameProjection === null ? 0 : aoStrength;
+    /*
+     * The occlusion read where this frame's jitter put it (`uAoOffset`): measured from the jittered
+     * depth and applied to a picture the jitter has been taken out of. A texel stands at its index
+     * plus a half less the jitter, so the occlusion of a point is a jitter further on. The
+     * reconstruction's y is given upward and negated into the corrected matrix, which this pass's
+     * rows run down from; the temporal resolve's goes in as it is, and arrives as it is.
+     */
+    f[at('uAoOffset')] = this.reconstructing
+      ? (this.reconJitter[0] as number) / this.renderWidth
+      : this.temporalJittering
+        ? this.temporalJitterX / this.renderWidth
+        : 0;
+    f[at('uAoOffset') + 1] = this.reconstructing
+      ? -(this.reconJitter[1] as number) / this.renderHeight
+      : this.temporalJittering
+        ? this.temporalJitterY / this.renderHeight
+        : 0;
     f[at('uDofStrength')] = dofStrength;
     if (dofStrength > 0 && this.frameProjection !== null) {
       mat4.invert(this.dofInvProjection, this.frameProjection);
@@ -10615,6 +10718,8 @@ export class WebGPURenderer implements RendererApi {
 
     for (const dead of [
       ...this.reconHistories,
+      ...this.reconFlickers,
+      ...this.reconSwings,
       this.reconShown,
       this.reconMotion,
       this.reconPreviousDepth,
@@ -10623,6 +10728,10 @@ export class WebGPURenderer implements RendererApi {
     }
     this.reconHistories = [null, null];
     this.reconHistoryViews = [null, null];
+    this.reconFlickers = [null, null];
+    this.reconFlickerViews = [null, null];
+    this.reconSwings = [null, null];
+    this.reconSwingViews = [null, null];
     this.reconShown = null;
     this.reconShownView = null;
     this.reconMotion = null;
@@ -10647,6 +10756,22 @@ export class WebGPURenderer implements RendererApi {
       });
       this.reconHistories[i] = texture;
       this.reconHistoryViews[i] = texture.createView();
+      const record = device.createTexture({
+        label: `recon.flicker${String(i)}`,
+        size: [outputWidth, outputHeight],
+        format: RECON_HISTORY_FORMAT,
+        usage: HISTORY_USAGE,
+      });
+      this.reconFlickers[i] = record;
+      this.reconFlickerViews[i] = record.createView();
+      const swing = device.createTexture({
+        label: `recon.swing${String(i)}`,
+        size: [outputWidth, outputHeight],
+        format: 'r32float',
+        usage: HISTORY_USAGE,
+      });
+      this.reconSwings[i] = swing;
+      this.reconSwingViews[i] = swing.createView();
     }
     this.reconShown = device.createTexture({
       label: 'recon.shown',
@@ -10723,6 +10848,26 @@ export class WebGPURenderer implements RendererApi {
             viewDimension: '2d' as const,
           },
         },
+        sampled(8, 'float'),
+        {
+          binding: 9,
+          visibility: COMPUTE,
+          storageTexture: {
+            access: 'write-only' as const,
+            format: RECON_HISTORY_FORMAT,
+            viewDimension: '2d' as const,
+          },
+        },
+        sampled(10, 'unfilterable-float'),
+        {
+          binding: 11,
+          visibility: COMPUTE,
+          storageTexture: {
+            access: 'write-only' as const,
+            format: 'r32float' as const,
+            viewDimension: '2d' as const,
+          },
+        },
       ],
     });
     const module = device.createShaderModule({ label: 'recon.resolve', code: reconResolveWgsl() });
@@ -10754,7 +10899,15 @@ export class WebGPURenderer implements RendererApi {
     if (this.reconMotionView === null || this.reconPreviousDepthView === null) return;
     if (this.reconShownView === null) return;
     const { device } = this.surface;
-    const build = (label: string, history: GPUTextureView, target: GPUTextureView) =>
+    const build = (
+      label: string,
+      history: GPUTextureView,
+      target: GPUTextureView,
+      records: GPUTextureView,
+      nextRecords: GPUTextureView,
+      swings: GPUTextureView,
+      nextSwings: GPUTextureView,
+    ) =>
       device.createBindGroup({
         label,
         layout,
@@ -10767,23 +10920,108 @@ export class WebGPURenderer implements RendererApi {
           { binding: 5, resource: this.postSampler },
           { binding: 6, resource: { buffer: params } },
           { binding: 7, resource: target },
+          { binding: 8, resource: records },
+          { binding: 9, resource: nextRecords },
+          { binding: 10, resource: swings },
+          { binding: 11, resource: nextSwings },
         ],
       });
     for (let write = 0; write < 2; write += 1) {
       const read = this.reconHistoryViews[1 - write];
       const target = this.reconHistoryViews[write];
-      if (read === null || target === null) continue;
-      this.reconGroups[write] = build(`recon.resolve${String(write)}`, read, target);
+      const records = this.reconFlickerViews[1 - write];
+      const nextRecords = this.reconFlickerViews[write];
+      const swings = this.reconSwingViews[1 - write];
+      const nextSwings = this.reconSwingViews[write];
+      if (read === null || target === null || records === null || nextRecords === null) continue;
+      if (swings === null || nextSwings === null) continue;
+      this.reconGroups[write] = build(
+        `recon.resolve${String(write)}`,
+        read,
+        target,
+        records,
+        nextRecords,
+        swings,
+        nextSwings,
+      );
+      /* The sharpen reads no record, but one layout serves both dispatches: the same pair, so no
+         texture is both read and written. */
       this.reconSharpenGroups[write] = build(
         `recon.sharpen${String(write)}`,
         target,
         this.reconShownView,
+        records,
+        nextRecords,
+        swings,
+        nextSwings,
       );
     }
     /* The composite's own group, over the resolved picture instead of the scene target. */
     this.reconRushGroup = this.buildRushBindGroup('recon.rushBindGroup', this.reconShownView);
     /* And the scene's, because `ensureComposite` built it before this one existed. */
     this.rebuildRushBindGroup();
+    /* And the bloom's, which blooms the resolved picture: see `rebuildBloomGroups`. */
+    this.rebuildBloomGroups();
+  }
+
+  /** This frame's jitter and temporal frame, decided where its scene camera is bound. See `bindMeshPass`. */
+  private jitterFrame(): void {
+    this.reconstructing = this.reconstructionWanted && !this.reflectionPassActive;
+    if (this.quality.reconstruction > 0 && this.samples > 1 && !this.reconMultisampleSaid) {
+      this.reconMultisampleSaid = true;
+      console.warn(RECONSTRUCTION_MULTISAMPLE_REFUSAL);
+    }
+    if (this.reconstructing) {
+      /*
+       * The offset `settleReconJitter` chose for the frame at `beginFrame`, applied here and not
+       * advanced here: a frame binding its mesh pass twice is one frame of the sequence.
+       *
+       * **The y offset is negated on the way in, and that is not a preference.** This shifts the
+       * *corrected* matrix, whose y `CLIP_CORRECTION` has already negated so that the negation
+       * every generated vertex stage ends with cancels out — §3 row 56. So an offset added here
+       * arrives on screen with its sign reversed, while x, which nothing negates, arrives as
+       * given. The temporal resolve cannot see this because its shader never reads the offset; the
+       * reconstruction reads it at every texel it unprojects, and a sign error there moves every
+       * sample two jitters away from where the depth says it is.
+       */
+      this.viewProj = jitterProjection(
+        this.jitteredViewProj,
+        this.correctedViewProj,
+        this.reconJitter[0] as number,
+        -(this.reconJitter[1] as number),
+        this.renderWidth,
+        this.renderHeight,
+      ) as Float32Array;
+      this.temporalJittering = false;
+      this.temporalHistoryUsable = false;
+    }
+    this.temporalJittering =
+      !this.reconstructing &&
+      this.quality.temporalAa &&
+      this.quality.screenEffects &&
+      !this.reflectionPassActive;
+    if (this.temporalJittering) {
+      /* The scene's size, not the drawing buffer's: the history is a picture of the render. */
+      this.temporalHistoryUsable = this.temporalHistory.openFrame(
+        this.renderWidth,
+        this.renderHeight,
+      );
+      const [jx, jy] = jitterOffset(this.temporalHistory.frameIndex);
+      this.temporalJitterX = jx;
+      this.temporalJitterY = jy;
+      /* A jitter is half a *render* texel, which is what the sequence is spread over. */
+      this.viewProj = jitterProjection(
+        this.jitteredViewProj,
+        this.correctedViewProj,
+        jx,
+        jy,
+        this.renderWidth,
+        this.renderHeight,
+      ) as Float32Array;
+    } else if (!this.reconstructing) {
+      this.temporalHistoryUsable = false;
+      this.viewProj = this.correctedViewProj;
+    }
   }
 
   /**
@@ -10809,15 +11047,15 @@ export class WebGPURenderer implements RendererApi {
    * otherwise. **Late draws record whatever `quality.frameGraph` says**, since the late replay is
    * the only moment they can land; everything else keeps the path it has.
    */
-  private recordBlended(reads: number): DrawCommand | null {
+  private recordBlended(reads: number, lands = this.drawsLate()): DrawCommand | null {
     const late = this.latePass;
-    if (late !== null && this.drawsLate()) return late.take();
+    if (late !== null && lands) return late.take();
     return this.recordDraw(reads, this.currentTarget());
   }
 
   /** The pipelines a blended draw is built for: the reconstructed picture's while late. */
-  private blendedPipelines(): PipelineCache {
-    return this.drawsLate() ? this.latePipelines : this.targetPipelines();
+  private blendedPipelines(lands = this.drawsLate()): PipelineCache {
+    return lands ? this.latePipelines : this.targetPipelines();
   }
 
   /**
@@ -10835,7 +11073,16 @@ export class WebGPURenderer implements RendererApi {
     const width = Math.max(1, this.surface.canvas.width);
     const height = Math.max(1, this.surface.canvas.height);
     /* The order-independent set tests against this depth too, so it is made for either. */
-    late.upscale(encoder, depth, this.renderWidth, this.renderHeight, width, height);
+    late.upscale(
+      encoder,
+      depth,
+      this.renderWidth,
+      this.renderHeight,
+      width,
+      height,
+      this.reconJitter[0] as number,
+      this.reconJitter[1] as number,
+    );
     if (this.lateRefractWanted && this.refractSnapshot !== null && this.reconShown !== null) {
       encoder.copyTextureToTexture(
         { texture: this.reconShown },
@@ -10994,7 +11241,16 @@ export class WebGPURenderer implements RendererApi {
      * OpenGL's depth convention — which is the convention the shader's accessor converts the
      * renderer's reversed buffer into.
      */
-    mat4.invert(this.reconInverseViewProj, this.frameRawViewProj);
+    /*
+     * The inverse and the reprojection in double precision, rounded once on the way into the
+     * uniform: the product of two single-precision matrices this far apart in depth is not the
+     * identity for a still camera, and the resolve read the difference as motion.
+     */
+    mat4.invert(this.reconInverse64, this.frameRawViewProj);
+    mat4.multiply(this.reconReprojection64, this.reconPreviousRawViewProj, this.reconInverse64);
+    for (let i = 0; i < 16; i += 1) {
+      this.reconInverseViewProj[i] = this.reconInverse64[i] as number;
+    }
     const f = this.reconFloats;
     const u = this.reconInts;
     u[0] = this.renderWidth;
@@ -11018,6 +11274,17 @@ export class WebGPURenderer implements RendererApi {
     f[69] = DEFAULT_DISOCCLUSION.motionScale;
     f[70] = DEFAULT_DISOCCLUSION.normalFloor;
     f[71] = DEFAULT_DISOCCLUSION.normalCeiling;
+    /* The anti-flicker over the reconstruction's own period, its rule made once a period. */
+    const phases = reconJitterPhases(this.renderWidth, outputWidth);
+    if (phases !== this.reconFlickerPhases) {
+      this.reconFlickerPhases = phases;
+      this.reconFlickerRule = flickerRule(phases);
+    }
+    u[72] = this.reconFrameIndex % phases === 0 ? 1 : 0;
+    u[73] = 1;
+    f[74] = this.reconFlickerRule.memory;
+    f[75] = this.reconFlickerRule.width;
+    f.set(this.reconReprojection64, 76);
     device.queue.writeBuffer(params, 0, this.reconStaging);
 
     const groupsX = Math.ceil(outputWidth / RECON_WORKGROUP);
@@ -12317,6 +12584,7 @@ export class WebGPURenderer implements RendererApi {
     command.indexBuffer = null;
     command.indexed = false;
     command.instances = 1;
+    command.indirect = null;
     recordNode(this.arena, VERB_DRAW, reads, writes, at, 0);
     return command;
   }
@@ -12363,7 +12631,8 @@ export class WebGPURenderer implements RendererApi {
     }
     if (command.indexed && command.indexBuffer !== null) {
       pass.setIndexBuffer(command.indexBuffer, 'uint32');
-      pass.drawIndexed(command.count, command.instances);
+      if (command.indirect !== null) pass.drawIndexedIndirect(command.indirect, 0);
+      else pass.drawIndexed(command.count, command.instances);
     } else {
       pass.draw(command.count, command.instances);
     }
@@ -13020,6 +13289,11 @@ export class WebGPURenderer implements RendererApi {
    * declares nothing behaves exactly as it did before. Read it beside `visible`, which answers the
    * other half of the same question.
    */
+  /** Whether a world-space box is wholly behind the declared occluders. See `Renderer.occludedBox`. */
+  occludedBox(min: ArrayLike<number>, max: ArrayLike<number>): boolean {
+    return this.occlusion?.occludedBox(min, max) ?? false;
+  }
+
   occluded(bounds: Bounds, model: ReadonlyMat4): boolean {
     return this.occlusion?.occluded(bounds, model) ?? false;
   }
@@ -13475,12 +13749,14 @@ export class WebGPURenderer implements RendererApi {
     const cssHeight = Math.max(canvas.clientHeight, 1);
     const origin = canvas.getBoundingClientRect();
     /*
-     * **CSS pixels to the scene's pixels, not the viewer's.** A viewport is state on the frame's
-     * own pass, which draws into the render-size targets, so a box measured in the drawing buffer
-     * would be scaled by the reconstruction ratio and land off the side of a smaller attachment.
+     * **CSS pixels to the pixels of the attachment this pass draws into.** Mid-frame that is the
+     * scene's render size, which a reconstruction makes smaller than the drawing buffer; after the
+     * present it is the swap image, the drawing buffer itself. Measured against the scene's size
+     * there, an interface's inset landed two thirds of the way to where it was asked for.
      */
-    const scaleX = this.renderWidth / cssWidth;
-    const scaleY = this.renderHeight / cssHeight;
+    const target = this.passSize();
+    const scaleX = target[0] / cssWidth;
+    const scaleY = target[1] / cssHeight;
     const left = rect.left - origin.left;
     const top = rect.top - origin.top;
     const w = Math.max(1, Math.round(rect.width * scaleX));
@@ -13508,9 +13784,8 @@ export class WebGPURenderer implements RendererApi {
      * edge for the frames it is half-off. That asymmetry is the cost of the clamp, it is
      * recorded in the parity ledger, and the alternative was an exception.
      */
-    /* The attachment this pass draws into, which is the scene's size — see `renderWidth`. */
-    const targetWidth = this.renderWidth;
-    const targetHeight = this.renderHeight;
+    const targetWidth = target[0];
+    const targetHeight = target[1];
     const clampedX = Math.max(0, Math.min(x, targetWidth));
     const clampedY = Math.max(0, Math.min(y, targetHeight));
     const clampedW = Math.max(0, Math.min(x + w, targetWidth) - clampedX);
@@ -13587,10 +13862,30 @@ export class WebGPURenderer implements RendererApi {
     if (this.quality.frameGraph) this.flushGraph();
     const pass = this.pass;
     if (this.surface.lost || pass === null) return;
-    /* The whole of what this pass draws into, which is the scene's size and not the viewer's. */
-    pass.setViewport(0, 0, this.renderWidth, this.renderHeight, 0, 1);
-    pass.setScissorRect(0, 0, this.renderWidth, this.renderHeight);
+    /* The whole of what this pass draws into: the scene's size mid-frame, the canvas after. */
+    const [width, height] = this.passSize();
+    pass.setViewport(0, 0, width, height, 0, 1);
+    pass.setScissorRect(0, 0, width, height);
   }
+
+  /**
+   * The size of the attachment the open pass draws into: the swap image — the drawing buffer —
+   * in the overlay after the present, the scene's render size in the frame's own pass. A tuple
+   * held once rather than a new array a call.
+   */
+  private passSize(): readonly [number, number] {
+    const size = this.passSizeOut;
+    if (this.overlayActive) {
+      size[0] = Math.max(1, this.surface.canvas.width);
+      size[1] = Math.max(1, this.surface.canvas.height);
+    } else {
+      size[0] = this.renderWidth;
+      size[1] = this.renderHeight;
+    }
+    return size;
+  }
+
+  private readonly passSizeOut: [number, number] = [0, 0];
 
   /**
    * Copy a rectangle of the frame into a 2D canvas, pixel for pixel.
@@ -14182,10 +14477,14 @@ export class WebGPURenderer implements RendererApi {
   private probeView: GPUTextureView | null = null;
   private readonly probeSize: number;
   private readonly probeMipLayout: GPUBindGroupLayout;
-  /** The photometric atlas, allocated on first use. See `setIesProfiles`. */
-  private iesTexture: GPUTexture | null = null;
+  /** The fixture atlas — cookies over profiles — built on first use. See `fixtureAtlas.ts`. */
+  private fixtureTexture: GPUTexture | null = null;
+  private fixtureView: GPUTextureView | null = null;
+  /** The profiles as packed and the cookie images, kept so either can rebuild the atlas. */
+  private iesAtlas = packIesAtlas([]);
+  private cookieImages: readonly TexImageSource[] = [];
   /** The scene's DriftLight field, and its two volumes once it is whole. See `createLightField`. */
-  private lightField: LightField | null = null;
+  private lightField: DriftLightVolumes | null = null;
   private driftIndex: GPUTexture | null = null;
   private driftAtlas: GPUTexture | null = null;
   private driftIndexView: GPUTextureView | null = null;
@@ -14197,10 +14496,7 @@ export class WebGPURenderer implements RendererApi {
   /** The frame's exact lights packed for the traced bake. See `gi/bounceLights.ts`. */
   private readonly bounceLights = createBounceLights();
   private readonly bakeLamps = { data: this.bounceLights, count: 0, falloff: 0 };
-  private iesView: GPUTextureView | null = null;
-  private cookieTexture: GPUTexture | null = null;
-  private cookieView: GPUTextureView | null = null;
-  /** Tiles in the cookie atlas. 0 is the white placeholder and the whole off path. */
+  /** Cookie tiles in the atlas. 0 is none, and the whole off path. */
   private cookieTiles = 0;
   /** Rows in that atlas. One until a consumer loads a profile, which is the row of ones. */
   private iesRows = 1;
@@ -14688,42 +14984,58 @@ export class WebGPURenderer implements RendererApi {
    */
   setSpotCookies(images: readonly TexImageSource[]): void {
     if (this.surface.lost) return;
-    const { device } = this.surface;
-    const tiles = images.length;
-    const width = tiles === 0 ? 1 : COOKIE_TILE * tiles;
-    const height = tiles === 0 ? 1 : COOKIE_TILE;
-    if (this.cookieTexture === null || this.cookieTexture.width !== width) {
-      this.cookieTexture?.destroy();
-      this.cookieTexture = device.createTexture({
-        label: 'cookie.atlas',
-        size: [width, height],
-        format: 'rgba8unorm',
-        /* `RENDER_ATTACHMENT` because `copyExternalImageToTexture` writes through one. */
-        usage: 0x4 | 0x2 | 0x10,
-      });
-      this.cookieView = this.cookieTexture.createView();
-    }
-    if (tiles === 0) {
-      /* White, not black: this multiplies a light's colour. */
-      device.queue.writeTexture(
-        { texture: this.cookieTexture },
-        new Uint8Array([255, 255, 255, 255]),
-        { bytesPerRow: 4, rowsPerImage: 1 },
-        { width: 1, height: 1, depthOrArrayLayers: 1 },
-      );
-    } else {
-      for (let tile = 0; tile < tiles; tile++) {
-        const source = images[tile];
-        if (source === undefined) continue;
-        device.queue.copyExternalImageToTexture(
-          { source: source as GPUCopyExternalImageSource },
-          { texture: this.cookieTexture, origin: { x: tile * COOKIE_TILE, y: 0 } },
-          { width: COOKIE_TILE, height: COOKIE_TILE },
-        );
-      }
-    }
-    this.cookieTiles = tiles;
+    this.cookieImages = images.slice();
+    this.forgetFixtureAtlas();
     this.rebuildFlatBindGroup();
+  }
+
+  /** Let the atlas go, to be built again from what is in hand the next time it is bound. */
+  private forgetFixtureAtlas(): void {
+    this.fixtureTexture?.destroy();
+    this.fixtureTexture = null;
+    this.fixtureView = null;
+  }
+
+  /**
+   * The fixture atlas's view, built from the profiles and cookies in hand if it is not already: the
+   * profiles' rows at the bottom, the cookies' tiles on top. See `renderer.ts` and `fixtureAtlas.ts`.
+   *
+   * **`rgba16float`, not `rgba32float`**: a 32-bit float texture is not filterable in core WebGPU,
+   * and binding one to a filtering sampler takes the whole bind group with it. Both tables want
+   * linear filtering. `RENDER_ATTACHMENT` because `copyExternalImageToTexture` writes through one.
+   */
+  private fixtureAtlasView(): GPUTextureView {
+    if (this.fixtureView !== null) return this.fixtureView;
+    const { device } = this.surface;
+    const layout = fixtureAtlasLayout(this.iesAtlas.height, this.cookieImages.length);
+    const texture = device.createTexture({
+      label: 'fixture.atlas',
+      size: [layout.width, layout.height],
+      format: 'rgba16float',
+      usage: 0x4 | 0x2 | 0x10,
+    });
+    device.queue.writeTexture(
+      { texture },
+      /* Converted, because `writeTexture` does not — see `environmentTexels`. */
+      toHalfFloats(fixtureAtlasTexels(layout, this.iesAtlas)),
+      { bytesPerRow: layout.width * 8, rowsPerImage: layout.height },
+      { width: layout.width, height: layout.height, depthOrArrayLayers: 1 },
+    );
+    for (let tile = 0; tile < this.cookieImages.length; tile++) {
+      const source = this.cookieImages[tile];
+      if (source === undefined) continue;
+      device.queue.copyExternalImageToTexture(
+        { source: source as GPUCopyExternalImageSource },
+        { texture, origin: { x: tile * COOKIE_TILE, y: 0 } },
+        { width: COOKIE_TILE, height: COOKIE_TILE },
+      );
+    }
+    this.fixtureTexture = texture;
+    this.fixtureView = texture.createView();
+    this.iesRows = this.iesAtlas.height;
+    this.iesPlanes = this.iesAtlas.planes;
+    this.cookieTiles = this.cookieImages.length;
+    return this.fixtureView;
   }
 
   /**
@@ -14736,6 +15048,23 @@ export class WebGPURenderer implements RendererApi {
   ): LightField {
     this.forgetLightFieldVolumes();
     const field = new LightField(lights, { ...options, falloff: this.quality.pointLightFalloff });
+    this.lightField = field;
+    return field;
+  }
+
+  /**
+   * Hand a world's DriftLight volume to the renderer: every fixed light of a city, summed offline by
+   * `bakeDenseField`, standing in past the frame's exact choice. Replaces any field made before, of
+   * either kind; the scene calls `field.follow(buffer.complete, ...)` each frame as it would for
+   * `createLightField`, and marks the lights the volume summed `inLightField` so none is counted
+   * twice. See `driftLight/worldLightField.ts`.
+   */
+  createWorldLightField(
+    volume: DenseLightVolume,
+    options: WorldLightFieldOptions = {},
+  ): WorldLightField {
+    this.forgetLightFieldVolumes();
+    const field = new WorldLightField(volume, options);
     this.lightField = field;
     return field;
   }
@@ -14766,12 +15095,12 @@ export class WebGPURenderer implements RendererApi {
    */
   private uploadLightField(): void {
     const field = this.lightField;
-    if (field === null || this.driftAtlas !== null || !field.ready || field.layout.count === 0) {
+    if (field === null || this.driftAtlas !== null || !field.ready || field.empty) {
       return;
     }
     if (this.surface.lost) return;
     const { device } = this.surface;
-    const [ix, iy, iz] = field.layout.dims;
+    const [ix, iy, iz] = field.indexDims;
     const index = device.createTexture({
       label: 'driftLight.index',
       size: [ix, iy, iz],
@@ -14781,7 +15110,7 @@ export class WebGPURenderer implements RendererApi {
     });
     device.queue.writeTexture(
       { texture: index },
-      field.layout.index,
+      field.index,
       { bytesPerRow: ix * 4, rowsPerImage: iy },
       [ix, iy, iz],
     );
@@ -14814,45 +15143,8 @@ export class WebGPURenderer implements RendererApi {
 
   setIesProfiles(profiles: readonly PhotometricProfile[]): void {
     if (this.surface.lost) return;
-    const { device } = this.surface;
-    const atlas = packIesAtlas(profiles);
-    /*
-     * Reallocated when the row count changes, because a texture's size is immutable. A set of the
-     * same size overwrites in place, which is the common case of a consumer swapping one fixture.
-     */
-    if (this.iesTexture === null || this.iesTexture.height !== atlas.height) {
-      this.iesTexture?.destroy();
-      this.iesTexture = device.createTexture({
-        label: 'ies.atlas',
-        size: [atlas.width, atlas.height],
-        /*
-         * **`r16float`, not `r32float`, and that is a filtering constraint rather than a size
-         * choice.** A 32-bit float texture is not filterable in core WebGPU — it needs the
-         * optional `float32-filterable` feature — and binding one to a filtering sampler is a
-         * validation failure that takes the whole bind group with it. This row *wants* linear
-         * filtering: it is a curve sampled between two angles, which is the entire reason it is
-         * not `NEAREST` like the froxel table beside it.
-         *
-         * Half precision holds a normalised intensity to about three decimal digits, which is far
-         * finer than the eight-bit frame it ends up in. **What would make it wrong** is a profile
-         * carrying absolute candela rather than a normalised curve, which would run out of range —
-         * and `packIesAtlas` normalises for its own reasons.
-         */
-        format: 'r16float',
-        usage: 0x4 | 0x2, // TEXTURE_BINDING | COPY_DST
-      });
-      this.iesView = this.iesTexture.createView();
-    }
-    device.queue.writeTexture(
-      { texture: this.iesTexture },
-      /* Converted, because `writeTexture` does not — see `environmentTexels` for what handing it
-         the wrong width silently produces. */
-      toHalfFloats(atlas.data),
-      { bytesPerRow: atlas.width * 2, rowsPerImage: atlas.height },
-      { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 },
-    );
-    this.iesRows = atlas.height;
-    this.iesPlanes = atlas.planes;
+    this.iesAtlas = packIesAtlas(profiles);
+    this.forgetFixtureAtlas();
     this.rebuildFlatBindGroup();
   }
 
@@ -15356,7 +15648,10 @@ export class WebGPURenderer implements RendererApi {
      * An empty list is a real answer for a frame too small to hold one, and `runBloom` reads it
      * as no bloom rather than as a target it should have had.
      */
-    this.bloomLevels = bloomLevelSizes(width, height).map((size, index) => {
+    /* The resolved picture's size while reconstructing, as the order-independent pair above is. */
+    this.bloomSourceWidth = oitSize[0];
+    this.bloomSourceHeight = oitSize[1];
+    this.bloomLevels = bloomLevelSizes(oitSize[0], oitSize[1]).map((size, index) => {
       const texture = device.createTexture({
         label: `post.bloom${index}`,
         size: [size.width, size.height],
@@ -15529,13 +15824,31 @@ export class WebGPURenderer implements RendererApi {
     /* The volume's group holds the depth snapshot, which is one of the targets just replaced.
        Keeping the old group would clamp every beam against a destroyed texture. */
     this.lightVolumeBindGroup = this.buildLightVolumeBindGroup();
-    /*
-     * One group per source the chain reads, in the order `runBloom` indexes them: the scene
-     * first, then every level. The prefilter reads the scene; the downsample into level `i`
-     * reads level `i - 1`, which is group `i`; the upsample into level `i - 1` reads level
-     * `i`, which is group `i + 1`.
-     */
-    this.bloomGroups = [this.sceneColorView, ...this.bloomLevels.map((level) => level.view)].map(
+    this.rebuildBloomGroups();
+    this.writeBloomBlocks();
+  }
+
+  /**
+   * One group per source the bloom chain reads, in the order `runBloom` indexes them: the picture
+   * first, then every level. The prefilter reads the picture; the downsample into level `i` reads
+   * level `i - 1`, which is group `i`; the upsample into level `i - 1` reads level `i`, which is
+   * group `i + 1`.
+   *
+   * **While reconstructing the picture is the resolved one**, which `ensureReconstruction` makes
+   * after this runs and rebuilds these over. The scene target is the jittered render then: a bright
+   * thing smaller than a render texel is caught in some phases and missed in others, and its halo,
+   * wide and over everything round it, flashed with it — a night street's panels breathing a few
+   * levels of luma frame to frame. Built at the drawing buffer's size, which `ensureComposite`
+   * already sized the pyramid for.
+   */
+  private rebuildBloomGroups(): void {
+    const picture =
+      this.reconstructionWanted && this.reconShownView !== null
+        ? this.reconShownView
+        : this.sceneColorView;
+    if (picture === null) return;
+    const { device } = this.surface;
+    this.bloomGroups = [picture, ...this.bloomLevels.map((level) => level.view)].map(
       (view, index) =>
         device.createBindGroup({
           label: `post.bloomGroup${index}`,
@@ -15545,11 +15858,11 @@ export class WebGPURenderer implements RendererApi {
               binding: BLOOM_UNIFORMS,
               resource: { buffer: this.bloomUniforms, size: BLOOM_STAGE_SIZE },
             },
-            ...entry(BLOOM_TEXTURES.uSource, view),
+            { binding: BLOOM_TEXTURES.uSource.texture, resource: view },
+            { binding: BLOOM_TEXTURES.uSource.sampler, resource: this.postSampler },
           ],
         }),
     );
-    this.writeBloomBlocks();
   }
 
   /**
@@ -15567,12 +15880,12 @@ export class WebGPURenderer implements RendererApi {
     if (levels.length === 0) return;
     const slot = (index: number): number => (index * BLOOM_SLOT) / 4;
 
-    /* The prefilter reads the *scene*, so its texel is the frame's rather than a level's.
+    /* The prefilter reads the *picture*, so its texel is the picture's rather than a level's.
        `uTexel`, not `uTexelSize`, and the block carries no strength at all: the composite
        applies that when it adds the result back. Both were written wrong here first. */
     const prefilter = (name: string): number => this.postField(BLOOM_PREFILTER_FIELDS, name);
-    f[slot(0) + prefilter('uTexel')] = 1 / Math.max(1, this.frameWidth);
-    f[slot(0) + prefilter('uTexel') + 1] = 1 / Math.max(1, this.frameHeight);
+    f[slot(0) + prefilter('uTexel')] = 1 / Math.max(1, this.bloomSourceWidth);
+    f[slot(0) + prefilter('uTexel') + 1] = 1 / Math.max(1, this.bloomSourceHeight);
     /* In scene units, which is why an HDR target is what makes a threshold above 1 mean
        anything: against a clamped buffer nothing is ever brighter than white. */
     f[slot(0) + prefilter('uThreshold')] = this.bloomThresholdSet ?? this.quality.bloomThreshold;
@@ -15699,6 +16012,7 @@ export class WebGPURenderer implements RendererApi {
     this.fieldComposer = null;
     this.driftIndex?.destroy();
     this.driftAtlas?.destroy();
+    this.forgetFixtureAtlas();
     this.sunTint?.texture.destroy();
     this.sunTint = null;
     this.glassTint?.dispose();

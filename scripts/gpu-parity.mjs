@@ -266,6 +266,15 @@ const LIT_ENVIRONMENT = {
   ground: [0.09, 0.08, 0.07],
 };
 
+const { cullInstances } = await import(`${ROOT}packages/core/src/render/instanceCull.ts`);
+const { createMeshInstances, INSTANCE_FLOATS } = await import(
+  `${ROOT}packages/core/src/render/instances.ts`
+);
+const { frustumFromViewProjection } = await import(`${ROOT}packages/core/src/math/frustum.ts`);
+const { INSTANCE_CULL_WGSL, INSTANCE_CULL_WORKGROUP } = await import(
+  `${ROOT}packages/core/src/render/backend/webgpu/shaders/instanceCull.wgsl.ts`
+);
+
 const gpu = await openGpuCompute();
 try {
   /* ---------------------------------------------------------------- instance culling */
@@ -312,6 +321,88 @@ try {
       failures.push(`cullInstances: ${culledCount} of ${COUNT} culled, so the cases are not mixed`);
     }
     report(`cullInstances  ${COUNT} spheres, ${culledCount} culled`);
+  }
+
+  /* ------------------------------------------- a batch's instances, into an indirect draw */
+  {
+    /*
+     * The forward path's instance cull against `cullInstances`. Survivors are compacted by atomics,
+     * so their order is the device's; each instance carries its own index in the spare float, and
+     * the check compares the kept *sets*, then the count the indirect record holds.
+     */
+    const COUNT = 700;
+    const random = lcg(0x6c1f3a9d);
+    const data = createMeshInstances(COUNT);
+    for (let i = 0; i < COUNT; i += 1) {
+      const yaw = random() * Math.PI * 2;
+      const sx = 0.5 + random() * 3;
+      const sy = 0.5 + random() * 3;
+      const sz = 0.5 + random() * 3;
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
+      const m = i * 16;
+      data.models.set([c * sx, 0, -s * sx, 0, 0, sy, 0, 0, s * sz, 0, c * sz, 0], m);
+      data.models[m + 12] = (random() - 0.5) * 120;
+      data.models[m + 13] = (random() - 0.5) * 60;
+      data.models[m + 14] = -random() * 160 + 10;
+      data.models[m + 15] = 1;
+      data.tints.set([random(), random(), random()], i * 3);
+    }
+    data.count = COUNT;
+    const local = { centre: new Float32Array([0.2, 0.5, -0.1]), radius: 0.9 };
+    const planes = new Float32Array(24);
+    frustumFromViewProjection(viewProj(), planes);
+
+    const kept = createMeshInstances(COUNT);
+    const want = cullInstances(data, local, planes, kept);
+
+    const source = new Float32Array(COUNT * INSTANCE_FLOATS);
+    for (let i = 0; i < COUNT; i += 1) {
+      source.set(data.models.subarray(i * 16, i * 16 + 16), i * INSTANCE_FLOATS);
+      source.set(data.tints.subarray(i * 3, i * 3 + 3), i * INSTANCE_FLOATS + 16);
+      source[i * INSTANCE_FLOATS + 19] = i;
+    }
+    const countBits = new Float32Array(new Uint32Array([COUNT]).buffer)[0];
+    const params = [...planes, local.centre[0], local.centre[1], local.centre[2], local.radius];
+    params.push(countBits, 0, 0, 0);
+    const out = await gpu.run({
+      wgsl: INSTANCE_CULL_WGSL,
+      workgroups: [Math.ceil(COUNT / INSTANCE_CULL_WORKGROUP)],
+      buffers: [
+        { kind: 'uniform', type: 'f32', values: params },
+        { type: 'f32', values: source, readOnly: true },
+        { type: 'f32', length: COUNT * INSTANCE_FLOATS, read: true },
+        { type: 'u32', values: [36, 0, 0, 0, 0], read: true },
+      ],
+    });
+    const got = out[3][1];
+    check('forward instance cull count', 0, want, got);
+    const wanted = new Set();
+    for (let k = 0; k < want; k += 1) {
+      /* The reference keeps order, so the k-th survivor's placement finds its source instance. */
+      for (let i = 0; i < COUNT; i += 1) {
+        if (
+          data.models[i * 16 + 12] === kept.models[k * 16 + 12] &&
+          data.models[i * 16 + 14] === kept.models[k * 16 + 14]
+        ) {
+          wanted.add(i);
+          break;
+        }
+      }
+    }
+    for (let k = 0; k < got; k += 1) {
+      const id = out[2][k * INSTANCE_FLOATS + 19];
+      if (!wanted.has(id))
+        failures.push(`forward instance cull: the device kept ${id}, the reference did not`);
+      const tint = out[2][k * INSTANCE_FLOATS + 16];
+      if (tint !== data.tints[id * 3])
+        failures.push(`forward instance cull: instance ${id}'s row arrived torn`);
+    }
+    check('forward instance cull indexCount', 0, 36, out[3][0]);
+    if (want === 0 || want === COUNT) {
+      failures.push(`forward instance cull: ${want} of ${COUNT} kept, so the cases are not mixed`);
+    }
+    report(`forward cull   ${COUNT} instances, ${want} kept, the same set on the device`);
   }
 
   /* ---------------------------------------------------------------- the level cut */

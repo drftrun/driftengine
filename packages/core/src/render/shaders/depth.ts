@@ -64,14 +64,15 @@ ${CHANNEL_BEND}
  * uniforms declared after every other, so no field of the plain variant moves and a binder written
  * against it stays right for this one; and two outputs after vLightPosition, which keeps location 0.
  */
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 uniform vec2 uUvScale;
 uniform float uAlphaCutout;
 #endif
 
 out vec4 vLightPosition;
 #if CUTOUT
-out vec2 vUv;
+/* The texture coordinate and, in z, the texture-array layer the face wears. */
+out vec3 vUv;
 flat out float vAlphaCutout;
 #endif
 #if GLASS
@@ -103,7 +104,7 @@ void main() {
   vLightPosition = uLightViewProj * vec4(bent, world.w);
   gl_Position = vLightPosition;
 #if CUTOUT
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vAlphaCutout = uAlphaCutout;
 #endif
 #if GLASS
@@ -196,16 +197,17 @@ void main() {
 export const DEPTH_CUTOUT_FRAG = `#version 300 es
 precision highp float;
 in vec4 vLightPosition;
-in vec2 vUv;
+in vec3 vUv;
 flat in float vAlphaCutout;
 
 uniform highp sampler2DArray uPreviousShadowMap;
 uniform int uPeelShadowLayer;
-uniform highp sampler2D uCutoutMap;
+uniform highp sampler2DArray uCutoutMap;
 ${CUTOUT_COVERAGE_GLSL}
 void main() {
   /* Credited for its mip level as the surface's own test is, so a leaf casts the shape it draws. */
-  float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));
+  vec3 at = vec3(vUv.xy, floor(vUv.z + 0.5));
+  float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));
   if (uPeelShadowLayer != 0) {
     vec3 p = vLightPosition.xyz / vLightPosition.w;
     vec2 uv = p.xy * 0.5 + 0.5;
@@ -289,19 +291,20 @@ ${GLASS_TINT_BODY}
 export const GLASS_TINT_CUTOUT_FRAG = `#version 300 es
 precision highp float;
 in vec4 vLightPosition;
-in vec2 vUv;
+in vec3 vUv;
 flat in float vAlphaCutout;
 in vec3 vGlassWorld;
 
 uniform vec4 uGlassPane;
 uniform vec4 uGlassLight;
-uniform highp sampler2D uCutoutMap;
+uniform highp sampler2DArray uCutoutMap;
 ${CUTOUT_COVERAGE_GLSL}
 out vec4 outTint;
 
 void main() {
   /* First, in uniform control flow, as the depth cutout samples it. */
-  float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));
+  vec3 at = vec3(vUv.xy, floor(vUv.z + 0.5));
+  float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));
 ${GLASS_TINT_BODY}
   if (alpha < vAlphaCutout) discard;
 }

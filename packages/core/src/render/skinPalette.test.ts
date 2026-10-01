@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { IES_ATLAS_TEXTURE_UNIT } from './lightBudget.ts';
+import { FIXTURE_ATLAS_TEXTURE_UNIT } from './lightBudget.ts';
 import {
   MAX_JOINTS,
   MAX_MORPH_TARGETS,
@@ -51,7 +51,7 @@ describe('the palette texture', () => {
    * in that file is: a second number for one decision is a collision waiting to happen.
    */
   it('takes a unit above every one the lit pass binds', () => {
-    expect(SKIN_PALETTE_TEXTURE_UNIT).toBe(IES_ATLAS_TEXTURE_UNIT + 1);
+    expect(SKIN_PALETTE_TEXTURE_UNIT).toBe(FIXTURE_ATLAS_TEXTURE_UNIT + 1);
   });
 });
 

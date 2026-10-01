@@ -28,6 +28,11 @@ export interface DrawCommand {
   indexed: boolean;
   count: number;
   instances: number;
+  /**
+   * A `drawIndexedIndirect` record to draw from instead of `count` and `instances`: an instance
+   * cull's survivors, counted on the device. Null for every other draw.
+   */
+  indirect: GPUBuffer | null;
 }
 
 export interface CommandPool {
@@ -50,6 +55,7 @@ function emptyCommand(): DrawCommand {
     indexed: false,
     count: 0,
     instances: 1,
+    indirect: null,
   };
 }
 

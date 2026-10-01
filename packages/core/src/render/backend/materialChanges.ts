@@ -18,11 +18,14 @@
  * slot on the backend that keeps slots, and comparing every field would cost more than the slot.
  */
 
+import { FOG_RECEDE } from './drawFog.ts';
+
 /** What of a draw's own options its material carries. */
 export interface DrawMaterialOptions {
   readonly opacity: number;
   readonly lit: boolean;
-  readonly fog: boolean;
+  /** How it meets the medium, as `fogModeOf` says; the pass's own is `FOG_RECEDE`. */
+  readonly fog: number;
   readonly toneMapped: boolean;
   /** Whether the draw refracts this time, which a backend decides by whether it has a snapshot. */
   readonly refracting: boolean;
@@ -31,7 +34,11 @@ export interface DrawMaterialOptions {
 /** Whether a draw's options differ from the pass's, so it takes a material and leaves one to restore. */
 export function ownsMaterial(options: DrawMaterialOptions): boolean {
   return (
-    options.opacity < 1 || !options.lit || !options.fog || !options.toneMapped || options.refracting
+    options.opacity < 1 ||
+    !options.lit ||
+    options.fog !== FOG_RECEDE ||
+    !options.toneMapped ||
+    options.refracting
   );
 }
 

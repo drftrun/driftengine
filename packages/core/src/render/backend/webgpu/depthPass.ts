@@ -137,7 +137,11 @@ export function createDepthBindGroupLayout(
             {
               binding: CUTOUT_MAP.texture,
               visibility: VISIBILITY_FRAGMENT,
-              texture: { sampleType: 'float' as GPUTextureSampleType },
+              /* A surface texture, and every surface texture is a `2d-array` view. */
+              texture: {
+                sampleType: 'float' as GPUTextureSampleType,
+                viewDimension: '2d-array' as GPUTextureViewDimension,
+              },
             },
             {
               binding: CUTOUT_MAP.sampler,

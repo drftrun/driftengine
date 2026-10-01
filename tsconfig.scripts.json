@@ -71,6 +71,7 @@
     "demo/dev/vite.config.ts",
     "packages/native-host/src/**/*.ts",
     "demo/native/**/*.ts",
+    "demo/sprawl/bake/**/*.ts",
     "tools/**/*.ts"
   ]
 }

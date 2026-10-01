@@ -61,6 +61,31 @@ const WALL_MIN = [-4, -4, -0.5];
 const WALL_MAX = [4, 4, 0.5];
 
 describe('occlusion culling', () => {
+  it('A FLAT BOX BEHIND A WALL IS OCCLUDED WHERE THE CUBE AROUND ITS SPHERE IS NOT', () => {
+    /*
+     * Seven metres wide, under a metre tall, low behind a wall: every corner projects inside the
+     * wall's rectangle and lies deeper than its back face. Its sphere (radius √(3.5² + 0.4² + 3.5²)
+     * ≈ 4.97 about y = −3.5) reaches to y ≈ −8.5, far under the wall's bottom edge at −6, so the
+     * sphere test has to abstain — which is every city block's case, whose sphere is half as deep
+     * underground as the block is wide.
+     */
+    const occlusion = buffer();
+    occlusion.begin(viewProj());
+    /* Twenty metres wide and twelve tall: the test reads a pyramid level whose texels are about the
+       rectangle's size, so a box near an occluder's edge straddles unwritten texels and abstains —
+       the conservative answer. The box sits well inside this one. */
+    occlusion.addOccluder([-10, -6, -0.5], [10, 6, 0.5], IDENTITY);
+    expect(occlusion.occludedBox([-3.5, -3.9, -9], [3.5, -3.1, -2])).toBe(true);
+    expect(
+      occlusion.occluded(sphere([0, -3.5, -5.5], Math.hypot(3.5, 0.4, 3.5)), IDENTITY),
+      'its sphere reaches under the wall',
+    ).toBe(false);
+    expect(
+      occlusion.occludedBox([-3.5, -3.9, -9], [3.5, -3.1, 1]),
+      'a box reaching in front of the wall is not behind it',
+    ).toBe(false);
+  });
+
   it('culls nothing at all when no occluder was declared', () => {
     const occlusion = buffer();
     occlusion.begin(viewProj());

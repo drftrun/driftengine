@@ -392,6 +392,17 @@ export type {
 export { FIELD_FADE_SEC, LightField } from './render/driftLight/lightField.ts';
 export type { LightFieldOptions, LightFieldSource } from './render/driftLight/lightField.ts';
 export {
+  DENSE_MAX_AXIS,
+  DENSE_MAX_HEIGHT,
+  bakeDenseField,
+} from './render/driftLight/denseField.ts';
+export type { DenseLightVolume } from './render/driftLight/denseField.ts';
+export { WorldLightField } from './render/driftLight/worldLightField.ts';
+export type { WorldLightFieldOptions } from './render/driftLight/worldLightField.ts';
+export { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from './render/surfaceEffects.ts';
+export type { SurfaceLayerEffect } from './render/surfaceEffects.ts';
+export type { FieldLight } from './render/driftLight/bake.ts';
+export {
   GI_SCREEN_MARCH,
   SCREEN_TRACE_BIAS_M,
   screenRayOrigin,
@@ -603,8 +614,11 @@ export type { GpuIdentity, DescribeGpuOptions } from './render/gpuCapability.ts'
 export {
   DEFAULT_POINT_LIGHT_VIEW_RANGE,
   createPointLightBuffer,
+  selectGridLights,
   selectPointLights,
 } from './render/pointLightSelection.ts';
+export { LIGHT_GRID_MAX_CELLS, createLightGrid, gatherLights } from './render/lightGrid.ts';
+export type { LightGrid } from './render/lightGrid.ts';
 export type { PointLightBuffer, PointLightSource } from './render/pointLightSelection.ts';
 export { createFlame, flameFrequencyHz, updateFlame } from './render/flameLight.ts';
 export type { Flame, FlameOptions } from './render/flameLight.ts';
@@ -658,6 +672,38 @@ export { WaterRenderer } from './render/waterRenderer.ts';
 export type { WaterBody, WaterBounds, WaterSettings } from './render/waterRenderer.ts';
 export { MeshBuilder } from './geometry/meshBuilder.ts';
 export { concatMeshes, placeMesh } from './geometry/meshConcat.ts';
+export {
+  emptySolid,
+  mergeSolids,
+  solidToMesh,
+  solidVolume,
+  transformSolid,
+} from './geometry/solid.ts';
+export type { Solid } from './geometry/solid.ts';
+export {
+  solidBox,
+  solidExtrude,
+  solidPrism,
+  solidQuad,
+  solidRoundedBox,
+  solidSweep,
+} from './geometry/solidFlat.ts';
+export {
+  solidCapsule,
+  solidCone,
+  solidCylinder,
+  solidFrustum,
+  solidHemisphere,
+  solidIcosphere,
+  solidLathe,
+  solidSphere,
+  solidTorus,
+  solidTube,
+} from './geometry/solidRound.ts';
+export { solidIntersect, solidSubtract, solidUnion } from './geometry/csg.ts';
+export { boxBooleanCells, solidBoxBoolean } from './geometry/boxCsg.ts';
+export type { BoxOperation } from './geometry/boxCsg.ts';
+export { smoothSolidNormals } from './geometry/solidNormals.ts';
 /* A tangent frame, which every map in the material track reads. */
 export { generateTangents } from './geometry/tangents.ts';
 export type { MeshBuildOptions } from './geometry/meshBuilder.ts';
@@ -1017,7 +1063,9 @@ export type { FlockParams } from './render/flockRenderer.ts';
 export { buildTree } from './geometry/treeBuilder.ts';
 export type { TreeParams, TreeGeometry } from './geometry/treeBuilder.ts';
 export type { InstanceData } from './render/instancedMesh.ts';
-export type { MeshInstances } from './render/instances.ts';
+export type { InstancedOptions, MeshInstances } from './render/instances.ts';
+export { batchBoxVisible, cullInstances, instancesBox } from './render/instanceCull.ts';
+export type { BoxOccluder } from './render/instanceCull.ts';
 export type { WindProfile, WindState } from './render/wind.ts';
 
 /*
@@ -1055,3 +1103,5 @@ export {
   thawCell,
 } from './world/freeze.ts';
 export type { FreezableWorld, FrozenCell, FrozenCells } from './world/freeze.ts';
+export { HLOD_NONE, HlodSet, createHlodDraws, projectionScaleOf } from './world/hlod.ts';
+export type { HlodDraws, HlodOptions } from './world/hlod.ts';

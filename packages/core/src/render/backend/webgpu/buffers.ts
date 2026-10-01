@@ -103,6 +103,28 @@ export const VERTEX_LAYOUT: readonly VertexAttribute[] = [
 ];
 
 /** Geometry on the device, with the buffers bound in layout order. */
+/**
+ * The texture coordinates of a mesh that names texture-array layers: (u, v, layer), three floats.
+ *
+ * **Three only where layers exist.** Every location is spent, so the layer rides in this attribute,
+ * and widening it for every textured mesh would add four bytes to each of its vertices for nothing.
+ * A mesh without layers keeps two, and the shader's `vec3` input reads z as 0 — WebGPU fills a
+ * component the format does not carry with 0 (and w with 1) — which is layer 0. The pipeline key
+ * carries `:layers`, so the two vertex layouts never share a pipeline.
+ */
+export const LAYERED_UVS: VertexAttribute = {
+  name: 'uvs',
+  shaderLocation: 5,
+  format: 'float32x3',
+  components: 3,
+  optional: true,
+};
+
+/** The attribute as this mesh lays it out: the UV field widens where the mesh names layers. */
+function laidOut(attribute: VertexAttribute, layered: boolean): VertexAttribute {
+  return layered && attribute.name === 'uvs' ? LAYERED_UVS : attribute;
+}
+
 export interface GpuMesh {
   /**
    * The buffers a draw binds, in the order `vertexBufferLayouts` describes them.
@@ -281,9 +303,10 @@ export function createGpuMeshIncremental(
   validateMeshData(data);
   const bounds = boundsOfPositions(data.positions, createBounds());
   const vertexCount = data.positions.length / 3;
+  const layered = data.layers !== undefined;
   const supplied = VERTEX_LAYOUT.filter(
     (attribute) => !attribute.optional || data[attribute.name as keyof MeshData] !== undefined,
-  );
+  ).map((attribute) => laidOut(attribute, layered));
 
   /* Interleaved: one stride holding every attribute the mesh actually supplied. */
   const stride = supplied.reduce((sum, attribute) => sum + attribute.components * 4, 0);
@@ -459,7 +482,21 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
     let fieldOffset = 0;
     for (const attribute of supplied) {
       const source = data[attribute.name as keyof MeshData] as Float32Array;
-      interleaveField(interleaved, source, attribute.components, step, fieldOffset, from, to);
+      if (attribute === LAYERED_UVS) {
+        /* (u, v) from the coordinates and the layer after them, one field of three. */
+        interleaveField(interleaved, source, 2, step, fieldOffset, from, to);
+        interleaveField(
+          interleaved,
+          data.layers as Float32Array,
+          1,
+          step,
+          fieldOffset + 2,
+          from,
+          to,
+        );
+      } else {
+        interleaveField(interleaved, source, attribute.components, step, fieldOffset, from, to);
+      }
       fieldOffset += attribute.components;
     }
     device.queue.writeBuffer(vertices, from * stride, interleaved, from * step, (to - from) * step);
@@ -678,7 +715,9 @@ export function vertexBufferLayouts(
   const constants: GPUVertexAttribute[] = [];
   let offset = 0;
 
-  VERTEX_LAYOUT.forEach((attribute, index) => {
+  const layered = present['layers'] === true;
+  VERTEX_LAYOUT.forEach((declared, index) => {
+    const attribute = laidOut(declared, layered);
     /*
      * **The instanced pipeline reclaims the two skinning locations, and it is allowed to because
      * it cannot skin.** Locations 11 and 12 are the joint indices and weights; the INSTANCED

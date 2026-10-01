@@ -690,6 +690,28 @@ bit, append to the end of the payload. Grain did exactly that in 1.1 — it belo
 roughness conceptually and it is written last, because inserting it where it reads best would
 have shifted every array after it.
 
+### A world built from a kit
+
+A procedural world is a few thousand shapes placed half a million times, and merged it is too big to
+ship and too big to keep on a GPU. Write it as copies instead: name the pieces in `kit`, and put a
+`DrftAssembly` in the mesh slot where the merged mesh would have gone.
+
+```ts
+writeDrft({
+  meshes: [unitBox, cylinder8, districtA /* a DrftAssembly */],
+  kit: [0, 1], // pieces come before every assembly that copies them
+  regions: [{ id: 1, levels: [{ error: 0, meshes: [2] }, { error: 6, meshes: [coarse] }], … }],
+});
+```
+
+- **A piece is shape; a copy is shape placed and painted.** Colour, emissive, roughness and layer come
+  from the copy's surface, never from the piece.
+- **Give pieces UVs in their own units and tangents**, and give each copy a stretch of size over tile
+  along each piece axis: a unit box then tiles in metres on every face at every size.
+- **Page the finest level.** `DrftLoader` holds a region's assembled level as copies;
+  `loader.pageRegion(id, 0, true)` expands and uploads it over the next frames, `level.resident`
+  says when it is up, and `pageRegion(id, 0, false)` frees it. Draw a coarser level until then.
+
 ### If you weld a model yourself, derive its tangents afterwards
 
 `readModel` derives a tangent frame where a material declares a normal map and the file supplies

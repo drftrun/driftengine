@@ -25,10 +25,10 @@ test('the shader carries the same arithmetic, and both cutout tests use it', () 
   );
   expect(CUTOUT_COVERAGE_GLSL).toContain('return alpha * (1.0 + level * 0.25);');
   expect(MAIN_GLSL).toContain(
-    'float tested = cutoutAlpha(texel.a, vUv * vec2(textureSize(uAlbedo, 0)));',
+    'float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));',
   );
   expect(DEPTH_CUTOUT_FRAG).toContain(
-    'float alpha = cutoutAlpha(texture(uCutoutMap, vUv).a, vUv * vec2(textureSize(uCutoutMap, 0)));',
+    'float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));',
   );
 });
 

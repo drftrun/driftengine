@@ -13,6 +13,7 @@ import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
 import { MAIN_GLSL } from './main.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
+import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
 import { FULL_LIGHT_BUDGET, type LightBudget } from '../../uniformVectorBudget.ts';
 
@@ -28,7 +29,7 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in float aEmissive;
 layout(location = 4) in float aSpecular;
-layout(location = 5) in vec2 aUv;
+layout(location = 5) in vec3 aUv;
 layout(location = 6) in vec3 aEmissiveColor;
 layout(location = 7) in float aRoughness;
 layout(location = 8) in float aGrain;
@@ -146,7 +147,7 @@ out vec3 vWorldPos;
 out float vEmissive;
 out float vSpecular;
 out vec4 vLightPos;
-out vec2 vUv;
+out vec3 vUv;
 out vec3 vEmissiveColor;
 out float vRoughness;
 out float vGrain;
@@ -243,7 +244,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = aUv * uUvScale;
+  vUv = vec3(aUv.xy * uUvScale, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -511,6 +512,7 @@ export function flatFrag(options: FlatShaderOptions): string {
       /* Unconditional for the same reason, and called only where a cutoff was asked for. */
       CUTOUT_COVERAGE_GLSL,
       DRIFT_LIGHT_GLSL,
+      SURFACE_EFFECTS_GLSL,
       MAIN_GLSL,
     ].join('\n'),
     {

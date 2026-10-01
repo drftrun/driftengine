@@ -44,6 +44,33 @@ test('A PROBE READS THE SUMMED LIGHT THE WAY THE FRAME DOES, line for line', () 
       'float facing = max(dot(n, from), 0.0) + (1.0 - min(length(from), 1.0)) * 0.25;',
       'let facing = max(dot(n, towardLight), 0.0) + (1.0 - min(length(towardLight), 1.0)) * 0.25;',
     ],
+    ['return driftLightFacing(light, toward, n);', 'return driftLightFacing(light, toward, n);'],
+    /* A world's dense volume, chosen by a negative spacing: one sample a texel, light below and
+       direction above along y. */
+    [
+      'if (spacing < 0.0) return driftLightDense(world, n, -spacing);',
+      'if (spacing < 0.0) { return driftLightDense(world, n, origin, -spacing); }',
+    ],
+    [
+      'vec3 dims = vec3(float(size.x), float(size.y / 2), float(size.z));',
+      'let dims = vec3<f32>(f32(size.x), f32(size.y / 2), f32(size.z));',
+    ],
+    [
+      'vec3 at = (world + n * (0.5 * spacing) - uDriftLightOrigin.xyz) / spacing;',
+      'let at = (world + n * (0.5 * spacing) - origin.xyz) / spacing;',
+    ],
+    [
+      'if (any(lessThan(at, vec3(0.0))) || any(greaterThan(at, dims - 1.0))) return vec3(0.0);',
+      'if (any(at < vec3<f32>(0.0)) || any(at > dims - 1.0)) { return vec3<f32>(0.0); }',
+    ],
+    [
+      'vec3 uvw = (at + 0.5) / vec3(dims.x, dims.y * 2.0, dims.z);',
+      'let uvw = (at + 0.5) / vec3<f32>(dims.x, dims.y * 2.0, dims.z);',
+    ],
+    [
+      'textureLod(uDriftLightAtlas, uvw + vec3(0.0, 0.5, 0.0), 0.0)',
+      'textureSampleLevel(driftAtlas, driftSampler, uvw + vec3<f32>(0.0, 0.5, 0.0), 0.0)',
+    ],
   ];
   for (const [frame, probe] of pairs) {
     expect(glsl, 'the frame lookup changed; change the probe lookup with it').toContain(frame);

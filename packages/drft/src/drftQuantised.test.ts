@@ -151,3 +151,9 @@ test('A QUANTISED FILE CARRIES MSHQ IN PLACE OF MESH, REQUIRED, AND BOTH READERS
   });
   expect(streamed).toEqual([64, 1010]);
 });
+
+test('TEXTURE-ARRAY LAYERS ARE CARRIED EXACTLY, because a layer rounded to its neighbour is another picture', () => {
+  const mesh = strip(8, 1);
+  mesh.layers = new Float32Array([0, 1, 2, 3, 250, 251, 252, 4095]);
+  expect([...(roundTrip(mesh).layers ?? [])]).toEqual([0, 1, 2, 3, 250, 251, 252, 4095]);
+});

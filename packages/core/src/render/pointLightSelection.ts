@@ -2,6 +2,8 @@
 
 import { POINT_LIGHT_COS_INNER, POINT_LIGHT_COS_OUTER } from './clusteredLights.ts';
 import { MAX_POINT_LIGHTS, POINT_SHADOW_POOL } from './lightBudget.ts';
+import { gatherLights } from './lightGrid.ts';
+import type { LightGrid } from './lightGrid.ts';
 
 export const DEFAULT_POINT_LIGHT_VIEW_RANGE = 180;
 
@@ -43,8 +45,15 @@ const FADE_BAND_M = 40;
  */
 const CONTENTION_BAND_M = 3;
 
-/** Sort keys for the shadow list, which is ordered independently of the shaded one. */
-const shadowRank = new Float32Array(POINT_SHADOW_POOL);
+/**
+ * Sort keys for the shadow list, which is ordered independently of the shaded one.
+ *
+ * **Float64, and ties broken by source index**, the shaded list's rule. These were single precision
+ * compared against a double, so which of two lamps exactly as far away came first depended on
+ * which way the distance happened to round — and on the order the lamps were met, which is what a
+ * grid changes. Now the list is the same whatever order its candidates arrive in.
+ */
+const shadowRank = new Float64Array(POINT_SHADOW_POOL);
 
 /**
  * Every light in range this frame, by source index and squared distance, before the nearest are
@@ -345,6 +354,58 @@ export function selectPointLights(
   castY = y,
   castZ = z,
 ): void {
+  choose(sources, null, sources.length, x, y, z, out, timeSeconds, viewRange, castX, castY, castZ);
+}
+
+/**
+ * `selectPointLights` over a grid's sources, looking only at the lights near the eye: the same
+ * choice, tie for tie, for a world of thousands of fixed lights that the plain scan would visit
+ * every frame. See `lightGrid.ts` for why the result is the scan's exactly.
+ */
+export function selectGridLights(
+  grid: LightGrid,
+  x: number,
+  y: number,
+  z: number,
+  out: PointLightBuffer,
+  timeSeconds = 0,
+  viewRange = DEFAULT_POINT_LIGHT_VIEW_RANGE,
+  castX = x,
+  castY = y,
+  castZ = z,
+): void {
+  const count = gatherLights(grid, x, y, z, viewRange + grid.maxRadius);
+  choose(
+    grid.sources,
+    grid.gathered,
+    count,
+    x,
+    y,
+    z,
+    out,
+    timeSeconds,
+    viewRange,
+    castX,
+    castY,
+    castZ,
+  );
+}
+
+/** The choice itself, over every source or over the ones `visit` names, in source order. */
+function choose(
+  sources: readonly PointLightSource[],
+  visit: Int32Array | null,
+  visitCount: number,
+  x: number,
+  y: number,
+  z: number,
+  out: PointLightBuffer,
+  timeSeconds: number,
+  viewRange: number,
+  castX: number,
+  castY: number,
+  castZ: number,
+): void {
   out.count = 0;
   out.shadowCount = 0;
   /*
@@ -362,7 +423,8 @@ export function selectPointLights(
   let cutSq = Infinity;
   let candidateCount = 0;
 
-  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+  for (let visited = 0; visited < visitCount; visited++) {
+    const sourceIndex = visit === null ? visited : (visit[visited] as number);
     const light = sources[sourceIndex];
     if (light === undefined) continue;
     /*
@@ -431,7 +493,13 @@ export function selectPointLights(
     const castDistanceSq = cx * cx + cy * cy + cz * cz;
     if (castDistanceSq >= light.radius * light.radius) continue;
     let shadowSlot = out.shadowCount;
-    while (shadowSlot > 0 && (shadowRank[shadowSlot - 1] ?? 0) > castDistanceSq) shadowSlot--;
+    while (
+      shadowSlot > 0 &&
+      ((shadowRank[shadowSlot - 1] ?? 0) > castDistanceSq ||
+        ((shadowRank[shadowSlot - 1] ?? 0) === castDistanceSq &&
+          (out.shadowIndex[shadowSlot - 1] ?? -1) > sourceIndex))
+    )
+      shadowSlot--;
     if (shadowSlot >= POINT_SHADOW_POOL) continue;
     const lastShadow = Math.min(out.shadowCount, POINT_SHADOW_POOL - 1);
     for (let index = lastShadow; index > shadowSlot; index--) {

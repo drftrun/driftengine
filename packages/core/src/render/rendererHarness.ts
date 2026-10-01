@@ -72,6 +72,10 @@ export function recordingGl(
   const programFragments = new WeakMap<object, string>();
   const calls: { name: string; args: unknown[] }[] = [];
   const constants: Record<string, number> = {
+    /* The canvas's size, as a real context reports its drawing buffer; a function here made every
+       jitter and every per-pixel offset divided by it a NaN. */
+    drawingBufferWidth: 640,
+    drawingBufferHeight: 480,
     ACTIVE_UNIFORMS: 0x8b86,
     ACTIVE_ATTRIBUTES: 0x8b89,
     COMPILE_STATUS: 0x8b81,

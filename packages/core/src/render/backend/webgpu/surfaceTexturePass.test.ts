@@ -108,7 +108,7 @@ test('AN IMAGE OF ANOTHER SIZE IS COPIED WHOLE into a texture of its size, and t
   const replaced = texture.update({ width: 8, height: 2 } as unknown as TexImageSource);
 
   const descriptor = create.mock.calls.at(-1)?.[0] as GPUTextureDescriptor;
-  expect(descriptor.size).toEqual([8, 2]);
+  expect(descriptor.size, 'one layer: every surface texture is an array').toEqual([8, 2, 1]);
   /* ⌊log2 8⌋ + 1: 8, 4, 2 and 1 texels across. */
   expect(descriptor.mipLevelCount).toBe(4);
   const copy = device.queue.copyExternalImageToTexture as unknown as ReturnType<typeof vi.fn>;
@@ -127,4 +127,22 @@ test('AN IMAGE OF THE SAME SIZE GOES INTO THE TEXTURE IT HAS', () => {
   expect(texture.update({ width: 4, height: 4 } as unknown as TexImageSource)).toBeNull();
   expect(device.createTexture).toHaveBeenCalledTimes(1);
   expect(texture.view).toBe(view);
+});
+
+test('AN ARRAY COPIES EVERY IMAGE TO ITS OWN LAYER and is read as one 2d-array view', () => {
+  const { device } = fakeDevice();
+  const images = [0, 1, 2].map(() => ({ width: 4, height: 4 }) as unknown as TexImageSource);
+  const array = new GpuSurfaceTexture(device, PIPELINES, images, { mipmap: false });
+  const create = device.createTexture as unknown as ReturnType<typeof vi.fn>;
+  expect((create.mock.calls[0]?.[0] as GPUTextureDescriptor).size).toEqual([4, 4, 3]);
+  const copy = device.queue.copyExternalImageToTexture as unknown as ReturnType<typeof vi.fn>;
+  expect(copy.mock.calls.map((call) => [call[0].source, call[1].origin])).toEqual([
+    [images[0], [0, 0, 0]],
+    [images[1], [0, 0, 1]],
+    [images[2], [0, 0, 2]],
+  ]);
+  const made = create.mock.results[0]?.value as { createView: ReturnType<typeof vi.fn> };
+  expect(made.createView.mock.calls[0]?.[0]).toEqual({ dimension: '2d-array', arrayLayerCount: 3 });
+  expect(array.layers).toBe(3);
+  expect(() => array.update(images[0] as TexImageSource)).toThrow(/array of 3 layers/);
 });

@@ -69,6 +69,8 @@ function stubSurface(limits: Record<string, number> = {}, features: string[] = [
     setVertexBuffer: vi.fn(),
     setIndexBuffer: vi.fn(),
     drawIndexed: vi.fn(),
+    /* What a batch culled on the device draws with: the survivors' count is on the device. */
+    drawIndexedIndirect: vi.fn(),
     draw: vi.fn(),
     /* An inset points both of these at its rectangle and `endInset` puts them back. */
     setViewport: vi.fn(),
@@ -703,6 +705,52 @@ describe('the webgpu renderer', () => {
    * uniforms a backend can forget to bind, and an unbound one is zero, which for these is off: the
    * failure would be a setter that does nothing on one backend with no error anywhere.
    */
+  /**
+   * **The occlusion is read where the frame's jitter put it.** It is measured from the jittered
+   * depth and applied to a picture the resolve has taken the jitter out of, so read at the pixel's
+   * own uv every crevice moved by the jitter each frame: at full strength a still tower view went
+   * from 1,098 changing pixels between frames to 797 under the reconstruction, and 713 to 437 under
+   * the temporal resolve. The signs were measured as well as derived — the other x sign took the
+   * reconstruction to 1,531. A texel stands at its index plus a half less the jitter.
+   */
+  it('READS THE OCCLUSION A JITTER ON, in each resolve’s own convention', () => {
+    const run = (quality: Parameters<typeof resolveRenderQuality>[0]) => {
+      const stub = stubSurface();
+      const renderer = freshRenderer(stub, resolveRenderQuality(quality));
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const floats = new Float32Array(ringUpload(stub.device, 'post.rushUniforms'));
+      const at = (RUSH_FRAG_FIELDS['uAoOffset']?.offset ?? -4) / 4;
+      const inner = renderer as unknown as {
+        reconJitter: Float32Array;
+        temporalJitterX: number;
+        temporalJitterY: number;
+        renderWidth: number;
+        renderHeight: number;
+      };
+      return { offset: [floats[at], floats[at + 1]], inner };
+    };
+    /* The reconstruction's y is given upward and negated into the corrected matrix. */
+    const recon = run({ screenEffects: true, reconstruction: 1.5, ambientOcclusion: 0.5 });
+    const r = recon.inner;
+    expect(r.reconJitter[0], 'a frame with a jitter to take out').not.toBe(0);
+    expect(recon.offset[0]).toBeCloseTo((r.reconJitter[0] as number) / r.renderWidth, 6);
+    expect(recon.offset[1]).toBeCloseTo(-(r.reconJitter[1] as number) / r.renderHeight, 6);
+    /* The temporal resolve's goes in as it is. */
+    const taa = run({ screenEffects: true, temporalAa: true, ambientOcclusion: 0.5 });
+    const t = taa.inner;
+    expect(t.temporalJitterX, 'a frame with a jitter to take out').not.toBe(0);
+    expect(taa.offset[0]).toBeCloseTo(t.temporalJitterX / t.renderWidth, 6);
+    expect(taa.offset[1]).toBeCloseTo(t.temporalJitterY / t.renderHeight, 6);
+    /* And an unjittered frame reads it where it is. */
+    const still = run({ screenEffects: true, temporalAa: false, ambientOcclusion: 0.5 });
+    expect(still.offset).toEqual([0, 0]);
+  });
+
   it('HANDS THE VIGNETTE AND THE GRAIN TO THE COMPOSITE, and 0 takes them away again', () => {
     const stub = stubSurface();
     const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
@@ -855,6 +903,30 @@ describe('the webgpu renderer', () => {
       .find((descriptor) => descriptor.label === 'overlay.depth');
     expect(overlay, 'the overlay opened').toBeDefined();
     expect((overlay?.size as number[] | undefined)?.slice(0, 2)).toEqual([640, 480]);
+  });
+
+  it('AN INSET AFTER THE PRESENT IS MEASURED IN THE DRAWING BUFFER, and gives the whole of it back', () => {
+    /*
+     * The overlay draws on the swap image, which is the drawing buffer's size; a reconstruction
+     * draws the scene at two thirds of it. Measured against the scene's size, an interface's inset
+     * landed two thirds of the way to where it was asked for, and `endInset` left the viewport at
+     * two thirds of the canvas, so everything drawn after it shrank into the top-left corner.
+     */
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+    /* The bottom-right quarter of a 320 × 240 CSS box over a 640 × 480 buffer. */
+    renderer.beginInset({ left: 160, top: 120, width: 160, height: 120 } as DOMRect, [0, 0, 0]);
+    renderer.endInset();
+    const calls = stub.pass.setViewport.mock.calls.map((c) => c.slice(0, 4));
+    expect(calls.slice(-2)).toEqual([
+      [320, 240, 320, 240],
+      [0, 0, 640, 480],
+    ]);
   });
 
   it('draws everything at the drawing buffer when no reconstruction was asked for', () => {
@@ -1205,6 +1277,40 @@ describe('the webgpu renderer', () => {
     expect(passesFor(0)).not.toContain('recon.late');
   });
 
+  /*
+   * **Unless it says it moves with what it lies on.** A glow on a wall, a pane in a window: its one
+   * motion is the surface's, so the resolve can reconstruct it with the surface — jittered, at the
+   * render size — and it never meets the late pass's question of whether a jittered edge covered
+   * an unjittered pixel, which it answered differently every frame.
+   */
+  it('RECONSTRUCTS A TRANSLUCENT SURFACE THAT MOVES WITH WHAT IT LIES ON, rather than drawing it late', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const batch = renderer.createInstanced(mesh, 1);
+    const one = createMeshInstances(1);
+    one.count = 1;
+    one.models.set(mat4.create());
+    renderer.uploadInstanced(batch, one);
+    stub.pass.drawIndexed.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { additive: true, reconstructed: true });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { reconstructed: true });
+    renderer.drawTranslucentInstanced(batch, one, 0.5, { reconstructed: true });
+    renderer.endFrame();
+    const passes = stub.encoder.beginRenderPass.mock.calls.map(([d]) => String(d.label ?? ''));
+    expect(passes, 'nothing is left for the late pass to draw').not.toContain('recon.late');
+    expect(
+      stub.pass.drawIndexed.mock.calls.length,
+      'and all three are drawn',
+    ).toBeGreaterThanOrEqual(3);
+  });
+
   it('runs the motion pass even when nothing moved, because its clear is what it is for', () => {
     const stub = stubSurface();
     const renderer = freshRenderer(
@@ -1347,6 +1453,46 @@ describe('the webgpu renderer', () => {
     renderer.setBloom(0.5);
     frame();
     expect(threshold(), 'a scale alone leaves the threshold where it was').toBe(0.25);
+  });
+
+  /**
+   * **A reconstruction's bloom is the resolved picture's, at the drawing buffer's size.** Read off
+   * the scene target instead, it bloomed the jittered render: a lamp's bulb smaller than a render
+   * texel is caught in some phases and missed in others, and its halo — wide, and over everything
+   * round it — flashed with it. Measured on a night street: a panel's luma swinging 113 to 119 frame
+   * to frame where the native frame held 117.
+   */
+  it('BLOOMS THE RESOLVED PICTURE WHILE RECONSTRUCTING, not the jittered render', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5, bloom: 1, hdrScene: true }),
+    );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+
+    const level0 = stub.device.createTexture.mock.calls
+      .map(([descriptor]) => descriptor)
+      .filter((descriptor) => descriptor.label === 'post.bloom0')
+      .at(-1);
+    /* Half of 640 by 480, not half of the 427 by 320 the scene is drawn at. */
+    expect(level0?.size).toEqual([320, 240]);
+    const group0 = stub.device.createBindGroup.mock.calls
+      .map(([descriptor]) => descriptor as GPUBindGroupDescriptor)
+      .filter((descriptor) => descriptor.label === 'post.bloomGroup0')
+      .at(-1);
+    const sources = [...(group0?.entries ?? [])].map(
+      (entry) => (entry.resource as { label?: string }).label,
+    );
+    expect(sources, 'the resolved picture').toContain('recon.shown');
+    expect(sources).not.toContain('post.sceneColor');
+    /* And the prefilter steps across the picture it reads. */
+    const at = (BLOOM_PREFILTER_FIELDS['uTexel']?.offset ?? -1) / 4;
+    const block = stub.device.queue.writeBuffer.mock.calls
+      .filter((call) => (call[0] as { label?: string }).label === 'post.bloomUniforms')
+      .at(-1);
+    const texel = new Float32Array(block?.[2] as ArrayBuffer).subarray(at, at + 2);
+    expect(Array.from(texel)).toEqual([Math.fround(1 / 640), Math.fround(1 / 480)]);
   });
 
   it('builds the whole bloom pyramid rather than only its first level', () => {
@@ -2941,6 +3087,46 @@ describe('the webgpu renderer', () => {
 
     expect(floats[grain]).toBeCloseTo(0.25);
     expect(floats[slotFloats + grain]).toBeCloseTo(0.75);
+  });
+
+  /**
+   * **Added light fades in the medium; it is never mixed toward the medium's colour.** Mixed and
+   * then added, a glow puts the haze into the frame a second time — grey cones under every street
+   * lamp on a hazy morning. See `drawFog.ts`. The shader fades where `uFogEnabled` is 2, so each
+   * draw's own material slot has to say so, single and instanced, and the pass's own 1 has to come
+   * back for the draw after.
+   */
+  it('ADDS LIGHT THAT FADES IN THE MEDIUM, single and instanced, and puts the surface rule back', () => {
+    const { surface, device } = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const batch = renderer.createInstanced(mesh, 2);
+    const placed = createMeshInstances(2);
+    placed.count = 1;
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { additive: true });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { additive: true, fog: false });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1);
+    renderer.drawTranslucentInstanced(batch, placed, 1, { additive: true });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1);
+    renderer.endFrame();
+
+    const upload = device.queue.writeBuffer.mock.calls
+      .filter((call: unknown[]) => (call[0] as { label?: string }).label === 'flat.fragRing')
+      .at(-1);
+    const ints = new Int32Array(upload?.[2] as ArrayBuffer);
+    const bindings = flatFragmentBindings(variantFor(quality));
+    const fog = (bindings.fields['uFogEnabled']?.offset ?? 0) / 4;
+    const slotInts = (Math.ceil(bindings.uniformSize / 256) * 256) / 4;
+    /* Each draw with options of its own takes a slot, and so does the plain draw after it. */
+    expect(
+      [0, 1, 2, 3, 4].map((slot) => ints[slot * slotInts + fog]),
+      'faded, out of the medium, a surface, faded, a surface',
+    ).toEqual([2, 0, 1, 2, 1]);
   });
 
   /**
@@ -7507,4 +7693,184 @@ it('EVERY PANE ON A RAY COUNTS, WHICHEVER WAY IT FACES: the sun s tint culls not
     .filter((descriptor) => String(descriptor.label ?? '').startsWith('glass-tint'));
   expect(tinted.length).toBeGreaterThan(0);
   expect(tinted.map((d) => d.primitive?.cullMode)).toEqual(tinted.map(() => 'none'));
+});
+
+/**
+ * **A batch too small to repay a per-instance cull is drawn whole once its box is seen**, on both
+ * backends and by one rule (`cullsInstances`).
+ *
+ * A device cull costs an indirect draw, and Chrome validates each one in its GPU process: measured
+ * at 8 µs apiece in a city whose six hundred small prop batches took one each, a third of that frame.
+ * WebGL2's twin culls on the CPU and uploads the survivors, which for four instances costs more than
+ * drawing the two it would drop. Half of each batch below stands outside the view, so a batch still
+ * culled instance by instance draws half and one drawn whole draws all of it.
+ */
+describe('instance culls, by the size of the batch', () => {
+  function placeHalfOutside(count: number) {
+    const data = createMeshInstances(count);
+    data.count = count;
+    for (let i = 0; i < count; i++) {
+      const m = i * 16;
+      data.models[m] = 1;
+      data.models[m + 5] = 1;
+      data.models[m + 10] = 1;
+      data.models[m + 15] = 1;
+      /* The view is the unit cube: the first half at its middle, the second fifty units right. */
+      data.models[m + 12] = i < count / 2 ? 0 : 50;
+      data.models[m + 14] = 0.5;
+    }
+    return data;
+  }
+
+  /**
+   * One triangle, its three indices repeated `times` over: a mesh as heavy as asked, so the size of
+   * a batch can come from its mesh rather than from how many instances it holds.
+   */
+  function triangles(times: number) {
+    const indices = new Uint32Array(times * 3);
+    for (let i = 0; i < indices.length; i++) indices[i] = i % 3;
+    return {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices,
+    } as never;
+  }
+
+  /*
+   * Four instances of three indices are twelve: drawn whole. Eight of three thousand are
+   * twenty-four thousand: culled — and a rule reading only the instances, or only the mesh, would
+   * draw that one whole too.
+   */
+  it('A BATCH TOO SMALL TO REPAY A DEVICE CULL DRAWS WHOLE, and a heavy one is still culled on the device', () => {
+    const stub = stubSurface({ maxSampledTexturesPerShaderStage: 48 });
+    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({}));
+    const light = renderer.createMesh(triangles(1));
+    const heavy = renderer.createMesh(triangles(1000));
+    const { camera, env } = stubScene();
+    const small = placeHalfOutside(4);
+    const few = placeHalfOutside(8);
+    const smallBatch = renderer.createInstanced(light, 4, { cull: true });
+    const heavyBatch = renderer.createInstanced(heavy, 8, { cull: true });
+    renderer.uploadInstanced(smallBatch, small);
+    renderer.uploadInstanced(heavyBatch, few);
+    stub.pass.drawIndexed.mockClear();
+    stub.pass.drawIndexedIndirect.mockClear();
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawInstanced(smallBatch, small);
+    renderer.drawInstanced(heavyBatch, few);
+    renderer.endFrame();
+
+    expect(
+      stub.pass.drawIndexed.mock.calls.filter((c) => c[0] === 3 && c[1] === 4).length,
+      'the small batch is drawn directly, every instance of it',
+    ).toBe(1);
+    expect(
+      stub.pass.drawIndexedIndirect.mock.calls.length,
+      'and only the heavy one takes an indirect draw',
+    ).toBe(1);
+  });
+
+  it('A BATCH TOO SMALL TO REPAY A CPU CULL DRAWS WHOLE ON WEBGL2, and a heavy one keeps its survivors', () => {
+    const recording = recordingGl();
+    const renderer = new WebGL2Renderer(recording.canvas, resolveRenderQuality({}));
+    const light = renderer.createMesh(triangles(1));
+    const heavy = renderer.createMesh(triangles(1000));
+    const { camera, env } = stubScene();
+    const small = placeHalfOutside(4);
+    const few = placeHalfOutside(8);
+    const smallBatch = renderer.createInstanced(light, 4, { cull: true });
+    const heavyBatch = renderer.createInstanced(heavy, 8, { cull: true });
+    renderer.uploadInstanced(smallBatch, small);
+    renderer.uploadInstanced(heavyBatch, few);
+    recording.calls.length = 0;
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawInstanced(smallBatch, small);
+    renderer.drawInstanced(heavyBatch, few);
+    renderer.endFrame();
+
+    const instances = recording.calls
+      .filter((c) => c.name === 'drawElementsInstanced')
+      .map((c) => c.args[4]);
+    expect(instances, 'the small batch whole, the heavy one halved by its cull').toEqual([4, 4]);
+  });
+});
+
+/**
+ * **A mesh pass bound after the present is the interface's, and the interface is not jittered.**
+ *
+ * A consumer draws its interface after `endFrame` so it escapes the post chain, and text and insets
+ * reach the pass through `bindMeshPass` like everything else. That bind re-decided the frame's
+ * sub-pixel jitter: the interface was drawn jittered with no resolve after it, so a map, a marker
+ * and every edge of it moved by a fraction of a pixel each frame; and it opened a second temporal
+ * frame, so every consumer drawing an interface stepped the jitter sequence twice a frame, the world
+ * saw every other position, and the anti-flicker's period — which starts where the index is a whole
+ * number of periods — never started at all.
+ */
+describe('a mesh pass after the present', () => {
+  const unjittered = (renderer: object): boolean => {
+    const r = renderer as unknown as { viewProj: Float32Array; correctedViewProj: Float32Array };
+    return Array.from(r.viewProj).every((v, i) => v === r.correctedViewProj[i]);
+  };
+
+  it('A MESH PASS AFTER THE PRESENT IS NOT JITTERED ON WEBGPU, and opens no second temporal frame', () => {
+    const stub = stubSurface();
+    const renderer = new WebGPURenderer(
+      stub.surface,
+      resolveRenderQuality({ screenEffects: true, temporalAa: true }),
+    );
+    const { camera, env } = stubScene();
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+      renderer.bindMeshPass(camera, env);
+      expect(unjittered(renderer), `the interface of frame ${frame} is drawn unjittered`).toBe(
+        true,
+      );
+    }
+    const history = (renderer as unknown as { temporalHistory: { frameIndex: number } })
+      .temporalHistory;
+    expect(history.frameIndex, 'two frames, two temporal frames').toBe(2);
+  });
+
+  it('A MESH PASS AFTER THE PRESENT IS NOT JITTERED UNDER RECONSTRUCTION', () => {
+    const stub = stubSurface();
+    const renderer = new WebGPURenderer(
+      stub.surface,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    renderer.bindMeshPass(camera, env);
+    expect(unjittered(renderer)).toBe(true);
+  });
+
+  it('A MESH PASS AFTER THE PRESENT IS NOT JITTERED ON WEBGL2, and opens no second temporal frame', () => {
+    const renderer = new WebGL2Renderer(
+      recordingGl().canvas,
+      resolveRenderQuality({ screenEffects: true, temporalAa: true }),
+    );
+    const { camera, env } = stubScene();
+    const r = renderer as unknown as {
+      temporalJittering: boolean;
+      temporalHistory: { frameIndex: number };
+    };
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      expect(r.temporalJittering, 'the world is jittered').toBe(true);
+      renderer.endFrame();
+      renderer.bindMeshPass(camera, env);
+      expect(r.temporalJittering, `the interface of frame ${frame} is not`).toBe(false);
+    }
+    expect(r.temporalHistory.frameIndex, 'two frames, two temporal frames').toBe(2);
+  });
 });

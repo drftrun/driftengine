@@ -9,6 +9,12 @@ import { createEnvironment } from './renderer.ts';
 import { Camera } from '../../camera.ts';
 import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
+import {
+  EMISSIVE_TEXTURE_UNIT,
+  NORMAL_TEXTURE_UNIT,
+  ORM_TEXTURE_UNIT,
+  SURFACE_TEXTURE_UNIT,
+} from '../../lightBudget.ts';
 import { createMeshInstances } from '../../instances.ts';
 
 /**
@@ -1283,4 +1289,173 @@ test('EVERY PANE ON A RAY COUNTS, WHICHEVER WAY IT FACES: the sun s tint culls n
     .filter((c) => (c.name === 'enable' || c.name === 'disable') && c.args[0] === CULL_FACE)
     .at(-1);
   expect(culling?.name, 'culling is off when the pane is drawn into the tint').toBe('disable');
+});
+
+/**
+ * **A material setter reaches every flat program, not only the plain one.**
+ *
+ * An instanced draw and a skinned one each run a program of their own, and material state has to
+ * be in all of them — `setMaterial` has written every flat program since skinning landed, for that
+ * reason. The scalar setters beside it wrote the plain program alone, so on this backend an
+ * instanced batch drew with the pass defaults whatever the caller set: grain full, no reflection,
+ * no relief. The other backend keeps material state in one block every variant reads, so the two
+ * disagreed about every batch that asked for any of it, and nothing failed.
+ *
+ * Counted by which programs each uniform was written into, walked off the recording.
+ */
+test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears what its caller set', () => {
+  const names = [
+    'uReflectivity',
+    'uEnvironmentGain',
+    'uGrain',
+    'uRelief',
+    'uReliefCycles',
+    'uTextureRelief',
+    'uEmissiveGain',
+    'uWriteMode',
+  ];
+  const { canvas, calls } = recordingGl({ uniforms: names });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+  /* The instanced program is compiled on first use; a batch is what asks for it. */
+  renderer.createInstanced(new Mesh(gl, GEOMETRY), 1);
+  calls.length = 0;
+
+  renderer.setSurfaceReflectivity(0.5);
+  renderer.setEnvironmentGain(2);
+  renderer.setSurfaceGrain(0.25);
+  renderer.setSurfaceRelief(0.5, 30);
+  renderer.setSurfaceTextureRelief(1.5);
+  renderer.setEmissiveGain(3);
+  renderer.setDitherFade(0.4);
+
+  const programsBy = new Map<string, Set<unknown>>();
+  let current: unknown = null;
+  for (const call of calls) {
+    if (call.name === 'useProgram') current = call.args[0];
+    if (call.name !== 'uniform1f' && call.name !== 'uniform2f') continue;
+    const name = (call.args[0] as { name?: string } | null)?.name ?? '';
+    const seen = programsBy.get(name) ?? new Set<unknown>();
+    seen.add(current);
+    programsBy.set(name, seen);
+  }
+  for (const name of names) {
+    expect(programsBy.get(name)?.size ?? 0, `${name} is written into both flat programs`).toBe(2);
+  }
+});
+
+/**
+ * **A material with no maps leaves an array bound on every surface unit, not nothing.**
+ *
+ * Every surface map has been a `sampler2DArray` since texture arrays landed, and a sampler reads the
+ * unit's *array* target. The stand-ins stayed 2D: a material with no normal, ORM or emissive map
+ * bound an empty 2D texture on a unit the shader reads as an array, and one with no albedo bound
+ * nothing at all — so those samplers were incomplete, which is the state `emptyTexture.ts` records
+ * page-faulting an RDNA4 card when a driver fetched the descriptor ahead of the branch that skips
+ * the read.
+ */
+test('A MATERIAL WITH NO MAPS LEAVES AN ARRAY STAND-IN ON EVERY SURFACE UNIT', () => {
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+  calls.length = 0;
+  renderer.setMaterial({ roughnessScale: 0.5 });
+
+  const arrayOn = new Map<number, unknown>();
+  let unit = 0;
+  for (const call of calls) {
+    if (call.name === 'activeTexture') unit = (call.args[0] as number) - gl.TEXTURE0;
+    if (call.name === 'bindTexture' && call.args[0] === gl.TEXTURE_2D_ARRAY) {
+      arrayOn.set(unit, call.args[1]);
+    }
+  }
+  for (const [name, at] of [
+    ['albedo', SURFACE_TEXTURE_UNIT],
+    ['normal', NORMAL_TEXTURE_UNIT],
+    ['ORM', ORM_TEXTURE_UNIT],
+    ['emissive', EMISSIVE_TEXTURE_UNIT],
+  ] as const) {
+    expect(arrayOn.get(at), `the ${name} unit holds an array`).toBeTruthy();
+  }
+});
+
+/**
+ * **Added light fades in the medium, and this backend says so as the other does.** The shader
+ * fades where `uFogEnabled` is 2 (see `drawFog.ts`): a glow mixed toward the medium and then added
+ * puts the haze into the frame a second time. Each additive draw, single or instanced, writes 2 and
+ * hands the pass's 1 back; an additive draw kept out of the medium writes 0.
+ */
+test('ADDS LIGHT THAT FADES IN THE MEDIUM, single and instanced, and puts the surface rule back', () => {
+  const { gl, canvas, calls } = recordingGl({ uniforms: ['uFogEnabled'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const batch = renderer.createInstanced(mesh, 2);
+  const placed = createMeshInstances(2);
+  placed.count = 1;
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, createEnvironment());
+  const start = calls.length;
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { additive: true });
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { additive: true, fog: false });
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1);
+  renderer.drawTranslucentInstanced(batch, placed, 1, { additive: true });
+  const written = calls
+    .slice(start)
+    .filter(
+      (call) =>
+        call.name === 'uniform1i' &&
+        (call.args[0] as { name?: string } | null)?.name === 'uFogEnabled',
+    )
+    .map((call) => call.args[1]);
+  expect(written, 'faded and back, out and back, nothing, faded and back').toEqual([
+    2, 1, 0, 1, 2, 1,
+  ]);
+});
+
+/**
+ * **The occlusion is read where the frame's jitter put it, as on the other backend.** Measured from
+ * the jittered depth and applied after the temporal resolve took the jitter out, it moved by the
+ * jitter every frame at every crevice. A texel stands at its index plus a half less the jitter, in
+ * the drawing buffer the jitter was spread over.
+ */
+test('READS THE OCCLUSION A JITTER ON under the temporal resolve, and where it is without one', () => {
+  const offsetOf = (temporalAa: boolean) => {
+    const { gl, canvas, calls } = recordingGl({
+      extensions: ['EXT_color_buffer_float'],
+      uniforms: ['uAoOffset'],
+    });
+    const renderer = new Renderer(
+      canvas,
+      resolveRenderQuality({ screenEffects: true, temporalAa, ambientOcclusion: 0.5 }),
+    );
+    const mesh = new Mesh(gl, GEOMETRY);
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, createEnvironment());
+    renderer.drawMesh(mesh, mat4.create());
+    const start = calls.length;
+    renderer.endFrame();
+    const written = calls
+      .slice(start)
+      .filter(
+        (call) =>
+          call.name === 'uniform2f' &&
+          (call.args[0] as { name?: string } | null)?.name === 'uAoOffset',
+      )
+      .at(-1);
+    const inner = renderer as unknown as { temporalJitterX: number; temporalJitterY: number };
+    return {
+      offset: [written?.args[1], written?.args[2]],
+      jitter: [inner.temporalJitterX, inner.temporalJitterY],
+      size: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+    };
+  };
+  const taa = offsetOf(true);
+  expect(taa.jitter[0], 'a frame with a jitter to take out').not.toBe(0);
+  expect(taa.offset[0]).toBeCloseTo((taa.jitter[0] as number) / (taa.size[0] as number), 9);
+  expect(taa.offset[1]).toBeCloseTo((taa.jitter[1] as number) / (taa.size[1] as number), 9);
+  expect(offsetOf(false).offset).toEqual([0, 0]);
 });

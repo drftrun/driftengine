@@ -1,5 +1,6 @@
 import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
+import { FOG_RECEDE, fogModeOf } from '../drawFog.ts';
 import { mat4 } from 'gl-matrix';
 import {
   GL_DEPTH_REMAP,
@@ -49,6 +50,7 @@ import { TranslucentQueue } from '../../translucentQueue.ts';
 import { createFrustum, frustumFromViewProjection } from '../../../math/frustum.ts';
 import type { Frustum } from '../../../math/frustum.ts';
 import type { Bounds } from '../../../math/bounds.ts';
+import { batchBoxVisible, cullsInstances } from '../../instanceCull.ts';
 import { OcclusionBuffer } from '../../occlusion.ts';
 import { boundsVisible } from '../../visibility.ts';
 import { createPassRegistry, drainRegistry, passAt, registerIn, unregisterIn } from '../../pass.ts';
@@ -93,6 +95,10 @@ import {
 } from '../../emptyTexture.ts';
 import { LightField } from '../../driftLight/lightField.ts';
 import type { LightFieldOptions, LightFieldSource } from '../../driftLight/lightField.ts';
+import type { DriftLightVolumes } from '../../driftLight/presence.ts';
+import type { DenseLightVolume } from '../../driftLight/denseField.ts';
+import { WorldLightField } from '../../driftLight/worldLightField.ts';
+import type { WorldLightFieldOptions } from '../../driftLight/worldLightField.ts';
 import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/uniforms.ts';
 
 /**
@@ -129,6 +135,8 @@ import { ProbeSweeps } from '../../probeSweeps.ts';
 import { octahedralEdgeFor } from '../../prefilterEnvMap.ts';
 import { EnvironmentPrefilterPass } from '../../prefilterPass.ts';
 import { packIesAtlas } from '../../iesProfile.ts';
+import { fixtureAtlasLayout, fixtureAtlasTexels } from '../../fixtureAtlas.ts';
+import { resolveSurfaceScene } from '../../surfaceScene.ts';
 import type { AreaLightBuffer, AreaLightSource } from '../../areaLights.ts';
 import { MAX_AREA_LIGHTS } from '../../areaLights.ts';
 import {
@@ -182,12 +190,12 @@ import {
   ENVIRONMENT_TEXTURE_UNIT,
   SURFACE_TEXTURE_UNIT,
   bindPointLights,
-  COOKIE_ATLAS_TEXTURE_UNIT,
   REFRACT_SCENE_TEXTURE_UNIT,
   DRIFT_LIGHT_ATLAS_TEXTURE_UNIT,
   DRIFT_LIGHT_INDEX_TEXTURE_UNIT,
   COOKIE_TILE,
-  IES_ATLAS_TEXTURE_UNIT,
+  FIXTURE_ATLAS_TEXTURE_UNIT,
+  SURFACE_EFFECTS_TEXTURE_UNIT,
   bindAreaLights,
   bindAreaShadows,
   openCones,
@@ -244,7 +252,7 @@ import type { WindStreakOptions } from '../../windStreakRenderer.ts';
 import type { WindField } from '../../windField.ts';
 import type { FlockParams } from '../../flockRenderer.ts';
 import { InstancedBatch } from './instanced.ts';
-import type { MeshInstances } from '../../instances.ts';
+import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
 import type { CutoutCaster } from '../../cutoutCaster.ts';
 import type { SurfaceTextureHandle } from '../api.ts';
@@ -296,6 +304,29 @@ export interface Environment extends Atmosphere {
    * how strongly.
    */
   nightFactor: number;
+  /**
+   * Seconds on the caller's clock, for the surfaces that animate — a sign's pulse, a ticker's
+   * scroll, a flipbook. The caller's rather than a clock read here, so a held clock holds every
+   * surface still and a replay replays them. 0 unless stated.
+   */
+  surfaceTime?: number;
+  /**
+   * How wet the world is, 0 to 1: upward surfaces darken and polish, except materials that say
+   * they stay dry. The scene-wide counterpart of `drawFilm`, which stays for a puddle. 0 unless
+   * stated.
+   */
+  wetness?: number;
+  /**
+   * The share of facade windows lit, 0 to 1, which a scene sets from its time of day. Windows switch
+   * on in steps by a per-window hash, so a rising share lights more windows rather than brightening
+   * the ones already lit. 0 unless stated.
+   */
+  litWindows?: number;
+  /**
+   * The share of windows that stay lit however late it gets, 0 to 1, so the small hours are not a
+   * dark city. 0 unless stated.
+   */
+  lateWindows?: number;
   /**
    * Emission that only shows where the dominant light does not reach, 0 and off by default.
    *
@@ -556,6 +587,8 @@ export { MAX_DEPTH_LAYER } from '../../depthConvention.ts';
 
 /** The identity tint, handed back after any draw that asked for one. See `drawMesh`. */
 const WHITE_TINT = new Float32Array([1, 1, 1]);
+/** The lit stage's clip plane when there is no mirror: zero, which clips nothing. */
+const NO_CLIP_PLANE = new Float32Array(4);
 
 /**
  * What a film should do beyond shimmering, which until now was nothing.
@@ -707,6 +740,31 @@ export interface LightVolumeDrawOptions {
  * boolean is refused everywhere else in this file.
  */
 export interface TranslucentMeshOptions {
+  /**
+   * Add this surface's light to what is behind it instead of covering it: a glow, a beam, a pool
+   * of light under a lamp. Its colour times its opacity is added and nothing is darkened, so black
+   * is invisible and overlapping glows brighten — which is why such surfaces are authored nearly
+   * black where they fade. **Order does not matter** to a sum, so an additive draw is never held
+   * for the order-independent pass; it is drawn where it is asked for. Write depth off with it
+   * (`depthWrite: false`) or a glow hides the glows behind it.
+   */
+  /**
+   * Drawn into the picture a reconstruction resolves, rather than after it. For a surface that
+   * moves with what it lies on — a glow on a wall, a pane in a window — whose one motion is that
+   * surface's, so the resolve can carry it with the surface.
+   *
+   * **Late is the default, and it is right for anything else.** A translucent surface writes no
+   * depth the motion pass could test and may move apart from what shows through it — a caption
+   * over a moving car — so a history can only smear it; after the upscale it is sharp and has none.
+   * **What late gives up** is the edge: drawn unjittered against a depth the jittered render
+   * covered, it meets a silhouette the render drew differently every frame, and a glow along an
+   * edge is let through on one frame and not the next. Reconstructed, it is resolved with the edge.
+   *
+   * Only a reconstructing frame draws anything late, so this changes nothing on WebGL2 or with
+   * `reconstruction` off. An order-independent blended set replays where it replays.
+   */
+  readonly reconstructed?: boolean;
+  readonly additive?: boolean;
   /**
    * `false` draws the mesh exactly its own vertex colour times its own texture, with no
    * ambient, sun, point lights, specular, reflectivity, grain or emissive touching it —
@@ -1136,7 +1194,7 @@ export class WebGL2Renderer implements RendererApi {
   private readonly emptyDriftIndex: WebGLTexture;
   private readonly emptyDriftAtlas: WebGLTexture;
   /** The scene's DriftLight field, and its two volumes once it is whole. See `createLightField`. */
-  private lightField: LightField | null = null;
+  private lightField: DriftLightVolumes | null = null;
   private driftIndex: WebGLTexture | null = null;
   private driftAtlas: WebGLTexture | null = null;
   private readonly driftUniforms = createDriftLightUniforms();
@@ -1183,6 +1241,11 @@ export class WebGL2Renderer implements RendererApi {
   private oitActive = false;
   /** True while the queue is being replayed, so a replayed draw does not record itself again. */
   private oitReplaying = false;
+  /** `uSurfaceScene`, resolved once a pass. See `surfaceScene.ts`. */
+  private readonly surfaceScene = new Float32Array(4);
+  /** The two halves of `uWriteMode`, kept here because a `vec2` is written whole. */
+  private oitWeight = 0;
+  private ditherFade = 0;
   /** Said once, not per frame, where the context cannot give the float target the sum needs. */
   private oitRefused = false;
   /** Said once for the whole renderer. See `refuseOitMultisampled`. */
@@ -1288,6 +1351,8 @@ export class WebGL2Renderer implements RendererApi {
   private readonly taaDepthToViewZ = Float32Array.of(0, 0, 0, 1);
   private readonly aoInvProjection = mat4.create();
   private readonly aoProjScale = new Float32Array(2);
+  /** Where this frame's jitter put the occlusion, in the composite's uv. See `uAoOffset`. */
+  private readonly aoOffset = new Float32Array(2);
   /**
    * Whether this frame has already been resolved to the canvas.
    *
@@ -1379,12 +1444,15 @@ export class WebGL2Renderer implements RendererApi {
    * world. See `prepareStaticPointShadows`.
    */
   private pointShadowArray: PointShadowArray | null = null;
-  /** The photometric atlas, allocated on first use. See `setIesProfiles`. */
-  private iesTexture: WebGLTexture | null = null;
-  /** Rows in that atlas. One until a consumer loads a profile, which is the row of ones. */
+  /** The fixture atlas — cookies over profiles — allocated on first use. See `fixtureAtlas.ts`. */
+  private fixtureTexture: WebGLTexture | null = null;
+  /** The profiles as packed, kept so a new set of cookies can rebuild the atlas around them. */
+  private iesAtlas = packIesAtlas([]);
+  /** The cookie images, kept so a new set of profiles can rebuild the atlas around them. */
+  private cookieImages: readonly TexImageSource[] = [];
+  /** Rows of profile in the atlas. One until a consumer loads a profile, which is the row of ones. */
   private iesRows = 1;
-  private cookieTexture: WebGLTexture | null = null;
-  /** Tiles in the cookie atlas. 0 is the white placeholder and the whole off path. */
+  /** Cookie tiles in the atlas. 0 is none, and the whole off path. */
   private cookieTiles = 0;
   /** Horizontal planes each profile occupies. 1 unless something asymmetric was loaded. */
   private iesPlanes = 1;
@@ -1701,7 +1769,7 @@ export class WebGL2Renderer implements RendererApi {
       if (cutout !== null) {
         gl.useProgram(this.depthInstancedCutoutProgram);
         this.bindCutoutDepth(this.depthInstancedCutoutUniforms, cutout);
-        gpuBatch.mesh.drawInstances(gl, count);
+        gpuBatch.draw(gl, count);
         if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
         gl.useProgram(this.depthProgram);
         this.restoreSurfaceTextureUnit();
@@ -1712,7 +1780,7 @@ export class WebGL2Renderer implements RendererApi {
       gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
       gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
       if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
-      gpuBatch.mesh.drawInstances(gl, count);
+      gpuBatch.draw(gl, count);
       if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       gl.useProgram(this.depthProgram);
     },
@@ -1991,6 +2059,14 @@ export class WebGL2Renderer implements RendererApi {
     return this.occlusion?.occluded(bounds, model) ?? false;
   }
 
+  /**
+   * Whether a world-space box is wholly behind the declared occluders — the tighter question for
+   * something that is a box, such as a region. False with no occlusion buffer. See `occluded`.
+   */
+  occludedBox(min: ArrayLike<number>, max: ArrayLike<number>): boolean {
+    return this.occlusion?.occludedBox(min, max) ?? false;
+  }
+
   /* -- Registered passes ---------------------------------------------------------------- */
 
   private readonly passes: PassRegistry = createPassRegistry();
@@ -2181,106 +2257,67 @@ export class WebGL2Renderer implements RendererApi {
    * `createSurfaceTexture` and the material maps take.
    */
   setSpotCookies(images: readonly TexImageSource[]): void {
-    const { gl } = this;
-    this.cookieTiles = images.length;
-    if (this.cookieTexture === null) this.cookieTexture = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE0 + COOKIE_ATLAS_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.cookieTexture);
-    if (images.length === 0) {
-      /* White, not black: this multiplies a light's colour. */
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA8,
-        1,
-        1,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        new Uint8Array([255, 255, 255, 255]),
-      );
-    } else {
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA8,
-        COOKIE_TILE * images.length,
-        COOKIE_TILE,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        null,
-      );
-      for (let tile = 0; tile < images.length; tile++) {
-        const image = images[tile];
-        if (image === undefined) continue;
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, tile * COOKIE_TILE, 0, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      }
-    }
-    /* Linear and clamped: a cookie is an image, and the shader's own inset is what keeps a tile
-       from reaching its neighbour — clamping alone cannot, the seam being interior to the row. */
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.activeTexture(gl.TEXTURE0);
+    this.cookieImages = images.slice();
+    this.buildFixtureAtlas();
   }
 
   setIesProfiles(profiles: readonly PhotometricProfile[]): void {
+    this.iesAtlas = packIesAtlas(profiles);
+    this.buildFixtureAtlas();
+  }
+
+  /**
+   * The fixture atlas from the profiles and cookies in hand: the profiles' rows at the bottom, the
+   * cookies' tiles on top, one `RGBA16F` texture. See `fixtureAtlas.ts` for the layout.
+   *
+   * **Half float, matching what the other backend must use**: a 32-bit float texture is not
+   * filterable in core WebGPU, and both tables are curves and images that want linear filtering.
+   * Linear and clamped: a profile is sampled between two angles, and a cookie's own inset is what
+   * keeps a tile from its neighbour — clamping alone cannot, the seam being interior to the row.
+   */
+  private buildFixtureAtlas(): void {
     const { gl } = this;
-    const atlas = packIesAtlas(profiles);
-    if (this.iesTexture === null) this.iesTexture = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE0 + IES_ATLAS_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.iesTexture);
-    /*
-     * `LINEAR` across a row and clamped, unlike the froxel table's `NEAREST`. This one *is* a
-     * curve rather than data addressed by index: interpolating between two columns is sampling
-     * the distribution between two angles, which is exactly what is wanted, and clamping stops a
-     * row bleeding into its neighbour at the edges.
-     */
+    const layout = fixtureAtlasLayout(this.iesAtlas.height, this.cookieImages.length);
+    if (this.fixtureTexture === null) this.fixtureTexture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + FIXTURE_ATLAS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.fixtureTexture);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA16F,
+      layout.width,
+      layout.height,
+      0,
+      gl.RGBA,
+      gl.FLOAT,
+      fixtureAtlasTexels(layout, this.iesAtlas),
+    );
+    for (let tile = 0; tile < this.cookieImages.length; tile++) {
+      const image = this.cookieImages[tile];
+      if (image === undefined) continue;
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, tile * COOKIE_TILE, 0, gl.RGBA, gl.HALF_FLOAT, image);
+    }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    /*
-     * One channel, because a row holds one number per angle and the other three would be three
-     * quarters of the upload spent on nothing — and **half float rather than full**, matching what
-     * the other backend must use: a 32-bit float texture is not filterable in core WebGPU, and this
-     * row is a curve that wants linear filtering. Keeping the two formats the same is the
-     * 2026-08-13 rule rather than tidiness; the driver converts the float data on the way in.
-     */
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R16F,
-      atlas.width,
-      atlas.height,
-      0,
-      gl.RED,
-      gl.FLOAT,
-      atlas.data,
-    );
-    this.iesRows = atlas.height;
-    this.iesPlanes = atlas.planes;
+    this.iesRows = this.iesAtlas.height;
+    this.iesPlanes = this.iesAtlas.planes;
+    this.cookieTiles = this.cookieImages.length;
     gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
-  /** Bind the atlas and say how many rows it has. Always, for the reason `bindClusters` gives. */
+  /** Bind the fixture atlas and say what is in it. Always, for the reason `bindClusters` gives. */
   private bindIesAtlas(u: Record<string, WebGLUniformLocation>): void {
     const { gl } = this;
-    if (this.iesTexture === null) this.setIesProfiles([]);
-    gl.activeTexture(gl.TEXTURE0 + IES_ATLAS_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.iesTexture);
-    gl.uniform1i(u['uIesAtlas'] ?? null, IES_ATLAS_TEXTURE_UNIT);
+    /* Built on demand rather than at construction, for the reason the grade's placeholder is. */
+    if (this.fixtureTexture === null) this.buildFixtureAtlas();
+    gl.activeTexture(gl.TEXTURE0 + FIXTURE_ATLAS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.fixtureTexture);
+    gl.uniform1i(u['uFixtureAtlas'] ?? null, FIXTURE_ATLAS_TEXTURE_UNIT);
     gl.uniform1f(u['uIesAtlasRows'] ?? null, this.iesRows);
     gl.uniform1f(u['uIesPlaneCount'] ?? null, this.iesPlanes);
-    /* Built on demand rather than at construction, for the reason the grade's placeholder is: a
-       scene that never projects a cookie should not carry a texture, and a declared sampler still
-       needs a complete one. */
-    if (this.cookieTexture === null) this.setSpotCookies([]);
-    gl.activeTexture(gl.TEXTURE0 + COOKIE_ATLAS_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.cookieTexture);
-    gl.uniform1i(u['uCookieAtlas'] ?? null, COOKIE_ATLAS_TEXTURE_UNIT);
     gl.uniform1f(u['uCookieTiles'] ?? null, this.cookieTiles);
     gl.activeTexture(gl.TEXTURE0);
   }
@@ -3035,8 +3072,7 @@ export class WebGL2Renderer implements RendererApi {
       gl.deleteVertexArray(this.panelVao);
       gl.deleteVertexArray(this.skyVao);
       if (this.panelBuffer !== null) gl.deleteBuffer(this.panelBuffer);
-      if (this.cookieTexture !== null) gl.deleteTexture(this.cookieTexture);
-      if (this.iesTexture !== null) gl.deleteTexture(this.iesTexture);
+      if (this.fixtureTexture !== null) gl.deleteTexture(this.fixtureTexture);
       if (this.clusterTexture !== null) gl.deleteTexture(this.clusterTexture);
     }
 
@@ -3194,6 +3230,19 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Upload several images of one size as the layers of one array, for a merged mesh that names a
+   * layer per vertex (`MeshData.layers`). One material binding then covers every image, which is
+   * what makes a block wearing forty facades one draw. Every layer must be the same size, and the
+   * refusal names the first that is not.
+   */
+  createSurfaceTextureArray(
+    sources: readonly TexImageSource[],
+    options: SurfaceTextureOptions = {},
+  ): SurfaceTexture {
+    return new SurfaceTexture(this.gl, sources, options);
+  }
+
+  /**
    * Replace a surface texture's pixels, keeping the GPU object and its sampler state.
    *
    * Goes through the renderer because the GL context does not leave this directory, and
@@ -3310,7 +3359,7 @@ export class WebGL2Renderer implements RendererApi {
      * page-faulted an RDNA4 card and wedged the device. See `emptyTexture.ts`.
      */
     gl.activeTexture(gl.TEXTURE0 + NORMAL_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (normal !== null) normal.bind(gl, NORMAL_TEXTURE_UNIT);
     gl.uniform1i(u['uNormalMap'] ?? null, NORMAL_TEXTURE_UNIT);
     gl.uniform1f(
@@ -3331,7 +3380,7 @@ export class WebGL2Renderer implements RendererApi {
      */
     const orm = material?.orm ?? null;
     gl.activeTexture(gl.TEXTURE0 + ORM_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (orm !== null) orm.bind(gl, ORM_TEXTURE_UNIT);
     gl.uniform1i(u['uOrmMap'] ?? null, ORM_TEXTURE_UNIT);
     gl.uniform1i(u['uOrmEnabled'] ?? null, orm === null ? 0 : 1);
@@ -3354,7 +3403,7 @@ export class WebGL2Renderer implements RendererApi {
      */
     const emissiveMap = material?.emissive ?? null;
     gl.activeTexture(gl.TEXTURE0 + EMISSIVE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (emissiveMap !== null) emissiveMap.bind(gl, EMISSIVE_TEXTURE_UNIT);
     gl.uniform1i(u['uEmissiveMap'] ?? null, EMISSIVE_TEXTURE_UNIT);
     gl.uniform1i(u['uEmissiveMapEnabled'] ?? null, emissiveMap === null ? 0 : 1);
@@ -3376,7 +3425,20 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform2f(u['uUvScale'] ?? null, material?.uScale ?? 1, material?.vScale ?? 1);
     gl.uniform1i(u['uDoubleSided'] ?? null, material?.doubleSided === true ? 1 : 0);
 
+    /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
+       return, so a material with no albedo still leaves a complete texture on the unit. */
     if (albedo === null) {
+      gl.activeTexture(gl.TEXTURE0 + SURFACE_EFFECTS_TEXTURE_UNIT);
+      gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    } else {
+      albedo.bindEffects(gl, SURFACE_EFFECTS_TEXTURE_UNIT, this.emptyTexture2D);
+    }
+    gl.uniform1i(u['uSurfaceEffects'] ?? null, SURFACE_EFFECTS_TEXTURE_UNIT);
+    if (albedo === null) {
+      /* The array stand-in, for the reason the maps above take one: a sampler reads its unit's
+         array target, and with nothing there it is incomplete. */
+      gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
       gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
       return;
     }
@@ -3413,7 +3475,7 @@ export class WebGL2Renderer implements RendererApi {
       return;
     }
     gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
   }
 
   /**
@@ -3441,8 +3503,7 @@ export class WebGL2Renderer implements RendererApi {
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.useFlatProgram();
-    this.gl.uniform1f(this.flatUniforms['uReflectivity'] ?? null, Math.min(1, Math.max(0, amount)));
+    this.writeFlatFloat('uReflectivity', Math.min(1, Math.max(0, amount)));
   }
 
   /**
@@ -3460,8 +3521,7 @@ export class WebGL2Renderer implements RendererApi {
   setEnvironmentGain(gain: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.useFlatProgram();
-    this.gl.uniform1f(this.flatUniforms['uEnvironmentGain'] ?? null, Math.max(0, gain));
+    this.writeFlatFloat('uEnvironmentGain', Math.max(0, gain));
   }
 
   /**
@@ -3490,8 +3550,53 @@ export class WebGL2Renderer implements RendererApi {
   setSurfaceGrain(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
+    this.writeFlatFloat('uGrain', Math.min(1, Math.max(0, amount)));
+  }
+
+  /**
+   * One float of material state, into every flat program.
+   *
+   * **Every one, for `setMaterial`'s reason**: an instanced or skinned draw runs a program of its
+   * own and is entitled to the material its caller set before it. These setters wrote the plain
+   * program alone until 2026-09-30, so on this backend a batch drew with the pass defaults — grain
+   * full, no reflection, no relief — while the other backend, whose material block every variant
+   * reads, drew what was asked.
+   */
+  private writeFlatFloat(name: string, value: number): void {
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.gl.uniform1f(target.uniforms[name] ?? null, value);
+    }
     this.useFlatProgram();
-    this.gl.uniform1f(this.flatUniforms['uGrain'] ?? null, Math.min(1, Math.max(0, amount)));
+  }
+
+  /**
+   * How much of the surfaces drawn next survives a screen-door dither, for crossfading two levels
+   * of detail of one thing.
+   *
+   * 0 is off and is what `bindMeshPass` restores. A positive amount keeps that share of the
+   * pattern's cells, a negative one keeps the complement, so the level fading in drawn at `t` and
+   * the one fading out at `-t` cover every pixel exactly once — no hole, no pixel drawn twice.
+   * Material state like `setSurfaceGrain`; instanced draws read it too, and shadow casters, which
+   * are a pass of their own, do not. See `uDither` in `flat/preamble.ts` for what it costs.
+   */
+  setDitherFade(amount: number): void {
+    if (this.contextLost) return;
+    this.materials.dirty();
+    this.useFlatProgram();
+    this.ditherFade = Math.min(1, Math.max(-1, amount));
+    /* Every flat program, as `setMaterial` writes them: an instanced or skinned draw is entitled
+       to the fade the caller set before it, and a second program holding none draws whole. */
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.writeMode(target.uniforms);
+    }
+    this.useFlatProgram();
+  }
+
+  /** `uWriteMode`: the order-independent weight and the dither, which share one uniform row. */
+  private writeMode(u: Record<string, WebGLUniformLocation>): void {
+    this.gl.uniform2f(u['uWriteMode'] ?? null, this.oitWeight, this.ditherFade);
   }
 
   /**
@@ -3520,10 +3625,8 @@ export class WebGL2Renderer implements RendererApi {
   setSurfaceRelief(amount: number, cyclesPerMetre = 60): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.useFlatProgram();
-    const u = this.flatUniforms;
-    this.gl.uniform1f(u['uRelief'] ?? null, Math.min(1, Math.max(0, amount)));
-    this.gl.uniform1f(u['uReliefCycles'] ?? null, Math.max(0.01, cyclesPerMetre));
+    this.writeFlatFloat('uRelief', Math.min(1, Math.max(0, amount)));
+    this.writeFlatFloat('uReliefCycles', Math.max(0.01, cyclesPerMetre));
   }
 
   /**
@@ -3554,11 +3657,7 @@ export class WebGL2Renderer implements RendererApi {
   setSurfaceTextureRelief(scale: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.useFlatProgram();
-    this.gl.uniform1f(
-      this.flatUniforms['uTextureRelief'] ?? null,
-      Number.isFinite(scale) ? scale : 0,
-    );
+    this.writeFlatFloat('uTextureRelief', Number.isFinite(scale) ? scale : 0);
   }
 
   /**
@@ -3585,8 +3684,7 @@ export class WebGL2Renderer implements RendererApi {
   setEmissiveGain(gain: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.useFlatProgram();
-    this.gl.uniform1f(this.flatUniforms['uEmissiveGain'] ?? null, gain);
+    this.writeFlatFloat('uEmissiveGain', gain);
   }
 
   /* -- Instanced meshes --------------------------------------------------------------- */
@@ -3634,7 +3732,7 @@ export class WebGL2Renderer implements RendererApi {
    * One batch per mesh: the attributes bind to the mesh's own vertex array, of which a mesh has
    * one. `Mesh.attachInstances` is what refuses a second, and says why.
    */
-  createInstanced(mesh: Mesh, capacity: number): InstancedBatch {
+  createInstanced(mesh: Mesh, capacity: number, options: InstancedOptions = {}): InstancedBatch {
     /* The same refusal as the other backend, for the same reason: the instanced attributes take
        the two locations a skinned mesh's joints and weights already occupy. */
     if (mesh.isSkinned) {
@@ -3644,7 +3742,7 @@ export class WebGL2Renderer implements RendererApi {
       );
     }
     this.ensureInstancedProgram();
-    return new InstancedBatch(this.gl, mesh, capacity);
+    return new InstancedBatch(this.gl, mesh, capacity, options.cull ?? false);
   }
 
   /** Push placement and colour. Only the live prefix. */
@@ -3699,6 +3797,11 @@ export class WebGL2Renderer implements RendererApi {
     if (!mesh.complete) return;
     const count = Math.min(data.count, batch.capacity);
     if (count === 0) return;
+    /* A culling batch's camera draw: the whole batch against the view and the occluders first,
+       then instance by instance where it survives. Blended draws keep every instance and their
+       order. See `InstancedOptions.cull`. */
+    const culling = !blend && batch.cull;
+    if (culling && !batchBoxVisible(batch.box, this.frustum, this.occlusion)) return;
     this.drawBudget.ask();
     this.ensureInstancedProgram();
     const program = this.flatInstancedProgram;
@@ -3710,7 +3813,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uHasTangents'] ?? null, mesh.hasTangents ? 1 : 0);
 
     const lit = options.lit ?? true;
-    const fog = options.fog ?? true;
+    /* Added light fades in the medium rather than receding into it. See `drawFog.ts`. */
+    const fog = fogModeOf(options.fog ?? true, blend && options.additive === true);
     const toneMapped = options.toneMapped ?? true;
     /* A blended batch shows what is behind it — refraction or glass — as a single draw does, and
        counts a material of its own for it by the rule both backends share (`materialChanges.ts`). */
@@ -3739,12 +3843,14 @@ export class WebGL2Renderer implements RendererApi {
      * part of what the count asks.
      */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
-    if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 0);
+    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.gradeCode(), 1));
 
     if (blend) {
       gl.enable(gl.BLEND);
-      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      if (options.additive === true) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
+      else
+        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       if (!depthWrite) gl.depthMask(false);
     }
     /* The sign follows the compare, which `depthOffsetForLayer` owns — see `drawMesh`, where the
@@ -3758,7 +3864,8 @@ export class WebGL2Renderer implements RendererApi {
     /* Both sides of a double-sided material, as every mesh path does and WebGPU's pipeline does
        for both: without it a batch's far faces were culled here alone. */
     if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
-    mesh.drawInstances(gl, count);
+    if (culling && cullsInstances(count, mesh.indexCount)) batch.drawCulled(gl, data, this.frustum);
+    else batch.draw(gl, count);
     if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
 
     if (layer > 0) {
@@ -3776,7 +3883,7 @@ export class WebGL2Renderer implements RendererApi {
        outlives its frame, so a snapshot left on unit 14 is held against the next frame's copy. */
     if (refracting) this.unbindSeeThrough(u);
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
-    if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 1);
+    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, FOG_RECEDE);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
     if (own) this.materials.dirty();
     this.useFlatProgram();
@@ -5159,7 +5266,7 @@ export class WebGL2Renderer implements RendererApi {
         cutout,
       );
       gl.disable(gl.CULL_FACE);
-      gpuBatch.mesh.drawInstances(gl, count);
+      gpuBatch.draw(gl, count);
       if (this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       if (cutout !== null) this.restoreSurfaceTextureUnit();
     },
@@ -6574,6 +6681,7 @@ export class WebGL2Renderer implements RendererApi {
           radius: number;
           projScale: Float32Array;
           invProjection: Float32Array;
+          offset: Float32Array;
         }
       | undefined;
     if (aoStrength > 0 && projection !== null) {
@@ -6583,11 +6691,20 @@ export class WebGL2Renderer implements RendererApi {
          metres into a radius in UV. */
       this.aoProjScale[0] = projection[0] ?? 1;
       this.aoProjScale[1] = projection[5] ?? 1;
+      /* The occlusion read where this frame's jitter put it (`uAoOffset`): a texel stands at its
+         index plus a half less the jitter, in the drawing buffer the jitter was spread over. */
+      this.aoOffset[0] = this.temporalJittering
+        ? this.temporalJitterX / Math.max(1, this.gl.drawingBufferWidth)
+        : 0;
+      this.aoOffset[1] = this.temporalJittering
+        ? this.temporalJitterY / Math.max(1, this.gl.drawingBufferHeight)
+        : 0;
       ao = {
         strength: aoStrength,
         radius: this.quality.ambientOcclusionRadius,
         projScale: this.aoProjScale,
         invProjection: this.aoInvProjection as Float32Array,
+        offset: this.aoOffset,
       };
     }
 
@@ -6739,7 +6856,8 @@ export class WebGL2Renderer implements RendererApi {
       this.oit.accumulateOit(this.canvas.width, this.canvas.height, oitDepth, (weighted) => {
         this.oitReplaying = true;
         this.useFlatProgram();
-        this.gl.uniform1f(flat['uOitWeighted'] ?? null, weighted ? 1 : 0);
+        this.oitWeight = weighted ? 1 : 0;
+        this.writeMode(flat);
         this.translucentQueue.replay((draw) => {
           options.lit = draw.lit;
           options.fog = draw.fog;
@@ -6756,7 +6874,8 @@ export class WebGL2Renderer implements RendererApi {
           this.drawTranslucentMesh(draw.mesh as Mesh, draw.model, draw.opacity, options);
         });
         /* Back to zero for every other draw in the frame, exactly as `uOpacity` and `uTint` are. */
-        this.gl.uniform1f(flat['uOitWeighted'] ?? null, 0);
+        this.oitWeight = 0;
+        this.writeMode(flat);
         this.oitReplaying = false;
       });
       this.sceneTarget?.bind();
@@ -6942,7 +7061,14 @@ export class WebGL2Renderer implements RendererApi {
      * A reflection pass binds its own camera and is skipped: blurring toward a mirror's
      * previous view is not what a viewer moved through.
      */
-    if (!this.reflectionPassActive && !this.probePassActive) {
+    /*
+     * **Not after the present**: a mesh pass bound then is the interface's, over a picture already
+     * resolved. Deciding the frame again drew the interface jittered with nothing to resolve it,
+     * and opened a second temporal frame, so the sequence stepped twice a frame, the world saw every
+     * other position, and the anti-flicker's period never started.
+     */
+    if (this.framePresented) this.temporalJittering = false;
+    if (!this.reflectionPassActive && !this.probePassActive && !this.framePresented) {
       this.frameViewProj = camera.viewProjection;
       /* Copied rather than referenced: a caller moves its camera in place, and the decal pass
          reads this at the end of the frame. */
@@ -7056,6 +7182,23 @@ export class WebGL2Renderer implements RendererApi {
     return field;
   }
 
+  /**
+   * Hand a world's DriftLight volume to the renderer: every fixed light of a city, summed offline by
+   * `bakeDenseField`, standing in past the frame's exact choice. Replaces any field made before, of
+   * either kind; the scene calls `field.follow(buffer.complete, ...)` each frame as it would for
+   * `createLightField`, and marks the lights the volume summed `inLightField` so none is counted
+   * twice. See `driftLight/worldLightField.ts`.
+   */
+  createWorldLightField(
+    volume: DenseLightVolume,
+    options: WorldLightFieldOptions = {},
+  ): WorldLightField {
+    this.forgetLightFieldVolumes();
+    const field = new WorldLightField(volume, options);
+    this.lightField = field;
+    return field;
+  }
+
   /** Let go of the field and its volumes; the scene's lights are all exact again. */
   disposeLightField(): void {
     this.forgetLightFieldVolumes();
@@ -7075,11 +7218,11 @@ export class WebGL2Renderer implements RendererApi {
    */
   private uploadLightField(): void {
     const field = this.lightField;
-    if (field === null || this.driftAtlas !== null || !field.ready || field.layout.count === 0) {
+    if (field === null || this.driftAtlas !== null || !field.ready || field.empty) {
       return;
     }
     const { gl } = this;
-    const [ix, iy, iz] = field.layout.dims;
+    const [ix, iy, iz] = field.indexDims;
     const index = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_3D, index);
     gl.texImage3D(
@@ -7092,7 +7235,7 @@ export class WebGL2Renderer implements RendererApi {
       0,
       gl.RED_INTEGER,
       gl.UNSIGNED_INT,
-      field.layout.index,
+      field.index,
     );
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -7232,6 +7375,10 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uFogEnabled'] ?? null, 1);
     /* Grain on by default, so every scene written before it was a choice looks unchanged. */
     gl.uniform1f(u['uGrain'] ?? null, 1);
+    /* No dither and no weighting: every draw whole, until a crossfade asks. See `setDitherFade`. */
+    this.oitWeight = 0;
+    this.ditherFade = 0;
+    gl.uniform2f(u['uWriteMode'] ?? null, 0, 0);
     /* No environment reflection unless a caller asks, so existing scenes are unchanged. */
     gl.uniform1f(u['uReflectivity'] ?? null, 0);
     /* 1, not 0: this one is a multiplier and its identity is one. See `setEnvironmentGain`. */
@@ -7241,11 +7388,14 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uReliefCycles'] ?? null, 60);
     /* And no relief read off a surface texture either, for the same reason. */
     gl.uniform1f(u['uTextureRelief'] ?? null, 0);
-    gl.uniform1i(u['uClipEnabled'] ?? null, this.reflectionPassActive ? 1 : 0);
+    /* The mirror's plane in a reflection pass, and zero — which clips nothing — in every other. */
     const reflection = this.planarReflection;
-    if (this.reflectionPassActive && reflection !== null) {
-      gl.uniform4fv(u['uClipPlane'] ?? null, reflection.clipPlane);
-    }
+    gl.uniform4fv(
+      u['uClipPlane'] ?? null,
+      this.reflectionPassActive && reflection !== null ? reflection.clipPlane : NO_CLIP_PLANE,
+    );
+    resolveSurfaceScene(env, this.surfaceScene);
+    gl.uniform4fv(u['uSurfaceScene'] ?? null, this.surfaceScene);
     bindAtmosphere(
       gl,
       u,
@@ -7414,9 +7564,13 @@ export class WebGL2Renderer implements RendererApi {
     this.bindDriftLight(u, camera.position);
 
     gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uAlbedo'] ?? null, SURFACE_TEXTURE_UNIT);
     gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
+    /* No albedo, so no effects table: the stand-in, which the shader reads as none. */
+    gl.activeTexture(gl.TEXTURE0 + SURFACE_EFFECTS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.uniform1i(u['uSurfaceEffects'] ?? null, SURFACE_EFFECTS_TEXTURE_UNIT);
     gl.uniform2f(u['uUvScale'] ?? null, 1, 1);
     gl.uniform1f(u['uAlbedoCutout'] ?? null, 0);
     gl.uniform1i(u['uDoubleSided'] ?? null, 0);
@@ -7441,20 +7595,20 @@ export class WebGL2Renderer implements RendererApi {
      * fetch a sampler's descriptor before it evaluates the branch that would have skipped the read.
      */
     gl.activeTexture(gl.TEXTURE0 + NORMAL_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uNormalMap'] ?? null, NORMAL_TEXTURE_UNIT);
     gl.uniform1f(u['uNormalStrength'] ?? null, 0);
 
     /* And the ORM map, for the reason directly above and the one above that. */
     gl.activeTexture(gl.TEXTURE0 + ORM_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uOrmMap'] ?? null, ORM_TEXTURE_UNIT);
     gl.uniform1i(u['uOrmEnabled'] ?? null, 0);
     gl.uniform3f(u['uOrmScale'] ?? null, 1, 1, 1);
 
     /* And the emissive map. The scale goes back to one, which is the identity it multiplies by. */
     gl.activeTexture(gl.TEXTURE0 + EMISSIVE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uEmissiveMap'] ?? null, EMISSIVE_TEXTURE_UNIT);
     gl.uniform1i(u['uEmissiveMapEnabled'] ?? null, 0);
     gl.uniform3f(u['uEmissiveScale'] ?? null, 1, 1, 1);
@@ -7741,7 +7895,7 @@ export class WebGL2Renderer implements RendererApi {
      * The two buffers are two blend states over the same geometry, so the set has to survive until
      * the end of the pass. Everything is copied — see `TranslucentQueue`.
      */
-    if (this.oitActive && !this.oitReplaying) {
+    if (this.oitActive && !this.oitReplaying && options.additive !== true) {
       this.translucentQueue.record(mesh, model, opacity, options);
       return;
     }
@@ -7760,10 +7914,11 @@ export class WebGL2Renderer implements RendererApi {
      * drew with, and only a caller that asks pays for the branch that skips them.
      */
     const lit = options.lit ?? true;
-    const fog = options.fog ?? true;
+    /* Added light fades in the medium rather than receding into it. See `drawFog.ts`. */
+    const fog = fogModeOf(options.fog ?? true, options.additive === true);
     const toneMapped = options.toneMapped ?? true;
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
-    if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 0);
+    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
     /* `1` is sRGB alone: the conversion without the curve, which is what dropping the tone map
        means rather than dropping the whole transform. `Math.min` rather than a literal, so a
        renderer asked for `none` stays at none and one asked for `srgb` is already there. */
@@ -7801,7 +7956,9 @@ export class WebGL2Renderer implements RendererApi {
     const ownsState = !this.oitReplaying;
     if (ownsState) {
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      /* Added, where asked: colour times alpha onto what is there, and the target's alpha kept. */
+      if (options.additive === true) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
+      else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
     /*
      * The two depth options, both scoped to this draw and handed straight back — the same
@@ -7833,7 +7990,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Put back for whatever is drawn next, exactly as `uOpacity` and `uTint` are — a pass
        cannot inherit a material from the draw before it. */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
-    if (!fog) gl.uniform1i(u['uFogEnabled'] ?? null, 1);
+    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, FOG_RECEDE);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
     if (own) this.materials.dirty();
   }

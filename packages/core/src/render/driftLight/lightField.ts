@@ -34,11 +34,11 @@ import type { FieldLight } from './bake.ts';
 import type { PointLightFalloff } from './falloff.ts';
 import { BRICK_SAMPLES, layoutLightField } from './layout.ts';
 import type { LightFieldLayout } from './layout.ts';
+import { FieldPresence } from './presence.ts';
+import type { DriftLightVolumes } from './presence.ts';
 
 /** Seconds the summed light takes to fade in once the field is whole. */
 export const FIELD_FADE_SEC = 0.5;
-/** How fast the shading radius grows back, per second, when the choice reaches further again. */
-const RADIUS_GROWTH_PER_SEC = 2;
 /** Bricks along each axis of the atlas: 256 texels a side, the least 3D texture WebGL2 promises. */
 const ATLAS_BRICKS: readonly [number, number, number] = [32, 64, 64];
 /** A brick's footprint in the atlas: its light block and its direction block side by side. */
@@ -66,7 +66,7 @@ export interface LightFieldOptions {
   readonly fadeSec?: number;
 }
 
-export class LightField {
+export class LightField implements DriftLightVolumes {
   readonly layout: LightFieldLayout;
   /** Texels on each axis of the atlas. */
   readonly atlasSize: readonly [number, number, number];
@@ -82,18 +82,15 @@ export class LightField {
   readonly fadeSec: number;
   /** The summed light's brightness, for a scene that dims all its lamps at once: dawn, a switch. */
   scale = 1;
-  /** Where the frame's choice was centred, which the shader measures the radius from. */
-  readonly centre = new Float32Array(3);
 
   private readonly lights: readonly FieldLight[];
   private readonly falloff: PointLightFalloff;
   private readonly distance: ((x: number, y: number, z: number) => number) | null;
   private readonly lightBlock = new Float32Array(BRICK_TEXELS * 4);
   private readonly directionBlock = new Float32Array(BRICK_TEXELS * 4);
+  private readonly showing: FieldPresence;
   private baked = 0;
   private taken = 0;
-  private eased = 0;
-  private shown = 0;
 
   constructor(lights: readonly LightFieldSource[], options: LightFieldOptions) {
     for (const light of lights) light.inLightField = true;
@@ -110,6 +107,7 @@ export class LightField {
     this.falloff = options.falloff;
     this.band = options.band ?? 2;
     this.fadeSec = Math.max(0, options.fadeSec ?? FIELD_FADE_SEC);
+    this.showing = new FieldPresence(this.fadeSec);
     const fields = options.fields ?? [];
     this.occluded = fields.length > 0;
     this.distance = this.occluded ? distanceToInstances(fields) : null;
@@ -143,12 +141,37 @@ export class LightField {
 
   /** The radius, in metres from `centre`, inside which lights are shaded exactly. */
   get radius(): number {
-    return this.eased;
+    return this.showing.radius;
   }
 
   /** How much of the summed light is in the frame, 0 until the field is whole, then up to 1. */
   get presence(): number {
-    return this.shown;
+    return this.showing.presence;
+  }
+
+  /** Where the frame's choice was centred, which the shader measures the radius from. */
+  get centre(): Float32Array {
+    return this.showing.centre;
+  }
+
+  get empty(): boolean {
+    return this.layout.count === 0;
+  }
+
+  get indexDims(): readonly [number, number, number] {
+    return this.layout.dims;
+  }
+
+  get index(): Uint32Array {
+    return this.layout.index;
+  }
+
+  get sampleOrigin(): readonly [number, number, number] {
+    return this.layout.origin;
+  }
+
+  get signedSpacing(): number {
+    return this.layout.spacing;
   }
 
   /** The texel at which brick `brick`'s light block starts; its direction block is 4 along x. */
@@ -195,15 +218,7 @@ export class LightField {
    * which is only less exact. While nothing is summed the radius simply follows.
    */
   follow(complete: number, x: number, y: number, z: number, dtSec: number): void {
-    this.centre[0] = x;
-    this.centre[1] = y;
-    this.centre[2] = z;
-    const showing = this.shown > 0;
-    if (!showing || complete < this.eased) this.eased = complete;
-    else this.eased += (complete - this.eased) * (1 - Math.exp(-RADIUS_GROWTH_PER_SEC * dtSec));
-    if (this.ready) {
-      this.shown = this.fadeSec > 0 ? Math.min(1, this.shown + dtSec / this.fadeSec) : 1;
-    }
+    this.showing.follow(this.ready, complete, x, y, z, dtSec);
   }
 
   /** Write the brick just baked into its place in the atlas, as half floats. */
