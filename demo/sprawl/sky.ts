@@ -32,6 +32,8 @@ import {
 import type {
   Camera,
   CelestialSite,
+  DaylightKey,
+  DaylightPalette,
   Environment,
   RendererApi,
   SkyColors,
@@ -75,41 +77,57 @@ const OVERCAST_TO = 0.35;
 /** The moon's own tint, as the sky draws its disc: 180 196 255. */
 const MOON_DISC: Vec3 = [0.46, 0.55, 1];
 
-const PALETTE = createDaylightPalette([
-  {
-    at: 0,
-    sunColor: [0, 0, 0],
-    moonColor: MOON,
-    skyTop: [0.004, 0.005, 0.012],
-    skyHorizon: [0.03, 0.02, 0.05],
-    skyDeep: [0.002, 0.002, 0.006],
-    /* A city's night is not dark: its own lights come back off the haze over it. */
-    ambient: [0.05, 0.038, 0.06],
-    ambientGround: [0.03, 0.022, 0.026],
-    fogColor: NIGHT_FOG,
-    fogDensity: FOG_DENSITY,
-    shadowStrength: 0.4,
-    emissiveGain: 1,
-    exposure: 1,
-  },
-  {
-    at: 1,
-    sunColor: SUN,
-    moonColor: [0, 0, 0],
-    skyTop: [0.18, 0.32, 0.62],
-    skyHorizon: [0.62, 0.66, 0.72],
-    skyDeep: [0.3, 0.32, 0.36],
-    ambient: [0.34, 0.37, 0.44],
-    ambientGround: [0.16, 0.15, 0.14],
-    fogColor: DAY_FOG,
-    fogDensity: FOG_DENSITY,
-    shadowStrength: 0.9,
-    emissiveGain: 0,
-    exposure: 1,
-  },
-]);
+const NIGHT_KEY: DaylightKey = {
+  at: 0,
+  sunColor: [0, 0, 0],
+  moonColor: MOON,
+  skyTop: [0.004, 0.005, 0.012],
+  skyHorizon: [0.03, 0.02, 0.05],
+  skyDeep: [0.002, 0.002, 0.006],
+  /* A city's night is not dark: its own lights come back off the haze over it. */
+  ambient: [0.05, 0.038, 0.06],
+  ambientGround: [0.03, 0.022, 0.026],
+  fogColor: NIGHT_FOG,
+  fogDensity: FOG_DENSITY,
+  shadowStrength: 0.4,
+  emissiveGain: 1,
+  exposure: 1,
+};
+const DAY_KEY: DaylightKey = {
+  at: 1,
+  sunColor: SUN,
+  moonColor: [0, 0, 0],
+  skyTop: [0.18, 0.32, 0.62],
+  skyHorizon: [0.62, 0.66, 0.72],
+  skyDeep: [0.3, 0.32, 0.36],
+  ambient: [0.34, 0.37, 0.44],
+  ambientGround: [0.16, 0.15, 0.14],
+  fogColor: DAY_FOG,
+  fogDensity: FOG_DENSITY,
+  shadowStrength: 0.9,
+  emissiveGain: 0,
+  exposure: 1,
+};
+
+/**
+ * A city's own look over the same sky: its day's colours in place of the reference's, its haze by
+ * night and by day, and how much of its signs still shows at noon. Every field is optional and the
+ * city scene passes none, so what it draws is what it drew.
+ */
+export interface SkyLook {
+  readonly day?: Partial<Omit<DaylightKey, 'at'>>;
+  readonly fogNight?: number;
+  readonly fogDay?: number;
+  /** The share of the night's glow a sign keeps at noon; 0, the reference's, gates it off. */
+  readonly daySigns?: number;
+}
 
 export class CitySky {
+  private readonly palette: DaylightPalette;
+  private readonly fogNight: number;
+  private readonly fogDay: number;
+  private readonly daySigns: number;
+
   private readonly celestial = createCelestialState();
   private readonly daylight = createDaylightState();
   /** The sky's colours, and the sun and moon it draws: the celestial state's own directions. */
@@ -131,6 +149,13 @@ export class CitySky {
     cloudOffsetZ: 0,
   };
 
+  constructor(look: SkyLook = {}) {
+    this.palette = createDaylightPalette([NIGHT_KEY, { ...DAY_KEY, ...look.day, at: 1 }]);
+    this.fogNight = look.fogNight ?? FOG_DENSITY;
+    this.fogDay = look.fogDay ?? FOG_DENSITY;
+    this.daySigns = look.daySigns ?? 0;
+  }
+
   /** Light `env` and colour the sky for `hour`, with the streets `wetness` wet and `rain` falling. */
   apply(hour: number, wetness: number, env: Environment, rain = 0): void {
     const when = YEAR + ((DAY_OF_YEAR - 1) * 24 + hour) * MS_PER_HOUR;
@@ -141,7 +166,7 @@ export class CitySky {
     env.directionalDir[0] = dir[0];
     env.directionalDir[1] = dir[1];
     env.directionalDir[2] = dir[2];
-    const light = resolveDaylight(day, PALETTE, this.daylight);
+    const light = resolveDaylight(day, this.palette, this.daylight);
     const clear = 1 - smoothstep(OVERCAST_FROM, OVERCAST_TO, rain);
     const moonlit = moonIllumination(state.moonPhase) * clear;
     for (let c = 0; c < 3; c++) {
@@ -158,7 +183,7 @@ export class CitySky {
       this.colors.deep[c] = cloud + ((light.skyDeep[c] as number) - cloud) * clear;
       (this.colors.moonColor as Vec3)[c] = (MOON_DISC[c] as number) * clear;
     }
-    env.fogDensity = FOG_DENSITY;
+    env.fogDensity = this.fogNight + (this.fogDay - this.fogNight) * day;
     env.fogHeightFalloff = FOG_FALLOFF;
     env.fogBaseY = FOG_BASE_Y;
     env.shadowStrength = light.shadowStrength;
@@ -167,8 +192,9 @@ export class CitySky {
     this.colors.moonPhase = state.moonPhase;
     /* The city's own night: its lamps, its windows and its signs. */
     const night = nightAt(hour);
-    env.nightFactor = night;
-    env.emissiveGain = night;
+    const signs = this.daySigns + (1 - this.daySigns) * night;
+    env.nightFactor = signs;
+    env.emissiveGain = signs;
     env.litWindows = night;
     env.lateWindows = LATE_WINDOWS;
     env.wetness = wetness;

@@ -122,6 +122,114 @@ test('an RGB PNG still widens with its three channels in place', () => {
   assert.deepEqual([...rgbaOf(decodePng(png)).rgba], [1, 2, 3, 255]);
 });
 
+/*
+ * **A bought city's maps are a tenth palette PNGs**, measured at 219 of 2,447 in one source: colour
+ * type 3 at eight bits and below, and greyscale masks at one, two and four. The reader refused every
+ * one, and the baker turned each into a material with no colour map at all, drawn white.
+ */
+
+/** A PNG of any depth and colour type around already-filtered rows, with chunks before IDAT. */
+function buildAny(width, height, depth, colorType, rows, chunks = []) {
+  const chunk = (type, body) => {
+    const out = Buffer.alloc(body.length + 12);
+    out.writeUInt32BE(body.length, 0);
+    out.write(type, 4, 'ascii');
+    Buffer.from(body).copy(out, 8);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = depth;
+  ihdr[9] = colorType;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    ...chunks.map(([type, body]) => chunk(type, body)),
+    chunk('IDAT', deflateSync(Buffer.concat(rows.map((row) => Buffer.from(row))))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+test('A PALETTE PNG DECODES TO ITS COLOURS, with tRNS as alpha and opaque past its end', () => {
+  /* Entry 0 red at alpha 128, entry 1 blue with no tRNS entry, so opaque. Pixels: 1, then 0. */
+  const png = buildAny(
+    2,
+    1,
+    8,
+    3,
+    [[0, 1, 0]],
+    [
+      ['PLTE', [255, 0, 0, 0, 0, 255]],
+      ['tRNS', [128]],
+    ],
+  );
+  const decoded = decodePng(png);
+  assert.equal(decoded.channels, 4);
+  assert.deepEqual([...decoded.pixels], [0, 0, 255, 255, 255, 0, 0, 128]);
+});
+
+test('a two-bit palette is un-filtered as packed bytes, then unpacked high bits first', () => {
+  /*
+   * Width 3 at two bits is one byte a row, two bits of it padding.
+   *   row 0 indices 3 0 2 -> 11 00 10 00 = 0xC8, literal.
+   *   row 1 indices 1 2 3 -> 01 10 11 00 = 0x6C, written as Up: 0x6C - 0xC8 = 0xA4 (mod 256).
+   * A reader that unpacked before un-filtering would add index to index and read nonsense.
+   */
+  const png = buildAny(
+    3,
+    2,
+    2,
+    3,
+    [
+      [0, 0xc8],
+      [2, 0xa4],
+    ],
+    [['PLTE', [0, 0, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90]]],
+  );
+  const decoded = decodePng(png);
+  assert.equal(decoded.channels, 3);
+  assert.deepEqual(
+    [...decoded.pixels],
+    [70, 80, 90, 0, 0, 0, 40, 50, 60, 10, 20, 30, 40, 50, 60, 70, 80, 90],
+  );
+});
+
+test('one-bit grey widens each bit to black or white, across a byte boundary', () => {
+  /* Bits 1011000011 over two bytes: 0b10110000, 0b11000000. */
+  const decoded = decodePng(buildAny(10, 1, 1, 0, [[0, 0xb0, 0xc0]]));
+  assert.equal(decoded.channels, 1);
+  assert.deepEqual([...decoded.pixels], [255, 0, 255, 255, 0, 0, 0, 0, 255, 255]);
+});
+
+test('sixteen-bit RGB keeps the high byte, and a filter steps a whole six-byte pixel', () => {
+  /*
+   * Pixel 0 literal: 0x1234 0xABCD 0xFF00. Pixel 1 is Sub with every residual 1, so each of its
+   * bytes is the byte six back plus one: 0x1335 0xACCE 0x0001 — and 0xFF + 1 wraps to 0x00.
+   */
+  const png = buildAny(2, 1, 16, 2, [[1, 0x12, 0x34, 0xab, 0xcd, 0xff, 0x00, 1, 1, 1, 1, 1, 1]]);
+  const decoded = decodePng(png);
+  assert.equal(decoded.channels, 3);
+  assert.deepEqual([...decoded.pixels], [0x12, 0xab, 0xff, 0x13, 0xac, 0x00]);
+});
+
+test('a grey PNG with a tRNS key turns that one grey transparent and keeps the rest opaque', () => {
+  const decoded = decodePng(buildAny(2, 1, 8, 0, [[0, 200, 100]], [['tRNS', [0, 200]]]));
+  assert.equal(decoded.channels, 2);
+  assert.deepEqual([...decoded.pixels], [200, 0, 100, 255]);
+});
+
+test('a palette index past the end of PLTE is named, not read from beyond it', () => {
+  const png = buildAny(1, 1, 8, 3, [[0, 5]], [['PLTE', [1, 2, 3]]]);
+  assert.throws(() => decodePng(png), /index 5/);
+});
+
+test('interlacing is still refused by name', () => {
+  const png = buildAny(1, 1, 8, 2, [[0, 1, 2, 3]]);
+  png[16 + 12] = 1;
+  assert.throws(() => decodePng(png), /interlaced/);
+});
+
 test('what it cannot read, it names rather than guesses', () => {
   assert.throws(() => decodePng(Buffer.from('not a png at all')), /not a PNG/);
   const bad = buildPng(1, 1, 3, [[9, 0, 0, 0]]);

@@ -97,6 +97,37 @@ export interface RenderQuality {
    * halved frame rate rather than a slightly slower one.
    */
   readonly maxDrawingBufferPixels: number;
+  /**
+   * How many times a frame may change material, on a backend that keeps a slot for each.
+   *
+   * **WebGPU spends a slot of a uniform ring per material change and skips every draw past it**,
+   * because a buffer rewritten between two draws would hand both of them its last contents. So
+   * this is a ceiling on what a frame can show, not a performance hint: a scene that needs more
+   * loses whatever it asks for last — measured on a bought city of 1,139 materials, whose street
+   * spends some nine hundred and whose river's planar mirror spends the rest twice over.
+   *
+   * **What it costs is memory, paid at construction**: a slot is the fragment block twice over,
+   * staging and buffer, so 7 to 13 KB depending on the permutation built — 1,024 is 7 to 13 MB
+   * and 2,048 twice that. Hence a default that suits most scenes and an option for the one that
+   * measures past it, rather than a number every consumer pays for. WebGL2 writes each uniform
+   * into the command stream and keeps no ring, so there it is read and does nothing, and its
+   * budget line reports no ceiling. What would make it wrong is a scene that switches material
+   * every draw, which no ring answers: many copies of one mesh want one instanced draw.
+   */
+  readonly materialChangesPerFrame: number;
+  /**
+   * How many draws a frame may make, on a backend that keeps a uniform slot for each — the main
+   * pass and the shadow passes each hold this many.
+   *
+   * **The same shape as `materialChangesPerFrame` and the same failure**: WebGPU skips every draw
+   * past the ring. A frame that draws two hundred pays for two hundred whatever this says, so
+   * raising it costs no bandwidth; it costs memory at construction, 1,540 bytes a slot — 6 MB at
+   * the default 4,096. A city whose street spends three and a half thousand and whose river
+   * mirrors that street spends more than the default, and a scene in the ordinary band of two to
+   * ten thousand draws can meet it. WebGL2 keeps no ring and reads this without effect. What would
+   * make it wrong is a frame that approaches it on the CPU first, which four thousand draws can.
+   */
+  readonly drawsPerFrame: number;
   readonly directionalShadows: boolean;
   readonly pointShadows: boolean;
   /**
@@ -821,6 +852,10 @@ export interface RenderQuality {
 export type RenderQualityOptions = Partial<RenderQuality>;
 
 export const MAX_SHADOW_FILTER_TAPS = 12;
+/** The most material changes a frame may be built to hold. See `materialChangesPerFrame`. */
+export const MAX_MATERIAL_CHANGES_PER_FRAME = 8192;
+/** The most draws a frame may be built to hold. See `drawsPerFrame`. */
+export const MAX_DRAWS_PER_FRAME = 65536;
 export const MAX_WATER_REFLECTION_FILTER_TAPS = 9;
 export const POINT_SHADOW_FADE_START = 0.35;
 export const DIRECTIONAL_SHADOW_FADE_START = 0.65;
@@ -864,6 +899,8 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
    * if it is above where people actually are. Consumers wanting the pixels set it to 0.
    */
   maxDrawingBufferPixels: 12_000_000,
+  materialChangesPerFrame: 1024,
+  drawsPerFrame: 4096,
   directionalShadows: true,
   pointShadows: true,
   /* The engine's own budgets, which the renderer lowers per device when it has to. */
@@ -1015,6 +1052,9 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     maxDevicePixelRatio: options.maxDevicePixelRatio ?? DEFAULT_RENDER_QUALITY.maxDevicePixelRatio,
     maxDrawingBufferPixels:
       options.maxDrawingBufferPixels ?? DEFAULT_RENDER_QUALITY.maxDrawingBufferPixels,
+    materialChangesPerFrame:
+      options.materialChangesPerFrame ?? DEFAULT_RENDER_QUALITY.materialChangesPerFrame,
+    drawsPerFrame: options.drawsPerFrame ?? DEFAULT_RENDER_QUALITY.drawsPerFrame,
     directionalShadows: options.directionalShadows ?? DEFAULT_RENDER_QUALITY.directionalShadows,
     pointShadows: options.pointShadows ?? DEFAULT_RENDER_QUALITY.pointShadows,
     /* Whole slots, at least one, never above what the shader is written for: these two are
@@ -1132,6 +1172,21 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
   // Zero is legal and means uncapped, so this is the non-negative check rather than
   // the positive one.
   nonNegative('maxDrawingBufferPixels', quality.maxDrawingBufferPixels);
+  positiveInteger('materialChangesPerFrame', quality.materialChangesPerFrame);
+  if (quality.materialChangesPerFrame > MAX_MATERIAL_CHANGES_PER_FRAME) {
+    throw new Error(
+      `materialChangesPerFrame is ${quality.materialChangesPerFrame}, and at most ` +
+        `${MAX_MATERIAL_CHANGES_PER_FRAME} are kept: past that the ring is a hundred megabytes, ` +
+        'and a frame changing material that often wants its draws batched instead.',
+    );
+  }
+  positiveInteger('drawsPerFrame', quality.drawsPerFrame);
+  if (quality.drawsPerFrame > MAX_DRAWS_PER_FRAME) {
+    throw new Error(
+      `drawsPerFrame is ${quality.drawsPerFrame}, and at most ${MAX_DRAWS_PER_FRAME} are kept: ` +
+        'past that the rings are a hundred megabytes, and a frame drawing that often wants instancing.',
+    );
+  }
   positiveInteger('directionalShadowMapSize', quality.directionalShadowMapSize);
   positiveInteger('pointShadowFaceSize', quality.pointShadowFaceSize);
   positiveInteger('shadowFilterTaps', quality.shadowFilterTaps);

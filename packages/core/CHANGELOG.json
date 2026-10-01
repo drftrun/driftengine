@@ -1,4 +1,30 @@
 [
+  {
+    "version": "4.7.0",
+    "date": "2026-10-01",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "Blender files bake directly: .blend from 2.79 to 5.x, compressed or not, with meshes, normals, materials, lights, cameras, shape keys and animation, and through your Blender where needed.",
+        "text": "**A `.blend` file is read directly, with nothing installed.** `readModel` and `npm run bake` take Blender's own format from 2.79 to 5.x, plain, gzip or zstd, because the reader learns every struct from the file's `DNA1` catalogue rather than from a list of Blender releases. It reads meshes in all three layouts Blender has stored them in (the legacy structs, 3.5's named attributes and 5.0's attribute storage), their normals by Blender's own rule — sharp edges and faces, auto smooth, custom split normals — with UVs, colour attributes and shape keys; Principled materials wired the way the glTF importer wires them, with their packed pictures; point, spot and sun lights, blackbody colour included; cameras; parents, collection instances and render visibility; and keyed object animation, layered actions and NLA strips included. It builds the same glTF the rest of the pipeline reads, so a `.blend` and a `.glb` reach the baker as the same thing, and the fixtures in `scripts/fixtures/blend/` hold it to what Blender's own exporter writes for the same file. **What only Blender can evaluate is refused by name** — a rig, a constraint, a modifier past the smoothing ones — as `BlendNeedsBlender`, never as half a scene; the baker then drives the user's own Blender through its bundled glTF exporter, `--via-blender` asks for that outright and `--direct` refuses it, and every import says which route it took."
+      },
+      {
+        "kind": "added",
+        "short": "materialChangesPerFrame: a scene that changes material more than 1,024 times a frame on WebGPU can now ask for a larger ring instead of losing the draws past it.",
+        "text": "**How many material changes a WebGPU frame holds is a quality option, `materialChangesPerFrame`.** A frame spends a slot of a uniform ring each time it changes material and skips every draw past the last slot, which is geometry missing rather than geometry drawn wrong — and 1,024 was a constant. A bought city of eleven hundred materials spends about nine hundred on a street, and a planar mirror of that street spends as many again, so its reflection came and went as the camera turned. The default stays 1,024; a scene that measures past it asks for more at construction and pays seven to thirteen kilobytes a slot, and `frameBudget`'s materials line reports the ceiling it got. WebGL2 keeps no ring and reads the option without effect."
+      },
+      {
+        "kind": "fixed",
+        "short": "The PNG reader in core's scripts reads palettes, one- to four-bit greys, sixteen-bit images and tRNS transparency, so a bake no longer drops those pictures and draws their surfaces white.",
+        "text": "**`@driftengine/core/scripts/png.mjs` reads every non-interlaced PNG.** It refused palettes (colour type 3), greys below eight bits and sixteen-bit images, and the baker and the native host read model pictures through it: measured on one bought city, 219 of its 2,447 pictures, every material wearing one baked with no colour map and drew white. Rows are now un-filtered as packed bytes and then widened to eight-bit samples — a palette to RGB, or RGBA where it carries `tRNS`; a grey or RGB `tRNS` key to an alpha of nought at that value; sixteen bits to the high byte; a grey below eight bits scaled to the full byte. An eight-bit image with no key still takes the path that copies nothing, so a screenshot decodes as it did. Interlacing is still refused by name."
+      },
+      {
+        "kind": "fixed",
+        "short": "A glTF material with no metallic texture and no metallicFactor is a full metal, as the specification says, and now reflects like one instead of reading as matte.",
+        "text": "**An untextured glTF metal that states no `metallicFactor` mirrors.** The specification's default for the factor is 1, and the reader took the material's reflectivity from the factor alone with a default of 0, so every such material — an exporter writes none when the value is the default — drew as a matte surface. The reflectivity of a material with no base colour texture now follows its metallic value, defaulted as the specification defaults it; a textured or vertex-coloured one is unchanged."
+      }
+    ]
+  },
  {
   "version": "4.6.1",
   "date": "2026-10-01",

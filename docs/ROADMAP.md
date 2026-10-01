@@ -1,6 +1,6 @@
 # Roadmap — the order of work, and why this order
 
-**Written 2026-08-20, updated 2026-09-05 against engine 3.56.2.** The scope is the full engine: `CAPABILITIES.md` is
+**Written 2026-08-20, updated 2026-10-01 against engine 4.7.0.** The scope is the full engine: `CAPABILITIES.md` is
 the map of what exists and `ARCHITECTURE.md` is the shape it is being built into.
 
 **This supersedes the ordering in `private/PRIORITY.md`**, which was written before the WebGPU
@@ -694,6 +694,80 @@ anything comparative built later inherits them:**
   gradient, so a wet street cannot give back the street lights above it.
 - **Frame generation inside the frame**, and the learned reconstruction tier beside it.
 
+## 4.8.0 — a world larger than one container
+
+**Decided 2026-10-01, after 4.7.0, and nothing of it is built.** A bought city of 3.1 km was baked
+whole for a draft scene and came to more than one container can hold. The measurements behind that
+are what this release is designed against, so they come first.
+
+### What is wrong today, measured
+
+- **One container is one download.** `DrftLoader` reads a file front to back, once. The bake writes
+  regions nearest the spawn first, so a street draws while the rest arrives, but every visit fetches
+  all of it: 779 MB for the district's one-kilometre core and its skyline.
+- **A container stops at 4 GiB.** Every chunk's offset and length is a `u32` (`FORMAT.md` §4.2), the
+  same choice glTF's `.glb` makes and with the same cap. The city at full detail everywhere passed it,
+  and the writer, which assembles a file in one buffer, failed first.
+- **Plain meshes never leave the GPU.** Only a level carried as an assembly (`KITS` and `MSHC`) is
+  paged in and out by distance; the district writes `MESH`, so the whole of it is resident once it
+  arrives. The city scene bakes assemblies and measured its page buffers at 851 MB, then 168 MB.
+- **So the district is a full-detail core and a clustered skyline**, and flown over, the skyline is
+  four-metre blocks coloured from thumbnails.
+- **Nothing reports GPU memory.** No renderer says how many bytes it holds resident, so "bounded" is
+  not yet a number anybody can read.
+
+### The engine: tiled world streaming
+
+A world as **a manifest and many tile containers**, fetched and dropped by distance, so the download,
+the CPU's memory and the GPU's follow what is near rather than what exists.
+
+- **The manifest** is a small `.drft` with a new chunk, `WTIL`: every tile's bounds, address, byte
+  size and coarse level inline, so the whole horizon draws before any tile arrives; and what every
+  tile shares — materials, pictures, kit pieces, prototypes — written once.
+- **A tile** is an ordinary container of regions that names shared resources by the manifest's
+  ordinals, through a cross-reference chunk marked required: rule 3 of §4.4, so a reader that
+  predates it refuses a tile by name rather than drawing it without its materials. Each tile is far
+  below 4 GiB, so the cap stays and stops mattering.
+- **`TiledWorld`** in `@driftengine/assets`, beside `DrftLoader`: a focus point, a fetch radius and a
+  release radius with hysteresis between them, a budget of fetches and bytes in flight, and the
+  per-frame upload budget that already exists. A dropped tile frees every GPU handle and every CPU
+  copy it made. Regions keep one id space across tiles, so `HlodSet` and paging work unchanged.
+- **`writeTiledWorld`** beside `writeDrft`, taking regions already cut and a tile size, and writing
+  each tile from its own buffer, so no step holds the whole world at once.
+- **First, the instrument**: the renderer's resident bytes by kind — meshes, pictures, targets — on
+  both backends, read beside `frameBudget`. What it costs is a counter per allocation.
+- **Declined, with its trigger**: 64-bit offsets, a major version under rule 5. What would reopen it
+  is a single _asset_, not a world, past 4 GiB.
+
+### The draft scene, in this order
+
+1. **Its finest levels as assemblies**, so they page. Needs no engine change, so it comes first, and
+   is measured flying one fixed path before and after.
+2. **The outer city as real buildings**: its copies drawn instanced from prototypes the file already
+   carries, its towers simplified with their pictures kept, clusters only where `HlodSet` would
+   choose them anyway. File size measured before and after.
+3. **Once tiles exist, the whole city baked as tiles at full detail**, and the core and skyline split
+   retired.
+
+### Done means
+
+- Nowhere in the district is a clustered building drawn nearer than its error allows.
+- GPU memory over a fixed flight across the city stays under a ceiling stated in advance, read from
+  the instrument above, on both backends.
+- What a visit downloads before its first frame is the manifest and the tiles in reach, measured.
+- Tests: tile choice and its hysteresis as pure functions; the manifest's round trip; a pre-`WTIL`
+  reader refusing a tile by name; a dropped tile freeing every handle it made, counted.
+
+### Open, for the design review before any of it is built
+
+- **Tile size**, 256 or 512 metres, against regions of 128.
+- **Pictures**: all in the manifest, which is simplest and downloads them all, or per tile through
+  DriftTexture's residency, which already streams tiles of a picture.
+- **The light volume**: one coarse volume for the city in the manifest and a fine one a tile, or a
+  tile's alone.
+
+---
+
 ## The open rows — everything still missing, and what would close each
 
 **Read `CAPABILITIES.md` §2 first**; it is the map and each of its rows carries a sentinel. This
@@ -713,6 +787,7 @@ table is the ordering over what that map says is absent, plus three things it do
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | **`.sog` splat captures**                   | **Shipped 2026-09-05 in 3.57.0.** `readSplatSog` reads the PlayCanvas container, version 2: a ZIP of lossless WebP images and a manifest. **Two formats share the name**, which is the finding worth keeping — the Fraunhofer repository this row pointed at is the ECCV 2024 _technique_, whose released scenes decompress to `.ply` and which documents no on-disk structure; what capture tools emit is the PlayCanvas container. The decoder is a parameter, because Node has none and this package will not vendor a thousand lines of VP8L. Checked against a bundle `@playcanvas/splat-transform` produced from sixty-four Gaussians chosen here: every field within the quantiser's own resolution. | Closed. Degrees 2 and 3 of the palette are read as far as l=1, which is the row below. |
 | **Splat spherical harmonics past degree 1** | Degree 1 ships. Degrees 2 and 3 **declined against the mobile bandwidth figure**, which is the right call and is recorded with its number.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | A measurement that changes the figure.                                                 |
+| **A world larger than one container**       | **Planned for 4.8.0**, sentinel `tiled-world-streaming`: a manifest and tile containers fetched and dropped by distance. See the 4.8.0 section above for the measurements, the design and what done means.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Verification debt
 

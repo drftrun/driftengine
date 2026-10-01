@@ -91,6 +91,47 @@ export type { Inflate } from './fbx.ts';
  * decompressors and the resolution of a name a file states are all the caller's to supply.
  */
 export { readModel, readerFor, extensionOf, MODEL_FORMATS } from './readModel.ts';
+/*
+ * Blender's own format, read directly. `readModel` takes a `.blend` like any other model; the rest
+ * is for a bake that keeps a scene's structure — its instancing, its materials' channels — rather
+ * than flattening it into world-space meshes.
+ */
+export { BlendNeedsBlender, openBlend, readBlend } from './blend.ts';
+export { BlendData, BlendStruct } from './blendData.ts';
+export {
+  blendToGltf,
+  blackbody,
+  imageMime,
+  imagePath,
+  materialSlots,
+  packedImage,
+} from './blendGltf.ts';
+export type { BlendGltf } from './blendGltf.ts';
+export {
+  placeObjects,
+  localMatrix,
+  activeScene,
+  OB_ARMATURE,
+  OB_EMPTY,
+  OB_LAMP,
+  OB_MESH,
+} from './blendScene.ts';
+export type { BlendPlaced } from './blendScene.ts';
+export { readBlendMesh } from './blendMesh.ts';
+export type { BlendMeshData, BlendColorLayer } from './blendMesh.ts';
+export { cornerNormals, faceNormals } from './blendNormals.ts';
+export { meshPrimitives, triangulateFace } from './blendGeometry.ts';
+export type { BlendPrimitive, SlotNeeds } from './blendGeometry.ts';
+export { readBlendSurface, customProperties } from './blendMaterial.ts';
+export type { BlendSurface, ChannelSource } from './blendMaterial.ts';
+export { judgeModifiers } from './blendModifiers.ts';
+export { Animation, actionCurves, readCurve } from './blendAnimation.ts';
+export type { Curve } from './blendAnimation.ts';
+export type { ModifierVerdict } from './blendModifiers.ts';
+export { blendCompression, isBlend } from './blendFile.ts';
+export type { BlendBlock, BlendHeader, DnaField, DnaStruct } from './blendFile.ts';
+export { unpackBlend, zstdFrames } from './blendPacked.ts';
+export type { BlendDecompress } from './blendPacked.ts';
 export type { ModelSource, ModelImport } from './readModel.ts';
 /*
  * The browser's decompressor, and the two-pass trick that makes an async one usable by a

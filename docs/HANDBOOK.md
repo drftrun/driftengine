@@ -99,7 +99,7 @@ push. `scripts/` has its own `tsconfig.scripts.json` because those files need `@
 
 ### Formats
 
-Tier 1: `.glb` `.gltf` `.obj` `.stl` `.usdz` `.usda` `.3mf` · Tier 2: `.fbx` · Tier 4
+Tier 1: `.glb` `.gltf` `.obj` `.stl` `.usdz` `.usda` `.3mf` · Tier 2: `.fbx` `.kn5` `.blend` · Tier 4
 (refused with instructions): `.mb` `.max`
 
 STL is almost always Z-up. USD and 3MF state their own units. glTF is Y-up by specification.
@@ -324,16 +324,17 @@ been unreliable here.
 
 ## 1. What the baker accepts
 
-| You have         | Pass it    | Tier | Notes                                                                                                                                                                                               |
-| ---------------- | ---------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.glb`, `.gltf`  | the file   | 1    | The best thing to hand it. Y-up is mandated by the specification, so there is no axis to guess. Both material models are read, the core one and the archived `KHR_materials_pbrSpecularGlossiness`. |
-| `.obj` + `.mtl`  | the `.obj` | 1    | The `.mtl` is named inside the file and found beside it. A bare `.obj` still imports.                                                                                                               |
-| `.stl`           | the file   | 1    | Triangles and nothing else. Almost always Z-up: expect to pass `--up z`.                                                                                                                            |
-| `.usdz`, `.usda` | the file   | 1    | A `.usdz` carries its own textures, so nothing needs resolving.                                                                                                                                     |
-| `.3mf`           | the file   | 1    | A printing format: geometry and colour, no UVs.                                                                                                                                                     |
-| `.fbx`           | the file   | 2    | Experimental, and says so on every import. The format most stores hand you, and the one characters are sold in: it carries skins and clips.                                                         |
-| `.mb`, `.max`    | the file   | 4    | Identified and refused, with the export that works named.                                                                                                                                           |
-| a **folder**     | the folder | —    | It inventories what is inside, picks the highest tier, and prints the choice.                                                                                                                       |
+| You have         | Pass it    | Tier | Notes                                                                                                                                                                                                                                                                                                                                       |
+| ---------------- | ---------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.glb`, `.gltf`  | the file   | 1    | The best thing to hand it. Y-up is mandated by the specification, so there is no axis to guess. Both material models are read, the core one and the archived `KHR_materials_pbrSpecularGlossiness`.                                                                                                                                         |
+| `.obj` + `.mtl`  | the `.obj` | 1    | The `.mtl` is named inside the file and found beside it. A bare `.obj` still imports.                                                                                                                                                                                                                                                       |
+| `.stl`           | the file   | 1    | Triangles and nothing else. Almost always Z-up: expect to pass `--up z`.                                                                                                                                                                                                                                                                    |
+| `.usdz`, `.usda` | the file   | 1    | A `.usdz` carries its own textures, so nothing needs resolving.                                                                                                                                                                                                                                                                             |
+| `.3mf`           | the file   | 1    | A printing format: geometry and colour, no UVs.                                                                                                                                                                                                                                                                                             |
+| `.fbx`           | the file   | 2    | Experimental, and says so on every import. The format most stores hand you, and the one characters are sold in: it carries skins and clips.                                                                                                                                                                                                 |
+| `.blend`         | the file   | 2    | Read from the file's own `DNA1`, Blender 2.79 to 5.x, compressed or not: meshes, normals, materials, lights, cameras, shape keys and keyed animation. A rig, a constraint or a modifier is refused by name, and with Blender installed the baker exports through it instead. `--direct` refuses that hand-off, `--via-blender` asks for it. |
+| `.mb`, `.max`    | the file   | 4    | Identified and refused, with the export that works named.                                                                                                                                                                                                                                                                                   |
+| a **folder**     | the folder | —    | It inventories what is inside, picks the highest tier, and prints the choice.                                                                                                                                                                                                                                                               |
 
 **Hand it the folder when you have one.** A store download is usually the source plus three
 conversions, and exactly one of them is the best thing to read:

@@ -49,6 +49,12 @@ export interface BudgetCounter extends BudgetLine {
   ask(): void;
   /** One of them was refused, and the frame is marked. */
   drop(): void;
+  /**
+   * The ceiling, where it is a construction-time option and not known when the line is declared.
+   * Called at construction, once; a line keeps the place it was declared in, which is the order a
+   * report reads in.
+   */
+  limit(ceiling: number): void;
 }
 
 class Line implements BudgetCounter {
@@ -57,9 +63,13 @@ class Line implements BudgetCounter {
 
   constructor(
     readonly name: string,
-    readonly ceiling: number | null,
+    public ceiling: number | null,
     private readonly budget: FrameBudget,
   ) {}
+
+  limit(ceiling: number): void {
+    this.ceiling = ceiling;
+  }
 
   /** One more of this thing was asked for, whether or not it will fit. */
   ask(): void {

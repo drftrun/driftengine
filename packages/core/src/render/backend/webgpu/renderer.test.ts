@@ -5430,7 +5430,7 @@ describe('replaying a caster enumeration into the colour pass', () => {
    * `ShadowCasterSink`'s material is optional and omitting it means *no material* rather than
    * *unchanged*, so the sink had no way of being told one was still standing and bound per entry.
    * Here a bind is not a slope but a cliff: `setMaterial` dirties `materialSlot`, so binding per
-   * entry spends a slot **per draw** out of `MAX_MATERIALS_PER_FRAME`, and past the ring the draws
+   * entry spends a slot **per draw** out of `materialChangesPerFrame`, and past the ring the draws
    * are skipped rather than mispainted. A consumer measured 82 materials a model over two to four
    * draws each and wrote a deduping sink of its own over the public verbs.
    *
@@ -5858,7 +5858,7 @@ describe('the skin palette', () => {
  * **`WebGPU: more than 1024 materials in a frame; the rest reuse the last` was wrong in the commit
  * that wrote it.** `materialSlotForDraw` has returned null and the caller has skipped the draw
  * since `9d90bf7`; nothing has ever reused the last material. The doc comment at
- * `MAX_MATERIALS_PER_FRAME` said the same thing and was the stated argument for raising the ring
+ * The ring's ceiling said the same thing and was the stated argument for raising the ring
  * from 256 to 1024 — "reads as a stretch of the world losing its texture and has been reported
  * twice from a consumer". What those consumers saw was geometry that was not drawn.
  *
@@ -5913,6 +5913,72 @@ describe('the frame budget', () => {
       pass.drawIndexed.mock.calls.length,
       'the draw past the ceiling is skipped, not drawn with another material',
     ).toBe(drawnWhenFull);
+  });
+
+  /*
+   * **A bought city of 1,139 materials and the planar mirror of its river did not fit 1,024**,
+   * measured: the street alone spent about nine hundred changes and the mirror the rest twice over,
+   * so the reflection came and went as the camera turned. The ring is a construction-time option
+   * so a scene that measures past the default can ask, and the line reports the ceiling it got.
+   */
+  it('A RING SIZED BY materialChangesPerFrame HOLDS WHAT THE DEFAULT DROPS, and its line says so', () => {
+    const cases = [
+      { quality: resolveRenderQuality({}), ceiling: 1024, dropped: 76 },
+      {
+        quality: resolveRenderQuality({ materialChangesPerFrame: 1100 }),
+        ceiling: 1100,
+        dropped: 0,
+      },
+    ];
+    for (const { quality, ceiling, dropped } of cases) {
+      const { surface } = stubSurface();
+      const renderer = new WebGPURenderer(surface, quality);
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      for (let i = 0; i < 1100; i++)
+        renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
+      const materials = renderer.frameBudget.lines.find((line) => line.name === 'materials');
+      expect(materials?.ceiling).toBe(ceiling);
+      expect(materials?.dropped, `dropped on a ring of ${ceiling}`).toBe(dropped);
+      expect(renderer.frameBudget.lines[1]?.name, 'still the second line a report reads').toBe(
+        'materials',
+      );
+    }
+  });
+
+  it('A DRAW RING SIZED BY drawsPerFrame skips what is past it, and the default does not', () => {
+    const cases = [
+      { quality: resolveRenderQuality({}), ceiling: 4096, dropped: 0 },
+      { quality: resolveRenderQuality({ drawsPerFrame: 50 }), ceiling: 50, dropped: 10 },
+    ];
+    for (const { quality, ceiling, dropped } of cases) {
+      const { surface } = stubSurface();
+      const renderer = new WebGPURenderer(surface, quality);
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      for (let i = 0; i < 60; i++) renderer.drawMesh(mesh, mat4.create());
+      const draws = renderer.frameBudget.lines.find((line) => line.name === 'draws');
+      expect(draws?.ceiling).toBe(ceiling);
+      expect(draws?.dropped, `dropped on a ring of ${ceiling}`).toBe(dropped);
+      const shadows = renderer.frameBudget.lines.find((line) => line.name === 'shadow draws');
+      expect(shadows?.ceiling, 'the shadow ring is the same size').toBe(ceiling);
+    }
+    expect(() => resolveRenderQuality({ drawsPerFrame: 0 })).toThrow(/drawsPerFrame/);
+    expect(() => resolveRenderQuality({ drawsPerFrame: 65537 })).toThrow(/at most 65536/);
+  });
+
+  it('refuses a material ring that is not a whole positive number, or past the most kept', () => {
+    expect(() => resolveRenderQuality({ materialChangesPerFrame: 0 })).toThrow(
+      /materialChangesPerFrame/,
+    );
+    expect(() => resolveRenderQuality({ materialChangesPerFrame: 1.5 })).toThrow(
+      /materialChangesPerFrame/,
+    );
+    expect(() => resolveRenderQuality({ materialChangesPerFrame: 8193 })).toThrow(/at most 8192/);
   });
 
   it('clears every line at the start of a frame, and keeps the objects', () => {

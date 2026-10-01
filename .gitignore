@@ -50,3 +50,6 @@ demo/dev/.vite/
 # who has no private nouns to leak.
 scripts/private-nouns.local.json
 editor/public/
+
+# Blender keeps the previous save beside a file it overwrites.
+*.blend1

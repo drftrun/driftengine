@@ -1,7 +1,7 @@
 {
   "name": "@driftengine/workspace",
   "private": true,
-  "version": "4.6.1",
+  "version": "4.7.0",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [
@@ -25,6 +25,9 @@
     "docs:check": "node --test scripts/docs.test.mjs",
     "bake": "npx tsx --conditions=drift-source scripts/bake.ts",
     "sprawl:bake": "npx tsx --conditions=drift-source demo/sprawl/bake/main.ts",
+    "district:bake": "node --max-old-space-size=26000 ./node_modules/.bin/tsx --conditions=drift-source demo/district/bake/main.ts",
+    "district:movers": "node --max-old-space-size=20000 ./node_modules/.bin/tsx --conditions=drift-source demo/district/bake/movers.ts",
+    "blend:fixtures": "flatpak run org.blender.Blender --background --factory-startup --python \"$PWD/scripts/blender/fixtures.py\" -- \"$PWD/scripts/fixtures/blend\"",
     "car": "npx tsx --conditions=drift-source scripts/showroom-car.ts",
     "demo": "npx vite demo/dev",
     "editor": "npx vite editor",
@@ -59,9 +62,9 @@
     "native:startup": "node demo/native/startup.mjs"
   },
   "devDependencies": {
-    "@driftengine/assets": "4.6.1",
-    "@driftengine/core": "4.6.1",
-    "@driftengine/drft": "4.6.1",
+    "@driftengine/assets": "4.7.0",
+    "@driftengine/core": "4.7.0",
+    "@driftengine/drft": "4.7.0",
     "@jsquash/jpeg": "1.6.0",
     "@types/node": "^26.2.0",
     "@webgpu/glslang": "^0.0.15",

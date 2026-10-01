@@ -48,6 +48,7 @@ import { dayClock } from './dayClock';
 import { showroom } from './showroom';
 import { sponza } from './sponza';
 import { sprawl } from './sprawl';
+import { district } from './district';
 import { gildedChamber } from './gildedChamber';
 import { nightCourt } from './nightCourt';
 import { nightStreet } from './nightStreet';
@@ -160,6 +161,11 @@ export { setUniformStrictMode } from '../packages/core/src/index';
  * rather than something that happens by writing the file.
  */
 export const DRAFT_SCENES: readonly DemoScene[] = [
+  /*
+   * A bought Blender city baked from data kept outside the tree, as `sprawl` is: a draft until it
+   * can be published with data the engine may host, and held to frame budget on a phone.
+   */
+  district,
   /*
    * A city streamed from a container its bake makes from data kept outside the tree: a draft
    * until it can be published with data of its own, and held to frame budget on a phone.

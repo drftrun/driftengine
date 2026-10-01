@@ -826,3 +826,22 @@ test('A MATERIAL THAT TRANSMITS LIGHT ARRIVES AS GLASS, and rough glass is frost
   expect(wall?.frost).toBe(0);
   expect(wall?.blend).toBe(false);
 });
+
+test('AN UNTEXTURED METAL THAT STATES NO FACTOR MIRRORS, AND AN IMAGE-COLOURED ONE STAYS A DIELECTRIC', () => {
+  /*
+   * glTF's `metallicFactor` defaults to 1, and Blender's exporter writes none for a metal for exactly
+   * that reason. `reflectivity` read the absence as 0, so every untextured metal from Blender took a
+   * highlight and mirrored nothing. The image-coloured case keeps the decal guard `specular` has.
+   */
+  const steel = readMaterial({
+    pbrMetallicRoughness: { baseColorFactor: [0.6, 0.6, 0.65, 1], roughnessFactor: 0.2 },
+  });
+  expect(steel.materials[0]?.reflectivity).toBe(1);
+  expect(steel.materials[0]?.specular).toBe(1);
+  const decal = readMaterial({ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } });
+  expect(decal.materials[0]?.reflectivity).toBe(0);
+  const stated = readMaterial({
+    pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0.7 },
+  });
+  expect(stated.materials[0]?.reflectivity).toBeCloseTo(0.7, 6);
+});

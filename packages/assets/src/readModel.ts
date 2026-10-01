@@ -38,6 +38,8 @@ import { parseUsda, usdzToMeshes } from './usd.ts';
 import { threeMfToMeshes } from './threemf.ts';
 import { kn5ToMeshes, toDrftNodes } from './kn5.ts';
 import { describeRecognised, recognise } from './recognise.ts';
+import { readBlend } from './blend.ts';
+import type { BlendDecompress } from './blendPacked.ts';
 
 /**
  * Every extension this project reads, in the order a bundle should be picked from.
@@ -57,6 +59,11 @@ export const MODEL_FORMATS: readonly { ext: string; tier: number; note: string }
   { ext: '.3mf', tier: 1, note: '3MF, geometry and colour, with no UVs in the core format' },
   { ext: '.fbx', tier: 2, note: 'FBX, experimental reader, geometry, materials, skins and clips' },
   { ext: '.kn5', tier: 2, note: 'experimental reader, geometry, materials and hierarchy' },
+  {
+    ext: '.blend',
+    tier: 2,
+    note: 'Blender, read directly; modifiers, rigs and constraints are refused and baked through Blender',
+  },
 ];
 
 /** Whether this project has a reader for an extension. Lower case or not. */
@@ -93,6 +100,8 @@ export interface ModelSource {
   readonly inflate?: Inflate;
   /** Raw deflate inflate, for the zip inside a `.3mf`. Not the same function as `inflate`. */
   readonly inflateRaw?: Inflate;
+  /** gzip and zstd, for a `.blend` saved compressed. See `blendPacked.ts`. */
+  readonly decompress?: BlendDecompress;
   /**
    * Derive a tangent frame where a material declares a normal map and the file supplies none.
    *
@@ -154,6 +163,14 @@ export interface ModelImport {
   lights?: readonly DrftLight[];
   /** Which way round the source's coordinate system was. `orient.ts` is what acts on it. */
   declaredHand?: Handedness;
+  /**
+   * Where the reader knows its result differs from what the authoring tool would export: a node
+   * graph glTF cannot hold, animation it does not read. Drawn anyway, and named.
+   *
+   * Absent for every format but `.blend`, whose authoring tool can be asked instead: the baker
+   * reads a non-empty list as the reason to hand the file to Blender when Blender is there.
+   */
+  approximations?: readonly string[];
 }
 
 function needed(ext: string, capability: string): DrftError {
@@ -417,6 +434,33 @@ async function dispatch(source: ModelSource): Promise<ModelImport> {
        */
       unitScale: result.unitScale,
     };
+  }
+
+  if (ext === '.blend') {
+    /*
+     * Read into a glTF document and through the glTF reader, so a `.blend` and Blender's export of
+     * it share every step after the document. A file needing evaluation throws
+     * `BlendNeedsBlender`, which the baker answers by asking Blender.
+     */
+    const result = await readBlend(bytes, source.decompress);
+    const parts = [result.binary];
+    const read = gltfToMeshes(result.doc, parts, options);
+    const said = [...result.approximations, ...result.warnings];
+    const shown = said.slice(0, 8);
+    return complete(
+      {
+        ...read,
+        ...readGltfSkins(result.doc, parts),
+        warnings: [
+          ...read.warnings,
+          ...shown,
+          ...(said.length > shown.length ? [`…and ${said.length - shown.length} more`] : []),
+          'blend: direct reader (tier 2), not covered by the compatibility promise.',
+        ],
+        approximations: result.approximations,
+      },
+      result.notes,
+    );
   }
 
   if (ext === '.kn5') {

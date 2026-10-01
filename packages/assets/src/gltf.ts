@@ -692,8 +692,20 @@ function materialOf(material: GltfMaterial | undefined): DrftMaterial {
     cutout: masked ? Math.min(1, Math.max(0, material?.alphaCutoff ?? 0.5)) : 0,
     /* Metalness is glTF's statement about reflection: a metal mirrors its surroundings and
        a dielectric mostly does not. It also feeds `specular`, which is not double counting,
-       because the two describe different halves of the same fact. */
-    reflectivity: Math.min(1, Math.max(0, modulated ? 0 : (pbr?.metallicFactor ?? 0))),
+       because the two describe different halves of the same fact.
+
+       **An absent factor is 1 here as it is everywhere else in glTF**, with the decal guard
+       `highlight` applies above: an image-coloured surface naming no metallic stays a dielectric.
+       It read 0 for every surface until a Blender export showed it, because Blender writes no
+       `metallicFactor` for a metal — 1 is the default — so every untextured metal it exported
+       arrived taking a highlight and mirroring nothing. */
+    reflectivity: Math.min(
+      1,
+      Math.max(
+        0,
+        modulated ? 0 : pbr?.baseColorTexture === undefined ? metallic : (pbr?.metallicFactor ?? 0),
+      ),
+    ),
     normalMap: material?.normalTexture?.index ?? -1,
     ormMap,
     emissiveMap: material?.emissiveTexture?.index ?? -1,

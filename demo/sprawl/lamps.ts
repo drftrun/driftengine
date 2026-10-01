@@ -126,6 +126,8 @@ export class CityLamps {
     if (this.field === null && volume !== null) {
       this.field = this.renderer.createWorldLightField(volume, { fadeSec: 0 });
       for (const source of this.sources) source.inLightField = true;
+      /* The volume is scaled where the night changes; one arriving after the lamps has to be told. */
+      this.night = -1;
     }
   }
 

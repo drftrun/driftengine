@@ -22,7 +22,9 @@ import path from 'node:path';
 import { MODEL_FORMATS, bakeSceneField, readModel, readerFor } from '@driftengine/assets';
 import type { ModelImport } from '@driftengine/assets';
 import { describeRecognised, recognise } from '@driftengine/assets';
-import { inflateRawSync, inflateSync } from 'node:zlib';
+import { gunzipSync, inflateRawSync, inflateSync, zstdDecompressSync } from 'node:zlib';
+import { BlendNeedsBlender } from '@driftengine/assets';
+import { exportWithBlender, findBlender } from './blenderHost.ts';
 import { writeDrft } from '@driftengine/drft';
 import {
   deriveTangentsFor,
@@ -123,10 +125,13 @@ function walk(dir: string, depth = 0): string[] {
  * `.obj` mean by a relative name. The two inflates are different functions on purpose: a
  * zip stores a bare deflate stream and FBX embeds a zlib-wrapped one.
  */
-function loadModel(file: string): Promise<ModelImport> {
-  const bytes = readFileSync(file);
+function loadModel(
+  file: string,
+  bytes: Uint8Array = readFileSync(file),
+  name = path.basename(file),
+): Promise<ModelImport> {
   return readModel({
-    name: path.basename(file),
+    name,
     bytes,
     beside: (relative) => {
       try {
@@ -149,7 +154,65 @@ function loadModel(file: string): Promise<ModelImport> {
       new Uint8Array(inflateSync(data, { maxOutputLength: Math.max(expected, 1) * 2 })),
     inflateRaw: (data, expected) =>
       new Uint8Array(inflateRawSync(data, { maxOutputLength: Math.max(expected, 1) * 2 })),
+    decompress: (data, codec) =>
+      new Uint8Array(codec === 'zstd' ? zstdDecompressSync(data) : gunzipSync(data)),
   });
+}
+
+/**
+ * A `.blend`, read directly where the reader can and through the person's Blender where it cannot.
+ *
+ * **The order is the one docs/FORMAT.md §3.2 promises**: the direct reader first, because it needs
+ * nothing installed and gives the same bytes on every machine, and Blender when the file holds
+ * something only Blender can evaluate — a modifier, a constraint, a rig — or a node graph the direct
+ * reader can only approximate and Blender's exporter knows more of. `--via-blender` asks for
+ * Blender outright and `--direct` refuses it. Every route says which it took.
+ */
+async function loadBlend(
+  file: string,
+  args: readonly string[],
+  workIn: string,
+): Promise<ModelImport> {
+  const direct = args.includes('--direct');
+  const viaBlender = args.includes('--via-blender');
+  let reason: readonly string[] = [];
+  if (!viaBlender) {
+    try {
+      const read = await loadModel(file);
+      const approximations = read.approximations ?? [];
+      if (approximations.length === 0 || direct) {
+        console.log(`${path.basename(file)} — read directly (tier 2)`);
+        return read;
+      }
+      reason = approximations;
+      if (findBlender() === null) {
+        console.log(
+          `${path.basename(file)} — read directly; Blender is not installed, so ${approximations.length} approximations stand`,
+        );
+        return read;
+      }
+    } catch (error) {
+      if (!(error instanceof BlendNeedsBlender) || direct) throw error;
+      reason = error.reasons;
+    }
+  }
+  const blender = findBlender();
+  if (blender === null) {
+    console.error(
+      `${path.basename(file)} needs Blender, and none was found. Install it, put \`blender\` on the ` +
+        'path, or set BLENDER to its executable. The direct reader said:',
+    );
+    for (const line of reason) console.error(`  ${line}`);
+    process.exit(1);
+  }
+  console.log(
+    `${path.basename(file)} — exported by ${blender.version}${viaBlender ? ' (--via-blender)' : ', because:'}`,
+  );
+  for (const line of reason.slice(0, 12)) console.log(`  ${line}`);
+  if (reason.length > 12) console.log(`  …and ${reason.length - 12} more`);
+  const { glb, log } = exportWithBlender(blender, file, workIn);
+  for (const line of log) console.log(`  ${line}`);
+  return loadModel(file, glb, `${path.basename(file, path.extname(file))}.glb`);
 }
 
 /**
@@ -515,7 +578,7 @@ async function main(): Promise<void> {
       'usage: bake <file-or-folder> [-o out.drft] [--from glb|gltf|obj|stl] [--up x|-x|y|-y|z|-z]' +
         ' [--lod cells] [--no-lod] [--no-levels] [--max-texture px] [--texture-codec jpeg|jpeg-all] [--sdf m]' +
         ' [--normals-directx] [--simplify m]' +
-        ' [--no-instances] [--no-quantise] [--blend-as-cutout]',
+        ' [--no-instances] [--no-quantise] [--blend-as-cutout] [--direct | --via-blender]',
     );
     process.exit(1);
   }
@@ -616,8 +679,7 @@ async function main(): Promise<void> {
         console.error(describeRecognised(foreign, path.basename(file)));
         named = true;
       }
-      if (!named)
-        console.error('If this bundle has a blend or an ma only, export glTF from it for now.');
+      if (!named) console.error('If this bundle has an .ma only, export glTF from it for now.');
       process.exit(1);
     }
     const found = [...new Set(candidates.map((c) => c.reader.ext.slice(1)))];
@@ -657,7 +719,13 @@ async function main(): Promise<void> {
     clips,
     nodes,
     lights,
-  } = await loadModel(chosen);
+  } = path.extname(chosen).toLowerCase() === '.blend'
+    ? await loadBlend(
+        chosen,
+        args,
+        outIndex === -1 ? process.cwd() : path.dirname(path.resolve(args[outIndex + 1] as string)),
+      )
+    : await loadModel(chosen);
   /*
    * `--blend-as-cutout`: every blended material becomes a cutout at glTF's own default of 0.5.
    * Foliage is authored `BLEND` as often as `MASK`, and a leaf drawn blended is sorted, soft-edged

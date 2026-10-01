@@ -1,4 +1,4 @@
-/** What a decoded PNG is: row-major 8-bit samples, three or four to a pixel. */
+/** What a decoded PNG is: row-major 8-bit samples, one to four to a pixel. */
 export interface DecodedPng {
   readonly width: number;
   readonly height: number;

@@ -2,10 +2,11 @@
  * Enough of a PNG reader to compare two frames, with no dependency.
  *
  * A screenshot arrives as 8-bit RGBA, filter method 0, not interlaced, which is what every
- * browser produces. A bought model's maps also arrive as 8-bit grey, grey with alpha and RGB, and
- * the baker and the native host read those through here too. Anything else — a palette, sixteen
- * bits, interlacing — is refused by name rather than guessed at, because a reader that quietly
- * mis-decodes produces pixel differences that look like a rendering change.
+ * browser produces, and is read on a path that copies nothing. A bought model's maps arrive as
+ * every other non-interlaced kind — grey, grey with alpha, RGB and RGBA at eight or sixteen bits,
+ * palettes and greys at one to eight — and the baker and the native host read those through here
+ * too, widened to 8-bit samples. Interlacing is refused by name rather than guessed at, because a
+ * reader that quietly mis-decodes produces pixel differences that look like a rendering change.
  *
  * `zlib` is Node's own, so this costs nothing to have.
  */
@@ -14,14 +15,28 @@ import { readFileSync } from 'node:fs';
 
 const SIGNATURE = 0x89504e47;
 
-/** `{ width, height, channels, pixels }`, pixels being row-major 8-bit samples. */
+/** Samples a pixel, by colour type. */
+const SAMPLES = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+/** The bit depths the specification allows for each colour type. */
+const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+
+/**
+ * `{ width, height, channels, pixels }`, pixels being row-major 8-bit samples.
+ *
+ * A palette widens to RGB, or to RGBA where it carries `tRNS`; a grey or RGB image with a `tRNS`
+ * key gains an alpha channel, nought at that one value; sixteen bits keep the high byte; a grey
+ * below eight bits is scaled to the full byte, so one bit is 0 or 255.
+ */
 export function decodePng(bytes) {
   if (bytes.length < 8 || bytes.readUInt32BE(0) !== SIGNATURE) throw new Error('not a PNG');
 
   let at = 8;
   let width = 0;
   let height = 0;
-  let channels = 0;
+  let depth = 0;
+  let colorType = 0;
+  let palette = null;
+  let transparency = null;
   const parts = [];
 
   while (at + 8 <= bytes.length) {
@@ -31,20 +46,22 @@ export function decodePng(bytes) {
     if (type === 'IHDR') {
       width = body.readUInt32BE(0);
       height = body.readUInt32BE(4);
-      const depth = body[8];
-      const colorType = body[9];
+      depth = body[8];
+      colorType = body[9];
       const interlace = body[12];
-      if (depth !== 8) throw new Error(`bit depth ${depth}, only 8 is handled`);
       if (interlace !== 0) throw new Error('interlaced PNG, not handled');
-      /*
-       * Grey, grey with alpha, RGB and RGBA — every 8-bit type but a palette. A bought model's
-       * single-channel maps are greyscale, and refusing them left a baker's texture cap unable to
-       * shrink a third of one scene's maps. A palette needs `PLTE` read, and nothing has asked.
-       */
-      channels = { 0: 1, 4: 2, 2: 3, 6: 4 }[colorType] ?? 0;
-      if (channels === 0) {
-        throw new Error(`colour type ${colorType}, only 0, 2, 4 and 6 are handled`);
+      if (SAMPLES[colorType] === undefined) {
+        throw new Error(`colour type ${colorType}, which is not a PNG colour type`);
       }
+      if (!DEPTHS[colorType].includes(depth)) {
+        throw new Error(
+          `bit depth ${depth} for colour type ${colorType}, which PNG does not allow`,
+        );
+      }
+    } else if (type === 'PLTE') {
+      palette = body;
+    } else if (type === 'tRNS') {
+      transparency = body;
     } else if (type === 'IDAT') {
       parts.push(body);
     } else if (type === 'IEND') {
@@ -54,15 +71,21 @@ export function decodePng(bytes) {
     at += 12 + length;
   }
   if (width === 0 || height === 0) throw new Error('no IHDR');
+  if (colorType === 3 && palette === null) throw new Error('a palette PNG with no PLTE');
 
+  const samples = SAMPLES[colorType];
+  const bits = samples * depth;
+  /* What a filter steps back by: a whole pixel, or one byte where a pixel is smaller than one. */
+  const step = Math.max(1, bits >> 3);
+  const stride = (width * bits + 7) >> 3;
   const raw = inflateSync(Buffer.concat(parts));
-  const stride = width * channels;
-  const pixels = Buffer.alloc(stride * height);
+  const scan = Buffer.alloc(stride * height);
 
   /*
    * Un-filtering, which is the whole of the format that is not zlib. Each row states one of five
-   * predictors and the residual against it; `a` is the sample one pixel left, `b` the one above,
-   * `c` the one above and left, and all three are zero outside the image rather than wrapped.
+   * predictors and the residual against it; `a` is the byte one pixel left, `b` the one above,
+   * `c` the one above and left, and all three are zero outside the image rather than wrapped. It
+   * runs on the packed bytes, before a sub-byte pixel is unpacked, which is what the format says.
    */
   for (let y = 0; y < height; y++) {
     const filter = raw[y * (stride + 1)];
@@ -70,9 +93,9 @@ export function decodePng(bytes) {
     const to = y * stride;
     for (let i = 0; i < stride; i++) {
       const value = raw[from + i];
-      const a = i >= channels ? pixels[to + i - channels] : 0;
-      const b = y > 0 ? pixels[to - stride + i] : 0;
-      const c = i >= channels && y > 0 ? pixels[to - stride + i - channels] : 0;
+      const a = i >= step ? scan[to + i - step] : 0;
+      const b = y > 0 ? scan[to - stride + i] : 0;
+      const c = i >= step && y > 0 ? scan[to - stride + i - step] : 0;
       let restored;
       if (filter === 0) restored = value;
       else if (filter === 1) restored = value + a;
@@ -80,10 +103,61 @@ export function decodePng(bytes) {
       else if (filter === 3) restored = value + ((a + b) >> 1);
       else if (filter === 4) restored = value + paeth(a, b, c);
       else throw new Error(`row ${y} states filter ${filter}, which is not a PNG filter`);
-      pixels[to + i] = restored & 0xff;
+      scan[to + i] = restored & 0xff;
     }
   }
 
+  /* Eight bits of grey, grey and alpha, RGB or RGBA with no key: the scan is the pixels. */
+  if (depth === 8 && colorType !== 3 && transparency === null) {
+    return { width, height, channels: samples, pixels: scan };
+  }
+  return widen(scan, width, height, depth, colorType, stride, palette, transparency);
+}
+
+/** A sample at its own precision: pixel `x`, sample `s` of row `y`. */
+function sampleAt(scan, stride, depth, samples, y, x, s) {
+  const index = x * samples + s;
+  if (depth === 16) return scan.readUInt16BE(y * stride + index * 2);
+  if (depth === 8) return scan[y * stride + index];
+  const bit = index * depth;
+  return (scan[y * stride + (bit >> 3)] >> (8 - depth - (bit & 7))) & ((1 << depth) - 1);
+}
+
+/** Everything the 8-bit path does not take, widened to 8-bit samples. */
+function widen(scan, width, height, depth, colorType, stride, palette, transparency) {
+  const samples = SAMPLES[colorType];
+  const paletted = colorType === 3;
+  /* A key in tRNS is one sample value a channel, at the image's own depth. */
+  const keyed = !paletted && transparency !== null && (colorType === 0 || colorType === 2);
+  const channels = paletted ? (transparency === null ? 3 : 4) : samples + (keyed ? 1 : 0);
+  const key = keyed
+    ? [0, 1, 2].slice(0, samples).map((s) => transparency.readUInt16BE(s * 2))
+    : null;
+  const to8 =
+    depth === 16 ? (v) => v >> 8 : depth === 8 ? (v) => v : (v) => (v * 255) / ((1 << depth) - 1);
+  const entries = paletted ? palette.length / 3 : 0;
+  const pixels = Buffer.alloc(width * height * channels);
+  let out = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (paletted) {
+        const index = sampleAt(scan, stride, depth, 1, y, x, 0);
+        if (index >= entries) throw new Error(`palette index ${index} past a PLTE of ${entries}`);
+        pixels[out++] = palette[index * 3];
+        pixels[out++] = palette[index * 3 + 1];
+        pixels[out++] = palette[index * 3 + 2];
+        if (channels === 4) pixels[out++] = index < transparency.length ? transparency[index] : 255;
+        continue;
+      }
+      let matches = key !== null;
+      for (let s = 0; s < samples; s++) {
+        const value = sampleAt(scan, stride, depth, samples, y, x, s);
+        if (key !== null && value !== key[s]) matches = false;
+        pixels[out++] = to8(value);
+      }
+      if (keyed) pixels[out++] = matches ? 0 : 255;
+    }
+  }
   return { width, height, channels, pixels };
 }
 

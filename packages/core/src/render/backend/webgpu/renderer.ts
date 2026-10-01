@@ -586,7 +586,9 @@ import type { WorldLightFieldOptions } from '../../driftLight/worldLightField.ts
 import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/uniforms.ts';
 
 /**
- * How many draws one frame may make before the ring is full.
+ * How many draws one frame is prepared for before anything grows: `drawsPerFrame`'s default, and
+ * the starting size of the arena and the command pool, which reallocate on demand. The two rings
+ * that cannot grow take `drawsPerFrame` itself.
  *
  * **Four thousand and ninety-six, and the number is an allocation rather than a limit.**
  * `UniformRing.flush` uploads `used * slotSize`, so a frame that draws two hundred pays for two
@@ -643,37 +645,6 @@ const MAX_OVERLAYS = 64;
  * and passes nobody has written yet; the cost is sixteen kilobytes.
  */
 const MAX_SKY_DRAWS = 64;
-
-/**
- * Distinct materials a frame may set.
- *
- * A slot is spent per *change*, not per draw, so this counts how many times a scene switches
- * material rather than how much it draws.
- *
- * **A thousand and twenty-four, and it is the expensive one of the two.** A slot is the fragment
- * block — 3,376 to 6,656 bytes depending on which of the sixteen permutations is built — paid
- * twice for staging and buffer, so **7,168 to 13,312 bytes a slot** against 1,540 for a draw.
- * Raising it from 256 costs 5.25 to 9.75 MB.
- *
- * It is worth paying for how it *fails* rather than how it performs. Past the ring
- * `materialSlotForDraw` returns null and **every draw that needed a new material is skipped** —
- * a stretch of the world simply not drawn, which has been reported from a consumer as
- * ground that appears and disappears as the camera moves. A budget that hopes to stay under a
- * ceiling is a budget that ships this the first time somebody adds a model.
- *
- * **This comment said "silently reuses the last material" until 2026-09-02, and so did the
- * warning, and neither was ever true.** The skip has been there since `9d90bf7` wrote both
- * halves in one diff. It is recorded because the wrong failure was the stated argument for
- * raising this number from 256, and because "wrong texture" and "no geometry" send a consumer
- * looking in completely different places — one at materials, the other at culling, which is
- * where the reporting game spent its weeks. `frameBudget` reports the count now, so the next
- * consumer reads a number instead of a sentence.
- *
- * **What would make it wrong** is a scene switching material every draw: a thousand material
- * changes is a thousand uniform copies, and a consumer reaching this has a batching problem no
- * ring size answers — many copies of one mesh want one material and one instanced draw.
- */
-const MAX_MATERIALS_PER_FRAME = 1024;
 
 /**
  * Whether the environment probe's permutation fits this device's per-stage binding limits.
@@ -1584,8 +1555,37 @@ export class WebGPURenderer implements RendererApi {
    * geometry come first.
    */
   private readonly budget = new FrameBudget();
-  private readonly drawBudget = this.budget.line('draws', MAX_DRAWS_PER_FRAME);
-  private readonly materialBudget = this.budget.line('materials', MAX_MATERIALS_PER_FRAME);
+  private readonly drawBudget = this.budget.line('draws', null);
+  /**
+   * Distinct materials a frame may set: `materialChangesPerFrame`, 1,024 unless a consumer asks.
+   *
+   * A slot is spent per *change*, not per draw, so this counts how many times a scene switches
+   * material rather than how much it draws.
+   *
+   * **A thousand and twenty-four by default, and it is the expensive one of the two.** A slot is the fragment
+   * block — 3,376 to 6,656 bytes depending on which of the sixteen permutations is built — paid
+   * twice for staging and buffer, so **7,168 to 13,312 bytes a slot** against 1,540 for a draw.
+   * Raising it from 256 costs 5.25 to 9.75 MB.
+   *
+   * It is worth paying for how it *fails* rather than how it performs. Past the ring
+   * `materialSlotForDraw` returns null and **every draw that needed a new material is skipped** —
+   * a stretch of the world simply not drawn, which has been reported from a consumer as
+   * ground that appears and disappears as the camera moves. A budget that hopes to stay under a
+   * ceiling is a budget that ships this the first time somebody adds a model.
+   *
+   * **This comment said "silently reuses the last material" until 2026-09-02, and so did the
+   * warning, and neither was ever true.** The skip has been there since `9d90bf7` wrote both
+   * halves in one diff. It is recorded because the wrong failure was the stated argument for
+   * raising this number from 256, and because "wrong texture" and "no geometry" send a consumer
+   * looking in completely different places — one at materials, the other at culling, which is
+   * where the reporting game spent its weeks. `frameBudget` reports the count now, so the next
+   * consumer reads a number instead of a sentence.
+   *
+   * **What would make it wrong** is a scene switching material every draw: a thousand material
+   * changes is a thousand uniform copies, and a consumer reaching this has a batching problem no
+   * ring size answers — many copies of one mesh want one material and one instanced draw.
+   */
+  private readonly materialBudget = this.budget.line('materials', null);
   /**
    * Native bind groups built this frame, which is the one cost a consumer could not see.
    *
@@ -1596,7 +1596,7 @@ export class WebGPURenderer implements RendererApi {
    * in draw order, precisely because the frame reported draws and material changes and never this.
    */
   private readonly bindGroupBudget = this.budget.line('bind groups', null);
-  private readonly shadowDrawBudget = this.budget.line('shadow draws', MAX_DRAWS_PER_FRAME);
+  private readonly shadowDrawBudget = this.budget.line('shadow draws', null);
   private readonly scatterDepthBudget = this.budget.line(
     'scatter shadow draws',
     MAX_SCATTER_DEPTH_DRAWS,
@@ -5909,6 +5909,9 @@ export class WebGPURenderer implements RendererApi {
         }
       : quality;
     quality = this.quality;
+    this.materialBudget.limit(quality.materialChangesPerFrame);
+    this.drawBudget.limit(quality.drawsPerFrame);
+    this.shadowDrawBudget.limit(quality.drawsPerFrame);
     this.maxDrawingBufferPixels = quality.maxDrawingBufferPixels;
     this.exposure = quality.outputExposure;
     this.flushSchedule =
@@ -6014,7 +6017,7 @@ export class WebGPURenderer implements RendererApi {
     this.perDraw = new UniformRing(
       device,
       FLAT_VERT_SIZE,
-      MAX_DRAWS_PER_FRAME,
+      quality.drawsPerFrame,
       USAGE_UNIFORM_DST,
       'flat.vertRing',
       this.drawBudget,
@@ -6038,7 +6041,7 @@ export class WebGPURenderer implements RendererApi {
     this.perFrame = new UniformRing(
       device,
       this.fragment.uniformSize,
-      MAX_MATERIALS_PER_FRAME,
+      this.quality.materialChangesPerFrame,
       USAGE_UNIFORM_DST,
       'flat.fragRing',
       this.materialBudget,
@@ -6773,7 +6776,7 @@ export class WebGPURenderer implements RendererApi {
       device,
       /* The cutout block is the plain one and two fields more, and a slot must hold either. */
       Math.max(DEPTH_VERT_SIZE, DEPTH_CUTOUT_VERT_SIZE),
-      MAX_DRAWS_PER_FRAME,
+      quality.drawsPerFrame,
       USAGE_UNIFORM_DST,
       'shadow.drawRing',
       this.shadowDrawBudget,
@@ -8208,7 +8211,7 @@ export class WebGPURenderer implements RendererApi {
       if (!this.warnedMaterialsFull) {
         this.warnedMaterialsFull = true;
         console.warn(
-          `WebGPU: more than ${MAX_MATERIALS_PER_FRAME} material changes in a frame; the draws asking for the rest are skipped. renderer.frameBudget names the line and the count.`,
+          `WebGPU: more than ${this.quality.materialChangesPerFrame} material changes in a frame; the draws asking for the rest are skipped. renderer.frameBudget names the line and the count.`,
         );
       }
       return null;
@@ -8432,7 +8435,7 @@ export class WebGPURenderer implements RendererApi {
       if (!this.warnedFull) {
         this.warnedFull = true;
         console.warn(
-          `WebGPU: more than ${MAX_DRAWS_PER_FRAME} draws in a frame; the rest are skipped`,
+          `WebGPU: more than ${this.quality.drawsPerFrame} draws in a frame; the rest are skipped`,
         );
       }
       return;
@@ -8598,7 +8601,7 @@ export class WebGPURenderer implements RendererApi {
     /*
      * Guards the draw call only, not the restore below.
      *
-     * `materialSlotForDraw` returns null once `MAX_MATERIALS_PER_FRAME` is exhausted, and an
+     * `materialSlotForDraw` returns null once `materialChangesPerFrame` is exhausted, and an
      * early `return` here used to skip the restore too — which left `uOpacity`,
      * `uLightingEnabled` and `uFogEnabled` dirtied in `perFrameFloats`/`perFrameInts` for the
      * rest of the frame, since that scratch block is cumulative state shared by every draw
@@ -8888,7 +8891,7 @@ export class WebGPURenderer implements RendererApi {
       if (!this.warnedFull) {
         this.warnedFull = true;
         console.warn(
-          `WebGPU: more than ${MAX_DRAWS_PER_FRAME} draws in a frame; the rest are skipped`,
+          `WebGPU: more than ${this.quality.drawsPerFrame} draws in a frame; the rest are skipped`,
         );
       }
       return;
@@ -9272,7 +9275,7 @@ export class WebGPURenderer implements RendererApi {
    * *unchanged*, so a run of entries sharing one material has no shorter spelling and the sink
    * bound once per entry. On this backend that is a cliff rather than a slope: `setMaterial`
    * dirties `materialSlot`, so a bind per entry is a **slot per draw** out of
-   * `MAX_MATERIALS_PER_FRAME` — and past the ring `materialSlotForDraw` returns null and the draw
+   * `materialChangesPerFrame` — and past the ring `materialSlotForDraw` returns null and the draw
    * is skipped, which is the world that appears and disappears that constant's own comment
    * describes. A consumer measured 82 materials a model over two to four draws each, and a
    * reflection replaying the frame shares the ring with the pass that recorded it.
