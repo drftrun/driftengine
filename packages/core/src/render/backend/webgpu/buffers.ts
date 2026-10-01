@@ -154,6 +154,13 @@ export interface GpuMesh {
    */
   readonly skinOffsets: { readonly joints: number; readonly weights: number } | null;
   readonly indexBuffer: GPUBuffer;
+  /**
+   * How many indices the mesh draws. **Zero is a mesh with nothing to draw, and no pass draws it**:
+   * a level can hold none of some kind of geometry, and a draw of zero indices does nothing but
+   * earn a warning from the device in every pass that issues it. Every place a mesh enters a pass
+   * checks this beside `complete` or its vertex buffers, and WebGL2 skips the same meshes, so the
+   * two backends count the same draws.
+   */
   readonly indexCount: number;
   /**
    * How big this mesh is, in its own space.

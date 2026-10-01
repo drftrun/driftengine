@@ -99,7 +99,12 @@ export class Mesh {
   private readonly deformable: { positions: WebGLBuffer; normals: WebGLBuffer } | null = null;
   /** How many floats the position buffer holds, so an update of the wrong size is refused. */
   private readonly positionFloats: number;
-  /** Indices one draw of it issues; the batch-size rule reads it (`cullsInstances`). */
+  /**
+   * Indices one draw of it issues; the batch-size rule reads it (`cullsInstances`). **At zero the
+   * mesh has nothing to draw and no verb draws it**, as on WebGPU (`GpuMesh.indexCount`): a draw of
+   * nothing is silent here but is still a call and a counted draw, and the two backends count the
+   * same frame.
+   */
   readonly indexCount: number;
   /**
    * The constant values this mesh's *absent* attributes are shaded with, re-applied on

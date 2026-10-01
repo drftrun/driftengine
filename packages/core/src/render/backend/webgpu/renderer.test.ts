@@ -1311,6 +1311,44 @@ describe('the webgpu renderer', () => {
     ).toBeGreaterThanOrEqual(3);
   });
 
+  /**
+   * **An empty mesh draws nothing, anywhere.** A consumer's world can hold a mesh with no triangles,
+   * for a level that has none of that kind; drawn, every pass it reached issued a draw of zero
+   * indices, which WebGPU answers with a warning a pass, in a console that is meant to be quiet.
+   */
+  it('AN EMPTY MESH DRAWS NOTHING, in the frame, as a batch, or as a shadow caster', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
+    const { camera, env } = stubScene();
+    const empty = renderer.createMesh({
+      positions: new Float32Array(0),
+      normals: new Float32Array(0),
+      colors: new Float32Array(0),
+      emissive: new Float32Array(0),
+      indices: new Uint32Array(0),
+    } as never);
+    const batch = renderer.createInstanced(empty, 1);
+    const one = createMeshInstances(1);
+    one.count = 1;
+    one.models.set(mat4.create());
+    renderer.uploadInstanced(batch, one);
+    stub.pass.drawIndexed.mockClear();
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(empty, mat4.create());
+      sink.instanced?.(batch, one);
+    });
+    renderer.endShadowPass();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(empty, mat4.create());
+    renderer.drawTranslucentMesh(empty, mat4.create(), 0.5);
+    renderer.drawInstanced(batch, one);
+    renderer.endFrame();
+    const nothing = stub.pass.drawIndexed.mock.calls.filter(([count]) => count === 0);
+    expect(nothing.length, 'no pass is handed a draw of nothing').toBe(0);
+  });
+
   it('runs the motion pass even when nothing moved, because its clear is what it is for', () => {
     const stub = stubSurface();
     const renderer = freshRenderer(

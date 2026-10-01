@@ -2624,7 +2624,7 @@ export class WebGPURenderer implements RendererApi {
   ): void {
     if (!this.canDraw()) return;
     const geometry = mesh as GpuMesh & { key?: string };
-    if (geometry.vertexBuffers === undefined) return;
+    if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
     const vertexSlot = this.filmVerts.allocate();
     const fragmentSlot = this.filmFrags.allocate();
     if (vertexSlot === null || fragmentSlot === null) return;
@@ -4329,8 +4329,9 @@ export class WebGPURenderer implements RendererApi {
     if (!this.canDraw()) return;
     /* Geometry that has not all arrived is not drawn, which is the surface's contract and what
        every other mesh verb here and the other backend's volume already kept. This one drew a
-       beam from a buffer still filling, and counted it, until 2026-09-19. See `Mesh.complete`. */
-    if (!mesh.complete) return;
+       beam from a buffer still filling, and counted it, until 2026-09-19. See `Mesh.complete`. A
+       hull with no triangles draws nothing either: see `GpuMesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
     /* At zero it draws nothing rather than adding black, so a caller may keep the call in. That
        now covers a clear night too: a beam with no medium to light is not drawn at all. */
     const shown =
@@ -5478,7 +5479,7 @@ export class WebGPURenderer implements RendererApi {
         this.writeCutout(slot, cutout, DEPTH_CUTOUT_VERT_FIELDS);
 
       const geometry = mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       const cuts = cutoutGroup !== null;
       /* A two-sided caster casts from whichever face the light sees: nothing culled. */
       const cull = material?.doubleSided === true ? 'none' : this.depthCullMode;
@@ -5517,7 +5518,7 @@ export class WebGPURenderer implements RendererApi {
       if (pass === null) return;
       const gpuBatch = batch as GpuInstancedBatch;
       const geometry = gpuBatch.mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
       const cutout = cutoutOf(material);
@@ -5591,7 +5592,7 @@ export class WebGPURenderer implements RendererApi {
       this.writeShadowWind(slot);
 
       const geometry = mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       pass.setPipeline(
         depthPipeline(
           this.pipelines,
@@ -5621,7 +5622,7 @@ export class WebGPURenderer implements RendererApi {
       const pass = this.shadowPass;
       if (pass === null || data.count === 0) return;
       const geometry = scatter as GpuScatter;
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
 
       const v = this.scatterDepthFloats;
       const at = (name: string): number => (SCATTER_DEPTH_FIELDS[name]?.offset ?? -4) / 4;
@@ -8422,8 +8423,9 @@ export class WebGPURenderer implements RendererApi {
     options: TranslucentMeshOptions = {},
   ): void {
     if (!this.canDraw() || this.viewProj === null) return;
-    /* Geometry that has not all arrived is not drawn. See `GpuMesh.complete`. */
-    if (!mesh.complete) return;
+    /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `GpuMesh.complete`
+       and `GpuMesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
 
     const slot = this.perDraw.allocate();
     if (slot === null) {
@@ -8868,7 +8870,8 @@ export class WebGPURenderer implements RendererApi {
   ): void {
     if (!this.canDraw() || this.viewProj === null) return;
     const mesh = batch.mesh;
-    if (!mesh.complete) return;
+    /* Nor a batch of a mesh with nothing in it: see `GpuMesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
     const count = Math.min(data.count, batch.capacity);
     if (count === 0) return;
     /* A culling batch's camera draw: the whole batch against the view and the occluders on the CPU,
@@ -9522,7 +9525,7 @@ export class WebGPURenderer implements RendererApi {
       const tint = this.glassTint;
       if (pass === null || tint === null) return;
       const geometry = mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       const cutout = cutoutOf(material);
       const albedo = cutout === null ? null : (cutout.albedo as unknown as GpuSurfaceTexture);
       const slot = this.shadowDraws.allocate();
@@ -9565,7 +9568,7 @@ export class WebGPURenderer implements RendererApi {
       if (pass === null || tint === null) return;
       const gpuBatch = batch as GpuInstancedBatch;
       const geometry = gpuBatch.mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
       const cutout = cutoutOf(material);
@@ -9609,7 +9612,7 @@ export class WebGPURenderer implements RendererApi {
       const tint = this.glassTint;
       if (pass === null || tint === null) return;
       const geometry = mesh as GpuMesh & { key?: string };
-      if (geometry.vertexBuffers === undefined) return;
+      if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
       const paletteSlot = this.skinPalettes.take(this.surface.device, palette);
       const view = paletteSlot === null ? null : this.skinPalettes.view(paletteSlot);
       if (view === null) return;

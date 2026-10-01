@@ -811,7 +811,8 @@ export const FLOORS = {
    * reconstructed translucent draws, the inset after the present, the pixel font's strokes, small
    * culling batches drawn whole, and an interface after the present left unjittered.
    */
-  'core-only': 715702,
+  /* Raised 2026-10-01 by +48, 4.6.1: every pass skips a mesh with no triangles. */
+  'core-only': 715750,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -826,7 +827,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-gizmo': 720697,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-gizmo': 720742,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -841,7 +843,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-audio': 721996,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-audio': 722039,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -865,7 +868,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-animation': 722157,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-animation': 722205,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -902,7 +906,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-script': 753915,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-script': 753963,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1067,7 +1072,8 @@ export const FLOORS = {
   'capture-only': 72615,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-splats': 732847,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-splats': 732892,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1086,7 +1092,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-terrain': 717089,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-terrain': 717138,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1114,13 +1121,15 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-and-ui2d': 724711,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-ui2d': 724753,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
    * regions and kit pieces arriving with container 1.23 while this floor stayed where it was.
    */
-  'core-and-assets': 738761,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-and-assets': 738809,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1133,7 +1142,8 @@ export const FLOORS = {
    */
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
-  'core-audio-spatial': 724091,
+  /* Raised 2026-10-01 with `core-only`, 4.6.1. */
+  'core-audio-spatial': 724139,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

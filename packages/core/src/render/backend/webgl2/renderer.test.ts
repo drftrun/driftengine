@@ -1459,3 +1459,37 @@ test('READS THE OCCLUSION A JITTER ON under the temporal resolve, and where it i
   expect(taa.offset[1]).toBeCloseTo((taa.jitter[1] as number) / (taa.size[1] as number), 9);
   expect(offsetOf(false).offset).toEqual([0, 0]);
 });
+
+/**
+ * **An empty mesh draws nothing, here as on WebGPU.** A draw of zero indices is silent on this
+ * backend, which is why it went unseen, but it was still a call and still a counted draw, and the
+ * other backend now skips the same meshes: the two count the same frame. See `Mesh.indexCount`.
+ */
+test('AN EMPTY MESH DRAWS NOTHING, as a mesh, a translucent mesh or a batch', () => {
+  const { canvas, calls } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const empty = renderer.createMesh({
+    positions: new Float32Array(0),
+    normals: new Float32Array(0),
+    colors: new Float32Array(0),
+    emissive: new Float32Array(0),
+    indices: new Uint32Array(0),
+  } as never);
+  const batch = renderer.createInstanced(empty, 1);
+  const one = createMeshInstances(1);
+  one.count = 1;
+  one.models.set(mat4.create());
+  renderer.uploadInstanced(batch, one);
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, createEnvironment());
+  const before = calls.length;
+  renderer.drawMesh(empty, mat4.create());
+  renderer.drawTranslucentMesh(empty, mat4.create(), 0.5);
+  renderer.drawInstanced(batch, one);
+  const drawn = calls
+    .slice(before)
+    .filter((call) => call.name === 'drawElements' || call.name === 'drawElementsInstanced');
+  expect(drawn.length, 'nothing is drawn').toBe(0);
+});

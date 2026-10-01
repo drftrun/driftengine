@@ -509,7 +509,8 @@ export class MotionPass {
         } else {
           pipeline = this.pipelineFor(mesh.vertexStride);
         }
-        if (pipeline === null) continue;
+        /* A mesh with nothing in it draws nothing: see `GpuMesh.indexCount`. */
+        if (pipeline === null || mesh.indexCount === 0) continue;
         if (pipeline !== bound) {
           pass.setPipeline(pipeline);
           bound = pipeline;

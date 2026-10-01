@@ -3794,7 +3794,8 @@ export class WebGL2Renderer implements RendererApi {
   ): void {
     if (this.contextLost) return;
     const mesh = batch.mesh;
-    if (!mesh.complete) return;
+    /* Nor a batch of a mesh with nothing in it: see `Mesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
     const count = Math.min(data.count, batch.capacity);
     if (count === 0) return;
     /* A culling batch's camera draw: the whole batch against the view and the occluders first,
@@ -7698,8 +7699,9 @@ export class WebGL2Renderer implements RendererApi {
     _previousModel: ReadonlyMat4 | Mover | null = null,
   ): void {
     if (this.contextLost) return;
-    /* Geometry that has not all arrived is not drawn. See `Mesh.complete`. */
-    if (!mesh.complete) return;
+    /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
+       and `Mesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
 
     /*
      * Skipped where the flag asks and the bounds say so.
@@ -7885,8 +7887,9 @@ export class WebGL2Renderer implements RendererApi {
     options: TranslucentMeshOptions = {},
   ): void {
     if (this.contextLost) return;
-    /* Geometry that has not all arrived is not drawn. See `Mesh.complete`. */
-    if (!mesh.complete) return;
+    /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
+       and `Mesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
 
     if (opacity <= 0) return;
 
@@ -8312,8 +8315,9 @@ export class WebGL2Renderer implements RendererApi {
     options: LightVolumeDrawOptions = {},
   ): void {
     if (this.contextLost) return;
-    /* Geometry that has not all arrived is not drawn. See `Mesh.complete`. */
-    if (!mesh.complete) return;
+    /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
+       and `Mesh.indexCount`. */
+    if (!mesh.complete || mesh.indexCount === 0) return;
     const shown =
       options.medium === undefined
         ? strength

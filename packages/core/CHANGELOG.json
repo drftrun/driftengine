@@ -1,5 +1,16 @@
 [
  {
+  "version": "4.6.1",
+  "date": "2026-10-01",
+  "entries": [
+   {
+    "kind": "fixed",
+    "short": "A mesh with no triangles is skipped by every pass instead of drawn as nothing, so a game's console no longer fills with WebGPU warnings about empty draws.",
+    "text": "**A mesh with no triangles draws nothing, in every pass, on both backends.** A game's world can hold an empty mesh, for a level with none of that kind of geometry, and every pass it reached issued a draw of zero indices: WebGPU answers each with a warning, five on one game's first screen (the frame, its reflection, the sun's static and peeled maps and a lamp's shadow faces), and WebGL2 counted draws that drew nothing. `GpuMesh.indexCount` and `Mesh.indexCount` carry the rule, and every place a mesh enters a pass skips an empty one beside its other checks: meshes, translucent meshes, instanced batches, light volumes, shadow casters, glass depth and the motion pass. A game that already skipped its empty meshes itself can keep doing so."
+   }
+  ]
+ },
+ {
   "version": "4.6.0",
   "date": "2026-10-01",
   "entries": [
