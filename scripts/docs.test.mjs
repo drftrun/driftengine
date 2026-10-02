@@ -394,8 +394,9 @@ test('the DriftScript refusals name modules the linker still refuses', async () 
      was provided on 2026-08-28, `networking` until Track J bound `drift/network` and
      `drift/rollback` on 2026-09-03, and `xr` until Track I bound the last of them on 2026-09-05. A
      name removed from this map is a refusal that ended; a name left in it after its module was
-     bound is what the assertion below catches. */
-  const modules = {};
+     bound is what the assertion below catches. `prefab` came back on 2026-10-02: the module was
+     bound with one function named `spawn`, a keyword no script can write, and was withdrawn. */
+  const modules = { prefab: 'drift/prefab' };
   for (const name of named) {
     const module = modules[name];
     assert.ok(module, `no module is recorded for the \`driftscript-${name}\` sentinel`);

@@ -1035,6 +1035,93 @@
       "implementation": "audio.stereoPan"
     },
     {
+      "module": "drift/audio",
+      "name": "duck",
+      "signature": "fn(bus: String, factor: f32, seconds: f32) -> bool",
+      "params": [
+        {
+          "name": "bus",
+          "type": "String"
+        },
+        {
+          "name": "factor",
+          "type": "f32"
+        },
+        {
+          "name": "seconds",
+          "type": "f32"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "audio.write"
+      ],
+      "deterministic": false,
+      "doc": "Take a bus down to factor of its fader over seconds, 1 to bring it back, leaving the fader where the player set it. False when the mix has no bus of that name.",
+      "implementation": "MixBus.duck"
+    },
+    {
+      "module": "drift/audio",
+      "name": "fade",
+      "signature": "fn(bus: String, level: f32, seconds: f32) -> bool",
+      "params": [
+        {
+          "name": "bus",
+          "type": "String"
+        },
+        {
+          "name": "level",
+          "type": "f32"
+        },
+        {
+          "name": "seconds",
+          "type": "f32"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "audio.write"
+      ],
+      "deterministic": false,
+      "doc": "Move a bus's fader to level over seconds. For a bus the game made: the music and effects faders are the player's, and duck is how a script goes over them. False when the mix has no bus of that name.",
+      "implementation": "MixBus.fadeLevel"
+    },
+    {
+      "module": "drift/audio",
+      "name": "recall",
+      "signature": "fn(snapshot: String, seconds: f32) -> bool",
+      "params": [
+        {
+          "name": "snapshot",
+          "type": "String"
+        },
+        {
+          "name": "seconds",
+          "type": "f32"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "audio.write"
+      ],
+      "deterministic": false,
+      "doc": "Crossfade every level, mute and send to a snapshot the host captured, over seconds. False when nothing was captured under that name.",
+      "implementation": "MixConsole.recall"
+    },
+    {
+      "module": "drift/audio",
+      "name": "pulse",
+      "signature": "fn() -> f32",
+      "params": [],
+      "returns": "f32",
+      "effects": [
+        "nondeterministic"
+      ],
+      "deterministic": false,
+      "doc": "How hard the music is kicking, 0 to 1, spiking on each kick and falling back. 0 when the host runs no kick detector.",
+      "implementation": "KickDetector.pulse"
+    },
+    {
       "module": "drift/behavior",
       "name": "tick",
       "signature": "fn(behavior: Behavior) -> i32",
@@ -1551,6 +1638,28 @@
       "deterministic": true,
       "doc": "kg of liquid water on the surface, per square metre of it.",
       "implementation": "drift/chemistry.wetness"
+    },
+    {
+      "module": "drift/chemistry",
+      "name": "wettable",
+      "signature": "fn(chem: Chemistry, parcel: i32) -> bool",
+      "params": [
+        {
+          "name": "chem",
+          "type": "Chemistry"
+        },
+        {
+          "name": "parcel",
+          "type": "i32"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "chemistry.read"
+      ],
+      "deterministic": true,
+      "doc": "Whether this material can hold liquid water, which is what `wet` asks. Rain over everything asks first, since `wet` refuses an iron nail.",
+      "implementation": "drift/chemistry.wettable"
     },
     {
       "module": "drift/chemistry",
@@ -2837,6 +2946,28 @@
       "deterministic": true,
       "doc": "The entity the last `findNearest` on this world found. **Valid only until the next one**, and meaningless when that answered false — the same lifetime a raycast hit has.",
       "implementation": "drift/ecs.nearest"
+    },
+    {
+      "module": "drift/ecs",
+      "name": "instantiate",
+      "signature": "fn(world: World, prefab: String) -> Entity",
+      "params": [
+        {
+          "name": "world",
+          "type": "World"
+        },
+        {
+          "name": "prefab",
+          "type": "String"
+        }
+      ],
+      "returns": "Entity",
+      "effects": [
+        "ecs.write"
+      ],
+      "deterministic": false,
+      "doc": "Make an entity from a prefab, with every component it names. Overrides are the host’s to apply; a script that wants a different value writes it after.",
+      "implementation": "drift/ecs.instantiate"
     },
     {
       "module": "drift/editor",
@@ -4327,6 +4458,96 @@
       "implementation": "drift/input.stopRumble"
     },
     {
+      "module": "drift/input",
+      "name": "touchX",
+      "signature": "fn(touch: Touch) -> f32",
+      "params": [
+        {
+          "name": "touch",
+          "type": "Touch"
+        }
+      ],
+      "returns": "f32",
+      "effects": [
+        "input.read"
+      ],
+      "deterministic": false,
+      "doc": "The touch stick's horizontal, -1 to 1, 0 while no thumb is on it.",
+      "implementation": "drift/input.touchX"
+    },
+    {
+      "module": "drift/input",
+      "name": "touchY",
+      "signature": "fn(touch: Touch) -> f32",
+      "params": [
+        {
+          "name": "touch",
+          "type": "Touch"
+        }
+      ],
+      "returns": "f32",
+      "effects": [
+        "input.read"
+      ],
+      "deterministic": false,
+      "doc": "The touch stick's vertical, -1 to 1, up negative as a gamepad stick's is.",
+      "implementation": "drift/input.touchY"
+    },
+    {
+      "module": "drift/input",
+      "name": "touchHeld",
+      "signature": "fn(touch: Touch) -> bool",
+      "params": [
+        {
+          "name": "touch",
+          "type": "Touch"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "input.read"
+      ],
+      "deterministic": false,
+      "doc": "Whether a thumb is held still on the action side of the screen: the held form of the primary.",
+      "implementation": "drift/input.touchHeld"
+    },
+    {
+      "module": "drift/input",
+      "name": "touchTap",
+      "signature": "fn(touch: Touch) -> bool",
+      "params": [
+        {
+          "name": "touch",
+          "type": "Touch"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "input.read"
+      ],
+      "deterministic": false,
+      "doc": "Whether the action side was tapped since this was last asked. True once per tap, so ask it once a tick.",
+      "implementation": "drift/input.touchTap"
+    },
+    {
+      "module": "drift/input",
+      "name": "touchSlide",
+      "signature": "fn(touch: Touch) -> bool",
+      "params": [
+        {
+          "name": "touch",
+          "type": "Touch"
+        }
+      ],
+      "returns": "bool",
+      "effects": [
+        "input.read"
+      ],
+      "deterministic": false,
+      "doc": "Whether a downward flick on the action side is being held: the secondary, a slide or a crouch.",
+      "implementation": "drift/input.touchSlide"
+    },
+    {
       "module": "drift/navigation",
       "name": "nearest",
       "signature": "fn(graph: NavGraph, x: float, y: float, z: float) -> i32",
@@ -5776,28 +5997,6 @@
       "deterministic": false,
       "doc": "The world's gravity, in metres per second squared.",
       "implementation": "drift/physics.setGravity"
-    },
-    {
-      "module": "drift/prefab",
-      "name": "spawn",
-      "signature": "fn(world: World, prefab: String) -> Entity",
-      "params": [
-        {
-          "name": "world",
-          "type": "World"
-        },
-        {
-          "name": "prefab",
-          "type": "String"
-        }
-      ],
-      "returns": "Entity",
-      "effects": [
-        "ecs.write"
-      ],
-      "deterministic": false,
-      "doc": "Make one, with every component the prefab names. Overrides are the host’s to apply; a script that wants a different value writes it after.",
-      "implementation": "drift/prefab.spawn"
     },
     {
       "module": "drift/random",
@@ -7636,6 +7835,11 @@
       "module": "drift/input",
       "name": "Actions",
       "doc": "A bound action map: what the player is pressing."
+    },
+    {
+      "module": "drift/input",
+      "name": "Touch",
+      "doc": "Touch controls: a stick on one side of the screen, and taps, holds and flicks on the other."
     },
     {
       "module": "drift/camera",

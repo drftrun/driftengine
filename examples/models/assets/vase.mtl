@@ -1,0 +1,6 @@
+# The vase's glaze.
+newmtl glaze
+Kd 0.16 0.36 0.52
+Ks 0.6 0.6 0.6
+Ns 220
+d 1

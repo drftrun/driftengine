@@ -87,8 +87,9 @@
         <h1>examples</h1>
         <p class="lede">
           One capability each, small enough to read in a sitting. Every page reports which backend
-          the browser actually gave it, and every switch is a link, because the options they change
-          are chosen when the renderer is built rather than per frame.
+          the browser actually gave it, and every switch changes the running scene, building a new
+          renderer in place where a quality option needs one. Three keep their behaviour in
+          DriftScript; save the script while the page is open and the page carries on with it.
         </p>
       </header>
 
@@ -99,6 +100,15 @@
             <span
               >A lit cube on a ground plane, in ninety lines. The one to copy out of the repository
               when beginning a project.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./first-game/">
+            <b>your first game</b>
+            <span
+              >A complete 3D game: an arena, a character, crates to push and orbs to gather against
+              the clock, with shadows, sound, pause and a HUD. The manual walks through it.</span
             >
           </a>
         </li>
@@ -133,8 +143,8 @@
           <a class="card" href="./overlay-text/">
             <b>2D overlay and text</b>
             <span
-              >Screen-space panels and the built-in font, and the draw-order mistake that costs you
-              the whole overlay on WebGPU.</span
+              >Screen-space panels and the built-in font, a keycap prompt, and a portrait in a box
+              of its own.</span
             >
           </a>
         </li>
@@ -144,6 +154,358 @@
             <span
               >Strokes with width in metres, an antialiased edge, and a buffer rewritten in place
               rather than reallocated.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./materials/">
+            <b>materials</b>
+            <span
+              >Image maps built in code, metalness and roughness, and the per-draw surface
+              dials.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./instancing/">
+            <b>instancing</b>
+            <span
+              >Ten thousand rocks in batches that cull as a whole and rock by rock, and a batch
+              rewritten every frame.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./lights/">
+            <b>lights</b>
+            <span
+              >Lamps that cast, a spot throwing a window through a cookie, a photometric downlight
+              and a window that is an area light.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./driftlight/">
+            <b>DriftLight</b>
+            <span
+              >Seven hundred candles: the sixteen nearest shaded exactly, the rest summed into an
+              occluded volume.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./driftray/">
+            <b>DriftRay</b>
+            <span
+              >Bounced light traced on the GPU, following a wall as it changes colour. WebGPU.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./air/">
+            <b>light in the air</b>
+            <span
+              >A sunbeam through a window, fire and smoke, and a medium that fills the room with
+              light.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./sky/">
+            <b>sky and atmosphere</b>
+            <span
+              >A day in ninety seconds: sun, moon, stars and clouds, and lamps that come on at
+              dusk.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./weather/">
+            <b>fog and weather</b>
+            <span
+              >Fog, one wind for everything, rain, lightning and puddles that mirror the
+              street.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./water/">
+            <b>water</b>
+            <span
+              >The open sea under three winds, a planar reflection, and caustics under a pier.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./look/">
+            <b>colour and motion</b>
+            <span
+              >Exposure, a colour grade, vignette, grain, a fade, depth of field and motion
+              blur.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./drifttr/">
+            <b>DriftTR</b>
+            <span
+              >The scene drawn smaller and rebuilt to full size by temporal reconstruction.
+              WebGPU.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./gpu-driven/">
+            <b>GPU-driven pipeline</b>
+            <span>Two and a half thousand meshes culled and drawn by the device. WebGPU.</span>
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./particles/">
+            <b>particles</b>
+            <span
+              >Sparks that streak, smoke that rises and thins, and motes, from deterministic
+              pools.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./picking/">
+            <b>picking</b>
+            <span>Hover and click: what is under the pointer.</span>
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./terrain/">
+            <b>terrain</b>
+            <span
+              >A valley two kilometres across drawn as a clipmap, painted and planted by a
+              DriftScript module.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./streaming/">
+            <b>large worlds</b>
+            <span
+              >A town three thousand kilometres out, streamed in cells by where the camera will be,
+              with walkers that freeze and thaw.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./hlod/">
+            <b>hierarchical detail</b>
+            <span
+              >A city of 144 blocks, each drawn at the level its distance deserves, with crossfades
+              between levels.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./kit/">
+            <b>worlds from a kit</b>
+            <span
+              >A street of thousands of copies of three pieces, carried as placements and expanded
+              into a mesh.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./solids/">
+            <b>procedural solids</b>
+            <span
+              >A gatehouse built in code from closed solids, with windows and a doorway cut by
+              booleans.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./splats/">
+            <b>gaussian splats</b>
+            <span
+              >A rock garden of sixty-six thousand splats, sorted off the frame, with a post of
+              ordinary geometry standing in it.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./drifttexture/">
+            <b>drifttexture</b>
+            <span
+              >Materials as small programs decoded per pixel, one of them animated by the
+              simulation's clock. WebGPU.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./scorch/">
+            <b>writable textures</b>
+            <span
+              >A wall a scripted turret scorches, with a clock that runs backwards and burns the
+              same marks again.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./capture/">
+            <b>driftcapture</b>
+            <span
+              >A clip of a room fused into a surface, proposed as floor and scenery, with balls
+              dropped onto it.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./physics/">
+            <b>rigid bodies</b>
+            <span
+              >A wall of crates, things rolling down a ramp, and a cannon scripted in DriftScript,
+              with the world's fingerprint.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./joints/">
+            <b>joints</b>
+            <span
+              >A bridge of hinged planks, a door on a motor, a swinging lamp and a chain that
+              breaks.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./queries/">
+            <b>queries and colliders</b>
+            <span
+              >A laser that asks the world what it meets, a sensor square that counts what stands on
+              it, and a sliding wall.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./character/">
+            <b>characters</b>
+            <span
+              >A character to walk about a valley, over a bridge and under it, up steps, off a slab
+              and into a pond.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./vehicle/">
+            <b>vehicles</b>
+            <span
+              >A raycast car on a ring of cones, driven by a DriftScript driver or by you, on tarmac
+              or ice.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./ragdoll/">
+            <b>ragdolls and cloth</b>
+            <span
+              >A figure shoved down the stairs, a flag in a gusting wind, and a sheet dropped over a
+              crate.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./animation/">
+            <b>animation</b>
+            <span
+              >A figure walking a circle on a blend tree, reaching for a lantern, its pace set in
+              DriftScript.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./navigation/">
+            <b>navigation</b>
+            <span
+              >Villagers walking lanes in DriftScript and dogs crossing a square on a navigation
+              mesh built from its geometry.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./entities/">
+            <b>entities</b>
+            <span
+              >Frogs catching fireflies over a pond, every rule a DriftScript system, with time that
+              runs backwards.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./chemistry/">
+            <b>chemistry</b>
+            <span
+              >A campfire where everything heats at its own rate, with rain, wind and green wood
+              scripted in DriftScript.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./agents/">
+            <b>agents</b>
+            <span
+              >Villagers whose routines shelter from the rain and resume, and a crier who asks a
+              model where to go next.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./models/">
+            <b>models</b>
+            <span
+              >A turntable that reads glTF, OBJ and STL in a worker and streams them in, or any
+              model dropped on the page.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./audio/">
+            <b>audio</b>
+            <span
+              >A courtyard heard from where the camera stands: a scripted bell, a cart behind a
+              house, a crypt's reverb, and lanterns on the kick.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./input/">
+            <b>input</b>
+            <span
+              >A puck driven by keys, a gamepad or a thumb, with a controls screen that rebinds and
+              saves, prompts for each pad, and rumble.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./cinematic/">
+            <b>cinematic</b>
+            <span
+              >A buggy lapping a track with a jump, filmed by a scripted director, a cinematic
+              written as data, and a keyed path.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./sprites/">
+            <b>sprites</b>
+            <span
+              >A garden of tiles and a gardener walking it, picking flowers, all one sprite pass,
+              scripted in DriftScript.</span
+            >
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./interface/">
+            <b>interface</b>
+            <span
+              >A pause menu and an options screen over a running scene: a tree laid out, themed,
+              clipped and scrolled, its behaviour in DriftScript.</span
             >
           </a>
         </li>

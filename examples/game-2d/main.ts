@@ -18,9 +18,12 @@
  * Input is plain DOM here to keep the file to one subject. The engine ships `InputSource` and
  * `TouchControls` for keyboard, gamepad and touch together — see the README's input section.
  */
+// #region imports
 import { DEFAULT_TEXT_STYLE, MeshBuilder, SceneNode, createEnvironment } from '@driftengine/core';
 import { openStage } from '../common/stage';
+// #endregion
 
+// #region field
 const FIELD_X = 7;
 const FIELD_TOP = 9.5;
 const FIELD_BOTTOM = -9.5;
@@ -31,7 +34,9 @@ const COLS = 8;
 const ROWS = 4;
 const BRICK_HALF_X = 0.72;
 const BRICK_HALF_Y = 0.26;
+// #endregion
 
+// #region light
 /** Flat-on light, so the board reads evenly rather than falling off toward one corner. */
 const FLAT = createEnvironment({
   directionalDir: [0.25, 0.45, 1],
@@ -45,9 +50,13 @@ const FLAT = createEnvironment({
   fogHeightFalloff: 0,
   fogBaseY: 0,
 });
+// #endregion
 
+// #region stage
 const stage = await openStage({ directionalShadows: false, sceneSamples: 4 });
+// #endregion
 
+// #region meshes
 /*
  * One unit brick, drawn once per live brick with a different tint. `drawMesh` takes an
  * optional colour multiplier that is reset after the call, which is what lets a single
@@ -68,7 +77,9 @@ const ball = stage.renderer.createMesh(ballMesh.build());
 const wallMesh = new MeshBuilder();
 wallMesh.addBox([0, 0, 0], [0.25, FIELD_TOP, 0.24], [0.24, 0.26, 0.34]);
 const wall = stage.renderer.createMesh(wallMesh.build());
+// #endregion
 
+// #region bricks
 const ROW_TINTS: [number, number, number][] = [
   [0.95, 0.42, 0.35],
   [0.95, 0.68, 0.32],
@@ -101,7 +112,9 @@ function rack(): void {
   }
 }
 rack();
+// #endregion
 
+// #region state
 let paddleX = 0;
 let ballX = 0;
 let ballY = PADDLE_Y + 1;
@@ -112,7 +125,9 @@ let velY = 7.6;
 let score = 0;
 let lives = 3;
 let over = '';
+// #endregion
 
+// #region input
 /* Pointer drives the paddle; the arrow keys do too, so the example works without a mouse. */
 let pointerTarget: number | null = null;
 const held = new Set<string>();
@@ -140,7 +155,9 @@ function serve(): void {
   velX = 4.4 * (Math.random() < 0.5 ? -1 : 1);
   velY = 7.6;
 }
+// #endregion
 
+// #region camera
 const hud = stage.renderer.createText();
 
 stage.camera.fovYDeg = 14;
@@ -148,8 +165,10 @@ stage.camera.position[0] = 0;
 stage.camera.position[1] = 0;
 stage.camera.position[2] = 86;
 stage.camera.lookAt(0, 0, 0);
+// #endregion
 
 stage.run({
+  // #region simulate
   simulate(dt) {
     if (over !== '') return;
 
@@ -219,7 +238,9 @@ stage.run({
       else serve();
     }
   },
+  // #endregion
 
+  // #region render
   render(alpha) {
     const drawX = previousBallX + (ballX - previousBallX) * alpha;
     const drawY = previousBallY + (ballY - previousBallY) * alpha;
@@ -274,4 +295,5 @@ stage.run({
 
     stage.renderer.endFrame();
   },
+  // #endregion
 });

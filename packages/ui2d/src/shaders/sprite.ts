@@ -68,7 +68,18 @@ void main() {
     uToNdc0.x * p.x + uToNdc0.z * p.y + uToNdc1.x,
     uToNdc0.y * p.x + uToNdc0.w * p.y + uToNdc1.y
   );
-  vUv = mix(aUv.xy, aUv.zw, corner);
+  /*
+   * **A picture keeps its top up in either space.** A frame's v runs down the image, and a sprite's
+   * second edge runs toward larger y: down the screen in screen space, up the world in a 2D world.
+   * So where the affine keeps orientation, which a world camera's does and the screen's does not,
+   * the frame's rows are read from the other end. Read from the affine rather than passed in,
+   * because a flag beside it could disagree with it. It was missing until 2026-10-02, and every
+   * sprite and tile drawn in a world came out upside down while every check, in screen space,
+   * passed.
+   */
+  float orientation = uToNdc0.x * uToNdc0.w - uToNdc0.y * uToNdc0.z;
+  vec2 along = vec2(corner.x, orientation > 0.0 ? 1.0 - corner.y : corner.y);
+  vUv = mix(aUv.xy, aUv.zw, along);
   vTint = aTint;
   /* z is 0 and nothing depth-tests here: the order sprites were submitted in is the layering. */
   gl_Position = uClipCorrection * vec4(ndc, 0.0, 1.0);

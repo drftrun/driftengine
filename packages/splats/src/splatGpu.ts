@@ -1,5 +1,7 @@
 /** The WebGPU half of the splat pass: the same two integer textures, one pipeline, no vertex state. */
 
+import { DEPTH_COMPARE } from '@driftengine/core';
+
 import {
   SPLAT_BINDINGS,
   SPLAT_FRAG_WGSL,
@@ -180,9 +182,18 @@ export function createGpuSplats(
     },
     primitive: { topology: 'triangle-list' },
     multisample: { count: samples },
-    /* Tested, never written: a wall in front occludes the capture, and a Gaussian has no surface
-       to occlude with, so a cloud that wrote depth would cull its own tail. */
-    depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'less' },
+    /*
+     * Tested, never written: a wall in front occludes the capture, and a Gaussian has no surface
+     * to occlude with, so a cloud that wrote depth would cull its own tail.
+     *
+     * **The compare is the frame's, from `depthConvention.ts`, and was a literal `'less'`.** The
+     * scene's depth is reversed on both backends, cleared to 0 and tested `greater`, so a `less`
+     * test passed only where a mesh had already written depth and the capture behind it was drawn
+     * through it: on WebGPU a scene showed its splats inside the silhouette of whatever geometry
+     * stood in it and nowhere else. The WebGL2 half sets no depth function of its own and inherits
+     * the renderer's, which is why only this half was wrong.
+     */
+    depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: DEPTH_COMPARE },
   });
 
   const vertexScratch = new ArrayBuffer(VERT.uniformSize);

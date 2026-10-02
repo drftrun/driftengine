@@ -128,6 +128,39 @@ describe('what a system may touch', () => {
   });
 });
 
+describe('counting and walking from inside a system', () => {
+  it('counts and walks what it declared, and refuses what it did not', () => {
+    const world = new World();
+    for (const value of [3, 4]) world.add(world.create(), Hunger, { value });
+    const seen: number[] = [];
+    runSchedule(
+      world,
+      buildSchedule([
+        {
+          name: 'census',
+          reads: [Hunger],
+          run(view) {
+            seen.push(view.count(Hunger));
+            const first = view.at(Hunger, 0);
+            seen.push(view.read(first, Hunger, 'value') as number, view.at(Hunger, 2));
+            seen.push(view.alive(first) ? 1 : 0);
+          },
+        },
+      ]),
+      0,
+    );
+    expect(seen, "two, the first one's value, nothing past the end, and alive").toEqual([
+      2, 3, -1, 1,
+    ]);
+
+    const refusal = refusalOf(
+      world,
+      buildSchedule([{ name: 'nosy', run: (view) => void view.count(Health) }]),
+    );
+    expect(refusal).toContain('`nosy` reads `SHealth`');
+  });
+});
+
 describe('structural change from inside a system', () => {
   it('defers a destroy, so a query cannot skip the entity swapped into the hole', () => {
     /*

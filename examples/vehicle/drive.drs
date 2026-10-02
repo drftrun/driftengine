@@ -1,0 +1,44 @@
+// The driver: the player's keys or stick as throttle, brake and steering, and the lap the car
+// drives itself until somebody takes over.
+//
+// Under `npm run examples`, change a rule and save: the car drives by it from the next tick. Try a
+// gentler throttle, or a driver who brakes into every corner.
+
+import { axisX, axisY, down } from "drift/input"
+import { atan2, clamp, cos, sin } from "std/math"
+
+data Pedals {
+    // Throttle from -1 for reverse to 1, brake from 0 to 1, steering from -1 to 1.
+    throttle: f32 = 0
+    brake: f32 = 0
+    steer: f32 = 0
+}
+
+// #region drive
+// Forward on the stick is throttle, back is reverse, sideways is steering, and Space brakes.
+fn drive(pedals: mut Pedals, actions: Actions) {
+    pedals.throttle = 0 - input.axisY(actions, "move")
+    pedals.steer = 0 - input.axisX(actions, "move")
+    if input.down(actions, "brake") {
+        pedals.brake = 1
+    } else {
+        pedals.brake = 0
+    }
+}
+// #endregion
+
+// #region lap
+// Steer toward a point ahead on a circle, at a steady throttle: the car laps by itself.
+fn lap(pedals: mut Pedals, x: f32, z: f32, heading: f32, radius: f32) {
+    // The point a third of a radian further round the circle than the car is now.
+    let around = math.atan2(z, x) + 0.35
+    let tx = math.cos(around) * radius - x
+    let tz = math.sin(around) * radius - z
+    // The turn from where the car points to the target, wrapped to half a turn either way.
+    let turn = math.atan2(tx, tz) - heading
+    let wrapped = math.atan2(math.sin(turn), math.cos(turn))
+    pedals.steer = math.clamp(wrapped * 2, -1, 1)
+    pedals.throttle = 0.6
+    pedals.brake = 0
+}
+// #endregion

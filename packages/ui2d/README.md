@@ -48,6 +48,12 @@ the time, so they are named separately and each says which it is.
 A `Camera2D` is where it is, how far in (`zoom`, in pixels per world unit) and which way up
 (`rotation`, radians, anticlockwise). Turning the camera turns the world the other way.
 
+**A picture keeps its top up in both.** A frame's top row is drawn at the top of the sprite whichever
+way y counts, because the vertex stage reads the affine's orientation and turns the frame's rows to
+match. It did not until 2026-10-02: every sprite and tile drawn through `worldToNdc` came out upside
+down, and `scripts/sprite-check.mjs`, which checked screen space only, passed. It draws the same
+rectangles in a world now and asserts the frame is byte for byte the one screen space draws.
+
 ## Order is the layering
 
 There is no depth here, on purpose: a sprite writes no depth and tests none, so **the order sprites
@@ -178,6 +184,18 @@ interface tree is tens of nodes built once and mutated, not thousands rebuilt pe
 The box you give it is what is _available_ — the root resolves its own size against it, so the same
 call lays out a full-screen HUD and a tooltip.
 
+## Clipping and scrolling
+
+A node made with `clip: true` bounds what its descendants draw and where they can be pointed at.
+`drawUiTree` cuts every quad under it to the rectangle its clipping ancestors leave, an image's frame
+in proportion, and hands the sink that visible rectangle so a caller can cut its text the same way;
+`uiHitTest` finds nothing outside it. A clipping node's `scrollX` and `scrollY` move its children
+under it at layout, and `routeScrollWheel`, `scrollBy` and `clampScroll` move them within
+`scrollExtent`. **Until 2026-10-02 the clip was laid out and scrolled and nothing drew it**: a list's
+rows drew wherever they had scrolled to, and a row scrolled below the list still took the pointer
+there. It is cut on the CPU rather than by a scissor, which is state a contributed pass would have to
+set and restore on both backends.
+
 ## Hit testing, focus and routing
 
 `uiHitTest` searches **last-drawn first**, so it agrees with the picture. **A node that is not
@@ -195,7 +213,7 @@ node hidden since it was focused does not take the keyboard with it.
 
 **Text is the caller's.** This package draws quads; core already draws two kinds of text. Pass a
 `UiContentSink` to `drawUiTree` and it hands you every node with text at its resolved rect, in the
-order it was drawn.
+order it was drawn, with the part of it a clip leaves visible.
 
 ## From DriftScript
 

@@ -13,7 +13,7 @@
  * holds up to the sizes this engine draws text at. If a face is ever needed at billboard
  * scale, that is when an outline parser earns its place.
  *
- *   npm run sdf-font -- --font ./D4R.ttf --out ./public/fonts --glyphs ./glyphs.txt
+ *   npm run sdf-font -- --font ./Display.ttf --out ./public/fonts --glyphs ./glyphs.txt
  *
  * **The rasteriser runs in headless Chrome**, through the harness this repository already
  * has for `shots.mjs` and `frame-audit.mjs`. Node 22 has no `OffscreenCanvas`, and

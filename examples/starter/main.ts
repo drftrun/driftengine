@@ -4,8 +4,9 @@
  *
  * Everything here is reached through the public barrel, because that barrel is the whole of
  * what a consumer receives. A starter that reached past it would be demonstrating privileged
- * access rather than the engine.
+ * access, not the engine.
  */
+// #region imports
 import {
   Camera,
   MeshBuilder,
@@ -14,27 +15,30 @@ import {
   createRenderer,
   startLoop,
 } from '@driftengine/core';
+// #endregion
 
+// #region renderer
 const canvas = document.querySelector<HTMLCanvasElement>('#stage');
 if (canvas === null) throw new Error('the page must carry <canvas id="stage">');
 
 /*
  * Asynchronous because it has to be: asking for a WebGPU adapter returns a promise, and there
  * is no synchronous way to learn whether a usable device exists. The fall back to WebGL2 is
- * automatic and silent, so `reason` is the only thing that says which of the three counts
- * fired — print it, because the first question asked about any picture is what drew it.
+ * automatic and silent, so `reason` is the only thing that says why. Print it: the first
+ * question asked about any picture is what drew it.
  */
 const { renderer, backend, reason } = await createRenderer(canvas, {
   maxDevicePixelRatio: 1.75,
-  directionalShadows: true,
 });
 
 const readout = document.querySelector('#backend');
-if (readout !== null) readout.textContent = `${backend} — ${reason}`;
+if (readout !== null) readout.textContent = `${backend}: ${reason}`;
 
 renderer.resize();
 addEventListener('resize', () => renderer.resize());
+// #endregion
 
+// #region environment
 /** Light, air and ground bounce. Chosen once, because these are allocation-sized decisions. */
 const ENV = createEnvironment({
   directionalDir: [0.4, 0.7, 0.35],
@@ -48,7 +52,9 @@ const ENV = createEnvironment({
   fogHeightFalloff: 0.03,
   fogBaseY: 0,
 });
+// #endregion
 
+// #region meshes
 /*
  * Colour is vertex data here, which is what lets a whole world be flat-shaded draw calls.
  * `addBox` takes a centre and *half* extents, so this ground is 24 units across and the cube
@@ -61,7 +67,9 @@ const cube = renderer.createMesh(shapes.build());
 const slab = new MeshBuilder();
 slab.addBox([0, -0.25, 0], [12, 0.25, 12], [0.3, 0.32, 0.36]);
 const ground = renderer.createMesh(slab.build());
+// #endregion
 
+// #region scene
 const spinner = new SceneNode();
 spinner.setPosition(0, 1, 0);
 const stillness = new SceneNode();
@@ -72,12 +80,14 @@ camera.position[0] = 6;
 camera.position[1] = 4.5;
 camera.position[2] = 8;
 camera.lookAt(0, 1, 0);
+// #endregion
 
+// #region loop
 /*
- * Two angles rather than one, because that is what `alpha` is for. The simulation advances in
- * fixed steps and the display does not, so a frame almost never lands on a step boundary:
- * drawing `spin` directly judders at any refresh rate that is not a multiple of the step.
- * Interpolating between the last two states is the whole reason the loop hands `alpha` over.
+ * Two angles, because that is what `alpha` is for. The simulation advances in fixed steps and
+ * the display does not, so a frame almost never lands on a step boundary: drawing `spin`
+ * directly judders at any refresh rate that is not a multiple of the step. Interpolating
+ * between the last two states is the whole reason the loop hands `alpha` over.
  */
 let spin = 0;
 let previousSpin = 0;
@@ -100,3 +110,4 @@ startLoop({
     renderer.endFrame();
   },
 });
+// #endregion

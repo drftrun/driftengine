@@ -36,6 +36,16 @@ export interface VoxeliseSettings {
   readonly agentHeight: number;
   /** How far from an edge an agent's centre must stay. */
   readonly agentRadius: number;
+  /**
+   * How many cells of height an agent can step across, the number `buildRegions` takes; 1 when
+   * absent. A neighbour further above or below than this is an edge, and erosion keeps the agent's
+   * radius from it.
+   *
+   * **Here as well as there because the polygons are flat.** Two regions whose edges touch are
+   * joined by a portal whatever their heights, so a floor and a ledge above it must be kept apart
+   * by erosion, or a route goes over the ledge.
+   */
+  readonly maxStep?: number;
 }
 
 /** Words per span: floor cell, ceiling cell, walkable. */
@@ -103,11 +113,20 @@ export function spanWalkable(field: VoxelField, x: number, z: number, at: number
   return field.spans[base + 2] === 1;
 }
 
-/** One rasterised sample before the columns are packed. */
+/**
+ * One rasterised sample before the columns are packed: a solid from `bottom` to `top`, in cells,
+ * and whether its top can be stood on. A floor is a solid of no height.
+ */
 interface Sample {
-  floor: number;
+  bottom: number;
+  top: number;
   walkable: boolean;
 }
+
+/** Scratch for clipping a triangle to one cell: four planes leave at most seven vertices. */
+const CLIP_IN = new Float64Array(8 * 3);
+const CLIP_OUT = new Float64Array(8 * 3);
+const HEIGHTS = new Float64Array(2);
 
 /**
  * Rasterise, then decide.
@@ -172,17 +191,96 @@ export function voxeliseWalkable(geometry: NavGeometry, settings: VoxeliseSettin
 
     for (let gz = loZ; gz <= hiZ; gz += 1) {
       for (let gx = loX; gx <= hiX; gx += 1) {
-        const px = minX + (gx + 0.5) * settings.cellSize;
-        const pz = minZ + (gz + 0.5) * settings.cellSize;
-        const height = heightAt(ax, ay, az, bx, by, bz, cx, cy, cz, px, pz);
-        if (height === null) continue;
-        const floor = Math.floor((height - minY) / settings.cellHeight);
-        columns[gx + gz * width]?.push({ floor, walkable });
+        if (walkable) {
+          const px = minX + (gx + 0.5) * settings.cellSize;
+          const pz = minZ + (gz + 0.5) * settings.cellSize;
+          const height = heightAt(ax, ay, az, bx, by, bz, cx, cy, cz, px, pz);
+          if (height === null) continue;
+          const floor = Math.floor((height - minY) / settings.cellHeight);
+          columns[gx + gz * width]?.push({ bottom: floor, top: floor, walkable });
+          continue;
+        }
+        /*
+         * **A face too steep to stand on is a solid, over every cell it crosses.** Sampled at the
+         * cell's centre like a floor, a wall is never met at all: it is vertical, so it covers no
+         * area seen from above, and a building on the ground read as a roof over open floor that a
+         * route went straight through. So the face is clipped to the cell's square, and the heights
+         * it spans there stand in the column as one solid, whose top is not walkable.
+         */
+        const x0 = minX + gx * settings.cellSize;
+        const z0 = minZ + gz * settings.cellSize;
+        CLIP_IN.set([ax, ay, az, bx, by, bz, cx, cy, cz]);
+        if (!clipToCell(x0, x0 + settings.cellSize, z0, z0 + settings.cellSize, HEIGHTS)) {
+          continue;
+        }
+        columns[gx + gz * width]?.push({
+          bottom: Math.floor(((HEIGHTS[0] as number) - minY) / settings.cellHeight),
+          top: Math.floor(((HEIGHTS[1] as number) - minY) / settings.cellHeight),
+          walkable: false,
+        });
       }
     }
   }
 
   return pack(columns, width, depth, origin, settings);
+}
+
+/**
+ * The lowest and highest heights of the triangle in `CLIP_IN` within one cell's square, written to
+ * `out`; false where the triangle misses the cell.
+ *
+ * Sutherland–Hodgman against the square's four sides. Inclusive, so a wall lying exactly on a cell
+ * boundary still lands in the cell the bounding box chose for it.
+ */
+function clipToCell(x0: number, x1: number, z0: number, z1: number, out: Float64Array): boolean {
+  let count = 3;
+  count = clipSide(CLIP_IN, count, CLIP_OUT, 0, x0, 1);
+  count = clipSide(CLIP_OUT, count, CLIP_IN, 0, x1, -1);
+  count = clipSide(CLIP_IN, count, CLIP_OUT, 2, z0, 1);
+  count = clipSide(CLIP_OUT, count, CLIP_IN, 2, z1, -1);
+  if (count === 0) return false;
+  let low = Infinity;
+  let high = -Infinity;
+  for (let at = 0; at < count; at += 1) {
+    const y = CLIP_IN[at * 3 + 1] as number;
+    low = Math.min(low, y);
+    high = Math.max(high, y);
+  }
+  out[0] = low;
+  out[1] = high;
+  return true;
+}
+
+/** Keep the part of a polygon on one side of `axis = bound`: above it for `side` 1, below for -1. */
+function clipSide(
+  from: Float64Array,
+  count: number,
+  to: Float64Array,
+  axis: number,
+  bound: number,
+  side: number,
+): number {
+  let written = 0;
+  for (let at = 0; at < count; at += 1) {
+    const next = (at + 1) % count;
+    const here = ((from[at * 3 + axis] as number) - bound) * side;
+    const there = ((from[next * 3 + axis] as number) - bound) * side;
+    if (here >= 0) {
+      to[written * 3] = from[at * 3] as number;
+      to[written * 3 + 1] = from[at * 3 + 1] as number;
+      to[written * 3 + 2] = from[at * 3 + 2] as number;
+      written += 1;
+    }
+    if (here >= 0 !== there >= 0) {
+      const t = here / (here - there);
+      for (let k = 0; k < 3; k += 1) {
+        const a = from[at * 3 + k] as number;
+        to[written * 3 + k] = a + ((from[next * 3 + k] as number) - a) * t;
+      }
+      written += 1;
+    }
+  }
+  return written;
 }
 
 /**
@@ -232,20 +330,34 @@ function pack(
   const merged: number[][] = [];
 
   for (const samples of columns) {
-    samples.sort((a, b) => a.floor - b.floor || Number(a.walkable) - Number(b.walkable));
+    samples.sort(
+      (a, b) => a.bottom - b.bottom || a.top - b.top || Number(a.walkable) - Number(b.walkable),
+    );
     const spans: number[] = [];
+    /* Where each span's solid starts, which is the ceiling of the span below it. */
+    const bottoms: number[] = [];
     for (const sample of samples) {
       const last = spans.length - SPAN_STRIDE;
-      /* Samples within one cell of each other are one surface, not two. */
-      if (last >= 0 && sample.floor - (spans[last] as number) <= 1) {
-        spans[last + 2] = (spans[last + 2] as number) | (sample.walkable ? 1 : 0);
+      const top = spans[last] as number;
+      /*
+       * A sample starting within one cell of a span's top is part of that solid, not a new one.
+       * The span stands on the highest top, and is walkable if anything ending within a cell of
+       * that top is: a wall rising past a floor takes the floor over, and a floor's two triangles
+       * at one height agree.
+       */
+      if (last >= 0 && sample.bottom - top <= 1) {
+        const flag = sample.walkable ? 1 : 0;
+        if (sample.top > top + 1) spans[last + 2] = flag;
+        else if (sample.top >= top - 1) spans[last + 2] = (spans[last + 2] as number) | flag;
+        spans[last] = Math.max(top, sample.top);
         continue;
       }
-      spans.push(sample.floor, Number.MAX_SAFE_INTEGER, sample.walkable ? 1 : 0);
+      spans.push(sample.top, Number.MAX_SAFE_INTEGER, sample.walkable ? 1 : 0);
+      bottoms.push(sample.bottom);
     }
-    /* A span's ceiling is the next span's floor. The topmost has open sky. */
-    for (let at = 0; at + SPAN_STRIDE < spans.length; at += SPAN_STRIDE) {
-      spans[at + 1] = spans[at + SPAN_STRIDE] as number;
+    /* A span's ceiling is where the next solid starts. The topmost has open sky. */
+    for (let at = 0, next = 1; at + SPAN_STRIDE < spans.length; at += SPAN_STRIDE, next += 1) {
+      spans[at + 1] = bottoms[next] as number;
       if ((spans[at + 1] as number) - (spans[at] as number) < headroom) spans[at + 2] = 0;
     }
     merged.push(spans);
@@ -288,6 +400,12 @@ function pack(
  * doing it as that many single-cell passes keeps the whole thing integer arithmetic with no
  * distance to round. **Copied per pass**, because eroding in place erodes into what the same pass
  * just cleared and eats the mesh from its edges inward.
+ *
+ * **A neighbour is judged at this span's height, not anywhere in its column.** Asked whether a
+ * neighbouring column had any walkable span at all, a wall answered yes, with the roof on top of
+ * it, and the floor beside the wall kept no margin. A neighbour counts as open when it has a
+ * walkable span within `maxStep` of this one, a step the agent can take. Further than that is a
+ * wall, a ledge or a drop, and the agent keeps its radius from it.
  */
 function erode(
   columns: number[][],
@@ -296,22 +414,34 @@ function erode(
   settings: VoxeliseSettings,
 ): void {
   const steps = Math.ceil(settings.agentRadius / settings.cellSize);
+  const reach = settings.maxStep ?? 1;
   for (let pass = 0; pass < steps; pass += 1) {
     const before = columns.map((column) => [...column]);
-    const open = (gx: number, gz: number): boolean => {
+    const open = (gx: number, gz: number, floor: number): boolean => {
       if (gx < 0 || gz < 0 || gx >= width || gz >= depth) return false;
       const column = before[gx + gz * width] as number[];
       for (let at = 0; at < column.length; at += SPAN_STRIDE) {
-        if (column[at + 2] === 1) return true;
+        if (column[at + 2] === 1 && Math.abs((column[at] as number) - floor) <= reach) return true;
       }
       return false;
     };
 
     for (let gz = 0; gz < depth; gz += 1) {
       for (let gx = 0; gx < width; gx += 1) {
-        if (open(gx - 1, gz) && open(gx + 1, gz) && open(gx, gz - 1) && open(gx, gz + 1)) continue;
         const column = columns[gx + gz * width] as number[];
-        for (let at = 0; at < column.length; at += SPAN_STRIDE) column[at + 2] = 0;
+        for (let at = 0; at < column.length; at += SPAN_STRIDE) {
+          if (column[at + 2] !== 1) continue;
+          const floor = column[at] as number;
+          if (
+            open(gx - 1, gz, floor) &&
+            open(gx + 1, gz, floor) &&
+            open(gx, gz - 1, floor) &&
+            open(gx, gz + 1, floor)
+          ) {
+            continue;
+          }
+          column[at + 2] = 0;
+        }
       }
     }
   }

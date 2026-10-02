@@ -24,7 +24,7 @@
  * What freezing needs of a world.
  *
  * Taken as a parameter rather than imported, on `AGENTS.md`'s rule: core has no entity store and a
- * consumer may be holding one of several. Six methods, all of which any store can answer.
+ * consumer may be holding one of several. Five methods, all of which any store can answer.
  */
 export interface FreezableWorld {
   /** Every entity whose home is this cell, live or not. */

@@ -1,0 +1,28 @@
+// The turret: when it fires, where on the wall it aims, and how big a mark each shot leaves. Every
+// answer is a function of the tick alone, so running the same ticks again fires the same shots.
+//
+// Under `npm run examples`, change a rule and save: the shots from now on follow it, and the marks
+// already on the wall stay as they were made. Try firing twice as often, or aiming at one corner.
+
+import { range } from "drift/random"
+
+// #region turret
+// A shot every third of a second, at sixty ticks a second.
+fn fires(tick: u32) -> bool {
+    return tick % 20 == 0
+}
+
+// Where it lands, as a fraction of the wall across and up.
+fn aimU(tick: u32) -> f32 {
+    return random.range(tick, 0.08, 0.92)
+}
+
+fn aimV(tick: u32) -> f32 {
+    return random.range(tick + 1, 0.1, 0.9)
+}
+
+// How wide the scorch is, as a fraction of the wall.
+fn size(tick: u32) -> f32 {
+    return random.range(tick + 2, 0.02, 0.05)
+}
+// #endregion

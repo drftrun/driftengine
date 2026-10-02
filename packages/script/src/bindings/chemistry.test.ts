@@ -11,6 +11,7 @@ import {
   registerStandardSpecies,
 } from '@driftengine/chemistry';
 import { ORGANIC } from '@driftengine/chemistry/library/organic';
+import { METAL } from '@driftengine/chemistry/library/metal';
 import { compileDriftScript } from 'driftscript/compiler';
 import type { ModuleHost } from 'driftscript/compiler';
 import { loadModule } from 'driftscript';
@@ -146,6 +147,42 @@ describe('drift/chemistry, against a real world', () => {
 
     /* Quarter of a kilogram over half a square metre. */
     expect(module.soak?.(chemistry.world as never) as number).toBeGreaterThan(0.4);
+  });
+
+  /**
+   * **Rain falls on everything, and not everything can hold water.** `wet` refuses a material with
+   * no water in its model, rightly, and a script had no way to ask first: a shower over a hearth
+   * threw on the first iron nail it reached, every tick, from inside the frame loop.
+   */
+  it('ASKS WHETHER SOMETHING CAN BE WET before pouring on it', async () => {
+    const species = new SpeciesRegistry();
+    registerStandardSpecies(species);
+    const reactions = new ReactionRegistry(species);
+    const substances = new SubstanceRegistry(species, reactions);
+    installLibrary(ORGANIC, species, reactions, substances);
+    installLibrary(METAL, species, reactions, substances);
+    const parcels = new ParcelStore(substances);
+    const air = new AtmosphereField(species, { cellSize: 1, ambient: STANDARD_AIR, maxChunks: 1 });
+    const chemistry = {
+      world: new ChemistryWorld(parcels, air),
+      parcels,
+      air,
+      substances,
+      species,
+    };
+    const module = await run(
+      `
+      import { place, substance, wettable } from "drift/chemistry"
+
+      fn check(chem: Chemistry) -> bool {
+        let log = chemistry.place(chem, chemistry.substance(chem, "oak"), 2, 0.5, 0, 0, 0)
+        let nail = chemistry.place(chem, chemistry.substance(chem, "iron"), 0.01, 0.001, 1, 0, 0)
+        return chemistry.wettable(chem, log) && !chemistry.wettable(chem, nail)
+      }
+    `,
+      chemistry,
+    );
+    expect(module.check?.(chemistry.world as never)).toBe(true);
   });
 
   it('READS THE AIR AT A POINT, in the units a game acts on', async () => {

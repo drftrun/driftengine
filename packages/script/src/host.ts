@@ -35,7 +35,7 @@
  * A binding is cheap — a table entry and a lookup — and is the difference between a subsystem
  * a consumer can script and one they can only call from TypeScript.
  */
-import type { AudioGraph, SoundRegistry } from '@driftengine/audio';
+import type { AudioGraph, KickDetector, SoundRegistry } from '@driftengine/audio';
 import {
   BEHAVIOR_CAPABILITIES,
   BEHAVIOR_MODULE,
@@ -161,10 +161,7 @@ import {
   ECS_MODULE,
   ENTITY_TYPES,
   type EntityServices,
-  PREFAB_CAPABILITIES,
-  PREFAB_MODULE,
   entitiesImplementation,
-  prefabImplementation,
 } from './bindings/entities.ts';
 import {
   CHEMISTRY_CAPABILITIES,
@@ -259,7 +256,6 @@ export function engineRegistry(): CapabilityRegistry {
     ...NAVIGATION_CAPABILITIES,
     ...PERSISTENCE_CAPABILITIES,
     ...PHYSICS_CAPABILITIES,
-    ...PREFAB_CAPABILITIES,
     ...RANDOM_CAPABILITIES,
     ...RENDER_CAPABILITIES,
     ...XR_CAPABILITIES,
@@ -304,7 +300,15 @@ export interface HostServices extends CoreServices {
    * one of those is a scene that draws and the other is a scene nobody is in.
    */
   readonly xr?: XrRuntime;
-  readonly audio?: { readonly graph: AudioGraph; readonly registry: SoundRegistry };
+  /**
+   * The mix a script plays into, the sounds it can name, and, when the game runs one, the kick
+   * detector `pulse` reads. The host calls the detector's `update` each frame; a script only reads.
+   */
+  readonly audio?: {
+    readonly graph: AudioGraph;
+    readonly registry: SoundRegistry;
+    readonly kick?: KickDetector;
+  };
   /**
    * The component types, and any prefabs, a script may name.
    *
@@ -358,12 +362,15 @@ export function engineImplementations(services: HostServices): Record<string, un
   const map: Record<string, unknown> = { ...stdImplementations() };
 
   if (services.audio !== undefined) {
-    map[AUDIO_MODULE] = audioImplementation(services.audio.graph, services.audio.registry);
+    map[AUDIO_MODULE] = audioImplementation(
+      services.audio.graph,
+      services.audio.registry,
+      services.audio.kick ?? null,
+    );
   }
   if (services.clocks !== undefined) map[TIME_MODULE] = timeImplementation(services.clocks);
   if (services.entities !== undefined) {
     map[ECS_MODULE] = entitiesImplementation(services.entities);
-    map[PREFAB_MODULE] = prefabImplementation(services.entities);
   }
 
   /*

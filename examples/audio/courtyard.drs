@@ -1,0 +1,113 @@
+// The courtyard's sound: when the bell strikes and how it is heard from where you stand, the music
+// stepping aside for it, the crypt's mix, the wind, and the lanterns keeping time with the kick.
+//
+// Under `npm run examples`, change a rule and save: the courtyard runs by it from the next tick.
+// Try a bell that strikes twice, a music bed that ducks further, or lanterns that only flash.
+
+import { distanceGain, duck, fade, playPanned, pulse, recall, sound, stereoPan } from "drift/audio"
+import { sqrt } from "std/math"
+
+// Where the bell hangs, in metres.
+let BELL_X: f32 = -9
+let BELL_Z: f32 = -7
+
+// Where the listener is this tick and which way it faces, written by the page from the camera.
+data Ears {
+    x: f32 = 0
+    z: f32 = 0
+    yaw: f32 = 0
+    indoors: bool = false
+}
+
+data Courtyard {
+    clock: f32 = 0
+    // Seconds between strikes, which the page's switch sets, and when the next one falls due.
+    every: f32 = 10
+    next: f32 = 2
+    // Seconds since the last strike, which the page draws as a ring round the tower; -1 before.
+    since: f32 = -1
+    strikes: u32 = 0
+    // When the music comes back from under the bell, or -1 while it is not ducked.
+    returns: f32 = -1
+    // The weather the page asked for, and what the wind bus was last told.
+    windy: bool = false
+    blowing: bool = false
+    // Whether the mix is the crypt's, so a crossing asks for one recall and not one a tick.
+    inside: bool = false
+    // How bright the lanterns are, 0 to 1.
+    glow: f32 = 0
+}
+
+fn tick(yard: mut Courtyard, ears: Ears, dt: f32) {
+    yard.clock += dt
+    if yard.since >= 0 {
+        yard.since += dt
+    }
+    toll(yard, ears)
+    room(yard, ears)
+    weather(yard)
+    // #region glow
+    // The lanterns follow the kick the music is making, and keep a little light between kicks.
+    yard.glow = 0.3 + audio.pulse() * 0.7
+    // #endregion
+}
+
+// #region toll
+// The bell strikes on its own clock and is heard the cheap way: louder the nearer you stand, and
+// on the side it is on. The music steps aside for it and comes back as the ring dies away.
+fn toll(yard: mut Courtyard, ears: Ears) {
+    if yard.next > yard.clock + yard.every {
+        yard.next = yard.clock + yard.every
+    }
+    if yard.returns >= 0 && yard.clock >= yard.returns {
+        audio.duck("music", 1, 2.5)
+        yard.returns = -1
+    }
+    if yard.clock < yard.next {
+        return
+    }
+    yard.next = yard.clock + yard.every
+    yard.since = 0
+    yard.strikes += 1
+    let dx = BELL_X - ears.x
+    let dz = BELL_Z - ears.z
+    let near = audio.distanceGain(math.sqrt(dx * dx + dz * dz), 80m)
+    if let clang = audio.sound("bell") {
+        audio.playPanned(clang, near, audio.stereoPan(dx, dz, ears.yaw))
+    }
+    audio.duck("music", 0.3, 0.12)
+    yard.returns = yard.clock + 2.5
+}
+// #endregion
+
+// #region room
+// Inside the crypt the yard falls away: the mix crossfades to the snapshot the page took for it,
+// and back again on the way out.
+fn room(yard: mut Courtyard, ears: Ears) {
+    if ears.indoors == yard.inside {
+        return
+    }
+    yard.inside = ears.indoors
+    if yard.inside {
+        audio.recall("crypt", 1.2)
+    } else {
+        audio.recall("yard", 1.2)
+    }
+}
+// #endregion
+
+// #region weather
+// The wind has a bus of its own, made after the snapshots were taken, so a recall never touches it
+// and only this fades it.
+fn weather(yard: mut Courtyard) {
+    if yard.windy == yard.blowing {
+        return
+    }
+    yard.blowing = yard.windy
+    if yard.blowing {
+        audio.fade("wind", 0.9, 4)
+    } else {
+        audio.fade("wind", 0, 3)
+    }
+}
+// #endregion

@@ -1,0 +1,51 @@
+// The villagers: each walks the lanes from one door to another, rests there, and picks the next.
+//
+// Under `npm run examples`, change a rule and save: they walk by it from the next frame. Try a
+// longer rest, a brisker pace, or villagers who only ever visit the first four doors.
+
+import { arrived, nearest, routeBetween, steerX, steerZ } from "drift/navigation"
+import { index } from "drift/random"
+import { atan2, sqrt } from "std/math"
+
+data Villager {
+    // Where it stands on the square, and which way it faces.
+    x: f32 = 0
+    z: f32 = 0
+    heading: f32 = 0
+    // Metres a second.
+    pace: f32 = 1.3
+    // Seconds left before it sets off from the door it is at.
+    resting: f32 = 0
+    // Doors walked to so far, and its own seed: together they pick the next door.
+    trips: u32 = 0
+    seed: u32 = 0
+}
+
+// #region walk
+// One frame of one villager: rest at a door, choose the next, or walk toward the point its route
+// says to aim at, which is a little way along the lane and so cuts corners the way people do.
+fn walk(villager: mut Villager, route: NavPath, lanes: NavGraph, dt: f32) {
+    if navigation.arrived(route, villager.x, 0, villager.z) {
+        if villager.resting > 0 {
+            villager.resting = villager.resting - dt
+            return
+        }
+        // The doors are the lanes' first eight nodes.
+        let door = random.index(villager.seed + villager.trips, 8)
+        let here = navigation.nearest(lanes, villager.x, 0, villager.z)
+        if navigation.routeBetween(route, lanes, here, i32.clamp(door)) {
+            villager.trips = villager.trips + 1
+            villager.resting = 2.5
+        }
+        return
+    }
+    let dx = navigation.steerX(route, villager.x, 0, villager.z) - villager.x
+    let dz = navigation.steerZ(route, villager.x, 0, villager.z) - villager.z
+    let distance = math.sqrt(dx * dx + dz * dz)
+    if distance > 0.01 {
+        villager.x = villager.x + dx / distance * villager.pace * dt
+        villager.z = villager.z + dz / distance * villager.pace * dt
+        villager.heading = math.atan2(dx, dz)
+    }
+}
+// #endregion

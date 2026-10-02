@@ -1,0 +1,35 @@
+// The street's rules: how tall each building is, how many bays wide, whether it has an arcade at
+// its foot and a dome on its roof. The page builds every building from three pieces of a kit, a
+// box, a column and a sphere, placed and painted as these rules say.
+//
+// Under `npm run examples`, change a rule and save: the page rebuilds the street from the same
+// kit. Try taller buildings, or an arcade on every one.
+
+import { index, unit } from "drift/random"
+
+// #region rules
+// Floors above the ground, from two to seven.
+fn storeys(lot: u32) -> u32 {
+    return 2 + random.index(lot, 6)
+}
+
+// Windows across the front, from three to five.
+fn bays(lot: u32) -> u32 {
+    return 3 + random.index(lot + 101, 3)
+}
+
+// Two buildings in five stand on an arcade of columns.
+fn arcaded(lot: u32) -> bool {
+    return random.unit(lot + 7) < 0.4
+}
+
+// One in seven carries a dome.
+fn domed(lot: u32) -> bool {
+    return random.unit(lot + 13) < 0.15
+}
+
+// Which of the four wall paints a building wears.
+fn paint(lot: u32) -> u32 {
+    return random.index(lot + 29, 4)
+}
+// #endregion

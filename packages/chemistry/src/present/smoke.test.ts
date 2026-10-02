@@ -114,6 +114,25 @@ describe('smoke, which is the field made visible', () => {
     expect(thick.alphas[0] as number).toBeLessThanOrEqual(1);
   });
 
+  /**
+   * **Pale smoke is smoke you can see.** A smoulder makes droplets and next to no soot, and the
+   * opacity came from an extinction that counted soot alone, so the white plume over a charring
+   * log was written at an alpha of about 1e-29 and drawn as nothing: the half of smoke this package
+   * says it models, present in the field and invisible on screen.
+   */
+  it('DRAWS PALE SMOKE, which is droplets and no soot', () => {
+    const air = field();
+    air.addAerosol(2.5, 2.5, 2.5, 1e-3);
+    const pale = target(8);
+    emitSmoke(air, 0, 0, 0, 8, pale, options);
+    expect(pale.count).toBe(1);
+    expect(
+      pale.alphas[0] as number,
+      'a gram of droplets in a cubic metre is a thick haze',
+    ).toBeGreaterThan(0.5);
+    expect(air.visibilityAt(2.5, 2.5, 2.5), 'and it is hard to see through').toBeLessThan(5);
+  });
+
   it("STOPS AT THE TARGET'S CAPACITY rather than writing past it", () => {
     const air = field();
     for (let x = 0; x < 8; x++) {

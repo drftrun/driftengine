@@ -31,6 +31,7 @@ import {
   type QueuedMessage,
   type RayHit,
   SceneNode,
+  type TouchControls,
   type WindState,
   angleDelta,
   boxCollider,
@@ -105,6 +106,11 @@ export const CORE_TYPES: readonly OpaqueType[] = [
     module: INPUT_MODULE,
     name: 'Actions',
     doc: 'A bound action map: what the player is pressing.',
+  },
+  {
+    module: INPUT_MODULE,
+    name: 'Touch',
+    doc: 'Touch controls: a stick on one side of the screen, and taps, holds and flicks on the other.',
   },
   { module: CAMERA_MODULE, name: 'Camera', doc: 'A cinematic camera.' },
   {
@@ -1018,7 +1024,17 @@ export const PHYSICS_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
 ];
 
-/** `drift/input` — Track H, complete: action maps, rebinding, gamepad, pointer and touch. */
+/**
+ * `drift/input` — what the player is doing, read through an action map or a touch screen, and the
+ * pad's motors.
+ *
+ * **This header said "action maps, rebinding, gamepad, pointer and touch" over an array that bound
+ * only the action reads and rumble**, the failure `docs/CAPABILITIES.md` §4 names for three other
+ * binding files. Touch is bound now, as a `Touch` handle beside `Actions`, because a scripted game
+ * was otherwise undriveable on a phone: `TouchControls` reports to nothing an action map reads.
+ * Rebinding and the pointer stay with the host. A controls screen is the game's own interface, and
+ * `ActionMap.rebind` changes what a script's `Actions` answer without the script knowing.
+ */
 export const INPUT_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     INPUT_MODULE,
@@ -1146,6 +1162,51 @@ export const INPUT_CAPABILITIES: readonly CapabilityDefinition[] = [
     ['host'],
     false,
     'Stop whatever that pad is playing. Answers whether the platform took it.',
+  ),
+  define(
+    INPUT_MODULE,
+    'touchX',
+    [{ name: 'touch', type: 'Touch' }],
+    'f32',
+    ['input.read'],
+    false,
+    "The touch stick's horizontal, -1 to 1, 0 while no thumb is on it.",
+  ),
+  define(
+    INPUT_MODULE,
+    'touchY',
+    [{ name: 'touch', type: 'Touch' }],
+    'f32',
+    ['input.read'],
+    false,
+    "The touch stick's vertical, -1 to 1, up negative as a gamepad stick's is.",
+  ),
+  define(
+    INPUT_MODULE,
+    'touchHeld',
+    [{ name: 'touch', type: 'Touch' }],
+    'bool',
+    ['input.read'],
+    false,
+    'Whether a thumb is held still on the action side of the screen: the held form of the primary.',
+  ),
+  define(
+    INPUT_MODULE,
+    'touchTap',
+    [{ name: 'touch', type: 'Touch' }],
+    'bool',
+    ['input.read'],
+    false,
+    'Whether the action side was tapped since this was last asked. True once per tap, so ask it once a tick.',
+  ),
+  define(
+    INPUT_MODULE,
+    'touchSlide',
+    [{ name: 'touch', type: 'Touch' }],
+    'bool',
+    ['input.read'],
+    false,
+    'Whether a downward flick on the action side is being held: the secondary, a slide or a crouch.',
   ),
 ];
 
@@ -1583,6 +1644,11 @@ export function inputImplementation(): Record<string, unknown> {
     rumble: (actions: ActionMap, durationMs: number, strong: number, weak: number) =>
       actions.rumble(durationMs, strong, weak),
     stopRumble: (actions: ActionMap) => actions.stopRumble(),
+    touchX: (touch: TouchControls) => f(touch.moveX),
+    touchY: (touch: TouchControls) => f(touch.moveY),
+    touchHeld: (touch: TouchControls) => touch.primaryHeld,
+    touchTap: (touch: TouchControls) => touch.consumePrimaryPress(),
+    touchSlide: (touch: TouchControls) => touch.secondaryHeld,
   };
 }
 

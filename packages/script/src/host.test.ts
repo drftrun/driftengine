@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { NavSearch, buildNavGraph } from '@driftengine/core';
-import { compileDriftScript, singleFileHost } from 'driftscript/compiler';
+import { KEYWORDS, compileDriftScript, isSoftKeyword, singleFileHost } from 'driftscript/compiler';
 import { createRegistry, defineTarget, loadModule, providesModule } from 'driftscript';
 import {
   ENGINE_MODULES,
@@ -10,6 +10,7 @@ import {
   engineRegistry,
   engineTarget,
 } from './host.ts';
+import { QUERY_CAPABILITIES } from './bindings/entities.ts';
 
 /**
  * Everything this engine binds, checked as a set rather than one capability at a time.
@@ -85,6 +86,35 @@ describe('every binding, as a set', () => {
           `${module}.${name} is implemented but not described`,
         ).toBeDefined();
       }
+    }
+  });
+
+  /**
+   * **A capability a script cannot write is a capability nobody has.** A call is
+   * `namespace.name(...)` and the lexer reads both before anything checks them. A namespace that is
+   * not a word has an answer at the import, `from "drift/2d" as sprites`; a function name has none,
+   * because it has to appear in the import list. `drift/prefab` was bound with one function,
+   * `spawn`, which is a keyword, so no script could reach it. A soft keyword reads as a name
+   * after a dot, and the four a query loop compiles to are never written by hand.
+   */
+  it('names every capability a script calls with a word it can write', () => {
+    const word = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    const generated = new Set(QUERY_CAPABILITIES.map(({ name }) => name));
+    for (const capability of registry.all()) {
+      if (capability.module === 'drift/ecs' && generated.has(capability.name)) continue;
+      const { name } = capability;
+      const writable =
+        word.test(name) && (!(KEYWORDS as readonly string[]).includes(name) || isSoftKeyword(name));
+      expect(writable, `${capability.module}: \`${name}\` cannot be written in a call`).toBe(true);
+    }
+  });
+
+  it('describes only modules the target provides', () => {
+    for (const capability of registry.all()) {
+      if (capability.module.startsWith('std/')) continue;
+      expect(ENGINE_MODULES, `${capability.module} is described and not provided`).toContain(
+        capability.module,
+      );
     }
   });
 

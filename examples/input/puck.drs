@@ -1,0 +1,143 @@
+// The puck: how it answers a stick, the keys or a thumb, a boost and a brake, and what it does when
+// it hits something.
+//
+// Under `npm run examples`, change a rule and save: the puck drives by it from the next tick. Try a
+// longer boost, a puck that slows by itself, or a rumble that only the hardest hits get.
+
+import { axisX, axisY, canRumble, down, pressed, rawAxisX, rawAxisY, rumble, touchHeld, touchTap, touchX, touchY } from "drift/input"
+import { abs, max, min, sqrt } from "std/math"
+
+// Half the arena's width to its walls, the puck's radius and a pillar's, in metres.
+let WALL: f32 = 10.5
+let RADIUS: f32 = 0.6
+let PILLAR: f32 = 0.7
+// How hard the puck accelerates, and how much of its speed the floor takes each second.
+let PUSH: f32 = 14
+let DRAG: f32 = 1.4
+
+data Puck {
+    x: f32 = 0
+    z: f32 = 5
+    vx: f32 = 0
+    vz: f32 = 0
+    // Seconds of boost left, and before another may start.
+    boost: f32 = 0
+    rest: f32 = 0
+    braking: bool = false
+    bumps: u32 = 0
+    // How hard the last hit was, 0 to 1 and fading, which the page flashes the rim with.
+    hit: f32 = 0
+    // The page's switches: read the stick as it is or shortened to the rim, and rumble or not.
+    raw: bool = false
+    shake: bool = true
+}
+
+fn drive(puck: mut Puck, actions: Actions, touch: Touch, dt: f32) {
+    steer(puck, actions, touch, dt)
+    walls(puck, actions)
+    pillar(puck, actions, -5, -4)
+    pillar(puck, actions, 5, -4)
+    pillar(puck, actions, -5, 4)
+    pillar(puck, actions, 5, 4)
+    puck.hit = math.max(0, puck.hit - dt * 2)
+}
+
+// #region steer
+// The stick, the keys or a thumb on the screen, whichever is pushed furthest: a keyboard and a
+// touch screen at once never add up to more than one stick.
+fn steer(puck: mut Puck, actions: Actions, touch: Touch, dt: f32) {
+    var sx = input.axisX(actions, "move")
+    var sz = input.axisY(actions, "move")
+    if puck.raw {
+        sx = input.rawAxisX(actions, "move")
+        sz = input.rawAxisY(actions, "move")
+    }
+    if math.abs(input.touchX(touch)) > math.abs(sx) {
+        sx = input.touchX(touch)
+    }
+    if math.abs(input.touchY(touch)) > math.abs(sz) {
+        sz = input.touchY(touch)
+    }
+    if puck.rest > 0 {
+        puck.rest -= dt
+    }
+    let tapped = input.touchTap(touch)
+    if (input.pressed(actions, "boost") || tapped) && puck.rest <= 0 {
+        puck.boost = 0.5
+        puck.rest = 1.2
+    }
+    var push = PUSH
+    if puck.boost > 0 {
+        push = PUSH * 2.6
+        puck.boost -= dt
+    }
+    puck.braking = input.down(actions, "brake") || input.touchHeld(touch)
+    var drag = DRAG
+    if puck.braking {
+        drag = DRAG * 5
+    }
+    puck.vx += (sx * push - puck.vx * drag) * dt
+    puck.vz += (sz * push - puck.vz * drag) * dt
+    puck.x += puck.vx * dt
+    puck.z += puck.vz * dt
+}
+// #endregion
+
+// #region bump
+// Off the walls and the pillars with some of its speed lost, and the pad, where it has motors,
+// rumbles with how hard the puck hit.
+fn bounce(puck: mut Puck, actions: Actions, speed: f32) {
+    let hard = math.min(1, speed / 12)
+    puck.bumps += 1
+    puck.hit = math.max(puck.hit, hard)
+    if puck.shake && input.canRumble(actions) {
+        input.rumble(actions, 60 + 140 * hard, hard, 0.3 * hard)
+    }
+}
+// #endregion
+
+fn walls(puck: mut Puck, actions: Actions) {
+    let edge = WALL - RADIUS
+    if puck.x > edge && puck.vx > 0 {
+        bounce(puck, actions, puck.vx)
+        puck.vx = -puck.vx * 0.55
+        puck.x = edge
+    }
+    if puck.x < -edge && puck.vx < 0 {
+        bounce(puck, actions, -puck.vx)
+        puck.vx = -puck.vx * 0.55
+        puck.x = -edge
+    }
+    if puck.z > edge && puck.vz > 0 {
+        bounce(puck, actions, puck.vz)
+        puck.vz = -puck.vz * 0.55
+        puck.z = edge
+    }
+    if puck.z < -edge && puck.vz < 0 {
+        bounce(puck, actions, -puck.vz)
+        puck.vz = -puck.vz * 0.55
+        puck.z = -edge
+    }
+}
+
+fn pillar(puck: mut Puck, actions: Actions, px: f32, pz: f32) {
+    let dx = puck.x - px
+    let dz = puck.z - pz
+    let reach = RADIUS + PILLAR
+    let apart = dx * dx + dz * dz
+    if apart >= reach * reach || apart <= 0 {
+        return
+    }
+    let distance = math.sqrt(apart)
+    let nx = dx / distance
+    let nz = dz / distance
+    let into = puck.vx * nx + puck.vz * nz
+    if into >= 0 {
+        return
+    }
+    bounce(puck, actions, -into)
+    puck.vx -= nx * into * 1.55
+    puck.vz -= nz * into * 1.55
+    puck.x = px + nx * reach
+    puck.z = pz + nz * reach
+}

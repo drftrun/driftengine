@@ -523,19 +523,7 @@ function base64Bytes(base64: string): Uint8Array {
   return out;
 }
 
-/**
- * The collision hull a vehicle folder ships beside its model, or null.
- *
- * **A convention, not a statement in any file**, which is why it is one named function instead of
- * a rule spread through the baker: a folder naming its hull differently gets no collider and the
- * baker says what it looked for, rather than leaving a consumer to wonder why physics has nothing
- * to work with.
- *
- * It is read by the ordinary reader and baked as its own asset. Carrying a hull *inside* the
- * model's own file would mean defining `COLL`, which is a declared FourCC with no payload, no
- * reader and no writer — a format decision about whether a hull is triangle soup or a set of
- * convex hulls, and not one an import should make in passing.
- */
+/** The separate levels of detail a bundle ships beside its model, finest first. */
 export function levelsBeside(model: string, names: readonly string[]): string[] {
   /*
    * `<name>_lod_<letter>.kn5` beside `<name>.kn5`, finest first, which is the order the letters
@@ -556,6 +544,19 @@ export function levelsBeside(model: string, names: readonly string[]): string[] 
     .map((entry) => entry.name);
 }
 
+/**
+ * The collision hull a vehicle folder ships beside its model, or null.
+ *
+ * **A convention, not a statement in any file**, which is why it is one named function instead of
+ * a rule spread through the baker: a folder naming its hull differently gets no collider and the
+ * baker says what it looked for, rather than leaving a consumer to wonder why physics has nothing
+ * to work with.
+ *
+ * It is read by the ordinary reader and baked as its own asset. Carrying a hull *inside* the
+ * model's own file would mean defining `COLL`, which is a declared FourCC with no payload, no
+ * reader and no writer — a format decision about whether a hull is triangle soup or a set of
+ * convex hulls, and not one an import should make in passing.
+ */
 export function colliderBeside(names: readonly string[]): string | null {
   return names.find((name) => name.toLowerCase() === 'collider.kn5') ?? null;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileDriftScript, singleFileHost } from 'driftscript/compiler';
 import { loadModule } from 'driftscript';
+import type { KickDetector } from '@driftengine/audio';
 import { AUDIO_CAPABILITIES, AUDIO_MODULE, audioImplementation } from './audio.ts';
 import { bindModule, engineRegistry, engineTarget } from '../host.ts';
 
@@ -17,16 +18,32 @@ import { bindModule, engineRegistry, engineTarget } from '../host.ts';
  * effects, the dispatch — not that the audio engine works, which is Track G's own suite's job.
  */
 
-/** Just enough of the two engine objects for a binding to call. */
+/** Just enough of the engine objects for a binding to call: a graph, its mix, and the sounds. */
 const fakeAudio = () => {
   const played: { gain: number; pan: number }[] = [];
   const buffers = new Map<string, object>();
+  /* Every move the mix was asked for, by the bus or snapshot it named. */
+  const moves: string[] = [];
+  const bus = (name: string) => ({
+    duck: (factor: number, seconds: number) => moves.push(`${name} duck ${factor} ${seconds}`),
+    fadeLevel: (level: number, seconds: number) => moves.push(`${name} fade ${level} ${seconds}`),
+  });
+  const buses = new Map([['music', bus('music')]]);
   return {
     played,
     buffers,
+    moves,
     graph: {
       play(_buffer: unknown, gain = 1, pan = 0) {
         played.push({ gain, pan });
+      },
+      console: {
+        find: (name: string) => buses.get(name),
+        recall: (name: string, seconds: number) => {
+          if (name !== 'indoors') return false;
+          moves.push(`recall ${name} ${seconds}`);
+          return true;
+        },
       },
     } as never,
     registry: {
@@ -44,7 +61,7 @@ const compile = (source: string) =>
     mode: 'development',
   });
 
-const run = async (source: string, services: ReturnType<typeof fakeAudio>) => {
+const run = async (source: string, services: ReturnType<typeof fakeAudio>, kick?: KickDetector) => {
   const result = compile(source);
   if (result.diagnostics.some((d) => d.severity === 'error')) {
     throw new Error(result.diagnostics.map((d) => `${d.code} ${d.message}`).join('\n'));
@@ -54,7 +71,11 @@ const run = async (source: string, services: ReturnType<typeof fakeAudio>) => {
   )) as Record<string, unknown>;
   const module = loadModule(namespace);
   const bound = bindModule(module, {
-    audio: { graph: services.graph, registry: services.registry },
+    audio: {
+      graph: services.graph,
+      registry: services.registry,
+      ...(kick === undefined ? {} : { kick }),
+    },
   });
   if (!bound.bound) throw new Error(bound.reason);
   return module;
@@ -190,6 +211,44 @@ describe('the audio binding', () => {
     /* The engine's own function, called directly, must give the same answer — which is the check
        that a binding dispatches rather than reimplements. */
     expect(script).toBeCloseTo(distanceGain(10, 40), 6);
+  });
+});
+
+describe('the mix, as dials a script turns by name', () => {
+  it('ducks, fades and recalls what the host made, and says false for a name nothing answers to', async () => {
+    const services = fakeAudio();
+    const module = await run(
+      'import { duck, fade, recall } from "drift/audio"\n' +
+        '\n' +
+        'fn bell() -> bool {\n' +
+        '    return audio.duck("music", 0.3, 0.2) && audio.fade("music", 0.8, 1) && audio.recall("indoors", 2)\n' +
+        '}\n' +
+        '\n' +
+        'fn stray() -> bool {\n' +
+        '    return audio.duck("choir", 0.3, 0.2) || audio.fade("choir", 1, 1) || audio.recall("outdoors", 1)\n' +
+        '}\n',
+      services,
+    );
+    expect((module.exports.bell as () => boolean)()).toBe(true);
+    expect(services.moves).toEqual(['music duck 0.3 0.2', 'music fade 0.8 1', 'recall indoors 2']);
+    expect((module.exports.stray as () => boolean)()).toBe(false);
+    expect(services.moves).toHaveLength(3);
+  });
+
+  it("reads the host's kick detector, and 0 when it runs none", async () => {
+    const source =
+      'import { pulse } from "drift/audio"\n\nfn glow() -> f32 {\n    return audio.pulse()\n}\n';
+    const kicking = await run(source, fakeAudio(), { pulse: 0.75 } as KickDetector);
+    expect((kicking.exports.glow as () => number)()).toBeCloseTo(0.75, 6);
+    const silent = await run(source, fakeAudio());
+    expect((silent.exports.glow as () => number)()).toBe(0);
+  });
+
+  it('refuses the kick in a deterministic function, since a replay hears what the speakers did', () => {
+    const result = compile(
+      'import { pulse } from "drift/audio"\n\n@deterministic\nfn glow() -> f32 {\n    return audio.pulse()\n}\n',
+    );
+    expect(result.diagnostics.some((d) => d.code === 'DS0261')).toBe(true);
   });
 });
 

@@ -1,0 +1,33 @@
+{
+  "capabilities": [
+    "Host",
+    "Packaging",
+    "Boot",
+    "Scripting",
+    "Scripting reach",
+    "Graph canvas",
+    "Material graphs",
+    "Particle graphs",
+    "Behaviour graphs",
+    "Play in editor",
+    "The rollback scrubber",
+    "Editing during play",
+    "Divergence analysis",
+    "In-game tools",
+    "What the scrubber cost",
+    "Shared WGSL",
+    "Gizmo drags as commands",
+    "The editor opens",
+    "The script editor"
+  ],
+  "packages": [
+    "@driftengine/editor",
+    "@driftengine/media",
+    "@driftengine/native-host",
+    "@driftengine/network",
+    "@driftengine/package",
+    "@driftengine/tools",
+    "@driftengine/xr"
+  ],
+  "areas": ["ui", "dev", "host", "editor", "media", "network", "package", "script", "tools", "xr"]
+}

@@ -2093,14 +2093,20 @@ export class WebGL2Renderer implements RendererApi {
    */
   registerPass(definition: PassDefinition): PassHandle {
     const handle = registerIn(this.passes, definition);
-    /* Identity: this backend's clip space is the one the projections are built for. */
-    /* Both are identity here: this backend runs the GLSL natively, so there is nothing to
-       correct and nothing a generator has flipped. */
+    /*
+     * Both the same here: this backend runs the GLSL natively, so no generator has flipped
+     * anything. **What they carry is the depth remap whenever this context draws reversed**, and
+     * they were the identity until a splat capture was drawn among meshes on this backend: the
+     * renderer's own draws go through `GL_DEPTH_REMAP` (`sceneMatrix`), a pass's projection did
+     * not, so a pass wrote conventional depth into a reversed buffer and a splat behind a post was
+     * drawn over it. Identity where clip control is missing and depth stays conventional.
+     */
+    const correction = this.reversedDepth ? GL_DEPTH_REMAP : IDENTITY_CLIP;
     this.passDevice ??= {
       backend: 'webgl2',
       gl: this.gl,
-      clipCorrection: IDENTITY_CLIP,
-      depthCorrection: IDENTITY_CLIP,
+      clipCorrection: correction,
+      depthCorrection: correction,
     };
     if (definition.prepare !== undefined) this.preparingPasses++;
     definition.init?.(this.passDevice);
@@ -4746,17 +4752,14 @@ export class WebGL2Renderer implements RendererApi {
    * `endPlanarReflection`; the next water draw samples the completed target.
    */
   /**
-   * **This is a water feature, not a renderer one, and the name hides that.**
+   * **Two things sample the target: water, and a wet film.** It is allocated when `water` and
+   * `waterReflections` are both on, or when `RenderQuality.planarReflections` asks for it in a
+   * scene with no water, and `drawFilm` reads it through `FilmOptions.reflectionStrength` for a
+   * film on the plane it was rendered for. This said the pass was water-only after both of those
+   * had landed, which is how a stale limitation outlives its cause: it read as a decision.
    *
-   * The target is allocated only when `water` *and* `waterReflections` are both on, and the
-   * only thing that samples it is `WaterRenderer`. So a scenario whose ground is a mesh slab
-   * with `drawFilm` patches over it, which is what a wet street is, cannot mirror the scene
-   * into it however it calls this. Reported from outside after being attempted, which is the
-   * cost of a name that promises more than the wiring does.
-   *
-   * What is available to a surface that is not water: `bakeReflectionProbe`, which is a room
-   * rather than a mirror, and `drawFilm`'s sheen, which is iridescence rather than reflection.
-   * Neither is a substitute for a mirrored pass and this comment is not pretending otherwise.
+   * A surface on any other plane, or that is not a film, reflects a probe
+   * (`bakeReflectionProbe`), which is a room rather than a mirror.
    */
   /* Like `bakeReflectionProbe`, this re-enters the **mesh pass only**: anything a scene draws
      after the world, particles, light volumes, the sky, is missing from the mirror unless it is
@@ -8447,9 +8450,9 @@ export class WebGL2Renderer implements RendererApi {
    * tarmac at night by bisection twice, at 0.7 and again at 0.24, and landed on **0.15 to
    * 0.18**. Start there rather than repeating the search.
    *
-   * There is no mirror term here to raise instead. A surface that should reflect the scene
-   * rather than shimmer needs a planar pass, and `beginPlanarReflection` is water-only; see the
-   * comment on it. Splitting the two is an open request from outside and is not built.
+   * The mirror is a separate dial: `FilmOptions.reflectionStrength` shows the planar reflection
+   * a frame rendered for the film's plane, weighted by the viewing angle. See
+   * `beginPlanarReflection` for when that target exists.
    */
   drawFilm(
     mesh: Mesh,

@@ -1,5 +1,36 @@
 [
   {
+    "version": "4.7.1",
+    "date": "2026-10-02",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "The manual: installation to a complete game, then every system in turn, sixty-nine chapters whose code is compiled from forty-six examples that switch live and run their behaviour in DriftScript.",
+        "text": "**The manual lives in `docs/manual/`**, one Markdown file a chapter and `manual.json` for their order: Getting started, from installation to a complete 3D game and a 2D one; Concepts; Rendering; Worlds; Simulation; Content, for models, the `.drft` container, sound and the command-line tools; and Interface, for input, cameras, sprites and menus. **Every code block is a region of a file under `examples/`**, which the typecheck compiles and `npm run manual:sync` copies in, so a sample cannot drift from code that runs. Forty-six examples run on WebGPU and WebGL2, their switches change the running scene, and where a scene has behaviour it lives in a `.drs` file that reloads in place. `docs/manual/uncovered.json` lists what has no chapter yet and can only shrink, and `undocumented.json` the exports with no comment, which can only shrink too. **`@driftengine/core`'s README is a package page**: what the engine is, a quickstart a test keeps equal to `examples/starter`, its systems linked to their chapters, and the other packages."
+      },
+      {
+        "kind": "added",
+        "short": "Scripts reach further: drift/audio ducks, fades and recalls the mix and reads the kick, drift/input reads a touch screen, and drift/chemistry asks whether a thing can be wet.",
+        "text": "**`drift/audio` turns the mix by name.** `duck`, `fade` and `recall` move a bus or a snapshot the host made, and answer `false` for a name nothing has; `pulse` reads the kick detector the host runs, `0` without one. `MixConsole.recall` returns whether the snapshot existed. **`drift/input` reads a touch screen** through a `Touch` handle beside `Actions`: `touchX`, `touchY`, `touchHeld`, `touchTap` and `touchSlide`, so a game whose controls are a script can be played on a phone. **`drift/chemistry` gains `wettable`**, so rain poured over every parcel passes over a nail instead of stopping at it."
+      },
+      {
+        "kind": "fixed",
+        "short": "A navigation mesh goes round a wall standing on the floor, and the regions a room is split into meet edge to edge, so a route crosses rooms it could not; the climb is a setting, maxStep.",
+        "text": "**`voxeliseWalkable` sees walls.** It sampled surfaces at cell centres, which never meet a vertical face, so a building on the ground read as a roof over open floor and a route went through it; a face too steep to stand on is now a solid in every cell it crosses, and erosion judges a neighbour at the span's own height. **Regions meet edge to edge**: each outline was simplified on its own, so a shared border came out as two lines that overlap nowhere and a portal vanished; a room with a pillar at the deviation the README recommends had no route between opposite corners. Border points are held across regions and each stretch is simplified once. `VoxeliseSettings.maxStep` takes the climb `buildRegions` takes."
+      },
+      {
+        "kind": "fixed",
+        "short": "Sprites and tiles drawn in a 2D world are the right way up, and a clipping node in an interface clips what its children draw and where the pointer reaches them.",
+        "text": "**A picture keeps its top up in a 2D world.** Every sprite and tile drawn through `worldToNdc` came out upside down, because the frame's top row was read at the sprite's corner, which in a world is its bottom; the vertex stage reads the affine's orientation now, and `scripts/sprite-check.mjs` draws the same rectangles in both spaces and asserts the frames match byte for byte. **`clip` is drawn and hit tested**: `drawUiTree` cuts every quad under a clipping node to what it leaves, an image's frame in proportion, and gives the content sink the visible rectangle; `uiHitTest` finds nothing under a clipping node outside its box. A scrolled list's rows drew wherever they had scrolled to, and took clicks there."
+      },
+      {
+        "kind": "fixed",
+        "short": "A script makes an entity from a prefab with ecs.instantiate and counts entities inside a system; splats hide behind what stands in front of them; a ragdoll whose root has no bone holds together.",
+        "text": "**`drift/prefab` could not be called**, since its one function is named `spawn`, a keyword; a script makes an entity from a prefab with `ecs.instantiate` now, and the module is refused by name. **`ecs.count`, `ecs.at` and `ecs.alive` work inside a system**, where they threw and the schedule skipped the system every tick. **Splats are occluded by the geometry in front of them on both backends**: WebGPU compared depth one way under reversed depth, and a contributed pass on WebGL2 was handed the identity in place of the depth remap. **A ragdoll built from a rig whose root has no bone holds together**: bones hanging from that root were jointed to nothing, so a humanoid fell as a torso and two loose legs. **Pale smoke is drawn**, because droplets now count toward how thick smoke is."
+      }
+    ]
+  },
+  {
     "version": "4.7.0",
     "date": "2026-10-01",
     "entries": [
@@ -2907,7 +2938,7 @@
    },
    {
     "kind": "added",
-    "text": "`KickDetector.level` is a low-end level a visual can actually follow. `energy`, the only one there was, is the raw sum of the two lowest bands with a gain on it: honest about what it says and useless on anything mastered loud, because it reaches its ceiling and stays there, so a consumer driving a light or a particle field from it draws a constant. Measured on a phonk track through this detector, it read 1.000 in every frame sampled. The detector already computed the quantity that does move with the kick and threw it away after gating on it, which is the whitened signal: what is left once the bassline, the mud and the low mids are masked out. That is now readable, unscaled, because how far a consumer opens it up is a decision about its own picture rather than about the music. `energy` keeps its meaning and its arithmetic, and a production consumer reads only `pulse`, so nothing existing moves",
+    "text": "`KickDetector.level` is a low-end level a visual can actually follow. `energy`, the only one there was, is the raw sum of the two lowest bands with a gain on it: honest about what it says and useless on anything mastered loud, because it reaches its ceiling and stays there, so a consumer driving a light or a particle field from it draws a constant. Measured on a bass-heavy track through this detector, it read 1.000 in every frame sampled. The detector already computed the quantity that does move with the kick and threw it away after gating on it, which is the whitened signal: what is left once the bassline, the mud and the low mids are masked out. That is now readable, unscaled, because how far a consumer opens it up is a decision about its own picture rather than about the music. `energy` keeps its meaning and its arithmetic, and a production consumer reads only `pulse`, so nothing existing moves",
     "short": "`KickDetector.level` exposes the whitened low end, which keeps its dynamics where `energy` saturates on a loud master."
    },
    {

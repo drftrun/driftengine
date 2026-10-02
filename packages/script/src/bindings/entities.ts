@@ -1,8 +1,10 @@
 /**
- * `drift/ecs` and `drift/prefab` — the entity model as DriftScript reaches it.
+ * `drift/ecs` — the entity model as DriftScript reaches it, prefabs included.
  *
- * These are the two surfaces the linker has refused by name since Track N shipped, and this file is
- * what kills that refusal. Like every binding here, nothing in it is new engine code: a binding is a
+ * This and `drift/prefab` were the two surfaces the linker refused by name until Track M shipped,
+ * and this file is what killed that refusal. `drift/prefab` is gone again: its one function was
+ * `spawn`, a keyword, so no script could call it, and making an entity from a prefab is
+ * `ecs.instantiate`. Like every binding here, nothing in it is new engine code: a binding is a
  * description and a lookup.
  *
  * ---
@@ -30,13 +32,13 @@ import {
   type Entity,
   type Prefab,
   type QueryCursor,
+  type SystemView,
   type World,
   instantiate,
 } from '@driftengine/entities';
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
 
 export const ECS_MODULE = 'drift/ecs';
-export const PREFAB_MODULE = 'drift/prefab';
 
 const define = (
   module: string,
@@ -264,6 +266,24 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     true,
     'The entity the last `findNearest` on this world found. **Valid only until the next one**, and meaningless when that answered false — the same lifetime a raycast hit has.',
   ),
+  /*
+   * **Here and not in a `drift/prefab` of its own, because that one could not be called.** It was
+   * bound as `prefab.spawn`, and `prefab` and `spawn` are both keywords: `spawn` cannot even appear
+   * in an import list, so no script could reach it, and the target never provided the module
+   * either. A prefab is made into entities in a world, so the call belongs with the others that do.
+   */
+  define(
+    ECS_MODULE,
+    'instantiate',
+    [
+      { name: 'world', type: 'World' },
+      { name: 'prefab', type: 'String' },
+    ],
+    'Entity',
+    ['ecs.write'],
+    false,
+    'Make an entity from a prefab, with every component it names. Overrides are the host’s to apply; a script that wants a different value writes it after.',
+  ),
 ];
 
 /**
@@ -326,21 +346,6 @@ export const QUERY_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
 ];
 
-export const PREFAB_CAPABILITIES: readonly CapabilityDefinition[] = [
-  define(
-    PREFAB_MODULE,
-    'spawn',
-    [
-      { name: 'world', type: 'World' },
-      { name: 'prefab', type: 'String' },
-    ],
-    'Entity',
-    ['ecs.write'],
-    false,
-    'Make one, with every component the prefab names. Overrides are the host’s to apply; a script that wants a different value writes it after.',
-  ),
-];
-
 /** What a host supplies so a name can become a component type or a prefab. */
 export interface EntityServices {
   /**
@@ -350,12 +355,13 @@ export interface EntityServices {
    * with two worlds — a simulation and a preview — would otherwise need two hosts.
    */
   readonly components: ReadonlyMap<string, ComponentType>;
-  /** Prefabs by name. Absent when the host has none, which makes `drift/prefab` refuse in words. */
+  /** Prefabs by name. Absent when the host has none, which makes `instantiate` refuse in words. */
   readonly prefabs?: ReadonlyMap<string, Prefab>;
 }
 
 export function entitiesImplementation(services: EntityServices): Record<string, unknown> {
   const { components } = services;
+  const prefabs = services.prefabs ?? new Map<string, Prefab>();
 
   /**
    * Resolve a component name, or refuse naming what the world has.
@@ -388,7 +394,7 @@ export function entitiesImplementation(services: EntityServices): Record<string,
   return {
     create: (w: World) => w.create(),
     destroy: (w: World, entity: Entity) => w.destroy(entity),
-    alive: (w: World, entity: Entity) => w.alive(entity),
+    alive: (w: SystemView, entity: Entity) => w.alive(entity),
     has: (w: World, entity: Entity, component: string) => w.has(entity, resolve(component)),
     attach: (w: World, entity: Entity, component: string) => w.add(entity, resolve(component)),
     detach: (w: World, entity: Entity, component: string) => w.remove(entity, resolve(component)),
@@ -429,11 +435,16 @@ export function entitiesImplementation(services: EntityServices): Record<string,
     },
     view: (w: QuerySource, component: string, forWriting: boolean) =>
       w.view(resolve(component), forWriting),
-    count: (w: World, component: string) => w.store(resolve(component)).size,
-    at: (w: World, component: string, index: number) => {
-      const store = w.store(resolve(component));
-      return index < store.size ? (store.dense[index] as number) : 0;
-    },
+    /*
+     * **Through the methods a system's view shares with a world, never a store.** Inside a system
+     * the value a script passes is the `SystemView` the schedule handed it, which has no `store`;
+     * reading `store.size` here threw the moment a system counted anything. The view checks the
+     * component against the system's declarations, which is the other thing a store would skip.
+     */
+    count: (w: SystemView, component: string) => w.count(resolve(component)),
+    /* Zero past the end, as this has always answered; the walk's bound is `count`. */
+    at: (w: SystemView, component: string, index: number) =>
+      Math.max(0, w.at(resolve(component), index)),
     /*
      * **A boolean rather than an option, and a second accessor for the handle.** `Sound?` is an
      * option because a slot is resolved once at load; this is written to be called every frame by
@@ -517,6 +528,14 @@ export function entitiesImplementation(services: EntityServices): Record<string,
      * is why the search answers one.
      */
     nearest: (w: QuerySource) => Math.max(0, found.get(w) ?? -1),
+    instantiate: (w: World, name: string) => {
+      const prefab = prefabs.get(name);
+      if (prefab === undefined) {
+        const known = [...prefabs.keys()].map((k) => `\`${k}\``).join(', ');
+        throw new Error(`no prefab is registered as \`${name}\`. This host has ${known}.`);
+      }
+      return instantiate(w, prefab);
+    },
   };
 }
 
@@ -531,20 +550,4 @@ export function entitiesImplementation(services: EntityServices): Record<string,
 interface QuerySource {
   query(a: ComponentType, b?: ComponentType, c?: ComponentType, d?: ComponentType): QueryCursor;
   view(type: ComponentType, forWriting: boolean): ComponentView;
-}
-
-export function prefabImplementation(services: EntityServices): Record<string, unknown> {
-  const prefabs = services.prefabs ?? new Map<string, Prefab>();
-  return {
-    spawn: (w: World, name: string) => {
-      const prefab = prefabs.get(name);
-      if (prefab === undefined) {
-        throw new Error(
-          `no prefab is registered as \`${name}\`. This host has ` +
-            `${[...prefabs.keys()].map((k) => `\`${k}\``).join(', ')}.`,
-        );
-      }
-      return instantiate(w, prefab);
-    },
-  };
 }

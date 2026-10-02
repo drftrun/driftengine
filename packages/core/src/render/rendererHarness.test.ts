@@ -3,6 +3,8 @@ import { expect, test, vi } from 'vitest';
 
 import { boundsOfPositions, createBounds } from '../math/bounds.ts';
 import { Renderer } from './backend/webgl2/renderer.ts';
+import { GL_DEPTH_REMAP } from './depthConvention.ts';
+import type { PassDevice } from './pass.ts';
 import { recordingGl } from './rendererHarness.ts';
 import { resolveRenderQuality } from './renderQuality.ts';
 
@@ -332,4 +334,35 @@ test('a pass with no prepare is not prepared, and an unregistered one stops', ()
   renderer.unregisterPass(handle);
   renderer.beginFrame([0, 0, 0]);
   expect(noisy, 'a pass let go of prepares nothing').toBe(1);
+});
+
+/**
+ * A pass projects through the same remap the renderer's own draws do.
+ *
+ * **Found by a splat capture with a post standing in it**: on a context drawing reversed depth the
+ * renderer multiplies its scene matrix by `GL_DEPTH_REMAP`, and a contributed pass, handed the
+ * identity, wrote conventional depth into the reversed buffer. Its far splats then passed the depth
+ * test in front of the post and were drawn over it.
+ */
+test('a pass on a context drawing reversed depth is handed the remap the scene draws through', () => {
+  const { canvas } = recordingGl({ extensions: ['EXT_clip_control'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const devices: PassDevice[] = [];
+  renderer.registerPass({ label: 'probe', init: (device) => devices.push(device), draw: () => {} });
+  expect(renderer.reversedDepth, 'clip control was offered, so depth is reversed').toBe(true);
+  expect(Array.from(devices[0]?.clipCorrection ?? [])).toEqual(Array.from(GL_DEPTH_REMAP));
+  expect(Array.from(devices[0]?.depthCorrection ?? [])).toEqual(Array.from(GL_DEPTH_REMAP));
+});
+
+test('and the identity on a context that cannot, where depth stays conventional', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const { canvas } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const devices: PassDevice[] = [];
+  renderer.registerPass({ label: 'probe', init: (device) => devices.push(device), draw: () => {} });
+  expect(renderer.reversedDepth).toBe(false);
+  expect(Array.from(devices[0]?.clipCorrection ?? [])).toEqual([
+    1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+  ]);
+  warn.mockRestore();
 });

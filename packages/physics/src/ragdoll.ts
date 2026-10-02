@@ -292,6 +292,38 @@ export function ragdollFromBones(
   }
 
   /*
+   * **Bones hanging from a joint with no bone of its own are jointed to one another, at the head
+   * they share.** The header names the case: a humanoid's hips are usually a root, and the spine
+   * and both thighs hang off them. The loop above joints a bone to its parent's bone, and a root
+   * has none, so until 2026-10-02 those three bones were never joined to anything: a doll built
+   * from that rig fell as a torso and two loose legs. Each sibling is now jointed to the first
+   * bone under the same joint, head to head, with its own joint's limits; at rest the two heads
+   * are one point, so the first tick still moves nothing.
+   */
+  const firstUnder = new Int32Array(jointCount).fill(-1);
+  for (let j = 0; j < jointCount; j++) {
+    const body = bodyOf[j] ?? -1;
+    if (body < 0) continue;
+    const p = parents[j] ?? -1;
+    if (p < 0 || (bodyOf[p] ?? -1) >= 0) continue;
+    const first = firstUnder[p] ?? -1;
+    if (first < 0) {
+      firstUnder[p] = j;
+      continue;
+    }
+    world.addJoint({
+      type: JOINT_CONE_TWIST,
+      bodyA: bodyOf[first] ?? 0,
+      bodyB: body,
+      swingCos: limitAt(swingCos, Math.SQRT1_2, j),
+      twistSin: limitAt(twistSin, 0.3826834323650898, j),
+      axisY: 1,
+      anchorAY: -(halfOf[first] ?? 0),
+      anchorBY: -(halfOf[j] ?? 0),
+    });
+  }
+
+  /*
    * **Bones that share an end must not collide, and it cannot be said with layers.**
    *
    * A mask is a property of one body, so it can say what a bone is and not who two bones are to

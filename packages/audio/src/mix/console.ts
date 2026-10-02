@@ -164,11 +164,15 @@ export class MixConsole {
     return captured;
   }
 
-  /** Crossfade back to a captured snapshot over `seconds`. */
-  recall(name: string, seconds = 0): void {
+  /**
+   * Crossfade back to a captured snapshot over `seconds`. False, and nothing moves, when no
+   * snapshot was taken under that name.
+   */
+  recall(name: string, seconds = 0): boolean {
     const captured = this.snapshots.get(name);
-    if (captured === undefined) return;
+    if (captured === undefined) return false;
     recallSnapshot(this, captured, seconds);
+    return true;
   }
 }
 

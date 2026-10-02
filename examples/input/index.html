@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Input · DriftEngine example</title>
+    <link rel="stylesheet" href="../common/examples.css" />
+    <style>
+      /* The controls screen: an action per row, what it is bound to, and a button to change it. */
+      #bindings {
+        position: fixed;
+        top: 64px;
+        right: 14px;
+        width: 240px;
+        padding: 10px 12px;
+        border: 1px solid #2a2d36;
+        border-radius: 10px;
+        background: rgba(22, 24, 30, 0.88);
+      }
+      #bindings h2 {
+        margin: 0 0 6px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        color: #8b91a0;
+        text-transform: uppercase;
+      }
+      #bindings .row {
+        display: grid;
+        grid-template-columns: 52px 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 4px 0;
+      }
+      #bindings .keys {
+        color: #e8eaf0;
+      }
+      #bindings button {
+        font: inherit;
+        color: #c9cdd6;
+        background: #22252e;
+        border: 1px solid #343845;
+        border-radius: 6px;
+        padding: 2px 8px;
+        cursor: pointer;
+      }
+      #bindings button.waiting {
+        color: #16181e;
+        background: #e3a46c;
+        border-color: #e3a46c;
+      }
+      #bindings .note {
+        min-height: 1.5em;
+        margin: 6px 0 0;
+        color: #e3a46c;
+      }
+      /* The touch stick, drawn where the thumb lands and hidden otherwise. */
+      #stick-base {
+        position: fixed;
+        width: 120px;
+        height: 120px;
+        margin: -60px 0 0 -60px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        pointer-events: none;
+      }
+      #stick-nub {
+        position: absolute;
+        left: 36px;
+        top: 36px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.45);
+      }
+      @media (max-width: 640px) {
+        #bindings {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <p id="backend">starting…</p>
+    <a id="home" href="../">← all examples</a>
+    <aside id="bindings">
+      <h2>Controls</h2>
+      <div id="rows"></div>
+      <p class="note" id="note"></p>
+      <button id="reset" type="button">Reset to defaults</button>
+    </aside>
+    <div id="stick-base" hidden><div id="stick-nub"></div></div>
+    <nav id="controls"></nav>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

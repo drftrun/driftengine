@@ -1,0 +1,80 @@
+// The camp: the weather over the fire, a keeper who puts logs on it, and a notebook of what the
+// chemistry reported.
+//
+// Under `npm run examples`, change a rule and save: the camp runs by it from the next tick and the
+// fire carries on. Try heavier rain, greener wood, or a keeper who only notes what boils.
+
+import { alive, eventCount, eventKind, eventParcel, ignite, parcelCount, phase, place, substance, surfaceTemperature, wet, wettable } from "drift/chemistry"
+
+// The kinds of event this camp listens for, as the chemistry numbers them.
+let IGNITED: i32 = 0
+let EXTINGUISHED: i32 = 1
+// A parcel's phase: 0 solid, 1 liquid, 2 gas, 3 mixed, which a block of ice is while it melts.
+let SOLID: i32 = 0
+
+data Camp {
+    // Water falling on everything in the open, in kilograms a second for each thing it lands on.
+    rain: f32 = 0
+    // What the notebook has counted.
+    caught: u32 = 0
+    putOut: u32 = 0
+    boiled: bool = false
+    melting: bool = false
+    // The last thing to catch, or -1 before anything has.
+    lastCaught: i32 = -1
+}
+
+// #region weather
+// Rain wets everything that can hold water, a little each tick; a nail or a coin stays dry.
+fn weather(camp: Camp, chem: Chemistry, dt: f32) {
+    if camp.rain <= 0 {
+        return
+    }
+    var parcel: i32 = 0
+    while parcel < chemistry.parcelCount(chem) {
+        if chemistry.alive(chem, parcel) && chemistry.wettable(chem, parcel) {
+            chemistry.wet(chem, parcel, camp.rain * dt)
+        }
+        parcel += 1
+    }
+}
+// #endregion
+
+// #region stoke
+// A log of oak laid on the fire and offered a flame: seasoned, or green, which is the same wood
+// with water poured on. Whether it catches is the chemistry's answer.
+fn stoke(chem: Chemistry, green: bool, x: f32, y: f32, z: f32) -> i32 {
+    let oak = chemistry.substance(chem, "oak")
+    let log = chemistry.place(chem, oak, 2.5, 0.16, x, y, z)
+    if green {
+        chemistry.wet(chem, log, 0.9)
+    }
+    chemistry.ignite(chem, log)
+    return log
+}
+// #endregion
+
+// #region notice
+// What happened this tick: catching and going out from the chemistry's event buffer, read before
+// it is cleared, and the kettle and the ice by watching them.
+fn notice(camp: mut Camp, chem: Chemistry, kettle: i32, ice: i32) {
+    var at: i32 = 0
+    while at < chemistry.eventCount(chem) {
+        let kind = chemistry.eventKind(chem, at)
+        if kind == IGNITED {
+            camp.caught += 1
+            camp.lastCaught = chemistry.eventParcel(chem, at)
+        }
+        if kind == EXTINGUISHED {
+            camp.putOut += 1
+        }
+        at += 1
+    }
+    if chemistry.surfaceTemperature(chem, kettle) >= 99.5degC {
+        camp.boiled = true
+    }
+    if chemistry.phase(chem, ice) != SOLID {
+        camp.melting = true
+    }
+}
+// #endregion

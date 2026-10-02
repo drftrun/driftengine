@@ -1,0 +1,112 @@
+{
+  "sections": [
+    {
+      "id": "start",
+      "title": "Getting started",
+      "blurb": "Read in order. It ends with a complete game.",
+      "pages": [
+        "introduction",
+        "installation",
+        "hello-world",
+        "the-loop",
+        "moving-things",
+        "first-game",
+        "a-2d-game",
+        "shipping-to-the-web"
+      ]
+    },
+    {
+      "id": "concepts",
+      "title": "Concepts",
+      "blurb": "How the engine thinks: its packages, its two backends, the scene graph, determinism, coordinates, quality and the shape of a frame.",
+      "pages": [
+        "packages",
+        "backends",
+        "scene-graph",
+        "determinism",
+        "coordinates",
+        "quality",
+        "the-frame"
+      ]
+    },
+    {
+      "id": "rendering",
+      "title": "Rendering",
+      "blurb": "Everything that puts pixels on the screen: meshes and materials, lights and shadows, the sky, the air and water, DriftLight and DriftRay, post-processing, the GPU-driven pipeline, and passes of your own.",
+      "pages": [
+        "meshes",
+        "materials",
+        "texture-arrays",
+        "instancing",
+        "splines-and-lines",
+        "translucency",
+        "decals",
+        "lights",
+        "shadows",
+        "light-in-the-air",
+        "driftlight",
+        "driftray",
+        "reflections",
+        "sky-and-atmosphere",
+        "fog-and-weather",
+        "water",
+        "wet-surfaces",
+        "post-processing",
+        "colour-and-motion",
+        "drifttr",
+        "gpu-driven",
+        "particles",
+        "text-and-overlays",
+        "picking",
+        "custom-passes"
+      ]
+    },
+    {
+      "id": "worlds",
+      "title": "Worlds",
+      "blurb": "Ground and the worlds built on it: terrain, worlds bigger than a float, hierarchical detail, worlds built from a kit, procedural solids, splats, textures as programs, streaming, and capture from video.",
+      "pages": [
+        "terrain",
+        "large-worlds",
+        "hierarchical-detail",
+        "worlds-from-a-kit",
+        "procedural-solids",
+        "splats",
+        "drifttexture",
+        "texture-streaming",
+        "writable-textures",
+        "driftcapture"
+      ]
+    },
+    {
+      "id": "simulation",
+      "title": "Simulation",
+      "blurb": "Everything that moves on the fixed clock: rigid bodies and their queries, characters, vehicles, ragdolls and cloth, animation, navigation, entities, chemistry and agents.",
+      "pages": [
+        "rigid-bodies",
+        "joints",
+        "queries",
+        "characters",
+        "vehicles",
+        "ragdolls-and-cloth",
+        "animation",
+        "navigation",
+        "entities",
+        "chemistry",
+        "agents"
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "blurb": "Getting what artists make into a game: importing models, the .drft container and how it streams, sound and music, and the tools that bake and check them.",
+      "pages": ["importing-models", "drft", "audio", "cli"]
+    },
+    {
+      "id": "interface",
+      "title": "Interface",
+      "blurb": "How a player reaches the game, and what they see: every input device through one action map, cameras that cut between shots and fly keyed paths, the 2D layer of sprites and tilemaps, and menus built as a tree.",
+      "pages": ["input", "cameras", "sprites", "interface"]
+    }
+  ]
+}

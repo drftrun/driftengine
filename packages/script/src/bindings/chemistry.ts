@@ -190,6 +190,13 @@ export const CHEMISTRY_CAPABILITIES: readonly CapabilityDefinition[] = [
     'kg of liquid water on the surface, per square metre of it.',
   ),
   define(
+    'wettable',
+    [P, PARCEL],
+    'bool',
+    READ,
+    'Whether this material can hold liquid water, which is what `wet` asks. Rain over everything asks first, since `wet` refuses an iron nail.',
+  ),
+  define(
     'phase',
     [P, PARCEL],
     'i32',
@@ -488,6 +495,7 @@ export function chemistryImplementation(services: ChemistryServices): Record<str
     charFraction: (_: unknown, parcel: number) => parcels.charFractionOf(parcel),
     charDepth: (_: unknown, parcel: number) => parcels.charDepthOf(parcel),
     wetness: (_: unknown, parcel: number) => parcels.wetnessOf(parcel),
+    wettable: (_: unknown, parcel: number) => parcels.wettable(parcel),
     phase: (_: unknown, parcel: number) => parcels.parcelPhaseOf(parcel),
     burning: (_: unknown, parcel: number) => parcels.burning(parcel),
     smouldering: (_: unknown, parcel: number) => parcels.smouldering(parcel),

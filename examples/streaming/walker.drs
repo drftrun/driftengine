@@ -1,0 +1,42 @@
+// Someone walking about their home cell: a few seconds in one direction, then a turn.
+//
+// Each walker is a record the page holds, and its position is in metres from the corner of its own
+// cell. The cell itself is three thousand kilometres from the origin, where a 32-bit float counts in
+// quarters of a metre, so nothing here ever holds an absolute coordinate: the page adds the cell's
+// corner in double precision when it draws.
+//
+// When a walker's cell leaves the simulated radius it freezes exactly where it is, and when it comes
+// back it carries on from there. Under `npm run examples`, change the pace or the turns and save:
+// every walker that is simulating picks the new rules up on its next step.
+
+import { range } from "drift/random"
+import { clamp, cos, sin } from "std/math"
+
+data Walker {
+    // Metres from the corner of the home cell.
+    x: f32 = 32
+    z: f32 = 32
+    // Radians, and the seconds until the next turn.
+    heading: f32 = 0
+    untilTurn: f32 = 0
+    // Which walker this is, and how many turns it has made: together they choose the next turn, so
+    // a walker that froze and thawed turns exactly as one that never stopped.
+    seed: u32 = 0
+    turns: u32 = 0
+}
+
+// #region step
+fn step(walker: mut Walker, dt: f32, cellSize: f32) {
+    walker.untilTurn = walker.untilTurn - dt
+    if walker.untilTurn <= 0 {
+        walker.turns = walker.turns + 1
+        let draw = walker.seed * 7919 + walker.turns
+        walker.heading = random.range(draw, 0, 6.2831855)
+        walker.untilTurn = random.range(draw + 1, 1.5, 4)
+    }
+    // A brisk walk, kept two metres inside the cell's edge.
+    let pace = 1.4
+    walker.x = math.clamp(walker.x + math.cos(walker.heading) * pace * dt, 2, cellSize - 2)
+    walker.z = math.clamp(walker.z + math.sin(walker.heading) * pace * dt, 2, cellSize - 2)
+}
+// #endregion

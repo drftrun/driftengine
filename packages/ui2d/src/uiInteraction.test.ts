@@ -66,6 +66,73 @@ describe('drawUiTree', () => {
   });
 });
 
+describe('drawUiTree under a clip', () => {
+  /** A 100x50 list that clips, holding four 100x20 rows, scrolled down by `scroll`. */
+  function scrolled(scroll: number, rowTexture = -1): { list: UiNode; rows: UiNode[] } {
+    const list = createUiNode({ width: 100, height: 50, clip: true, direction: 'column' });
+    const rows = [0, 1, 2, 3].map(() =>
+      addUiChild(
+        list,
+        createUiNode({
+          width: 'grow',
+          height: 20,
+          background: [1, 1, 1, 1],
+          texture: rowTexture,
+          text: 'row',
+          interactive: true,
+        }),
+      ),
+    );
+    list.scrollY = scroll;
+    layoutUiTree(list, 0, 0, 100, 50);
+    return { list, rows };
+  }
+
+  it("cuts a row to the list's box, so nothing draws past its edge", () => {
+    const batch = createSpriteBatch(16);
+    // Rows at 0, 20, 40 and 60: the third is half out and the fourth wholly.
+    expect(drawUiTree(batch, scrolled(0).list, 5, null)).toBe(3);
+    const third = 2 * SPRITE_FLOATS;
+    expect(batch.instances[third + 13]).toBe(40);
+    // The second edge, which is the height, cut from 20 to the 10 the list leaves.
+    expect(batch.instances[third + 3]).toBe(10);
+  });
+
+  it('draws a row scrolled entirely out of view not at all', () => {
+    const batch = createSpriteBatch(16);
+    // Scrolled by 30: rows at -30, -10, 10 and 30, so the first is gone and two are cut.
+    expect(drawUiTree(batch, scrolled(30).list, 5, null)).toBe(3);
+    expect(batch.instances[13]).toBe(0);
+    expect(batch.instances[3]).toBe(10);
+  });
+
+  it('cuts an image in proportion, so the part showing is the part of the frame there', () => {
+    const batch = createSpriteBatch(16);
+    drawUiTree(batch, scrolled(0, 2).list, 5, null);
+    // Background and image per row; the third row's image is the sixth quad, half its height kept.
+    const image = 5 * SPRITE_FLOATS;
+    expect([batch.instances[image + 5], batch.instances[image + 7]]).toEqual([0, 0.5]);
+  });
+
+  it('tells the sink how much of a node is visible, so its text can be cut the same way', () => {
+    const seen: number[] = [];
+    drawUiTree(createSpriteBatch(16), scrolled(0).list, 5, {
+      content: (_node, visible) => seen.push(visible.h),
+    });
+    expect(seen).toEqual([20, 20, 10]);
+  });
+
+  it('hit tests a row only where it can be seen', () => {
+    const { list, rows } = scrolled(30);
+    // The second row is drawn from -10 to 10, so only its visible half takes the pointer.
+    expect(uiHitTest(list, 50, 5)).toBe(rows[1]);
+    expect(uiHitTest(list, 50, 45)).toBe(rows[3]);
+    // Unscrolled, the fourth row is laid out from 60 to 80, below the list's edge, and is not there.
+    const still = scrolled(0);
+    expect(uiHitTest(still.list, 50, 70)).toBe(null);
+  });
+});
+
 describe('uiHitTest', () => {
   it('finds the interactive node under a point', () => {
     const { root, buttons } = bar();

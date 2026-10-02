@@ -207,6 +207,58 @@ describe('a path around an obstacle', () => {
   });
 });
 
+/**
+ * **A room the watershed splits into regions is still one room.** Each region's outline was
+ * simplified on its own, so the border two regions share came out differently on each side, and a
+ * portal is where two edges overlap: a jagged border simplified two ways overlaps nowhere, and the
+ * room became islands. Measured at the deviation the README recommends, 1.3, on a 16 by 10 room
+ * with a pillar: two regions, three polygons, and no route between opposite corners. A 30 by 30
+ * room with a 5 by 5 pillar had none even at 0.5.
+ */
+describe('a room split into regions', () => {
+  function room(width: number, depth: number, pillar: readonly number[]): string[] {
+    const [x0, z0, x1, z1] = pillar as [number, number, number, number];
+    return Array.from({ length: depth }, (_, z) =>
+      Array.from({ length: width }, (_, x) =>
+        x >= x0 && x < x1 && z >= z0 && z < z1 ? '#' : '.',
+      ).join(''),
+    );
+  }
+
+  for (const [width, depth, pillar] of [
+    [16, 10, [6, 3, 9, 6]],
+    [20, 12, [8, 4, 12, 8]],
+    [30, 30, [12, 12, 17, 17]],
+  ] as const) {
+    for (const deviation of [0.5, 1.3, 2]) {
+      it(`IS ONE WALKABLE SPACE: ${width} by ${depth}, simplified to ${deviation}`, () => {
+        const field = fieldFromMap(room(width, depth, pillar));
+        const regions = buildRegions(field, { minRegionSpans: 1, maxStep: 1 });
+        expect(regions.count, 'the case under test has more than one region').toBeGreaterThan(1);
+        const query = new NavMeshQuery(
+          buildPolyMesh(buildContours(field, regions, deviation), 6, field),
+        );
+        const out = new Float64Array(256);
+        const corners: [number, number][] = [
+          [0.5, 0.5],
+          [width - 0.5, 0.5],
+          [width - 0.5, depth - 0.5],
+          [0.5, depth - 0.5],
+        ];
+        for (const [fx, fz] of corners) {
+          for (const [tx, tz] of corners) {
+            if (fx === tx && fz === tz) continue;
+            expect(
+              query.findPath(fx, fz, tx, tz, 1, out),
+              `${fx},${fz} to ${tx},${tz}`,
+            ).toBeGreaterThan(1);
+          }
+        }
+      });
+    }
+  }
+});
+
 describe('a destination that cannot be reached', () => {
   it('reports failure rather than a partial path presented as complete', () => {
     const query = new NavMeshQuery(meshOf(['....#....', '....#....', '....#....']));

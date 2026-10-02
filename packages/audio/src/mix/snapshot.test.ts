@@ -17,7 +17,7 @@ test('a recall restores levels, mutes and sends', () => {
   music.setMute(true);
   music.send(reverb, 0.8);
 
-  mix.recall('dry');
+  expect(mix.recall('dry')).toBe(true);
   expect(music.level).toBeCloseTo(0.9, 6);
   expect(music.muted).toBe(false);
   expect(music.sendAmount(reverb)).toBeCloseTo(0.1, 6);
@@ -44,6 +44,6 @@ test('recalling a name nothing was captured under does nothing at all', () => {
   const mix = build();
   const music = mix.bus('music');
   music.setLevel(0.42);
-  mix.recall('never-taken');
+  expect(mix.recall('never-taken')).toBe(false);
   expect(music.level).toBeCloseTo(0.42, 6);
 });

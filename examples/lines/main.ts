@@ -16,25 +16,37 @@
 import { MeshBuilder, SceneNode, createLineSegments, setPolyline } from '@driftengine/core';
 import { DAYLIGHT, controls, flagNumber, openStage } from '../common/stage';
 
-const softness = flagNumber('softness', 0);
-const width = flagNumber('width', 0.06);
+/** Both are per-draw values, so the switches change the next frame's stroke. */
+let softness = flagNumber('softness', 0);
+let width = flagNumber('width', 0.06);
 
 const stage = await openStage({ directionalShadows: true });
 
 controls([
   {
+    key: 'softness',
     label: 'softness',
+    value: String(softness),
     options: [
-      { text: 'crisp', query: `softness=0&width=${width}` },
-      { text: 'feathered', query: `softness=0.8&width=${width}` },
+      { text: 'crisp', value: '0' },
+      { text: 'feathered', value: '0.8' },
     ],
+    change: (value) => {
+      softness = Number(value);
+    },
   },
   {
+    key: 'width',
     label: 'width',
+    value: String(width),
     options: [
-      { text: 'thin', query: `softness=${softness}&width=0.03` },
-      { text: 'thick', query: `softness=${softness}&width=0.12` },
+      { text: 'thin', value: '0.03' },
+      { text: 'medium', value: '0.06' },
+      { text: 'thick', value: '0.12' },
     ],
+    change: (value) => {
+      width = Number(value);
+    },
   },
 ]);
 
@@ -45,11 +57,13 @@ const ground = stage.renderer.createMesh(slab.build());
 const still = new SceneNode();
 still.updateWorld();
 
+// #region buffer
 /** One stroke of 220 segments, allocated once. `capacity` is segments, not points. */
 const POINTS = 221;
 const segments = createLineSegments(POINTS - 1);
 const batch = stage.renderer.createLines(POINTS - 1, 'example-trail');
 const path = new Float32Array(POINTS * 3);
+// #endregion
 
 stage.camera.position[0] = 6.5;
 stage.camera.position[1] = 4.6;
@@ -73,6 +87,7 @@ stage.run({
       path[i * 3 + 1] = 1.4 + Math.sin(t * 2 + seconds * 0.9) * 0.9;
       path[i * 3 + 2] = Math.cos(t * 2 + seconds * 0.5) * 3.4;
     }
+    // #region draw
     segments.count = setPolyline(segments, path, POINTS);
 
     stage.renderer.beginFrame([0.05, 0.06, 0.09]);
@@ -88,8 +103,10 @@ stage.run({
       width,
       1,
       softness,
-      0.5,
+      /* The floor: at least two millimetres of half-width per metre away, about a pixel. */
+      0.002,
     );
+    // #endregion
     stage.renderer.endFrame();
   },
 });

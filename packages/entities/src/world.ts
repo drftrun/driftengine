@@ -110,6 +110,22 @@ export class World implements CursorHost {
     return this.entities.destroy(entity);
   }
 
+  /** How many entities carry a component. */
+  count(type: ComponentType): number {
+    return this.store(type).size;
+  }
+
+  /**
+   * The entity at `index` among those carrying a component, or `-1` past the end.
+   *
+   * The order is the store's: insertion, modified by swap-removal, so it is a walk and not an
+   * identity, and an index held across a removal names a different entity.
+   */
+  at(type: ComponentType, index: number): Entity {
+    const store = this.store(type);
+    return index >= 0 && index < store.size ? (store.dense[index] as number) : -1;
+  }
+
   /** The store for a component type, made on first ask. */
   store(type: ComponentType): ComponentStore {
     const existing = this.stores.get(type.id);

@@ -16,6 +16,14 @@
  * approach and the bug behind a constant, which is the design rather than the
  * interface, and while the engine is closed the design is what does not ship.
  *
+ * **The whole comment ships now, beside the summary (2026-10-01).** The engine is published
+ * under Apache-2.0 with its source, so the reason above has gone, and a reference that stops at
+ * one paragraph is the thin page a reader leaves for the source. `docs-api-detail.mjs` adds each
+ * symbol's full comment, its parameters with their `@param` text, and its members, read from the
+ * same declaration output. The summary stays the first paragraph, because a page listing symbols
+ * still wants one line each; what is published past it is the declaration file's comment, and no
+ * implementation is in a declaration file.
+ *
  * Lives in this repository rather than in whatever renders it, because a barrel
  * change and its documentation should move in the same commit. A generator in
  * another repository is a generator that goes stale on a Friday.
@@ -48,6 +56,8 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { describeDeclarations } from './docs-api-detail.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -209,6 +219,52 @@ export function parseDeclarations(source) {
   return out;
 }
 
+/**
+ * A string literal type longer than a line is a leak, whatever it is attached to.
+ *
+ * The same control `parseDeclarations` applies to a `const`, extended to members and parameters:
+ * declaration emit gives a literal its literal type, so a member typed by a shader source would
+ * carry the whole source into the reference.
+ */
+function widenLiterals(text) {
+  return text.replace(/(:\s*)(["'`])((?:(?!\2)[\s\S]){61,})\2/g, '$1string');
+}
+
+/**
+ * A symbol with everything a reference page shows beyond its first line: the whole comment, its
+ * parameters with their `@param` text, overloads, and members with the same detail one level down.
+ */
+function withDetail(symbol, detail) {
+  if (detail === undefined) return symbol;
+  const parameters = (list, params) =>
+    list.map((parameter) => ({
+      ...parameter,
+      type: widenLiterals(`: ${parameter.type}`).slice(2),
+      doc: params[parameter.name] ?? '',
+    }));
+  return {
+    ...symbol,
+    doc: detail.doc.text,
+    returns: detail.doc.returns,
+    deprecated: detail.doc.deprecated,
+    parameters: parameters(detail.parameters, detail.doc.params),
+    overloads: detail.overloads.length > 1 ? detail.overloads.map(widenLiterals) : [],
+    members: detail.members.map((member) => ({
+      name: member.name,
+      kind: member.kind,
+      signature: widenLiterals(member.signature),
+      static: member.isStatic,
+      readonly: member.readonly,
+      optional: member.optional === true,
+      summary: summarise(member.doc.text),
+      doc: member.doc.text,
+      returns: member.doc.returns,
+      deprecated: member.doc.deprecated,
+      parameters: parameters(member.parameters, member.doc.params),
+    })),
+  };
+}
+
 /** The names the barrel re-exports, which is the whole of the public surface. */
 function barrelExports(indexDts) {
   const names = new Set();
@@ -323,10 +379,12 @@ export function buildApi({ root = ROOT } = {}) {
          * answer `core` for all of it and quietly merge five packages into core's own heading.
          */
         const area = pkg === 'core' ? groupFor(relative(file)) : pkg;
-        for (const [name, symbol] of parseDeclarations(readFileSync(file, 'utf8'))) {
+        const source = readFileSync(file, 'utf8');
+        const details = describeDeclarations(source);
+        for (const [name, symbol] of parseDeclarations(source)) {
           if (!wanted.has(name)) continue;
           if (!byArea.has(area)) byArea.set(area, new Map());
-          byArea.get(area).set(name, symbol);
+          byArea.get(area).set(name, withDetail(symbol, details.get(name)));
           found++;
         }
       }

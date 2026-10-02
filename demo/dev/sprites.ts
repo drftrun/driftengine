@@ -10,6 +10,11 @@
  *
  *     /sprites.html?order=1    the second sheet is submitted over the first
  *     /sprites.html?order=0    the other way round, and the overlap changes colour
+ *     /sprites.html?space=world   the same rectangles, placed in a 2D world whose y counts up
+ *
+ * **World space draws the same frame, byte for byte.** Each rectangle is placed through a world
+ * camera with y up, at the position that puts it on the same CSS pixels, so a picture that came
+ * out upside down there, or a tilemap whose rows ran the wrong way, is a different frame.
  *
  * **The control is the pair.** Submission order is the whole layering rule of a 2D layer — there is
  * no depth here to fall back on — so a page that drew one order only would prove nothing about it.
@@ -34,6 +39,7 @@ import {
   gridSheet,
   screenToNdc,
   setTile,
+  worldToNdc,
 } from '../../packages/ui2d/src/index';
 import type { SpritePlacement } from '../../packages/ui2d/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
@@ -107,6 +113,7 @@ async function main(): Promise<void> {
   const asked = new URLSearchParams(location.search);
   const frames = Number(asked.get('frames') ?? '3');
   const overUnder = asked.get('order') !== '0';
+  const world = asked.get('space') === 'world';
 
   const created = await createRenderer(canvas, askedQuality(), DEV_RENDERER);
   await created.renderer.ready();
@@ -126,12 +133,24 @@ async function main(): Promise<void> {
   const sheet = gridSheet(0, 2, 2, 1, 1);
   const map = createTilemap(MAP_COLUMNS, MAP_ROWS, TILE, TILE);
   map.x = MAP_X;
-  map.y = MAP_Y;
+  map.y = world ? canvas.clientHeight - MAP_Y - MAP_ROWS * TILE : MAP_Y;
   for (let row = 0; row < MAP_ROWS; row++) {
+    /* In a world row 0 is the bottom, so the row counted from the top is the other end. */
+    const fromTop = world ? MAP_ROWS - 1 - row : row;
     for (let column = 0; column < MAP_COLUMNS; column++) {
-      setTile(map, column, row, (column + row) % 4);
+      setTile(map, column, row, (column + fromTop) % 4);
     }
   }
+  /*
+   * A rectangle in CSS pixels, placed where it lands on the same pixels in the space being drawn.
+   * In a world the corner is the bottom-left and y counts up from the bottom of the frame.
+   */
+  const height = canvas.clientHeight;
+  const place = (p: SpritePlacement): SpritePlacement =>
+    world ? { x: p.x, y: height - p.y - p.h, w: p.w, h: p.h } : p;
+  const view = world
+    ? { x: MAP_VIEW.x, y: height - MAP_VIEW.y - MAP_VIEW.h, w: MAP_VIEW.w, h: MAP_VIEW.h }
+    : MAP_VIEW;
 
   const affine = createAffine2D();
   const mirror = document.createElement('canvas');
@@ -213,17 +232,22 @@ async function main(): Promise<void> {
 
   function frame(): void {
     pass.reset();
-    pass.setTransform(screenToNdc(canvas.clientWidth, canvas.clientHeight, affine));
-    drawSprite(pass.batch, 0, AT_A, null, null);
-    drawSprite(pass.batch, 1, AT_B, null, null);
+    const width = canvas.clientWidth;
+    pass.setTransform(
+      world
+        ? worldToNdc({ x: width / 2, y: height / 2, zoom: 1 }, width, height, affine)
+        : screenToNdc(width, height, affine),
+    );
+    drawSprite(pass.batch, 0, place(AT_A), null, null);
+    drawSprite(pass.batch, 1, place(AT_B), null, null);
     if (overUnder) {
-      drawSprite(pass.batch, 0, AT_C, null, null);
-      drawSprite(pass.batch, 1, AT_D, null, null);
+      drawSprite(pass.batch, 0, place(AT_C), null, null);
+      drawSprite(pass.batch, 1, place(AT_D), null, null);
     } else {
-      drawSprite(pass.batch, 1, AT_D, null, null);
-      drawSprite(pass.batch, 0, AT_C, null, null);
+      drawSprite(pass.batch, 1, place(AT_D), null, null);
+      drawSprite(pass.batch, 0, place(AT_C), null, null);
     }
-    tilesDrawn = drawTilemap(pass.batch, map, sheet, MAP_VIEW, null);
+    tilesDrawn = drawTilemap(pass.batch, map, sheet, view, null);
     renderer.beginFrame(CLEAR);
     renderer.drawPass(handle);
     renderer.endFrame();

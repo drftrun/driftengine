@@ -1,0 +1,63 @@
+// The valley's rules: which ground is bare rock, where snow lies, where a tree can grow, and how the
+// camera flies over it all. Every rule asks the terrain, so each answers the ground that is drawn.
+//
+// Under `npm run examples`, change a number here and save: the page repaints the valley and replants
+// the forest with the new rules, and the flight carries on from where it was. Try letting trees
+// climb to 160 metres, or rock that starts on gentler slopes.
+
+import { heightAt, slopeAt } from "drift/terrain"
+import { clamp, cos, max, sin } from "std/math"
+
+data Flight {
+    // How far round its loop the camera is, in radians.
+    angle: f32 = 0
+    // Where it is now, and the point it looks at. The page reads these to place the camera.
+    x: f32 = 0
+    y: f32 = 80
+    z: f32 = 0
+    lookX: f32 = 0
+    lookY: f32 = 0
+    lookZ: f32 = 0
+}
+
+// #region paint
+// How much of the ground at a place is bare rock, 0 to 1: none below a slope of 0.45 radians
+// (about 26 degrees), all of it from 0.7.
+fn rockiness(ground: Terrain, x: f32, z: f32) -> f32 {
+    return math.clamp((terrain.slopeAt(ground, x, z) - 0.45) / 0.25, 0, 1)
+}
+
+// How much is snow: it lies above 140 metres, fully by 170, and slides off the steepest faces.
+fn snowiness(ground: Terrain, x: f32, z: f32) -> f32 {
+    let high = math.clamp((terrain.heightAt(ground, x, z) - 140) / 30, 0, 1)
+    return high * (1 - rockiness(ground, x, z) * 0.8)
+}
+
+// Whether a tree can grow here: on gentle ground, above the river and below the tree line.
+fn grows(ground: Terrain, x: f32, z: f32) -> bool {
+    let height = terrain.heightAt(ground, x, z)
+    return terrain.slopeAt(ground, x, z) < 0.35 && height > 6 && height < 115
+}
+// #endregion
+
+// #region glide
+// One frame of flight round the valley. The camera holds its height above the ground ahead of it as
+// well as the ground beneath, so it climbs before a ridge arrives instead of on it.
+fn glide(flight: mut Flight, ground: Terrain, dt: f32) {
+    flight.angle = flight.angle + dt * 0.045
+    let radius = 300
+    flight.x = math.cos(flight.angle) * radius
+    flight.z = math.sin(flight.angle) * radius
+    let aheadX = math.cos(flight.angle + 0.25) * radius
+    let aheadZ = math.sin(flight.angle + 0.25) * radius
+    let floor = math.max(terrain.heightAt(ground, flight.x, flight.z),
+                         terrain.heightAt(ground, aheadX, aheadZ))
+    let wanted = floor + 45
+    // Ease toward it, so the flight rises and settles instead of following every bump.
+    flight.y = flight.y + (wanted - flight.y) * math.clamp(dt * 0.6, 0, 1)
+    // Look further along the loop, at the ground there.
+    flight.lookX = math.cos(flight.angle + 0.6) * radius
+    flight.lookZ = math.sin(flight.angle + 0.6) * radius
+    flight.lookY = terrain.heightAt(ground, flight.lookX, flight.lookZ)
+}
+// #endregion

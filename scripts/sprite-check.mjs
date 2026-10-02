@@ -57,14 +57,14 @@ function argOf(name, fallback) {
   return hit === undefined ? fallback : hit.slice(name.length + 3);
 }
 
-async function shoot(base, backend, order) {
+async function shoot(base, backend, order, space = 'screen') {
   const browser = await launch();
   try {
     const client = await connect(browser.port);
     /* Before anything is measured: a software rasteriser's figures are not this machine's. */
     await requireHardwareGpu(client);
     const page = await client.page(
-      `${base}/sprites.html?backend=${backend}&order=${order}&frames=3`,
+      `${base}/sprites.html?backend=${backend}&order=${order}&space=${space}&frames=3`,
       CSS_WIDTH,
       CSS_HEIGHT,
     );
@@ -106,7 +106,8 @@ for (const backend of ['webgl2', 'webgpu']) {
   console.log(`\n=== ${backend} ===`);
   const over = await shoot(base, backend, '1');
   const under = await shoot(base, backend, '0');
-  measured[backend] = { over, under };
+  const world = await shoot(base, backend, '1', 'world');
+  measured[backend] = { over, under, world };
 
   console.log(`      sheet A  : ${over.quadA.join(',')}`);
   console.log(`      sheet B  : ${over.quadB.join(',')}`);
@@ -185,6 +186,29 @@ for (const backend of ['webgl2', 'webgpu']) {
     `${backend}: the tiles outside the view are not drawn`,
     drewSprites && over.tilesDrawn === TILES_IN_VIEW && over.beyondView === 'black',
     `${over.tilesDrawn} drawn, beyond the view is ${over.beyondView}`,
+  );
+
+  /*
+   * **A 2D world draws the picture the right way up too.** The same rectangles placed through a
+   * world camera, where y counts up, on the same pixels. Checked only in screen space until
+   * 2026-10-02, and every sprite and tile in a world came out upside down: the frame's top row was
+   * read at the sprite's corner, which is the bottom of a world. A mirror is exactly what the
+   * quadrants catch, and the digest says the whole frame is the one screen space drew.
+   */
+  check(
+    `${backend}: in a 2D world, the texels land in the same corners`,
+    world.quadA.join(',') === SHEET_A.join(',') && world.quadB.join(',') === SHEET_B.join(','),
+    `${world.quadA.join(',')} and ${world.quadB.join(',')}`,
+  );
+  check(
+    `${backend}: and a tilemap's rows run up the world the way the picture does`,
+    world.tiles.join(',') === TOP_ROW.join(',') && world.beyondView === 'black',
+    `${world.tiles.join(',')}, beyond the view ${world.beyondView}`,
+  );
+  check(
+    `${backend}: a world camera draws the frame screen space draws, byte for byte`,
+    drewSprites && world.digest === over.digest,
+    `world ${world.digest} · screen ${over.digest}`,
   );
 
   /* The control and the claim together: order is the layering, and reversing it is visible. */

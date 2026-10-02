@@ -1,0 +1,47 @@
+// The figure's animation: how fast it is going, how that blends its idle, walk and run, and its
+// right hand reaching for the lantern when the lantern is close.
+//
+// Under `npm run examples`, change a rule and save: the figure moves by it from the next frame.
+// Try a slower change of pace, or reaching from further away.
+
+import { blendAt, blendSet, reach } from "drift/animation"
+import { clamp, sqrt } from "std/math"
+
+data Gait {
+    // The speed the switch asks for and the speed the figure is at, in metres a second.
+    wanted: f32 = 1.4
+    speed: f32 = 0
+    // Metres walked, which is the clock the walk and the run keep, so a foot does not slide.
+    travelled: f32 = 0
+    // Whether the hand may reach at all, and whether it reached on the last frame.
+    reaching: bool = true
+    reached: bool = false
+}
+
+// #region animate
+// One frame: ease the pace, sample the blend, and reach where the lantern is near.
+// The lantern's position is given in the figure's own frame, which is where its joints are.
+fn animate(gait: mut Gait, tree: Blend, skeleton: Skeleton, pose: Pose, at: f32, dt: f32,
+           lanternX: f32, lanternY: f32, lanternZ: f32) {
+    // A metre a second of change in pace a second, either way.
+    gait.speed = gait.speed + math.clamp(gait.wanted - gait.speed, 0 - dt, dt)
+    gait.travelled = gait.travelled + gait.speed * dt
+    animation.blendSet(tree, "speed", gait.speed)
+    // Each clip's time is distance: the walk plays at its own pace at 1.4 metres a second, the
+    // run at 4, so a foot stays where it was put whatever the pace.
+    animation.blendSet(tree, "walkClock", gait.travelled / 1.4)
+    animation.blendSet(tree, "runClock", gait.travelled / 4)
+    animation.blendAt(tree, at, pose)
+
+    // The right shoulder, elbow and hand are joints 8, 9 and 10. Reach within a metre and a half,
+    // elbow bending down and back.
+    let dx = lanternX + 0.2
+    let dy = lanternY - 1.6
+    let dz = lanternZ
+    let near = math.sqrt(dx * dx + dy * dy + dz * dz) < 1.5
+    gait.reached = false
+    if gait.reaching && near {
+        gait.reached = animation.reach(skeleton, pose, 8, 9, 10, lanternX, lanternY, lanternZ, -0.4, 0.8, -1)
+    }
+}
+// #endregion

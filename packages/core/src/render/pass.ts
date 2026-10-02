@@ -37,7 +37,8 @@ import type { FrameResource } from './frame/index.ts';
  */
 export type PassDevice = {
   /**
-   * Pre-multiply a projection by this **if your WGSL was generated from GLSL**. Identity on WebGL2.
+   * Pre-multiply a projection by this **if your WGSL was generated from GLSL**. On WebGL2 it is
+   * the depth remap while that context draws reversed depth, and the identity where it cannot.
    *
    * A contributed pass takes its camera from its caller, so it never sees the corrected matrix the
    * renderer built for its own verbs. Without this it would have to copy four numbers — and a
@@ -58,7 +59,8 @@ export type PassDevice = {
    */
   readonly clipCorrection: Float32Array;
   /**
-   * Pre-multiply a projection by this **if you wrote your WGSL by hand**. Identity on WebGL2.
+   * Pre-multiply a projection by this **if you wrote your WGSL by hand**. On WebGL2 it is the same
+   * matrix as `clipCorrection`.
    *
    * The same matrix without the Y negation, because there is no generated negation to cancel.
    * Taking `clipCorrection` in a hand-written shader mirrors the picture vertically — and mirrors

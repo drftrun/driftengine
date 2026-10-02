@@ -971,8 +971,23 @@ export const FLOORS = {
    * pairs inside each bucket. A kilobyte and a quarter for a tenth off every path an agent walks,
    * and the same answer as above about who pays: a separate export path when somebody minds.
    */
-  /* Re-measured 2026-10-01, 8 bytes under: drift through its imports, not this package. */
-  'nav-only': 8393,
+  /*
+   * Re-measured 2026-10-01, 8 bytes under: drift through its imports, not this package.
+   *
+   * **Raised to 8,778 on 2026-10-02, by walls: +385 bytes.** The voxeliser sampled surfaces at
+   * cell centres, which never meets a vertical face, so a building standing on the ground was a
+   * roof over open floor and a route went through it. Steep faces are now clipped to each cell
+   * they cross and stand in the column as solids, and erosion judges a neighbour at the span's own
+   * height. Every navigation mesh built from real geometry needs both, so there is no export path
+   * to put them behind.
+   *
+   * **Raised to 9,058 the same day, by shared borders: +280 bytes.** Each region's outline was
+   * simplified on its own, so a border two regions share came out as two lines that overlap
+   * nowhere, and a room the watershed split into regions had no route across it. Points where a
+   * border changes what it faces are now held in every outline through them and each stretch is
+   * simplified in one canonical direction.
+   */
+  'nav-only': 9058,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the

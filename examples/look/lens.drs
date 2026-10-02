@@ -1,0 +1,33 @@
+// The lens over the colonnade: where it focuses, how much a turning camera blurs, and the fade in
+// from black. The page owns the camera and calls `present` once a frame with how fast it turns.
+//
+// Under `npm run examples`, change a number in `present` and save: the page keeps running with
+// the new code. Try focusing at 6 metres, on the nearest columns. The record below is state the
+// page holds, so a reload of this file keeps it where it was.
+
+import { exposure, focus, motionBlur, veil } from "drift/render"
+import { clamp, max } from "std/math"
+
+data Lens {
+    // How much of the depth-of-field ceiling to take. The page's focus switch sets it.
+    focusing: f32 = 1
+    // How much of the motion-blur ceiling to take. The page's blur switch sets it.
+    blurring: f32 = 1
+    // Seconds of fade from black still to run.
+    fade: f32 = 2
+}
+
+// #region present
+fn present(lens: mut Lens, renderer: Renderer, turnRate: f32, dt: f32) {
+    render.exposure(renderer, 1.2)
+    // Focused on the figure 21 metres down the floor, with three metres sharp.
+    render.focus(renderer, 21, 3, lens.focusing)
+    // Blur only while the camera turns fast, in full at three radians a second: always on, it is a
+    // filter nobody reads as speed.
+    render.motionBlur(renderer, math.clamp(turnRate / 3, 0, 1) * lens.blurring)
+    if lens.fade > 0 {
+        lens.fade = math.max(lens.fade - dt, 0)
+        render.veil(renderer, 0, 0, 0, lens.fade / 2)
+    }
+}
+// #endregion

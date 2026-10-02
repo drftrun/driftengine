@@ -49,6 +49,16 @@ export const CHUNK_SIZE = 8;
  */
 const SOOT_EXTINCTION = 8700;
 
+/**
+ * Extinction per kilogram of droplets per cubic metre, m²/kg.
+ *
+ * The mass-specific extinction measured for smouldering-fire smoke, which is mostly liquid aerosol
+ * and scatters where soot absorbs: about half of flaming smoke's, per kilogram. One number for every
+ * droplet, which is right for tar condensing out of a smoulder, the aerosol this field was built
+ * for, and generous for coarse water droplets, which scatter less per kilogram.
+ */
+const AEROSOL_EXTINCTION = 4400;
+
 /** Koschmieder's constant: the contrast threshold that defines "can no longer see it". */
 const VISIBILITY_CONSTANT = 3.912;
 
@@ -657,15 +667,22 @@ export class AtmosphereField {
    * **The quantity `visibilityAt` is derived from**, and the one a consumer attenuating a light
    * along a ray actually needs: metres of visibility is one answer to it and `exp(−σ·d)` is another.
    * Exporting only the first would have every consumer inverting Koschmieder to get back here.
+   *
+   * **Soot and droplets both.** It counted soot alone, so a smoulder's smoke, which is droplets,
+   * hid nothing and was drawn at an alpha of about 1e-29 by `emitSmoke`: the pale half of smoke
+   * was in the field and nowhere on screen.
    */
   smokeDensityAt(x: number, y: number, z: number): number {
-    return (this.sootAt(x, y, z) / this.cellVolume) * SOOT_EXTINCTION;
+    return (
+      (this.sootAt(x, y, z) * SOOT_EXTINCTION + this.aerosolAt(x, y, z) * AEROSOL_EXTINCTION) /
+      this.cellVolume
+    );
   }
 
   /**
    * How far you can see, metres.
    *
-   * Koschmieder over the soot's extinction. Clamped at ten kilometres, past which the answer stops
+   * Koschmieder over the smoke's extinction, soot and droplets. Clamped at ten kilometres, past which the answer stops
    * being about the smoke.
    */
   visibilityAt(x: number, y: number, z: number): number {

@@ -1,0 +1,187 @@
+// The pond: flies wander over the water, frogs on the lily pads catch the ones that come near, and
+// new flies hatch to keep the number the pond is set to.
+//
+// Under `npm run examples`, change a rule and save: the pond runs by it from the next tick and
+// keeps every fly and frog it has. Try a longer reach, frogs that rest longer, or flies that keep low.
+
+import { alive, count, destroy, instantiate } from "drift/ecs"
+import { range } from "drift/random"
+import { atan2, clamp, cos, max, sin } from "std/math"
+
+// #region components
+component Position {
+    x: f32 = 0
+    y: f32 = 0
+    z: f32 = 0
+}
+
+component Velocity {
+    x: f32 = 0
+    y: f32 = 0
+    z: f32 = 0
+}
+
+// A fly, and its own seed and count of turns, which together pick its next heading.
+component Fly {
+    seed: u32 = 0
+    turns: u32 = 0
+}
+
+// A frog: how far its tongue reaches, whether it has its eye on a fly and which, how many it has
+// caught, how long before it can catch again, and how long its tongue stays out and where it went.
+component Frog {
+    reach: f32 = 2.5
+    aiming: bool = false
+    target: Entity
+    caught: u32 = 0
+    resting: f32 = 0
+    tongue: f32 = 0
+    tongueX: f32 = 0
+    tongueY: f32 = 0
+    tongueZ: f32 = 0
+}
+
+// The pond itself: how many flies it keeps, and how many have hatched.
+component Pond {
+    flies: u32 = 12
+    hatched: u32 = 0
+}
+// #endregion
+
+// #region prefabs
+// What a hatchling and a frog start as. Every value is a constant: where each goes is set after.
+prefab Hatchling {
+    Position { y: 1 }
+    Velocity {}
+    Fly {}
+}
+
+prefab Sitter {
+    Position {}
+    Frog { reach: 2.5 }
+}
+// #endregion
+
+// #region wander
+// A new heading for every fly twice a second, turning back toward the middle past six metres out.
+system Wander {
+    reads Position
+    writes Fly
+    writes Velocity
+
+    update at 2Hz {
+        for e in query<Fly, Velocity, Position>() {
+            e.Fly.turns = e.Fly.turns +% 1
+            let seed = e.Fly.seed +% e.Fly.turns *% 2654435761
+            var angle = random.range(seed, 0, 6.2831853)
+            if e.Position.x * e.Position.x + e.Position.z * e.Position.z > 36 {
+                angle = math.atan2(0 - e.Position.z, 0 - e.Position.x)
+            }
+            e.Velocity.x = math.cos(angle) * 1.2
+            e.Velocity.z = math.sin(angle) * 1.2
+            e.Velocity.y = random.range(seed +% 1, -0.4, 0.4)
+        }
+    }
+}
+// #endregion
+
+// #region move
+// Everything that has a velocity moves by it, a sixtieth of a second each fixed step.
+system Move {
+    reads Velocity
+    writes Position
+
+    update {
+        for e in query<Position, Velocity>() {
+            e.Position.x = e.Position.x + e.Velocity.x / 60
+            e.Position.y = math.clamp(e.Position.y + e.Velocity.y / 60, 0.4, 2)
+            e.Position.z = e.Position.z + e.Velocity.z / 60
+        }
+    }
+}
+// #endregion
+
+// #region hunt
+// Four times a second, each rested frog fixes on the nearest fly within its reach.
+system Hunt {
+    reads Fly
+    reads Position
+    writes Frog
+
+    update at 4Hz {
+        for frog in query<Frog, Position>() {
+            if frog.Frog.resting > 0 {
+                continue
+            }
+            var best = frog.Frog.reach * frog.Frog.reach
+            frog.Frog.aiming = false
+            for fly in query<Fly, Position>() {
+                let dx = fly.Position.x - frog.Position.x
+                let dy = fly.Position.y - frog.Position.y
+                let dz = fly.Position.z - frog.Position.z
+                let distance = dx * dx + dy * dy + dz * dz
+                if distance < best {
+                    best = distance
+                    frog.Frog.aiming = true
+                    frog.Frog.target = fly
+                }
+            }
+        }
+    }
+}
+// #endregion
+
+// #region catch
+// A frog with a fly in its eye catches it: out goes the tongue, and the fly is gone.
+system Catch {
+    reads Position
+    writes Frog
+
+    update {
+        for frog in query<Frog, Position>() {
+            frog.Frog.tongue = math.max(frog.Frog.tongue - 1 / 60, 0)
+            frog.Frog.resting = math.max(frog.Frog.resting - 1 / 60, 0)
+            if frog.Frog.aiming {
+                let fly = frog.Frog.target
+                if ecs.alive(world, fly) {
+                    frog.Frog.tongueX = fly.Position.x
+                    frog.Frog.tongueY = fly.Position.y
+                    frog.Frog.tongueZ = fly.Position.z
+                    frog.Frog.tongue = 0.2
+                    frog.Frog.resting = 4
+                    frog.Frog.caught = frog.Frog.caught + 1
+                    ecs.destroy(world, fly)
+                }
+                frog.Frog.aiming = false
+            }
+        }
+    }
+}
+// #endregion
+
+// #region hatch
+// Four times a second, while the pond has fewer flies than it keeps, one hatches over the water.
+// A hatchling is made with every component its prefab names, so the system declares all three: the
+// compiler sees the fields this body writes, and the schedule checks the components it adds.
+system Hatch {
+    writes Pond
+    writes Position
+    writes Velocity
+    writes Fly
+
+    update at 4Hz {
+        for pond in query<Pond>() {
+            if ecs.count(world, "Fly") < pond.Pond.flies {
+                pond.Pond.hatched = pond.Pond.hatched +% 1
+                let seed = pond.Pond.hatched *% 2246822519
+                let fly = ecs.instantiate(world, "Hatchling")
+                fly.Position.x = random.range(seed, -5, 5)
+                fly.Position.z = random.range(seed +% 1, -5, 5)
+                // Hatching from the water, it rises before it wanders.
+                fly.Velocity.y = 0.6
+                fly.Fly.seed = seed
+            }
+        }
+    }
+}
+// #endregion

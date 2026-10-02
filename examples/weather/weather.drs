@@ -1,0 +1,100 @@
+// The weather over the street: what each kind of sky does to the fog, the wet, the rain and the
+// wind, eased so a change of weather arrives instead of switching on, and when lightning strikes.
+//
+// The page's switch sets `kind`, and the page calls `advance` once a frame and draws what it says.
+// Under `npm run examples`, change a number here and save: the street keeps raining with the new
+// rules. Try a shorter gap between strikes, or a storm that dries the road.
+
+import { range } from "drift/random"
+import { clamp, max } from "std/math"
+
+data Weather {
+    // What the switch asked for: 0 clear, 1 rain, 2 storm.
+    kind: i32 = 1
+    // Where each quantity is now; each eases toward what the kind wants.
+    fog: f32 = 0.003
+    gloom: f32 = 0
+    wetness: f32 = 0
+    rain: f32 = 0
+    wind: f32 = 3
+    // Lightning: seconds to the next strike, how many there have been, and what is left of the flash.
+    nextStrike: f32 = 2
+    strikes: u32 = 0
+    flash: f32 = 0
+}
+
+// #region kinds
+// Each quantity, for each kind of sky.
+fn fogFor(kind: i32) -> f32 {
+    if kind == 2 {
+        return 0.014
+    }
+    if kind == 1 {
+        return 0.012
+    }
+    return 0.003
+}
+
+fn gloomFor(kind: i32) -> f32 {
+    if kind == 2 {
+        return 1
+    }
+    if kind == 1 {
+        return 0.3
+    }
+    return 0
+}
+
+fn rainFor(kind: i32) -> f32 {
+    if kind == 2 {
+        return 1
+    }
+    if kind == 1 {
+        return 0.6
+    }
+    return 0
+}
+
+fn windFor(kind: i32) -> f32 {
+    if kind == 2 {
+        return 9
+    }
+    return 3
+}
+
+// #endregion
+
+// Move a value toward a target by at most `rate` a second.
+fn toward(value: f32, target: f32, rate: f32, dt: f32) -> f32 {
+    return value + math.clamp(target - value, 0 - rate * dt, rate * dt)
+}
+
+// #region advance
+// One frame of weather. Answers whether lightning strikes on this one.
+fn advance(sky: mut Weather, dt: f32) -> bool {
+    sky.fog = toward(sky.fog, fogFor(sky.kind), 0.004, dt)
+    sky.gloom = toward(sky.gloom, gloomFor(sky.kind), 0.3, dt)
+    sky.rain = toward(sky.rain, rainFor(sky.kind), 0.4, dt)
+    sky.wind = toward(sky.wind, windFor(sky.kind), 2, dt)
+    // The road gets wet in seconds and dries over a minute.
+    if sky.rain > 0.05 {
+        sky.wetness = toward(sky.wetness, 1, 0.3, dt)
+    } else {
+        sky.wetness = toward(sky.wetness, 0, 0.02, dt)
+    }
+    sky.flash = math.max(sky.flash - dt * 4, 0)
+
+    if sky.kind != 2 {
+        return false
+    }
+    sky.nextStrike = sky.nextStrike - dt
+    if sky.nextStrike > 0 {
+        return false
+    }
+    // The gap to the next one comes from how many there have been, so a replay strikes alike.
+    sky.strikes = sky.strikes + 1
+    sky.nextStrike = random.range(sky.strikes, 2, 7)
+    sky.flash = 1
+    return true
+}
+// #endregion

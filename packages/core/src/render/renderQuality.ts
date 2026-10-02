@@ -604,10 +604,10 @@ export interface RenderQuality {
    * the output size with no upscaling, which is a temporal antialiaser with a better neighbourhood
    * rule than `temporalAa`'s. A sentinel that collided with it would make that unaskable.
    *
-   * The range is 1.3 to 2 and a value inside it is clamped to the end it is nearest. Below 1.3 the
-   * render saves less than a third of the fragment work and the resolve's own cost eats it; above 2
-   * the render is a quarter of the output and no reconstruction holds an edge through that. A
-   * negative number is off, not a clamp to the bottom: it cannot mean "a little".
+   * The range is 1.3 to 2 and a positive value outside it is clamped to the end it is nearest.
+   * Below 1.3 the render saves less than a third of the fragment work and the resolve's own cost
+   * eats it; above 2 the render is a quarter of the output and no reconstruction holds an edge
+   * through that. A negative number is off, not a clamp to the bottom: it cannot mean "a little".
    *
    * **What it needs from you.** A `createMover()` per moving object, passed with that object's
    * draws where `drawMesh` takes last frame's matrix — the renderer keeps last frame's model and,

@@ -1,0 +1,50 @@
+// The village's day: three villagers' routines advanced and watched, one of them held when the page
+// says so, and the crier told when the weather turns.
+//
+// Under `npm run examples`, change a rule and save: the village runs by it from the next frame and
+// everyone carries on from where they were. Try telling the crier about every errand finished, or
+// holding whoever is trading.
+
+import { doing, setPaused, tick } from "drift/behavior"
+import { wake } from "drift/ai"
+
+data Square {
+    // The weather now, and as it was last frame, so a change is noticed once.
+    raining: bool = false
+    wasRaining: bool = false
+    // Whether to hold the first villager where they are.
+    holdFirst: bool = false
+    // What the three are doing, counted from their routines.
+    sheltering: u32 = 0
+    trading: u32 = 0
+}
+
+// #region day
+// One frame of the village: every routine advanced, then asked what it is doing.
+fn day(square: mut Square, first: Behavior, second: Behavior, third: Behavior, crier: Agent) {
+    behavior.setPaused(first, square.holdFirst)
+    behavior.tick(first)
+    behavior.tick(second)
+    behavior.tick(third)
+
+    square.sheltering = count(first, "shelter") + count(second, "shelter") + count(third, "shelter")
+    square.trading = count(first, "trade") + count(second, "trade") + count(third, "trade")
+
+    // The crier hears about the weather once, when it changes.
+    if square.raining != square.wasRaining {
+        if square.raining {
+            ai.wake(crier, "it started raining", 5)
+        } else {
+            ai.wake(crier, "the rain stopped", 3)
+        }
+        square.wasRaining = square.raining
+    }
+}
+
+fn count(villager: Behavior, node: String) -> u32 {
+    if behavior.doing(villager, node) {
+        return 1
+    }
+    return 0
+}
+// #endregion

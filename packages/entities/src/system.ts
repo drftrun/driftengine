@@ -46,6 +46,18 @@ export interface SystemView {
   read(entity: Entity, type: ComponentType, field: string): unknown;
   write(entity: Entity, type: ComponentType, field: string, value: unknown): void;
   has(entity: Entity, type: ComponentType): boolean;
+  /**
+   * How many entities carry a component, and the one at an index among them; both reads, so both
+   * checked. A script's `ecs.count` and `ecs.at` reach these, and a view without them made each
+   * throw the moment a system called it.
+   */
+  count(type: ComponentType): number;
+  at(type: ComponentType, index: number): Entity;
+  /**
+   * Whether a handle names a live entity. It asks nothing of any component, so nothing is checked;
+   * an entity this system destroyed is still alive until the system returns.
+   */
+  alive(entity: Entity): boolean;
   create(): Entity;
   add(entity: Entity, type: ComponentType, values?: Readonly<Record<string, unknown>>): void;
   /** Deferred to after this system runs. See the header. */
@@ -145,6 +157,20 @@ export class BoundSystem implements SystemView {
   has(entity: Entity, type: ComponentType): boolean {
     this.requireReadable(type);
     return this.world.has(entity, type);
+  }
+
+  count(type: ComponentType): number {
+    this.requireReadable(type);
+    return this.world.count(type);
+  }
+
+  at(type: ComponentType, index: number): Entity {
+    this.requireReadable(type);
+    return this.world.at(type, index);
+  }
+
+  alive(entity: Entity): boolean {
+    return this.world.alive(entity);
   }
 
   create(): Entity {

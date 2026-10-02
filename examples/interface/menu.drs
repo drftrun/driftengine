@@ -1,0 +1,129 @@
+// The pause menu: routing the pointer and the keys to the tree, answering what was activated, and
+// painting each button from its own state. The page builds the tree and draws it; this decides what
+// it does.
+//
+// Under `npm run examples`, change a rule and save: the menu answers by it from the next frame. Try
+// arrow keys that wrap round, a button that says how many times it was pressed, or other colours.
+
+import { activated, focus, focused, hovered, key, layout, point, pressed, setText, show, tint } from "drift/ui"
+
+data Menu {
+    open: bool = true
+    inOptions: bool = false
+    spin: bool = true
+    shadows: bool = true
+    // Whether the page's theme is the light one, which the button colours follow.
+    light: bool = false
+    restarts: u32 = 0
+}
+
+// The keyboard starts on Resume, so the menu can be used without touching the mouse.
+fn begin(tree: UiTree) {
+    ui.focus(tree, "resume")
+}
+
+// #region route
+// Lay the tree out in the space it has, then give it the pointer and the key pressed this frame,
+// and answer whatever either of them activated. Arrow keys move the focus as Tab does.
+fn update(menu: mut Menu, tree: UiTree, width: f32, height: f32, px: f32, py: f32, down: bool, pressedKey: String) {
+    ui.layout(tree, 0, 0, width, height)
+    if pressedKey == "Escape" {
+        if menu.inOptions {
+            leaveOptions(menu, tree)
+        } else {
+            toggle(menu, tree)
+        }
+    }
+    if !menu.open {
+        return
+    }
+    ui.point(tree, px, py, down)
+    respond(menu, tree)
+    if pressedKey == "ArrowDown" {
+        ui.key(tree, "Tab", false)
+    } else if pressedKey == "ArrowUp" {
+        ui.key(tree, "Tab", true)
+    } else if pressedKey == "Enter" || pressedKey == " " || pressedKey == "Tab" {
+        ui.key(tree, pressedKey, false)
+    }
+    respond(menu, tree)
+    paint(menu, tree, "resume")
+    paint(menu, tree, "options")
+    paint(menu, tree, "restart")
+    paint(menu, tree, "spin")
+    paint(menu, tree, "shadows")
+    paint(menu, tree, "back")
+}
+// #endregion
+
+// #region respond
+fn respond(menu: mut Menu, tree: UiTree) {
+    if ui.activated(tree, "resume") {
+        toggle(menu, tree)
+    }
+    if ui.activated(tree, "options") {
+        menu.inOptions = true
+        ui.show(tree, "menu", false)
+        ui.show(tree, "optionsPanel", true)
+        ui.focus(tree, "spin")
+    }
+    if ui.activated(tree, "back") {
+        leaveOptions(menu, tree)
+    }
+    if ui.activated(tree, "restart") {
+        menu.restarts += 1
+    }
+    if ui.activated(tree, "spin") {
+        menu.spin = !menu.spin
+        label(tree, "spin", menu.spin, "SPIN  ON", "SPIN  OFF")
+    }
+    if ui.activated(tree, "shadows") {
+        menu.shadows = !menu.shadows
+        label(tree, "shadows", menu.shadows, "SHADOWS  ON", "SHADOWS  OFF")
+    }
+}
+// #endregion
+
+fn leaveOptions(menu: mut Menu, tree: UiTree) {
+    menu.inOptions = false
+    ui.show(tree, "optionsPanel", false)
+    ui.show(tree, "menu", true)
+    ui.focus(tree, "options")
+}
+
+fn toggle(menu: mut Menu, tree: UiTree) {
+    menu.open = !menu.open
+    ui.show(tree, "menu", menu.open && !menu.inOptions)
+    ui.show(tree, "optionsPanel", menu.open && menu.inOptions)
+    if menu.open {
+        ui.focus(tree, "resume")
+    }
+}
+
+fn label(tree: UiTree, name: String, on: bool, yes: String, no: String) {
+    if on {
+        ui.setText(tree, name, yes)
+    } else {
+        ui.setText(tree, name, no)
+    }
+}
+
+// #region paint
+// A button paints itself from its own state: held down, under the pointer or holding the keyboard,
+// or at rest, in the colours of the theme the page is showing.
+fn paint(menu: Menu, tree: UiTree, name: String) {
+    if ui.pressed(tree, name) {
+        ui.tint(tree, name, 0.9, 0.5, 0.25, 1)
+    } else if ui.hovered(tree, name) || ui.focused(tree, name) {
+        if menu.light {
+            ui.tint(tree, name, 0.95, 0.75, 0.45, 1)
+        } else {
+            ui.tint(tree, name, 0.85, 0.55, 0.3, 1)
+        }
+    } else if menu.light {
+        ui.tint(tree, name, 0.86, 0.87, 0.9, 1)
+    } else {
+        ui.tint(tree, name, 0.17, 0.19, 0.24, 1)
+    }
+}
+// #endregion

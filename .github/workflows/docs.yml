@@ -6,6 +6,11 @@
 # `packages.test.mjs` holds the package table in `README.md` against the directory it describes. A
 # markdown-only commit can break either, and nothing else.
 #
+# **A third reads the manual.** `manual.test.mjs` holds `docs/manual/` against its manifest, every
+# block of TypeScript in it against the example region it quotes, every name it mentions against the
+# barrels, and every capability row and every package against a page. A chapter is markdown, so a
+# chapter-only push arrives here and not at `test.yml`.
+#
 # **It installs now, and the paragraph that stood here said it never would.** Until the language
 # became a published dependency, both suites imported nothing outside `node:`, so this job was a
 # checkout, a Node and four hundred milliseconds, and installing looked like it would cost more than
@@ -57,4 +62,4 @@ jobs:
         run: npm ci
 
       - name: Documentation guards
-        run: node --test scripts/docs.test.mjs scripts/packages.test.mjs
+        run: node --test scripts/docs.test.mjs scripts/packages.test.mjs scripts/manual.test.mjs

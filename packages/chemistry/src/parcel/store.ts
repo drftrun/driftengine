@@ -916,6 +916,19 @@ export class ParcelStore {
   }
 
   /**
+   * Whether this parcel's substance can hold liquid water, which is what `wet` asks of it.
+   *
+   * A caller pouring rain over everything asks first: `wet` refuses a material with no water in its
+   * model, and refusing is right, but a loop over every parcel in the rain had no way to tell an
+   * iron nail from a log before it was told.
+   */
+  wettable(parcel: number): boolean {
+    const water = this.species.indexOf('H2O(l)');
+    const substance = this.substance[this.check(parcel)] as number;
+    return water >= 0 && this.substances.localSlotOf(substance, water) >= 0;
+  }
+
+  /**
    * Pour water on it: liquid water into the surface shell, where the boiling reaction will find it.
    *
    * **Not a flag, and that is the whole point.** The heat sink `§12` describes is the same

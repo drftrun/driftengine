@@ -1,0 +1,64 @@
+// The director: which shot to cut to, from what the buggy is doing. The page holds the shots and
+// makes the cut, because a script cannot build a shot's record yet, so this answers with a number.
+//
+// Under `npm run examples`, change a rule and save: the next cut follows it. Try holding shots
+// longer, an orbit on every landing, or a director who never leaves the chase.
+
+import { shotAge } from "drift/camera"
+
+// The shots the page holds, by their place in its list.
+let CHASE: i32 = 0
+let LOW_WIDE: i32 = 1
+let ORBIT: i32 = 2
+let FLYBY: i32 = 3
+let OVERHEAD: i32 = 4
+let LOOK_AT: i32 = 5
+
+data Director {
+    shot: i32 = 0
+    cuts: u32 = 0
+    // Whether the buggy was in the air last tick, so a take-off and a landing are each one moment.
+    flying: bool = false
+    // The least a shot holds, so the edit breathes, and the most before it moves on.
+    least: f32 = 2
+    most: f32 = 5
+}
+
+// #region direct
+// A take-off cuts at once, across the line of travel and low, the shot that sells a gap; a landing
+// cuts to an orbit round it. Otherwise a shot holds its time, the tower is framed when the buggy
+// passes it, and a long shot gives way to the next in turn.
+fn direct(director: mut Director, cam: Camera, airborne: bool, nearTower: bool) -> i32 {
+    let age = camera.shotAge(cam)
+    var want = director.shot
+    if airborne && !director.flying {
+        want = LOW_WIDE
+    } else if !airborne && director.flying {
+        want = ORBIT
+    } else if age < director.least {
+        want = director.shot
+    } else if nearTower && director.shot != LOOK_AT {
+        want = LOOK_AT
+    } else if age > director.most {
+        want = next(director.shot)
+    }
+    director.flying = airborne
+    if want == director.shot {
+        return -1
+    }
+    director.shot = want
+    director.cuts += 1
+    return want
+}
+// #endregion
+
+// The running order when nothing else calls for a cut.
+fn next(shot: i32) -> i32 {
+    if shot == CHASE {
+        return FLYBY
+    }
+    if shot == FLYBY {
+        return OVERHEAD
+    }
+    return CHASE
+}

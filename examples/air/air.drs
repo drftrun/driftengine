@@ -1,0 +1,26 @@
+// The air in the room: how much of it there is, and how it scatters the sun from the window.
+// The page's switch says what it wants; this eases the room toward it, so the air fills and clears
+// instead of appearing.
+//
+// Under `npm run examples`, change a number in `breathe` and save: the page keeps running with the
+// new air. Try a density of 0.08 for smoke, or an albedo of 0.3 for soot that swallows the light.
+
+import { medium } from "drift/render"
+import { clamp } from "std/math"
+
+data Air {
+    // What the switch asked for: 1 for air, 0 for none.
+    wanted: f32 = 0
+    // How much of it the room holds now.
+    present: f32 = 0
+}
+
+// #region breathe
+fn breathe(air: mut Air, renderer: Renderer, dt: f32) {
+    // Half of the change a second, either way.
+    air.present = air.present + math.clamp(air.wanted - air.present, 0 - dt * 0.5, dt * 0.5)
+    // Extinction per metre, how much of it comes back as light, how far forward it scatters, and
+    // how far the march looks. A density of 0 is no air at all, and costs nothing.
+    render.medium(renderer, 0.035 * air.present, 0.9, 0.6, 40)
+}
+// #endregion

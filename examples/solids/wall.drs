@@ -1,0 +1,26 @@
+// How the wall's windows are laid out: how many to a row, and how big each row's are. The page cuts
+// that many openings out of the wall with a boolean, row by row.
+//
+// Under `npm run examples`, change a rule and save: the page cuts the wall again. Try wider
+// windows, or more of them to a row.
+
+import { max, min } from "std/math"
+
+// #region windows
+// Openings across one row: all of them while there are few, ten at most.
+fn perRow(openings: u32) -> u32 {
+    if openings < 10 {
+        return openings
+    }
+    return 10
+}
+
+// Tall windows at the bottom, squarer toward the top.
+fn windowHeight(row: u32) -> f32 {
+    return math.max(2.2 - 0.3 * f32.nearest(row), 1.0)
+}
+
+fn windowWidth(row: u32) -> f32 {
+    return math.min(1.0 + 0.1 * f32.nearest(row), 1.4)
+}
+// #endregion

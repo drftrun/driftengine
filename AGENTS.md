@@ -8,7 +8,7 @@ engine code**.
 absent row. `docs/ROADMAP.md` says in what order the remaining gaps close. `docs/HANDBOOK.md` is
 the handbook for working with imported models.
 
-**`examples/` is where to start when writing code against the engine** — six small runnable
+**`examples/` is where to start when writing code against the engine** — small runnable
 programs, one capability each, served by `npm run examples`. See "Start from an example" below for
 which one answers which question, and for two traps that read as engine bugs and are not.
 
@@ -381,17 +381,58 @@ There is no `engine/` directory level: this repository _is_ the engine.
 ## Start from an example, not from the demos
 
 **When writing code against the engine — or answering a question about how to use it — read
-`examples/` first.** Six small programs, one subject each, all typechecked by `npm run typecheck` and
+`examples/` first.** Small programs, one subject each, all typechecked by `npm run typecheck` and
 served by `npm run examples`.
 
-| Want                                             | Read                                                              |
-| ------------------------------------------------ | ----------------------------------------------------------------- |
-| The shape of any program at all                  | `examples/starter/` — canvas, renderer, fixed-step loop, one mesh |
-| A complete game loop with state, input and a HUD | `examples/game-2d/`                                               |
-| Ambient occlusion, bloom, tone mapping           | `examples/postprocess/`                                           |
-| Multisampling                                    | `examples/antialiasing/`                                          |
-| Screen-space panels and text                     | `examples/overlay-text/`                                          |
-| Strokes and polylines in the world               | `examples/lines/`                                                 |
+| Want                                                     | Read                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------- |
+| The shape of any program at all                          | `examples/starter/` — canvas, renderer, fixed-step loop, one mesh |
+| A complete game loop with state, input and a HUD         | `examples/game-2d/`                                               |
+| A complete 3D game: physics, a character, shadows, sound | `examples/first-game/`                                            |
+| Ambient occlusion, bloom, tone mapping                   | `examples/postprocess/`                                           |
+| Multisampling                                            | `examples/antialiasing/`                                          |
+| Screen-space panels and text                             | `examples/overlay-text/`                                          |
+| Strokes and polylines in the world                       | `examples/lines/`                                                 |
+| Image-based materials and the per-draw surface dials     | `examples/materials/`                                             |
+| Instanced batches that cull                              | `examples/instancing/`                                            |
+| Point lights, spots, area lights, profiles and cookies   | `examples/lights/`                                                |
+| Hundreds of fixed lights through DriftLight              | `examples/driftlight/`                                            |
+| Bounced light traced by DriftRay (WebGPU)                | `examples/driftray/`                                              |
+| Light shafts, plumes and the global medium               | `examples/air/`                                                   |
+| Sky, celestial clock and daylight palette                | `examples/sky/`                                                   |
+| Fog, wind, rain, lightning and wet puddles               | `examples/weather/`                                               |
+| Water, planar reflection and caustics                    | `examples/water/`                                                 |
+| Exposure, grading, depth of field, motion blur           | `examples/look/`                                                  |
+| Temporal reconstruction (WebGPU)                         | `examples/drifttr/`                                               |
+| The GPU-driven pipeline (WebGPU)                         | `examples/gpu-driven/`                                            |
+| Particle pools and materials                             | `examples/particles/`                                             |
+| Picking what is under the pointer                        | `examples/picking/`                                               |
+| Terrain, a clipmap and blended ground materials          | `examples/terrain/`                                               |
+| Cells that stream by prediction, and freezing            | `examples/streaming/`                                             |
+| Hierarchical detail for the regions of a world           | `examples/hlod/`                                                  |
+| A world built from a kit of pieces, and its assembly     | `examples/kit/`                                                   |
+| Solids and booleans for procedural geometry              | `examples/solids/`                                                |
+| Gaussian splat captures among meshes                     | `examples/splats/`                                                |
+| DriftTexture materials decoded on the device (WebGPU)    | `examples/drifttexture/`                                          |
+| Writable textures recorded for replay and rollback       | `examples/scorch/`                                                |
+| DriftCapture: a clip to a surface, a collider, entities  | `examples/capture/`                                               |
+| Rigid bodies, shapes and a world's fingerprint           | `examples/physics/`                                               |
+| Joints: hinges, motors, limits and breaking              | `examples/joints/`                                                |
+| Rays, sensors, contact events and kinematic bodies       | `examples/queries/`                                               |
+| A character controller on bodies and ground surfaces     | `examples/character/`                                             |
+| A raycast vehicle and its tyre curves                    | `examples/vehicle/`                                               |
+| Ragdolls from a skeleton, and cloth                      | `examples/ragdoll/`                                               |
+| Skeletons, blend trees, clocks and two-bone IK           | `examples/animation/`                                             |
+| Routes over a graph, and a navigation mesh from geometry | `examples/navigation/`                                            |
+| Components, systems and prefabs in DriftScript; rewinds  | `examples/entities/`                                              |
+| Chemistry: heat, phase changes, burning, smoke           | `examples/chemistry/`                                             |
+| Behaviour trees, and agent sessions with a floor         | `examples/agents/`                                                |
+| Importing models in a worker, and streaming a container  | `examples/models/`                                                |
+| A mix, placed sounds, rooms and the kick, in DriftScript | `examples/audio/`                                                 |
+| Every device through actions, rebinding, rumble, touch   | `examples/input/`                                                 |
+| A camera that cuts, cinematics as data, camera paths     | `examples/cinematic/`                                             |
+| Sprites, sheets, tilemaps and a 2D camera                | `examples/sprites/`                                               |
+| Menus as a tree: layout, focus, clipping, themes         | `examples/interface/`                                             |
 
 `demo/` is not a substitute. Those scenes exist to _prove_ something about the engine — a partition
 that prunes, a pass that contributes, a governor that holds a budget — and the smallest is a thousand

@@ -1,0 +1,32 @@
+// A laser turning on a post in the middle of the room, asking the world what it meets.
+//
+// Under `npm run examples`, change the speed or the reach and save: the beam carries on turning
+// from where it was, with the new rules.
+
+import { hitBody, hitFraction, raycast } from "drift/physics"
+import { cos, sin } from "std/math"
+
+data Laser {
+    // Radians round the post, and how far the beam reaches, in metres.
+    angle: f32 = 0
+    reach: f32 = 9
+    // What it met on the last tick: a body's index or -1, and how far away.
+    hit: i32 = -1
+    distance: f32 = 9
+}
+
+// #region scan
+fn scan(laser: mut Laser, world: PhysicsWorld, dt: f32) {
+    laser.angle = laser.angle + dt * 0.7
+    let dx = math.cos(laser.angle)
+    let dz = math.sin(laser.angle)
+    // From half a metre up the post, level, any layer.
+    if physics.raycast(world, 0, 0.5, 0, dx, 0, dz, laser.reach, -1) {
+        laser.hit = physics.hitBody(world)
+        laser.distance = physics.hitFraction(world) * laser.reach
+    } else {
+        laser.hit = -1
+        laser.distance = laser.reach
+    }
+}
+// #endregion

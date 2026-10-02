@@ -48,6 +48,77 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### A material's maps on a mesh with no texture coordinates are ignored, and nothing says so
+
+**Filed 2026-10-02.** `MeshBuilder` writes no texture coordinates unless `build({ planarUvs: true })`
+asks for them, and a mesh without them reads as "no surface texture" in the mesh pass, so
+`setMaterial` with an albedo, emissive or normal map draws it as if nothing were bound. Found when
+the chemistry example's burning logs never glowed: it bound a scale for an emissive map on meshes
+with no coordinates and no emission of their own, and the frame was identical, pixel for pixel, with
+and without it. The materials chapter now says how emission is made. What is open is the silence: a
+draw with maps bound on a mesh that cannot sample them wants saying once per mesh, in development,
+the way a refused draw elsewhere is said.
+
+### An interface tree's draw layers are honoured by nothing that draws or hit tests it
+
+**Filed 2026-10-02.** `UiNode.layer` is inherited and `layerOrder` sorts a tree by it, stably, for a
+dropdown that must cover the panel its control sits in. `drawUiTree` and `uiHitTest` walk tree order
+and read no layer, and no function draws in the order `layerOrder` gives, so a layered popup is drawn
+under a later sibling and the pointer reaches the sibling through it. Either `drawUiTree` and the hit
+test take the order, or a caller is handed a draw over a flat list; the first keeps one way to draw a
+tree.
+
+### Seventeen of chemistry's twenty-one event kinds are never raised
+
+**Filed 2026-10-02.** `ignition/events.ts` declares twenty-one kinds, the README advertised all of
+them and `drift/chemistry`'s `eventKind` lists them by number, and four are ever pushed: ignited,
+extinguished, and a smoulder starting and ending, all from `transport/world.ts`. Melted, boiled,
+frozen, condensed, sublimed, consumed, charred, structural failure, corroded, calcined, dissolved,
+denatured, browned, caramelised, fermented, decayed and exploded are names with nothing behind them.
+Found by a script that waited for a kettle to boil and an ice block to melt, and heard nothing while
+both did.
+
+**What each needs is a decision as much as a line of code.** A phase change is a gated reaction, so
+melting and boiling could be raised where a phase-change reaction first runs in a parcel, or where
+it exhausts its reactant, and those are different events to a game; the same question stands for
+the cooking kinds. Until it is decided, the README says which four fire, and a script reads a
+parcel's `phase` or its temperature, as the chemistry example's camp does.
+
+### An optional component field written from a query loop stores NaN
+
+**Filed 2026-10-02, against DriftScript 1.13.0.** A component may declare `target: Entity?`, and
+the store gives it a value column and a `target$present` column, which is how `@driftengine/entities`
+keeps an absence. Inside a query loop the compiler lowers `frog.Frog.target = found` to
+`view.target[i] = found`, where `found` is the runtime's option object: a `Float64Array` stores
+`NaN`, and the presence column is never written. Reading it back with `if let` sees no value either
+way, so a frog that found a fly never knew it. Nothing caught it because nothing writes one: the
+corpus declares `watching: Entity?` and never assigns it, and no test in either repository does.
+
+**The fix is the language's**: lower an option written into a component field to the value column
+and the presence column, and an option read from one to `some` or `none` by the presence. Until then
+a script keeps an absence as a `bool` beside the field, as the entities example's frogs do.
+
+### `drift/prefab` names its one function `spawn`, and `spawn` is a keyword
+
+**Filed 2026-10-02.** The language specifies `drift/prefab` with one function, `spawn(world,
+prefab)`, and `spawn` is the keyword that starts a task. An import list is parsed before anything
+looks a name up, so `import { spawn } from "drift/prefab"` stops at `spawn` with `DS0102`, and the
+namespace `prefab` is a keyword too. The engine had bound and implemented the module since Track M
+and no script could reach it; nothing noticed, because the target never listed the module either, so
+every attempt failed at the parser or the linker before the call. Found by writing the first script
+that wanted a prefab.
+
+**The engine side is done.** Making an entity from a prefab is `ecs.instantiate(world, prefab)` in
+`drift/ecs`, a name a script can write, and `drift/prefab` is no longer described, so the linker
+refuses it in words and the `driftscript-prefab` sentinel records why. `host.test.ts` now asserts
+every function the engine binds is a word a script can write in a call, and that every module it
+describes is one the target provides.
+
+**The fix belongs in the language**, as `drift/2d`'s did. Two shapes would close it: rename the
+specified function, `instantiate` or `make`, which costs nothing because no script has ever called
+it; or let a keyword stand as a member name after a dot and in an import list, the way a soft
+keyword already does. The first is smaller and is what this engine would ask for.
+
 ### The lit shader's `main` is stored once per permutation
 
 **What the shared WGSL did not reach.** `scripts/wgsl/share.mjs` stores every distinct top-level item

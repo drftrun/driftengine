@@ -224,6 +224,127 @@ describe('the agent radius', () => {
   }
 });
 
+/** A closed box, every face, as a modelling tool or `MeshBuilder.addBox` would emit it. */
+function box(cx: number, cy: number, cz: number, hx: number, hy: number, hz: number): NavGeometry {
+  const corners: number[] = [];
+  for (const y of [cy - hy, cy + hy]) {
+    for (const [x, z] of [
+      [cx - hx, cz - hz],
+      [cx + hx, cz - hz],
+      [cx + hx, cz + hz],
+      [cx - hx, cz + hz],
+    ] as const) {
+      corners.push(x, y, z);
+    }
+  }
+  /* Bottom 0-3, top 4-7; each face as two triangles. */
+  const faces = [
+    [0, 1, 2, 3],
+    [4, 7, 6, 5],
+    [0, 4, 5, 1],
+    [1, 5, 6, 2],
+    [2, 6, 7, 3],
+    [3, 7, 4, 0],
+  ];
+  return {
+    positions: new Float32Array(corners),
+    indices: new Uint32Array(faces.flatMap(([a, b, c, d]) => [a, b, c, a, c, d] as number[])),
+  };
+}
+
+/** Whether the column under a world position has a walkable span within a cell of `height`. */
+function walkableAt(
+  field: ReturnType<typeof voxeliseWalkable>,
+  x: number,
+  z: number,
+  height: number,
+): boolean {
+  const column = columnAt(field, x, z);
+  if (column < 0) return false;
+  const gx = column % field.width;
+  const gz = Math.floor(column / field.width);
+  for (let at = 0; at < spanCount(field, gx, gz); at += 1) {
+    if (!spanWalkable(field, gx, gz, at)) continue;
+    if (Math.abs(spanFloor(field, column, at) - height) <= field.cellHeight) return true;
+  }
+  return false;
+}
+
+/**
+ * **Something standing on the floor is in the way.** A wall is a vertical face, which covers no
+ * area seen from above, so sampling surfaces at cell centres never meets it: a building on the
+ * ground read as a roof over walkable floor, and a navigation mesh built around one walked straight
+ * through it. Steep faces are solids, rasterised over every cell they cross.
+ */
+describe('an obstacle on the floor', () => {
+  it('takes the floor under a box taller than the agent out of the mesh', () => {
+    const field = voxeliseWalkable(merge(plane(5, 0), box(0, 1.5, 0, 1.1, 1.5, 1.1)), SETTINGS);
+    for (const x of [-1.1, 1.1]) {
+      expect(walkableAt(field, x, 0, 0), `the floor under the face at x ${x}`).toBe(false);
+    }
+    expect(walkableAt(field, 1.6, 0, 0), 'the floor beside it, within the radius').toBe(false);
+    expect(walkableAt(field, 3.5, 0, 0), 'the floor well clear of it').toBe(true);
+  });
+
+  /**
+   * **The floor a closed box encloses stays walkable, cut off from everything outside.** A column
+   * inside the box meets the floor, the box's bottom and its top, and nothing in that says the
+   * space between is solid short of trusting every mesh's winding. Its walls are what make it
+   * unreachable: the region builder finds no way in, so no route from outside enters it.
+   */
+  it('leaves the floor a closed box encloses as an island inside its walls', () => {
+    const field = voxeliseWalkable(merge(plane(5, 0), box(0, 1.5, 0, 2.1, 1.5, 2.1)), SETTINGS);
+    expect(walkableAt(field, 0, 0, 0), 'the enclosed floor').toBe(true);
+    expect(walkableAt(field, 2.1, 0, 0), 'the ring of wall around it').toBe(false);
+  });
+
+  it('blocks with a wall that has no thickness and no top', () => {
+    const wall: NavGeometry = {
+      positions: new Float32Array([-5, 0, 0.1, 5, 0, 0.1, 5, 3, 0.1, -5, 3, 0.1]),
+      indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    };
+    const field = voxeliseWalkable(merge(plane(5, 0), wall), SETTINGS);
+    for (const x of [-2, 0, 2]) {
+      expect(walkableAt(field, x, 0.1, 0), `the floor under the wall at x ${x}`).toBe(false);
+      expect(walkableAt(field, x, 0.6, 0), `the floor beside it at x ${x}`).toBe(false);
+      expect(walkableAt(field, x, 2, 0), `the floor two metres from it at x ${x}`).toBe(true);
+    }
+  });
+
+  it('keeps the agent radius between the floor and the wall', () => {
+    const field = voxeliseWalkable(merge(plane(5, 0), box(0, 1.5, 0, 1.1, 1.5, 1.1)), {
+      ...SETTINGS,
+      agentRadius: 1,
+    });
+    /* The face at x = 1.1 is in the column from 1 to 1.5, then two cells make a metre's radius. */
+    expect(walkableAt(field, 1.75, 0, 0), 'within the radius of the face').toBe(false);
+    expect(walkableAt(field, 2.25, 0, 0), 'at the edge of the radius').toBe(false);
+    expect(walkableAt(field, 3.25, 0, 0), 'past it').toBe(true);
+  });
+
+  /**
+   * **Shorter than the agent is not the same as a step.** Judged by the agent's height, a basin
+   * 0.6 m high beside a 2 m agent was somewhere it could be, so the floor kept no margin and the
+   * basin's top touched it; the polygons are flat, so two edges touching is a portal, and a route
+   * went over the basin. The climb is what decides it, as it does for regions.
+   */
+  it('keeps the radius from a ledge higher than the agent can step', () => {
+    /* The face at x = 1.3 is in the cell from 1 to 1.5, whose centre stands on the ledge's top. */
+    const geometry = merge(plane(5, 0), box(0, 0.3, 0, 1.3, 0.3, 1.3));
+    const stepping = voxeliseWalkable(geometry, { ...SETTINGS, maxStep: 1 });
+    expect(walkableAt(stepping, 1.75, 0, 0), 'the floor beside a 0.6 m ledge').toBe(false);
+    expect(walkableAt(stepping, 1.25, 0, 0.6), 'the ledge beside the floor').toBe(false);
+    const climbing = voxeliseWalkable(geometry, { ...SETTINGS, maxStep: 4 });
+    expect(walkableAt(climbing, 1.75, 0, 0), 'the same floor when 0.8 m is a step').toBe(true);
+    expect(walkableAt(climbing, 1.25, 0, 0.6), 'and the same ledge').toBe(true);
+  });
+
+  it('leaves the top of a step the agent can stand on walkable', () => {
+    const field = voxeliseWalkable(merge(plane(5, 0), box(0, 1.5, 0, 2, 1.5, 2)), SETTINGS);
+    expect(walkableAt(field, 0, 0, 3), 'the middle of the roof').toBe(true);
+  });
+});
+
 describe('empty geometry', () => {
   it('is an empty field rather than a throw', () => {
     const field = voxeliseWalkable(

@@ -1,0 +1,23 @@
+// The cannon: every two and a half seconds it puts the ball back at the muzzle and fires it at the
+// wall, a little differently each shot. Which shot it is decides the aim, so a replay fires the
+// same shots in the same order.
+//
+// Under `npm run examples`, change the rules and save: the next shot follows them. Try firing
+// harder, or lobbing the ball over the wall.
+
+import { setPosition, setVelocity, wake } from "drift/physics"
+import { range } from "drift/random"
+
+// #region fire
+// Called every tick with the tick's number. Answers whether it fired on this one.
+fn fire(world: PhysicsWorld, ball: i32, tick: u32) -> bool {
+    if tick % 150 != 30 {
+        return false
+    }
+    let shot = tick / 150
+    physics.setPosition(world, ball, -14, 1.2, random.range(shot, -1.5, 1.5))
+    physics.setVelocity(world, ball, 30, random.range(shot + 1, 1, 4), random.range(shot + 2, -0.6, 0.6))
+    physics.wake(world, ball)
+    return true
+}
+// #endregion

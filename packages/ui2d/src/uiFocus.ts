@@ -18,6 +18,9 @@ import type { UiNode } from './uiNode.ts';
  */
 export function uiHitTest(root: UiNode, x: number, y: number): UiNode | null {
   if (root.hidden) return null;
+  /* A clipping node bounds its descendants here as it does in the picture: a row scrolled out of a
+     list is not under the pointer, whatever is drawn where it would have been. */
+  if (root.clip && !uiRectHolds(root, x, y)) return null;
   for (let i = root.children.length - 1; i >= 0; i -= 1) {
     const hit = uiHitTest(root.children[i] as UiNode, x, y);
     if (hit !== null) return hit;

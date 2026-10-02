@@ -1,10 +1,11 @@
 /**
  * `drift/audio` — what this engine lets a script do to sound.
  *
- * **Five capabilities: a slot, two ways to play it, and the two cheap positional helpers.** This
+ * **Nine capabilities: a slot, two ways to play it, the two cheap positional helpers, three dials on
+ * the mix, and the kick the music is making.** The first five are the original binding. This
  * header read "playback, placement, the mix, and the rhythm the music is doing" until 2026-08-27,
- * and three of those four were never here — there is no mix verb, no rhythm verb, no HRTF-panned
- * source, no listener and no reverb zone. The sentence was written from *Track G's* deliverables
+ * and three of those four were not here then — no mix verb, no rhythm verb, no HRTF-panned source,
+ * no listener and no reverb zone. The sentence was written from *Track G's* deliverables
  * rather than from the list beneath it, which is the same failure `drift/physics` had one file
  * over, and the same one the first `drift/camera` binding had: a comment describing what a
  * subsystem ought to expose rather than what this array does.
@@ -13,12 +14,18 @@
  * entries describing capabilities the engine already has, plus a map of implementations the host
  * supplies at link time. **No new engine code.**
  *
- * **What is missing, and why it is not guessed at here.** `MixConsole`, `AudioListenerGraph`,
- * `SpatialSource` and `ReverbZone` are four stateful objects with lifetimes, and a script-side
- * surface for them is a design about handles and ownership rather than a table entry — who disposes
- * a source, what happens to its probe slot, whether a zone outlives the script that made it.
- * `docs/CAPABILITIES.md` §4 records it. Taking that badly would put a leak in front of every script
- * author, which is worse than a surface they can see is absent.
+ * **The mix is bound as dials, by name.** `duck`, `fade` and `recall` move a bus or a snapshot the
+ * host already made, named by the string it was made under, and `pulse` reads a kick detector the
+ * host already runs. None of them hands a script an object, so none of them raises the question of
+ * who disposes it; a name nothing answers to is a `false`, never a silent success. The same rule
+ * `drift/render` follows: a dial is bound, and anything built from a table waits for a design.
+ *
+ * **What is missing, and why it is not guessed at here.** `AudioListenerGraph`, `SpatialSource` and
+ * `ReverbZone` are stateful objects with lifetimes, and a script-side surface for them is a design
+ * about handles and ownership rather than a table entry — who disposes a source, what happens to
+ * its probe slot, whether a zone outlives the script that made it. `docs/CAPABILITIES.md` §4
+ * records it. Taking that badly would put a leak in front of every script author, which is worse
+ * than a surface they can see is absent.
  *
  * Three constraints this surface inherits, none of them negotiable:
  *
@@ -33,7 +40,8 @@
  *   silence and reports success, which is the failure the language's no-implicit-null rule exists
  *   to prevent — and this is the first place in the engine where that rule earns its keep.
  */
-import { AudioGraph, SoundRegistry, distanceGain, stereoPan } from '@driftengine/audio';
+import { distanceGain, stereoPan } from '@driftengine/audio';
+import type { AudioGraph, KickDetector, SoundRegistry } from '@driftengine/audio';
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
 
 export const AUDIO_MODULE = 'drift/audio';
@@ -148,6 +156,62 @@ export const AUDIO_CAPABILITIES: readonly CapabilityDefinition[] = [
     'Where something sits in the stereo field, relative to a listener facing yaw.',
     'audio.stereoPan',
   ),
+  define(
+    'duck',
+    [
+      { name: 'bus', type: 'String' },
+      { name: 'factor', type: 'f32' },
+      { name: 'seconds', type: 'f32' },
+    ],
+    'bool',
+    ['audio.write'],
+    false,
+    'Take a bus down to factor of its fader over seconds, 1 to bring it back, leaving the fader ' +
+      'where the player set it. False when the mix has no bus of that name.',
+    'MixBus.duck',
+  ),
+  define(
+    'fade',
+    [
+      { name: 'bus', type: 'String' },
+      { name: 'level', type: 'f32' },
+      { name: 'seconds', type: 'f32' },
+    ],
+    'bool',
+    ['audio.write'],
+    false,
+    "Move a bus's fader to level over seconds. For a bus the game made: the music and effects " +
+      "faders are the player's, and duck is how a script goes over them. False when the mix has " +
+      'no bus of that name.',
+    'MixBus.fadeLevel',
+  ),
+  define(
+    'recall',
+    [
+      { name: 'snapshot', type: 'String' },
+      { name: 'seconds', type: 'f32' },
+    ],
+    'bool',
+    ['audio.write'],
+    false,
+    'Crossfade every level, mute and send to a snapshot the host captured, over seconds. False ' +
+      'when nothing was captured under that name.',
+    'MixConsole.recall',
+  ),
+  define(
+    'pulse',
+    [],
+    'f32',
+    /*
+     * Read from the music as it plays, so a replay hears whatever the speakers did: outside the
+     * determinism boundary for the same reason playing a sound is.
+     */
+    ['nondeterministic'],
+    false,
+    'How hard the music is kicking, 0 to 1, spiking on each kick and falling back. 0 when the ' +
+      'host runs no kick detector.',
+    'KickDetector.pulse',
+  ),
 ];
 
 /** How the runtime represents an option. Matches what the compiler generates for `some`/`none`. */
@@ -167,7 +231,9 @@ const none: Option<never> = { tag: 'none' };
 export function audioImplementation(
   graph: AudioGraph,
   registry: SoundRegistry,
+  kick: KickDetector | null = null,
 ): Record<string, unknown> {
+  const mix = graph.console;
   return {
     sound(slot: string): Option<AudioBuffer> {
       const buffer = registry.get(slot);
@@ -181,5 +247,21 @@ export function audioImplementation(
     },
     distanceGain,
     stereoPan,
+    duck(bus: string, factor: number, seconds: number): boolean {
+      const found = mix.find(bus);
+      found?.duck(factor, seconds);
+      return found !== undefined;
+    },
+    fade(bus: string, level: number, seconds: number): boolean {
+      const found = mix.find(bus);
+      found?.fadeLevel(level, seconds);
+      return found !== undefined;
+    },
+    recall(snapshot: string, seconds: number): boolean {
+      return mix.recall(snapshot, seconds);
+    },
+    pulse(): number {
+      return kick?.pulse ?? 0;
+    },
   };
 }

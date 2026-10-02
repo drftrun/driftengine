@@ -161,6 +161,52 @@ describe('building a ragdoll', () => {
   });
 });
 
+/**
+ * Hips at the root, and a spine and two thighs hanging off them: the rig the module's header says a
+ * humanoid usually is.
+ */
+function hips(): { parents: Int32Array; world: Float32Array } {
+  const at: [number, number, number][] = [
+    [0, 2, 0],
+    [0.05, 2.6, 0],
+    [0.15, 1.5, 0],
+    [-0.15, 1.5, 0],
+  ];
+  const parents = Int32Array.from([-1, 0, 0, 0]);
+  const world = new Float32Array(at.length * 16);
+  at.forEach(([x, y, z], j) => {
+    world.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1], j * 16);
+  });
+  return { parents, world };
+}
+
+describe('bones under a root with no bone of its own', () => {
+  it('are jointed to one another, so the doll is one piece', () => {
+    const world = ground();
+    const { parents, world: matrices } = hips();
+    const doll = ragdollFromBones(world, parents, matrices);
+    expect(doll.boneCount).toBe(3);
+    expect(world.joints.count, 'each thigh to the spine, head to head').toBe(2);
+  });
+
+  it('stay together through a fall, where unjointed they land apart', () => {
+    const world = ground();
+    const { parents, world: matrices } = hips();
+    const doll = ragdollFromBones(world, parents, matrices);
+    for (let j = 1; j < 4; j++)
+      world.setVelocity(doll.bodyOf[j] ?? 0, j === 1 ? 4 : -4, 0, j * 2 - 5);
+    run(world, 600);
+    const spine = doll.bodyOf[1] ?? 0;
+    for (const thigh of [doll.bodyOf[2] ?? 0, doll.bodyOf[3] ?? 0]) {
+      const dx = (world.bodies.posX[thigh] ?? 0) - (world.bodies.posX[spine] ?? 0);
+      const dy = (world.bodies.posY[thigh] ?? 0) - (world.bodies.posY[spine] ?? 0);
+      const dz = (world.bodies.posZ[thigh] ?? 0) - (world.bodies.posZ[spine] ?? 0);
+      // Half a spine and half a thigh from their shared head, with room for the joint's give.
+      expect(Math.sqrt(dx * dx + dy * dy + dz * dz)).toBeLessThan(1.0);
+    }
+  });
+});
+
 describe('a ragdoll in the world', () => {
   it('falls and comes to rest on the ground', () => {
     const world = ground();

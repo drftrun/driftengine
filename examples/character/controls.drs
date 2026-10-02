@@ -1,0 +1,42 @@
+// The controls: what the player's keys or stick ask the character to do, turned to face the way
+// the camera looks, and the walk the page takes when nobody is playing.
+//
+// Under `npm run examples`, change a rule and save: the next tick moves by it. Try a slower walk,
+// or jumping whenever the character is moving.
+
+import { axisX, axisY, down } from "drift/input"
+import { clamp, cos, sin, sqrt } from "std/math"
+
+data Wish {
+    // Metres a second along x and z, and whether jump is held.
+    x: f32 = 0
+    z: f32 = 0
+    jump: bool = false
+}
+
+// #region steer
+// The stick or the keys, turned by the camera's yaw so that up is away from the camera.
+fn steer(wish: mut Wish, actions: Actions, yaw: f32, speed: f32) {
+    let across = input.axisX(actions, "move")
+    let along = input.axisY(actions, "move")
+    wish.x = (math.cos(yaw) * across + math.sin(yaw) * along) * speed
+    wish.z = (math.cos(yaw) * along - math.sin(yaw) * across) * speed
+    wish.jump = input.down(actions, "jump")
+}
+// #endregion
+
+// Walk toward a point at a steady pace, slowing into it, and jump when told to.
+fn seek(wish: mut Wish, fromX: f32, fromZ: f32, toX: f32, toZ: f32, speed: f32, jump: bool) {
+    let dx = toX - fromX
+    let dz = toZ - fromZ
+    let distance = math.sqrt(dx * dx + dz * dz)
+    let pace = math.clamp(distance, 0, 1) * speed
+    if distance > 0.01 {
+        wish.x = dx / distance * pace
+        wish.z = dz / distance * pace
+    } else {
+        wish.x = 0
+        wish.z = 0
+    }
+    wish.jump = jump
+}

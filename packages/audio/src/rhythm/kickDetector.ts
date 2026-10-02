@@ -98,7 +98,7 @@ export class KickDetector {
    * **The one to drive a visual from, and `energy` is usually not.** `energy` is the raw sum of
    * the two lowest bands with a gain on it, which is honest about what it says and useless on
    * anything mastered loud: on a bass-heavy master it reaches its own ceiling and stays there,
-   * so a consumer reading it draws a constant. Measured on a phonk track through this detector:
+   * so a consumer reading it draws a constant. Measured on a bass-heavy track through this detector:
    * `energy` sat at 1.000 in every frame of a two-minute sample.
    *
    * This is the whitened signal the detector already computes for its own gating — the level

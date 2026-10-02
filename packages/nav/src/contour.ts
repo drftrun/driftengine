@@ -69,7 +69,7 @@ export function buildContours(
   regions: RegionField,
   maxDeviation: number,
 ): Contour[] {
-  const out: Contour[] = [];
+  const traced: { region: number; raw: Int32Array; bridges: number[] }[] = [];
   for (let region = 0; region < regions.count; region += 1) {
     const edges: Edge[] = [];
     for (let z = 0; z < field.depth; z += 1) {
@@ -105,10 +105,67 @@ export function buildContours(
      * fixes it exactly.
      */
     const bridged = bridgeHoles(loops);
-    const raw = Int32Array.from(bridged.loop);
-    out.push({ region, points: simplify(raw, maxDeviation, bridged.anchors), raw });
+    traced.push({ region, raw: Int32Array.from(bridged.loop), bridges: bridged.anchors });
   }
-  return out;
+
+  /*
+   * **A border two regions share has to come out of simplification the same from both sides.** A
+   * portal is where two polygons' edges overlap, and each region's outline was simplified on its
+   * own: a jagged border between two regions came out as two different lines, which overlap
+   * nowhere, and a room the watershed had split was islands with no route between them. On a 16 by
+   * 10 room with a pillar, simplified to 1.3, there were two regions and no path across.
+   *
+   * So the points where a border changes what it faces are held in every loop that passes through
+   * them, which makes each stretch between two held points one border with the same two ends from
+   * both sides; a bridge's ends are held everywhere for the same reason, since the region on the
+   * far side of a hole meets them too. Each stretch is simplified in one canonical direction, so
+   * both sides take the same points. And the halving that keeps a loop from crossing itself is
+   * applied to every region together, because a shared stretch simplified at two deviations is two
+   * lines again. One awkward region makes every outline finer, which costs vertices and nothing
+   * else.
+   */
+  const bridgeEnds = new Set<string>();
+  for (const { raw, bridges } of traced) {
+    for (const at of bridges) bridgeEnds.add(`${raw[at * 2]},${raw[at * 2 + 1]}`);
+  }
+  const held = traced.map(({ raw }) => {
+    const indices: number[] = [];
+    for (let at = 0; at < raw.length / 2; at += 1) {
+      const x = raw[at * 2] as number;
+      const z = raw[at * 2 + 1] as number;
+      if (bridgeEnds.has(`${x},${z}`) || isJunction(field, regions, x, z)) indices.push(at);
+    }
+    return indices;
+  });
+
+  for (let deviation = maxDeviation; deviation > 1e-4; deviation /= 2) {
+    const simplified = traced.map(({ raw }, at) => simplifyOnce(raw, deviation, held[at] ?? []));
+    if (simplified.some(contourSelfIntersects)) continue;
+    return traced.map(({ region, raw }, at) => ({
+      region,
+      points: simplified[at] as Int32Array,
+      raw,
+    }));
+  }
+  return traced.map(({ region, raw }) => ({ region, points: raw, raw }));
+}
+
+/**
+ * Whether three or more different things meet at a cell corner: regions, or regions and nothing.
+ *
+ * Where a region's boundary stops facing one thing and starts facing another, the corner has the
+ * region and both of those around it, and that is the only way three can meet. So this is exactly
+ * the set of points where some loop through the corner changes what it borders, decided from the
+ * field alone, which is what lets every loop through it agree.
+ */
+function isJunction(field: VoxelField, regions: RegionField, x: number, z: number): boolean {
+  const around = [
+    regionAtColumn(field, regions, x - 1, z - 1),
+    regionAtColumn(field, regions, x, z - 1),
+    regionAtColumn(field, regions, x - 1, z),
+    regionAtColumn(field, regions, x, z),
+  ];
+  return new Set(around).size >= 3;
 }
 
 /** One side of one cell, pointing so the region stays on the same hand throughout. */
@@ -495,44 +552,27 @@ function segmentsCross(
 }
 
 /**
- * Douglas–Peucker around a closed loop, halving the deviation until the result is simple.
+ * Douglas–Peucker around a closed loop, holding `held` and simplifying the stretches between.
  *
- * The raw boundary is a walk along cell edges and cannot cross itself, so the loop terminates at
- * something valid however hostile the shape. The halving is the honest version of "this usually
- * works": it costs a few extra passes on a shape that needs them and nothing at all on one that
- * does not.
+ * `buildContours` halves the deviation until no loop crosses itself. The raw boundary is a walk
+ * along cell edges and cannot cross itself, so that terminates at something valid however hostile
+ * the shape: it costs a few extra passes on a shape that needs them and nothing on one that does
+ * not.
  */
-function simplify(
-  raw: Int32Array,
-  maxDeviation: number,
-  anchors: readonly number[] = [],
-): Int32Array {
-  for (let deviation = maxDeviation; deviation > 1e-4; deviation /= 2) {
-    const candidate = simplifyOnce(raw, deviation, anchors);
-    if (!contourSelfIntersects(candidate)) return candidate;
-  }
-  return raw;
-}
-
-function simplifyOnce(
-  raw: Int32Array,
-  maxDeviation: number,
-  anchors: readonly number[],
-): Int32Array {
+function simplifyOnce(raw: Int32Array, maxDeviation: number, held: readonly number[]): Int32Array {
   const count = raw.length / 2;
   if (count < 4) return raw;
 
   const keep = new Uint8Array(count);
-  const bridged = anchors.length >= 2;
   let fixed: number[];
-  if (bridged) {
+  if (held.length > 0) {
     /*
-     * **A bridged loop's anchors are the bridge, and they are not negotiable.** Every chain between
-     * two of them is an ordinary open polyline Douglas–Peucker may do as it likes with; the anchors
-     * are what keep the two traversals of each bridge coincident, which is the whole of what makes
-     * the polygon weakly simple rather than self-overlapping.
+     * **Held points are a bridge or a change of neighbour, and they are not negotiable.** Every
+     * stretch between two of them is an open polyline Douglas–Peucker may do as it likes with; the
+     * held points are what keep the two traversals of each bridge coincident, and each shared
+     * border the same from both of its regions.
      */
-    fixed = [...anchors].sort((a, b) => a - b);
+    fixed = [...held];
   } else {
     /* Two anchors, so the loop becomes two open chains: the first point and the one furthest. */
     let far = 0;
@@ -554,13 +594,13 @@ function simplifyOnce(
   for (const at of fixed) keep[at] = 1;
   for (let at = 0; at < fixed.length; at += 1) {
     const from = fixed[at] as number;
-    const to = at + 1 < fixed.length ? (fixed[at + 1] as number) : count;
-    chain(raw, from, to, maxDeviation, keep);
+    const to = at + 1 < fixed.length ? (fixed[at + 1] as number) : (fixed[0] as number) + count;
+    stretch(raw, from, to, maxDeviation, keep);
   }
 
   /*
-   * **Only a *bridge* anchor is protected from the collinear pass, never the arbitrary pair.** The
-   * two anchors of an unbridged loop are wherever the trace happened to start and whatever was
+   * **Only a *held* point is protected from the collinear pass, never the arbitrary pair.** The two
+   * anchors of a loop with nothing held are wherever the trace happened to start and whatever was
    * furthest from it, so one is routinely a point in the middle of a straight edge — and
    * `dropCollinear` exists precisely to remove that, which is what keeps an L six-cornered.
    */
@@ -568,7 +608,7 @@ function simplifyOnce(
   const protectedOut: number[] = [];
   for (let at = 0; at < count; at += 1) {
     if (keep[at] !== 1) continue;
-    if (bridged && fixed.includes(at)) protectedOut.push(out.length / 2);
+    if (held.length > 0 && fixed.includes(at)) protectedOut.push(out.length / 2);
     out.push(raw[at * 2] as number, raw[at * 2 + 1] as number);
   }
   return dropCollinear(Int32Array.from(out), protectedOut);
@@ -607,8 +647,16 @@ function dropCollinear(points: Int32Array, protect: readonly number[] = []): Int
   return out.length >= 6 ? Int32Array.from(out) : points;
 }
 
-/** Mark the points of `raw[from..to]` that have to stay. `to` may be one past the end, meaning wrap. */
-function chain(
+/**
+ * Mark the points of `raw` from `from` to `to` that have to stay. `to` may pass the end, which
+ * wraps; `to` equal to `from` plus the loop's length is the whole loop from one held point.
+ *
+ * **Walked in one canonical direction, whichever way the loop runs**, so a border two regions
+ * share, which each traces the other way round, keeps the same points from both sides: the
+ * stretch runs from its lesser end to its greater, comparing x then z, and a stretch that starts
+ * and ends at one point runs toward the lesser of its two neighbours.
+ */
+function stretch(
   raw: Int32Array,
   from: number,
   to: number,
@@ -616,19 +664,50 @@ function chain(
   keep: Uint8Array,
 ): void {
   const count = raw.length / 2;
-  const endIndex = to % count;
   if (to - from < 2) return;
+  const order: number[] = [];
+  for (let at = from; at <= to; at += 1) order.push(at % count);
+  const last = order.length - 1;
+  const first = order[0] as number;
+  const end = order[last] as number;
+  const sameEnds = raw[first * 2] === raw[end * 2] && raw[first * 2 + 1] === raw[end * 2 + 1];
+  const backwards = sameEnds
+    ? lesser(raw, order[last - 1] as number, order[1] as number)
+    : lesser(raw, end, first);
+  if (backwards) order.reverse();
+  douglasPeucker(raw, order, 0, last, maxDeviation, keep);
+}
 
+/** Whether point `a` comes before point `b`, by x and then by z. */
+function lesser(raw: Int32Array, a: number, b: number): boolean {
+  const ax = raw[a * 2] as number;
+  const bx = raw[b * 2] as number;
+  return ax < bx || (ax === bx && (raw[a * 2 + 1] as number) < (raw[b * 2 + 1] as number));
+}
+
+/** Keep the furthest point of `order` between `lo` and `hi` while it is further than the bound. */
+function douglasPeucker(
+  raw: Int32Array,
+  order: readonly number[],
+  lo: number,
+  hi: number,
+  maxDeviation: number,
+  keep: Uint8Array,
+): void {
+  if (hi - lo < 2) return;
+  const a = order[lo] as number;
+  const b = order[hi] as number;
   let worst = -1;
   let worstAt = -1;
-  for (let at = from + 1; at < to; at += 1) {
+  for (let at = lo + 1; at < hi; at += 1) {
+    const point = order[at] as number;
     const d = distanceToSegment(
-      raw[at * 2] as number,
-      raw[at * 2 + 1] as number,
-      raw[from * 2] as number,
-      raw[from * 2 + 1] as number,
-      raw[endIndex * 2] as number,
-      raw[endIndex * 2 + 1] as number,
+      raw[point * 2] as number,
+      raw[point * 2 + 1] as number,
+      raw[a * 2] as number,
+      raw[a * 2 + 1] as number,
+      raw[b * 2] as number,
+      raw[b * 2 + 1] as number,
     );
     if (d > worst) {
       worst = d;
@@ -636,7 +715,7 @@ function chain(
     }
   }
   if (worst <= maxDeviation || worstAt < 0) return;
-  keep[worstAt] = 1;
-  chain(raw, from, worstAt, maxDeviation, keep);
-  chain(raw, worstAt, to, maxDeviation, keep);
+  keep[order[worstAt] as number] = 1;
+  douglasPeucker(raw, order, lo, worstAt, maxDeviation, keep);
+  douglasPeucker(raw, order, worstAt, hi, maxDeviation, keep);
 }

@@ -2,7 +2,7 @@
 
 A navigation mesh: geometry in, convex walkable polygons out, and a straight line across them.
 
-**8,393 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**9,058 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/nav-only.ts`. Optional — nothing in `@driftengine/core` imports it, so a game
 that does not path pays nothing.
 
@@ -36,6 +36,7 @@ const field = voxeliseWalkable(geometry, {
   maxSlope: 45,
   agentHeight: 2,
   agentRadius: 0.5,
+  maxStep: 1,
 });
 const regions = buildRegions(field, { minRegionSpans: 8, maxStep: 1 });
 const mesh = buildPolyMesh(buildContours(field, regions, 1.3), 6, field);
@@ -53,11 +54,28 @@ it has two components, and an agent that asks for the other side has to be told.
 - **Steering.** §6.5 of the design reverses the refusal of a navigation _mesh_, which is a function
   from geometry to a graph. What an agent does with a path stays a game's decision, and
   `ai/src/entities/context.ts`'s refusal is upheld on exactly that line.
-- **Holes.** `buildContours` takes a region's outer loop and drops any inner one, so a room with a
-  free-standing pillar becomes a room and an agent walks through the pillar. There is a test that
-  pins that behaviour rather than a comment that hopes about it. The fix is a bridge edge joining
-  the inner loop to the outer; until it is built, leave a gap between a pillar and the floor so the
-  watershed splits around it.
-- **Optimal paths.** The funnel gives the shortest path through the corridor A* chose, and the
-  corridor comes from polygon centres. On the wall in `query.test.ts` that is 10.75 against an ideal
-  9.81 — about a tenth, from the region split putting a portal corner a cell below the wall's foot.
+- **A closed box's inside.** A column inside a box meets the floor, the box's bottom and its top,
+  and nothing there says the space between is solid short of trusting every mesh's winding. So the
+  floor a closed box encloses stays walkable: an island inside the box's walls that no route from
+  outside reaches, but `nearestPoly` can still snap a point beside the box onto it. A test pins it.
+- **More than one layer of polygons.** The voxel field keeps both floors under a bridge, and the
+  regions keep them apart, but a contour follows the lowest walkable span in each column, so where
+  two floors overlap only the lower one becomes polygons.
+
+## Walls, pillars and the shortest way round
+
+- **A wall is a solid.** A face too steep to stand on is clipped to every cell it crosses and
+  stands in that column as a solid, so a building on the ground blocks, and so does a wall with no
+  thickness and no top. Erosion judges a neighbour at the span's own height, so the agent keeps its
+  radius from a wall even when the wall's top is walkable, and from a ledge higher than `maxStep`.
+  Give the voxeliser the same `maxStep` as `buildRegions`: the polygons are flat, so two edges that
+  touch are a portal whatever their heights, and erosion is what keeps a floor and a ledge apart.
+- **A shared border is one line.** A room the watershed splits is several regions, and a portal is
+  where two polygons' edges overlap. The points where a border changes what it faces are held in
+  every outline through them, and each stretch between is simplified the same way from both sides,
+  so the regions meet edge to edge at any deviation.
+- **A pillar is a hole.** A region's inner loops are bridged into its outline, so a path goes round
+  a free-standing pillar and no polygon claims the ground under it.
+- **A path is the shortest way round.** The search runs over portals, the overlaps between
+  neighbouring polygons' edges, so the corridor it hands the funnel holds the shortest path: 9.81
+  on the wall in `query.test.ts`, where a search over polygon centres gives 10.75.

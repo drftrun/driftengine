@@ -160,7 +160,14 @@ export function recordingGl(
          and a small answer is read as a device that cannot do the thing. */
       return 4096;
     },
-    getExtension: (name: unknown) => (extensions.has(String(name)) ? {} : null),
+    getExtension: (name: unknown) => {
+      if (!extensions.has(String(name))) return null;
+      /* Clip control is called as well as asked for, so its object has to carry the call. */
+      if (name === 'EXT_clip_control') {
+        return { LOWER_LEFT_EXT: 0x8ca1, ZERO_TO_ONE_EXT: 0x935f, clipControlEXT: () => undefined };
+      }
+      return {};
+    },
     getShaderParameter: () => true,
     /*
      * A shader remembers its own source, and a program remembers its fragment one, so a link can

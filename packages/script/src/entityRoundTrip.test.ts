@@ -50,8 +50,11 @@ const run = async (
   const module = loadModule(namespace);
   const world = new World();
   const registry = new Map();
-  const { systems } = registerEntityModule(module, registry, options.resources);
-  const bound = bindModule(module, { entities: { components: registry }, ...options.services });
+  const { systems, prefabs } = registerEntityModule(module, registry, options.resources);
+  const bound = bindModule(module, {
+    entities: { components: registry, prefabs: new Map(prefabs.map((p) => [p.name, p])) },
+    ...options.services,
+  });
   if (!bound.bound) throw new Error(bound.reason);
 
   return { world, systems, registry, module } as never;
@@ -522,5 +525,98 @@ system Watch {
     runSchedule(parts.world, schedule, 0);
 
     expect(parts.world.read(watcher, Alarm, 'level')).toBe(99);
+  });
+  /**
+   * **A script can make an entity from a prefab.** It was bound as `drift/prefab`'s `spawn`, and
+   * `spawn` is a keyword, so the import list refused it before anything else looked: no script in
+   * either repository ever called it. It is `ecs.instantiate` now, and this is the first call.
+   */
+  it('makes an entity from a prefab the same file declares', async () => {
+    const parts = (await run(`import { count, instantiate } from "drift/ecs"
+
+component Seed { x: f32 = 0  sown: u32 = 0 }
+component Soil { seeds: u32 = 3 }
+
+prefab Sprout {
+    Seed { x: 1 }
+}
+
+system Sow {
+    writes Soil
+    writes Seed
+
+    update {
+        for e in query<Soil>() {
+            if ecs.count(world, "Seed") < e.Soil.seeds {
+                let sprout = ecs.instantiate(world, "Sprout")
+                sprout.Seed.sown = ecs.count(world, "Seed")
+            }
+        }
+    }
+}
+`)) as unknown as {
+      world: World;
+      systems: Parameters<typeof buildSchedule>[0];
+      registry: Map<string, Parameters<World['add']>[1]>;
+    };
+
+    const Soil = parts.registry.get('Soil');
+    const Seed = parts.registry.get('Seed');
+    if (Soil === undefined || Seed === undefined) throw new Error('components not registered');
+    parts.world.add(parts.world.create(), Soil, { seeds: 3 });
+
+    const schedule = buildSchedule(parts.systems);
+    for (let tick = 0; tick < 5; tick += 1) runSchedule(parts.world, schedule, tick);
+
+    const sown: number[] = [];
+    for (const seed of parts.world.query(Seed)) {
+      expect(parts.world.read(seed, Seed, 'x'), 'the prefab’s value').toBe(1);
+      sown.push(parts.world.read(seed, Seed, 'sown') as number);
+    }
+    expect(sown, 'three, one a tick, each written after it was made').toEqual([1, 2, 3]);
+  });
+  /**
+   * **Inside a system, `world` is the view the schedule hands it, and that has to answer too.**
+   * `count`, `at` and `alive` reached for a store or a method only a bare `World` has, so each threw
+   * the moment a system called it and the schedule skipped the system every tick after. The same
+   * fault `findNearest` records at its own definition, left standing in its three neighbours.
+   */
+  it('counts, walks and asks after entities from inside a system', async () => {
+    const parts = (await run(`import { alive, at, count } from "drift/ecs"
+
+component Bird { wing: f32 = 0 }
+component Tally { birds: u32 = 0  firstLive: bool = false  wings: f32 = 0 }
+
+system Census {
+    reads Bird
+    writes Tally
+
+    update {
+        for e in query<Tally>() {
+            e.Tally.birds = ecs.count(world, "Bird")
+            let first = ecs.at(world, "Bird", 0)
+            e.Tally.firstLive = ecs.alive(world, first)
+            e.Tally.wings = first.Bird.wing
+        }
+    }
+}
+`)) as unknown as {
+      world: World;
+      systems: Parameters<typeof buildSchedule>[0];
+      registry: Map<string, Parameters<World['add']>[1]>;
+    };
+
+    const Bird = parts.registry.get('Bird');
+    const Tally = parts.registry.get('Tally');
+    if (Bird === undefined || Tally === undefined) throw new Error('components not registered');
+    for (const wing of [0.5, 0.6]) parts.world.add(parts.world.create(), Bird, { wing });
+    const tally = parts.world.create();
+    parts.world.add(tally, Tally, {});
+
+    runSchedule(parts.world, buildSchedule(parts.systems), 0);
+
+    expect(parts.world.read(tally, Tally, 'birds')).toBe(2);
+    expect(parts.world.read(tally, Tally, 'firstLive')).toBe(1);
+    expect(parts.world.read(tally, Tally, 'wings')).toBeCloseTo(0.5, 6);
   });
 });

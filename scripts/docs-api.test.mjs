@@ -149,3 +149,63 @@ test('a re-export block is still not mistaken for a declaration', () => {
   ].join('\n');
   assert.deepEqual([...parseDeclarations(source).keys()], []);
 });
+
+/*
+ * The detail a reference page shows: members, parameters and the whole comment, read from the
+ * same declaration output, so an implementation still cannot reach it.
+ */
+test('a class body is read one member at a time, and private members are left out', async () => {
+  const { describeDeclarations } = await import('./docs-api-detail.mjs');
+  const source = [
+    'export declare class Node {',
+    '    /** Where it is. */',
+    '    readonly position: Float32Array<ArrayBuffer>;',
+    '    private dirty;',
+    '    constructor(options?: {',
+    '        name: string;',
+    '    });',
+    '    /**',
+    '     * Move it.',
+    '     *',
+    '     * @param x Metres along x.',
+    '     */',
+    '    setPosition(x: number, y?: number): void;',
+    '    get moving(): boolean;',
+    '}',
+  ].join('\n');
+  const node = describeDeclarations(source).get('Node');
+  assert.deepEqual(
+    node.members.map((member) => [member.kind, member.name]),
+    [
+      ['property', 'position'],
+      ['constructor', 'constructor'],
+      ['method', 'setPosition'],
+      ['getter', 'moving'],
+    ],
+  );
+  const move = node.members[2];
+  assert.equal(move.doc.text, 'Move it.');
+  assert.equal(move.doc.params.x, 'Metres along x.');
+  assert.deepEqual(
+    move.parameters.map((p) => [p.name, p.type, p.optional]),
+    [
+      ['x', 'number', false],
+      ['y', 'number', true],
+    ],
+  );
+});
+
+test('a parameter list splits only at its own commas', async () => {
+  const { parametersOf } = await import('./docs-api-detail.mjs');
+  const params = parametersOf(
+    'function f<T extends (a: number) => void>(map: Map<string, [number, number]>, fn: (a: T, b: T) => void, ...rest: T[]): void',
+  );
+  assert.deepEqual(
+    params.map((p) => [p.name, p.type, p.rest]),
+    [
+      ['map', 'Map<string, [number, number]>', false],
+      ['fn', '(a: T, b: T) => void', false],
+      ['rest', 'T[]', true],
+    ],
+  );
+});
