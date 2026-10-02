@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { AXIS_X, AXIS_Y, AXIS_Z } from './collide/index.ts';
+import { AXIS_X, AXIS_Z } from './collide/index.ts';
 import type { Axis, Body } from './collide/index.ts';
 import { ColliderSet, boxCollider } from './colliderSet.ts';
 import {

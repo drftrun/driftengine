@@ -16,7 +16,12 @@
  * and a future inspector all read **one** description of a component, so there is no second one to
  * keep in sync.
  */
-export type { ComponentStoreOptions, ComponentType, StoreSnapshot } from './store.ts';
+export type {
+  ComponentDefault,
+  ComponentStoreOptions,
+  ComponentType,
+  StoreSnapshot,
+} from './store.ts';
 export { ComponentStore, createStoreSnapshot, defineComponent } from './store.ts';
 
 export type { ComponentView, ViewColumn } from './view.ts';

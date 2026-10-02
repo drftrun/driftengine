@@ -9,7 +9,7 @@
  *
  * Everything here is synthesised in the page. No asset, no request, nothing to go missing.
  *
- * Nothing on this page is engine API, and nothing under `packages/*​/src` may import it.
+ * Nothing on this page is engine API, and nothing under `packages/<name>/src` may import it.
  */
 import {
   MixConsole,

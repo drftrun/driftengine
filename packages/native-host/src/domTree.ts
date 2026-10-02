@@ -125,8 +125,8 @@ export class HostNode implements EventTarget {
   }
 
   dispatchEvent(event: Event): boolean {
-    const path: HostNode[] = [];
-    for (let node: HostNode | null = this; node !== null; node = node.parentNode) path.push(node);
+    const path: HostNode[] = [this];
+    for (let node = this.parentNode; node !== null; node = node.parentNode) path.push(node);
     const dispatch: Dispatch = {
       target: this,
       current: null,
@@ -212,4 +212,24 @@ export class HostNode implements EventTarget {
       if (dispatch.stoppedNow) return;
     }
   }
+}
+
+/**
+ * A base class whose instances carry an `on<type>` attribute for each type given.
+ *
+ * `handles` defines them on this base's prototype as accessors, and the type says so. A class body
+ * cannot declare one property per member of a union, and an interface merged into the class to say
+ * it is a merge the checker cannot hold to its initialisers. The cast below is the one place the two
+ * meet, and it is true by construction: the static block above it has just defined every attribute
+ * the type names.
+ */
+export function withHandlers<Types extends string>(
+  types: readonly Types[],
+): abstract new () => HostNode & Handlers<Types> {
+  abstract class Handled extends HostNode {
+    static {
+      HostNode.handles(this.prototype, types);
+    }
+  }
+  return Handled as unknown as abstract new () => HostNode & Handlers<Types>;
 }

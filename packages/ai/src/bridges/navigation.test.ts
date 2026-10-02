@@ -45,7 +45,7 @@ interface World {
   present: boolean;
 }
 
-function bridgeOver(world: World): {
+function bridgeOver(): {
   tools: readonly ToolDefinition<NavigateArgs, NavigateResult, World>[];
   navigate: ToolDefinition<NavigateArgs, NavigateResult, World>;
 } {
@@ -73,7 +73,7 @@ const FAR_END: NavigateArgs = { agentId: 'A17', x: 50, y: 0, z: 0 };
 
 describe('the navigation bridge', () => {
   it('registers one versioned tool and describes its arguments', () => {
-    const { navigate } = bridgeOver(world(true));
+    const { navigate } = bridgeOver();
     expect(navigate.id).toBe('navigate@1');
     expect(navigate.schema).toEqual({
       kind: 'object',
@@ -90,7 +90,7 @@ describe('the navigation bridge', () => {
 
   it('routes across the bridge and reports the distance', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     expect(navigate.admits(FAR_END, w)).toBe(true);
     const result = navigate.execute(FAR_END, w);
     expect(result.found).toBe(true);
@@ -107,7 +107,7 @@ describe('the navigation bridge', () => {
    */
   it('refuses a destination that stopped being reachable after the proposal', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     expect(navigate.admits(FAR_END, w)).toBe(true);
 
     w.graph = corridor(false);
@@ -122,7 +122,7 @@ describe('the navigation bridge', () => {
    */
   it('admits again when the route comes back', () => {
     const w = world(false);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     expect(navigate.admits(FAR_END, w)).toBe(false);
 
     w.graph = corridor(true);
@@ -139,7 +139,7 @@ describe('the navigation bridge', () => {
    */
   it('clears the route when it executes without one', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     navigate.execute(FAR_END, w);
     expect(w.path?.active).toBe(true);
 
@@ -151,14 +151,14 @@ describe('the navigation bridge', () => {
 
   it('refuses an agent the consumer cannot place', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     w.present = false;
     expect(navigate.admits(FAR_END, w)).toBe(false);
   });
 
   it('refuses an agent with no graph at all', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     w.graph = null;
     expect(navigate.admits(FAR_END, w)).toBe(false);
   });
@@ -199,7 +199,7 @@ describe('the navigation bridge', () => {
   /** Asking is the guard without the act, which is what a policy scoring a destination needs. */
   it('answers reachability without writing a route', () => {
     const w = world(true);
-    const { tools } = bridgeOver(w);
+    const { tools } = bridgeOver();
     expect(reachableBy(tools, FAR_END, w)).toBe(true);
     expect(w.path?.active).toBe(false);
 
@@ -214,7 +214,7 @@ describe('the navigation bridge', () => {
    */
   it('builds one search per graph and reuses it', () => {
     const w = world(true);
-    const { navigate } = bridgeOver(w);
+    const { navigate } = bridgeOver();
     const first = w.graph;
     for (let i = 0; i < 50; i++) expect(navigate.admits(FAR_END, w)).toBe(true);
     expect(w.graph).toBe(first);

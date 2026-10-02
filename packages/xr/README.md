@@ -1,13 +1,15 @@
 # @driftengine/xr
 
-WebXR sessions, stereo views, controller input and hand joints, over both backends.
+WebXR sessions, each eye's view and projection, controller input and hand joints, with a layer on
+either backend. **Drawing into a headset is not built yet**: see below.
 
 **A package and not part of core**, so a game that never enters a session carries none of it. It
 supplies views to a camera; nothing in core reaches back for a session.
 
 ```ts
 import { startLoop } from '@driftengine/core';
-import { aimCameraAtEye, enterXr, eyeViews, probeXrSupport } from '@driftengine/xr';
+import { aimCameraAtEye, enterXr, eyeViews } from '@driftengine/xr';
+import type { XrFrame } from '@driftengine/xr';
 
 // From a click. requestSession needs a user gesture and no wrapper can change that.
 const entered = await enterXr({ sources: { gl }, optionalFeatures: ['hand-tracking'] });
@@ -22,11 +24,10 @@ const stop = startLoop(
     simulate: (dt, tick) => world.step(dt, tick),
     render: (alpha, dt, wallDt, frame) => {
       const pose = (frame as XrFrame).getViewerPose(run.referenceSpace);
-      if (pose === null) return; // Tracking lost. Draw nothing rather than draw it wrong.
+      if (pose === null || pose === undefined) return; // Tracking lost.
       for (const eye of eyeViews(pose, run.layer.baseLayer)) {
         aimCameraAtEye(camera, eye);
-        renderer.setViewport(eye.viewport);
-        renderer.draw(scene, camera);
+        // Drawing `camera` into `eye.viewport` of the layer is the step the renderer lacks.
       }
     },
   },
@@ -35,6 +36,15 @@ const stop = startLoop(
 
 run.onEnd(stop);
 ```
+
+## Drawing into a headset is not built
+
+A session composites a layer: on WebGL2 the `XRWebGLLayer`'s framebuffer, one viewport an eye, and
+on WebGPU a texture an eye from the binding. Core's renderer draws into its own canvas and has no
+call that points a frame at either, and it does not hand out the WebGL2 context or GPU device that
+`sources` asks for. So a session can be entered and read, poses, controllers and hands included,
+and the headset shows nothing. `docs/IMPROVEMENTS.md` in the engine repository records what it
+would take.
 
 ## The camera is supplied, not configured
 

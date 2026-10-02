@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XR · DriftEngine example</title>
+    <link rel="stylesheet" href="../common/examples.css" />
+    <style>
+      /* What the browser answered, in its own words: a sentence is too long for the readout. */
+      #answer {
+        position: fixed;
+        top: 124px;
+        left: 14px;
+        max-width: min(60ch, calc(100vw - 28px));
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: #00000080;
+        line-height: 1.45;
+        pointer-events: none;
+      }
+      @media (max-width: 900px) {
+        #answer {
+          top: 112px;
+          max-width: 44vw;
+          font-size: 11px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <p id="backend">starting…</p>
+    <p id="answer"></p>
+    <a id="home" href="../">← all examples</a>
+    <nav id="controls"></nav>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

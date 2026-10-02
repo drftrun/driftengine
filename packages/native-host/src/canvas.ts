@@ -14,7 +14,7 @@
  */
 
 import { CanvasStyle } from './canvasStyle.ts';
-import { type Handlers, HostNode } from './domTree.ts';
+import { withHandlers } from './domTree.ts';
 import { INPUT_TYPES, type PageDocument } from './page.ts';
 import { PointerCapture } from './pointerCapture.ts';
 
@@ -23,10 +23,7 @@ const COPY_SRC = 0x01;
 const TEXTURE_BINDING = 0x04;
 const RENDER_ATTACHMENT = 0x10;
 
-/* The attributes `HostNode.handles` defines below, declared for the checker. */
-export interface NativeCanvas extends Handlers<(typeof INPUT_TYPES)[number]> {}
-
-export class NativeCanvas extends HostNode {
+export class NativeCanvas extends withHandlers(INPUT_TYPES) {
   /** The drawing buffer, in device pixels, which the engine sets. */
   width: number;
   height: number;
@@ -52,10 +49,6 @@ export class NativeCanvas extends HostNode {
    * reports −1 and `focus()` does nothing.
    */
   private focusIndex: number | null = null;
-
-  static {
-    HostNode.handles(NativeCanvas.prototype, INPUT_TYPES);
-  }
 
   constructor(width: number, height: number, pixelRatio = 1) {
     super();

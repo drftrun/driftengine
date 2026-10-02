@@ -433,6 +433,8 @@ served by `npm run examples`.
 | A camera that cuts, cinematics as data, camera paths     | `examples/cinematic/`                                             |
 | Sprites, sheets, tilemaps and a 2D camera                | `examples/sprites/`                                               |
 | Menus as a tree: layout, focus, clipping, themes         | `examples/interface/`                                             |
+| WebXR: probing, sessions, controllers and hands          | `examples/xr/`                                                    |
+| Saves, preferences, a remote store, worlds read back     | `examples/saves/`                                                 |
 
 `demo/` is not a substitute. Those scenes exist to _prove_ something about the engine — a partition
 that prunes, a pass that contributes, a governor that holds a budget — and the smallest is a thousand

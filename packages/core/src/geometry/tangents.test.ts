@@ -60,7 +60,8 @@ test('a tangent is perpendicular to its normal, even where the two disagree', ()
   const tilted = new Float32Array([0.6, 0, 0.8, 0.6, 0, 0.8, 0.6, 0, 0.8, 0.6, 0, 0.8]);
   const t = generateTangents(QUAD.positions, tilted, QUAD.uvs, QUAD.indices);
   for (let v = 0; v < 4; v += 1) {
-    const dot = (t[v * 4] ?? 0) * 0.6 + (t[v * 4 + 1] ?? 0) * 0 + (t[v * 4 + 2] ?? 0) * 0.8;
+    /* The normal has no y, so the tangent's y takes no part in the dot. */
+    const dot = (t[v * 4] ?? 0) * 0.6 + (t[v * 4 + 2] ?? 0) * 0.8;
     expect(dot, 'orthogonalised against the normal it will be interpolated with').toBeCloseTo(0, 5);
   }
 });

@@ -136,7 +136,7 @@ export function registerEntityModule(
     const existing = registry.get(declared.name);
     /* A module reloaded keeps the store it already made: replacing the type would orphan every
        entity holding one, which is a world that silently loses its components on an edit. */
-    const type = existing ?? defineComponent(declared.schema);
+    const type = existing ?? defineComponent(declared.schema, declared.defaults);
     registry.set(declared.name, type);
     components.push(type);
   }

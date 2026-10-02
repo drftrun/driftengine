@@ -25,10 +25,8 @@ import { createRenderer } from '../../packages/core/src/index';
 import type { RendererApi } from '../../packages/core/src/index';
 import {
   CLUSTER_COUNT,
-  CLUSTER_TEXELS,
   CLUSTER_X,
   CLUSTER_Y,
-  LIGHT_REGION_TEXELS,
   LIGHT_TEXELS,
   MAX_LIGHTS_PER_CLUSTER,
   TABLE_HEIGHT,

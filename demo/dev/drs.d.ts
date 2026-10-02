@@ -5,7 +5,7 @@
  *
  * **One line, and it replaced a file this repository used to own.** The declaration lived in
  * `packages/driftscript/src/drs.d.ts`, which the engine's tsconfig picked up because it sat under
- * `packages/*​/src`. `driftscript` is an installed dependency now, and a `declare module` inside a
+ * `packages/<name>/src`. `driftscript` is an installed dependency now, and a `declare module` inside a
  * dependency is invisible unless the file is in *your* compilation — so it has to be referenced,
  * and the package ships an `exports` entry for exactly that.
  *

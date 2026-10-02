@@ -1,6 +1,5 @@
 import { BODY_DYNAMIC, BODY_SENSOR, BODY_STATIC, BodySet } from './bodies.ts';
 import type { BodyDesc } from './bodies.ts';
-import { shapeBounds } from './shape.ts';
 import type { Aabb } from './collide/index.ts';
 import { collideShapes, createManifold } from './manifold.ts';
 import { MAX_MESH_MANIFOLDS, collideMesh, isMesh } from './meshContact.ts';
@@ -13,13 +12,7 @@ import {
 
 import type { Manifold, ShapePose } from './manifold.ts';
 import { MAX_BODIES, PairSet, pairA, pairB, pairKey } from './pairs.ts';
-import {
-  ContactConstraints,
-  applyRestitution,
-  prepareContact,
-  solveContacts,
-  warmStart,
-} from './solver.ts';
+import { ContactConstraints, prepareContact } from './solver.ts';
 import type { FrictionModel } from './solver.ts';
 import { DynamicTree } from './tree.ts';
 import { overlapWorld, raycastWorld, shapecastWorld } from './query.ts';
@@ -27,7 +20,7 @@ import type { QueryFilter, RayHit } from './query.ts';
 import type { ConvexShape } from './shape.ts';
 import { ContactEvents } from './events.ts';
 import { IslandSet } from './island.ts';
-import { JointSet, resetJointImpulses, solveJoints } from './joints.ts';
+import { JointSet, resetJointImpulses } from './joints.ts';
 import type { JointDesc } from './joints.ts';
 import { SerialExecutor } from './executor.ts';
 import type { Executor, IslandSolver } from './executor.ts';

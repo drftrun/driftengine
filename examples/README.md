@@ -67,6 +67,8 @@ and the page keeps running with the new code.
 | [`cinematic/`](cinematic/)       | A buggy and a jump, cut by a scripted director, a cinematic as data, and a keyed path.           |
 | [`sprites/`](sprites/)           | A tilemap garden and a gardener who picks its flowers, one sprite pass, in DriftScript.          |
 | [`interface/`](interface/)       | A pause menu and options over a running scene: laid out, themed, clipped, in DriftScript.        |
+| [`xr/`](xr/)                     | A headset across a room: its head, controllers and hand read each frame, a lamp on the trigger.  |
+| [`saves/`](saves/)               | A garden bed that saves to a server that can fail, loads across a change, and keeps preferences. |
 
 ## Starting a project from `starter/`
 

@@ -620,3 +620,48 @@ system Census {
     expect(parts.world.read(tally, Tally, 'wings')).toBeCloseTo(0.5, 6);
   });
 });
+
+describe('a component declared with values, compiled', () => {
+  it('starts every entity at them wherever a field is not given', async () => {
+    /* The compiler carries the declared values in the module's metadata; the host builds the
+       component from them; a prefab, the script's own instantiate and a host add all read them. */
+    const { world, systems, registry } = (await run(`import { count, instantiate } from "drift/ecs"
+
+component Bed {
+    seed: u32 = 7
+    pace: f32 = -0.5
+    sown: u32
+}
+
+prefab Seedbed {
+    Bed { sown: 1 }
+}
+
+system Sow {
+    writes Bed
+
+    update {
+        if ecs.count(world, "Bed") < 1 {
+            let bed = ecs.instantiate(world, "Seedbed")
+            bed.Bed.sown = bed.Bed.sown + 1
+        }
+    }
+}
+`)) as unknown as {
+      world: World;
+      systems: Parameters<typeof buildSchedule>[0];
+      registry: Map<string, Parameters<World['add']>[1]>;
+    };
+    runSchedule(world, buildSchedule(systems), 0);
+    const Bed = registry.get('Bed');
+    if (Bed === undefined) throw new Error('no Bed');
+    const [sown] = [...world.query(Bed)];
+    expect(world.read(sown as number, Bed, 'seed')).toBe(7);
+    expect(world.read(sown as number, Bed, 'pace')).toBe(-0.5);
+    expect(world.read(sown as number, Bed, 'sown')).toBe(2);
+
+    const added = world.create();
+    world.add(added, Bed, {});
+    expect(world.read(added, Bed, 'seed')).toBe(7);
+  });
+});

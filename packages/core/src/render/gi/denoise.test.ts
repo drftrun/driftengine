@@ -151,7 +151,7 @@ test('and not across a normal discontinuity either', () => {
   /* Two faces of a corner at the same depth: a filter weighted on depth alone blends them. */
   const width = 20;
   const height = 8;
-  const source = frame(width, height, (x, y) => ({
+  const source = frame(width, height, (x) => ({
     radiance: [x < 10 ? 0.1 : 0.9, 0, 0],
     depth: 10,
     normal: x < 10 ? [0, 0, 1] : [1, 0, 0],

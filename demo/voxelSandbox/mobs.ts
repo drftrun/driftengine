@@ -22,8 +22,6 @@ import { loadModule } from 'driftscript';
 
 import {
   mulberry32,
-  type Camera,
-  type Environment,
   type MeshData,
   type RendererApi,
   type Vec3,
@@ -421,7 +419,7 @@ export class Mobs {
    * Six parts times ten mobs is sixty draws, which is what the reference spends on the same
    * picture and is cheaper than the bookkeeping to batch it.
    */
-  draw(camera: Camera, env: Environment): void {
+  draw(): void {
     const view = this.entities.view(this.Mob);
     const sparse = view.sparse as Int32Array;
     const xs = view['x'] as Float64Array;

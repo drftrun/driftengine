@@ -222,7 +222,7 @@ async function renderOcclusion(amount: number): Promise<RenderedMix> {
  */
 async function renderZone(seconds: number, decay: number): Promise<RenderedMix> {
   const context = new OfflineAudioContext(2, RATE * 4, RATE);
-  const { mix, listener } = placedListener(context);
+  const { listener } = placedListener(context);
   const zone = addReverbZone(
     listener,
     'room',

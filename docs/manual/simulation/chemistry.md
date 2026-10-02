@@ -19,8 +19,8 @@ The example is a campfire: oak and kindling beside a bed of embers, a kettle, a 
 iron nail and a copper coin, each heating at the rate its own substance decides. The camp is a
 DriftScript module: the rain, a keeper who lays a new log on, seasoned or green, and a notebook of
 what happened. Lay a green log and watch it steam instead of catching; let it rain and everything
-that can hold water stops at the boiling point; let the wind blow. The fire runs fifteen times
-faster than the clock.
+that can hold water stops at the boiling point; let the wind blow. The fire runs about four times
+faster than the clock, and slower on a machine that cannot keep that up.
 
 <!-- run: chemistry -->
 
@@ -29,8 +29,17 @@ faster than the clock.
 ```ts sample=chemistry/main.ts#install
 /** Three families of substance, and a world with air over it: one metre cells, 8³ to a chunk. */
 const chem = installChemistry({ libraries: [ORGANIC, FOOD, METAL], maxChunks: 8 });
-/** The fire's own fixed step: a quarter second of chemistry each tick of the page. */
-const DT = 0.25;
+/**
+ * The fire's own fixed step: a sixteenth of a second of chemistry each tick of the page, so it runs
+ * about four times faster than the clock.
+ *
+ * **Fifteen times was the first choice, and it was more than the air can afford.** The air steps in
+ * substeps a step's length decides, so what it costs follows how many seconds of fire pass each
+ * second: about 77 ms of a desktop's time per second of fire with the smoke in two chunks. A quarter
+ * second sixty times a second asked for more than a second of work every second, and the page fell
+ * to three frames a second while the fire went on burning.
+ */
+const DT = 1 / 16;
 /** The hearth sits at (4, 4, 4) in the air's cells, and the scene is drawn in those same metres. */
 const HEARTH: Vec3 = [4, 4, 4];
 ```

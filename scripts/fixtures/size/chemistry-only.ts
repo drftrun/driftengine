@@ -29,7 +29,6 @@ import {
   ReactionRegistry,
   SHAPE_SLAB,
   STANDARD_AIR,
-  phaseChange,
   registerStandardSpecies,
   wetComposition,
 } from '@driftengine/chemistry';

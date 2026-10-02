@@ -87,7 +87,7 @@ const SKY_FLOOR = 0.45;
  * The reference applies it to its ambient term; here it folds into the vertex colour, which is
  * the same multiplication in a different place.
  */
-function faceShade(nx: number, ny: number, nz: number): number {
+function faceShade(nx: number, ny: number): number {
   if (ny > 0.5) return 1;
   if (ny < -0.5) return 0.5;
   if (Math.abs(nx) > 0.5) return 0.8;
@@ -131,7 +131,7 @@ class Batch {
     const base = this.pos.length / 3;
     const uvU = [rect.u0, rect.u1, rect.u1, rect.u0];
     const uvV = [rect.v1, rect.v1, rect.v0, rect.v0];
-    const face = faceShade(normal[0], normal[1], normal[2]);
+    const face = faceShade(normal[0], normal[1]);
 
     for (let i = 0; i < 4; i++) {
       /*
@@ -182,7 +182,6 @@ class Batch {
 
   toMeshData(): MeshData | null {
     if (this.idx.length === 0) return null;
-    const vertices = this.pos.length / 3;
     return {
       positions: new Float32Array(this.pos),
       normals: new Float32Array(this.nrm),

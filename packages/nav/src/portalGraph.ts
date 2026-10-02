@@ -42,7 +42,7 @@
 import { buildNavGraph } from '@driftengine/core';
 import type { NavEdge, NavGraph } from '@driftengine/core';
 
-import { polyNeighbour, polyVertexCount, type PolyMesh } from './polymesh.ts';
+import { polyVertexCount, type PolyMesh } from './polymesh.ts';
 
 export interface PortalGraph {
   /** Nodes: one per portal, then the start, then the goal. */

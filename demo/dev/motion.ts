@@ -17,7 +17,7 @@
  * **What a failure looks like:** `moving` above zero at some step. The picture a moving camera saw
  * lacked something the settled one had, and the step says where in the turn.
  *
- * Nothing here is engine API and nothing under `packages/*​/src` may import it.
+ * Nothing here is engine API and nothing under `packages/<name>/src` may import it.
  */
 import type { RenderQualityOptions } from '../../packages/core/src/index';
 import { denseRig, materialsRig, mountRig, occlusionRig } from '../gpuDrivenRig';

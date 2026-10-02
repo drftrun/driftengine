@@ -105,8 +105,14 @@
     {
       "id": "interface",
       "title": "Interface",
-      "blurb": "How a player reaches the game, and what they see: every input device through one action map, cameras that cut between shots and fly keyed paths, the 2D layer of sprites and tilemaps, and menus built as a tree.",
-      "pages": ["input", "cameras", "sprites", "interface"]
+      "blurb": "How a player reaches the game, and what they see: every input device through one action map, cameras that cut between shots and fly keyed paths, the 2D layer of sprites and tilemaps, menus built as a tree, and a WebXR session read every frame.",
+      "pages": ["input", "cameras", "sprites", "interface", "xr"]
+    },
+    {
+      "id": "systems",
+      "title": "Systems",
+      "blurb": "What a game keeps between sessions and shares between players: saves and preferences, read back across a change to the game.",
+      "pages": ["saves"]
     }
   ]
 }

@@ -22,7 +22,7 @@
  *   - **A changed pixel** — something visible was culled. That is the failure this page exists for,
  *     and the box that vanished says where the conservatism broke.
  *
- * Nothing here is engine API and nothing under `packages/*​/src` may import it.
+ * Nothing here is engine API and nothing under `packages/<name>/src` may import it.
  */
 import {
   Camera,

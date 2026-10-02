@@ -116,7 +116,7 @@ function group(order: readonly SystemDefinition[]): (readonly SystemDefinition[]
   const groups: SystemDefinition[][] = [];
   let current: SystemDefinition[] = [];
   for (const system of order) {
-    if (current.length > 0 && current.some((other) => conflicts(other, system))) {
+    if (current.some((other) => conflicts(other, system))) {
       groups.push(current);
       current = [];
     }

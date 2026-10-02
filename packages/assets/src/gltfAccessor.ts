@@ -115,13 +115,3 @@ function normalisedScale(componentType: number): number {
       return 1;
   }
 }
-
-/**
- * The matrix a skinned primitive is built with: none.
- *
- * A palette entry already carries its joint's inverse bind, so it takes a vertex from model space
- * to where the joint moved it — and `uModel` then places the character. Baking the node's world
- * matrix in as well applies that placement twice and throws the rig across the scene. See
- * `gltfSkin.ts`.
- */
-const IDENTITY: readonly number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];

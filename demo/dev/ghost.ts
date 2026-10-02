@@ -21,7 +21,7 @@
  * that is not zero means this page is measuring its own noise and nothing it reports is a ghost.
  *
  * `scripts/ghost-check.mjs` reads `__ghostCheck`. Nothing here is engine API and nothing under
- * `packages/*​/src` may import it.
+ * `packages/<name>/src` may import it.
  */
 
 import {

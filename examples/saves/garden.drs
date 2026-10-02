@@ -1,0 +1,105 @@
+// The garden: a seed sown every second until the bed is full, every plant growing at the pace the
+// player chose, and an autosave the script holds back while the last one is still on its way.
+//
+// Under `npm run examples`, change a rule and save: the bed grows by it from the next tick and
+// keeps every plant. Try sowing a fuller bed, taller plants, or a new field on Plant: Load still
+// reads a garden saved before the field existed, and gives it the field's default.
+
+import { count, instantiate } from "drift/ecs"
+import { pendingSaves, write } from "drift/persistence"
+import { range } from "drift/random"
+import { min } from "std/math"
+
+// How many plants the bed holds, and how many seconds a plant takes to grow at the normal pace.
+let FULL: u32 = 40
+let GROWN: f32 = 20
+
+// #region components
+component Plant {
+    x: f32 = 0
+    z: f32 = 0
+    // Seconds grown, and how tall the plant stands once it is grown, in metres.
+    age: f32 = 0
+    tall: f32 = 1
+}
+
+// The bed: its own seed, how many seeds have gone in, and how fast it grows, which the page writes
+// from the player's preference.
+component Bed {
+    seed: u32 = 7
+    sown: u32 = 0
+    pace: f32 = 1
+}
+// #endregion
+
+prefab Seedling {
+    Plant {}
+}
+
+// #region sow
+// Once a second, while the bed has room, a seed goes in where the bed's own sequence puts it, so a
+// bed loaded from a save sows the same plants it would have sown.
+system Sow {
+    writes Bed
+    writes Plant
+
+    update at 1Hz {
+        for bed in query<Bed>() {
+            if ecs.count(world, "Plant") < FULL {
+                bed.Bed.sown = bed.Bed.sown +% 1
+                let seed = (bed.Bed.seed +% bed.Bed.sown) *% 2246822519
+                let plant = ecs.instantiate(world, "Seedling")
+                plant.Plant.x = random.range(seed, -2.6, 2.6)
+                plant.Plant.z = random.range(seed +% 1, -2.6, 2.6)
+                plant.Plant.tall = random.range(seed +% 2, 0.4, 1.3)
+            }
+        }
+    }
+}
+// #endregion
+
+// #region grow
+// Every plant grows a sixtieth of a second each fixed step, times the bed's pace, until it is grown.
+system Grow {
+    reads Bed
+    writes Plant
+
+    update {
+        var pace: f32 = 1
+        for bed in query<Bed>() {
+            pace = bed.Bed.pace
+        }
+        for e in query<Plant>() {
+            e.Plant.age = math.min(e.Plant.age + pace / 60, GROWN)
+        }
+    }
+}
+// #endregion
+
+// #region autosave
+data Autosave {
+    // Seconds between autosaves, and since the last one.
+    every: f32 = 5
+    since: f32 = 0
+    written: u32 = 0
+    // How many were held back because the one before had not landed.
+    held: u32 = 0
+}
+
+// The page offers the garden once a second and the script decides whether it is written. An
+// autosave waits while the last one is still on its way, so a slow server is never handed a queue.
+fn autosave(auto: mut Autosave, store: Store, garden: String, dt: f32) -> bool {
+    auto.since = auto.since + dt
+    if auto.since < auto.every {
+        return false
+    }
+    if persistence.pendingSaves(store) > 0 {
+        auto.held = auto.held + 1
+        return false
+    }
+    persistence.write(store, "driftengine.examples.saves.auto", garden)
+    auto.since = 0
+    auto.written = auto.written + 1
+    return true
+}
+// #endregion

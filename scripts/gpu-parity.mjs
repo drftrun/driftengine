@@ -2928,7 +2928,6 @@ try {
       const { corpus, got } = await run(half);
       const label = half ? 'network f16' : 'network f32';
       let worst = 0;
-      let worstHalf = 0;
       let tightest = 0;
       /* Per network: which of the two half-precision forms the device matched, exactly. */
       const matched = { plain: 0, contracted: 0, both: 0, neither: 0 };

@@ -99,7 +99,6 @@ import {
   AI_MODULE,
   AI_TYPES,
   aiImplementation,
-  type AgentRegistry,
   type AiServices,
 } from './bindings/ai.ts';
 import {

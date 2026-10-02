@@ -15,7 +15,16 @@ export interface Readout {
   draw(seconds: number): void;
 }
 
-export function createReadout(renderer: RendererApi, lines: number): Readout {
+export interface ReadoutOptions {
+  /** Pixels at the frame's right edge the lines must leave clear, asked each frame: a panel there. */
+  readonly clearRight?: () => number;
+}
+
+export function createReadout(
+  renderer: RendererApi,
+  lines: number,
+  options: ReadoutOptions = {},
+): Readout {
   const handles = Array.from({ length: lines }, () => renderer.createText());
   const shown = Array.from({ length: lines }, () => '');
   let cell = 0;
@@ -30,13 +39,22 @@ export function createReadout(renderer: RendererApi, lines: number): Readout {
     draw(seconds) {
       const width = renderer.cssWidth;
       const height = renderer.cssHeight;
-      const size = Math.max(2, Math.round(Math.min(width, height) / 320));
+      /* A glyph is five cells wide and six apart; a line is nine cells deep. */
+      const longest = Math.max(...shown.map((text) => text.length));
+      /*
+       * The size the frame suggests, made smaller until the longest line fits across it. A
+       * manual's frame is about 768 by 432, which suggests the same size as a full window, and at
+       * that size the agents' and the models' lines ran off the edge and the input example's ran
+       * under its controls panel.
+       */
+      const suggested = Math.max(2, Math.round(Math.min(width, height) / 320));
+      const room = width - 28 - (options.clearRight?.() ?? 0);
+      const fits = Math.floor(room / (longest * 6 + 5));
+      const size = Math.max(1, Math.min(suggested, fits));
       if (size !== cell) {
         cell = size;
         style = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.92, 0.94, 0.98] };
       }
-      /* A glyph is five cells wide and six apart; a line is nine cells deep. */
-      const longest = Math.max(...shown.map((text) => text.length));
       const top = 52;
       renderer.fillPanel(
         { left: 14, top, width: (longest * 6 + 5) * size, height: (lines * 9 + 4) * size },

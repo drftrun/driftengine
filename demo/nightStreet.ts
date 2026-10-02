@@ -46,7 +46,6 @@ import {
 import type {
   Environment,
   FilmOptions,
-  Mesh,
   MeshHandle,
   MeshData,
   PointLightSource,

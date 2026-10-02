@@ -4,35 +4,7 @@ import { MAX_BODY_PARTS } from './compoundContact.ts';
 import { combineMassProperties, createMassProperties, shapeMassProperties } from './mass.ts';
 import { meshShape } from './meshShape.ts';
 import { boxShape, hullShape } from './shape.ts';
-import { createManifold } from './manifold.ts';
-import type { Manifold, ShapePose } from './manifold.ts';
-import { MAX_PAIR_MANIFOLDS, collideCompound } from './compoundContact.ts';
 import { PhysicsWorld } from './world.ts';
-
-const IDENTITY: ShapePose = { x: 0, y: 0, z: 0, qx: 0, qy: 0, qz: 0, qw: 1 };
-
-/** A sawtooth floor: no two triangles under one foot are coplanar, so each foot finds several. */
-function sawtoothFloor(
-  span: number,
-  step: number,
-): { positions: Float32Array; indices: Uint32Array } {
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const cells = Math.round((span * 2) / step);
-  for (let ix = 0; ix <= cells; ix++) {
-    for (let iz = 0; iz <= cells; iz++) {
-      positions.push(-span + ix * step, ((ix + iz) % 2) * 0.02, -span + iz * step);
-    }
-  }
-  const at = (ix: number, iz: number): number => ix * (cells + 1) + iz;
-  for (let ix = 0; ix < cells; ix++) {
-    for (let iz = 0; iz < cells; iz++) {
-      indices.push(at(ix, iz), at(ix, iz + 1), at(ix + 1, iz));
-      indices.push(at(ix + 1, iz), at(ix, iz + 1), at(ix + 1, iz + 1));
-    }
-  }
-  return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
-}
 
 /** A box of the given half-extents, centred where asked, as a hull in the body's own frame. */
 function boxAt(cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) {

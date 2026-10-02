@@ -28,7 +28,7 @@ import {
   screenToNdc,
   themeRgba,
 } from '@driftengine/ui2d';
-import type { Theme, UiNode, UiNodeOptions, UiRect } from '@driftengine/ui2d';
+import type { UiNode, UiNodeOptions, UiRect } from '@driftengine/ui2d';
 import { patchModule } from 'driftscript';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';

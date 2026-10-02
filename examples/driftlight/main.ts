@@ -129,8 +129,10 @@ stage.run({
     camera.lookAt(walk + 8, 1.7, 0);
 
     // #region frame
-    /* A few bricks a frame until the field is whole; it then fades in over half a second. */
-    if (!field.ready) field.bake(64);
+    /* Bricks until four milliseconds of this frame are spent, so the walk stays smooth on a slow
+       machine too; once the field is whole it fades in over half a second. */
+    const until = performance.now() + 4;
+    while (!field.ready && performance.now() < until) field.bake(4);
 
     const [x, y, z] = camera.position;
     selectPointLights(candles, x, y, z, chosen, time, DEFAULT_POINT_LIGHT_VIEW_RANGE);

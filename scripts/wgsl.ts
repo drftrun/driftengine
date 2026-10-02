@@ -18,7 +18,6 @@
  * The toolchain and the reason for every transform rule are recorded in
  * the WGSL toolchain design. Change them there first.
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { shareItems } from './wgsl/share.mjs';
 import path from 'node:path';

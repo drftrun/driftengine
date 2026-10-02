@@ -69,7 +69,7 @@ const PI = 3.141592653589793;
 
 /* fdlibm's `__kernel_sin` coefficients. */
 const S1 = -1.6666666666666632e-1;
-const S2 = 8.3333333333224894e-3;
+const S2 = 8.33333333332249e-3;
 const S3 = -1.984126982985795e-4;
 const S4 = 2.7557313707070068e-6;
 const S5 = -2.5050760253406863e-8;
@@ -77,7 +77,7 @@ const S6 = 1.5896909952115501e-10;
 
 /* fdlibm's `__kernel_cos` coefficients. */
 const C1 = 4.1666666666666602e-2;
-const C2 = -1.3888888888874109e-3;
+const C2 = -1.388888888887411e-3;
 const C3 = 2.480158728947673e-5;
 const C4 = -2.7557314351390663e-7;
 const C5 = 2.0875723212981748e-9;
@@ -286,7 +286,7 @@ export function exactLog(x: number): number {
   if ((0x000fffff & (2 + hx)) < 3) {
     /* |f| < 2^-20: two terms of the series are the whole answer. */
     if (f === 0) return k === 0 ? 0 : k * LN2_HI + k * LN2_LO;
-    const r = f * f * (0.5 - 0.33333333333333333 * f);
+    const r = f * f * (0.5 - 0.3333333333333333 * f);
     return k === 0 ? f - r : k * LN2_HI - (r - k * LN2_LO - f);
   }
   const s = f / (2 + f);

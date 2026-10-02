@@ -875,7 +875,7 @@ export function moveAxis(body: Body, boxes: ColliderSet, axis: Axis, delta: numb
        * exactly `pos + local`, unchanged.
        */
       const pivotY = body.pivotY ?? 0;
-      const baseX = body.x - frame.rx * 0 - frame.ux * pivotY;
+      const baseX = body.x - frame.ux * pivotY;
       const baseY = body.y + pivotY - frame.uy * pivotY;
       const baseZ = body.z - frame.uz * pivotY;
       const parts = body.parts;

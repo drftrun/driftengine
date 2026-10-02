@@ -23,7 +23,7 @@
  * it and has to differ from it.
  *
  * `scripts/depth-share-check.mjs` reads `__depthShare`. Nothing here is engine API and nothing
- * under `packages/*​/src` may import it.
+ * under `packages/<name>/src` may import it.
  */
 import {
   Camera,

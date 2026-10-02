@@ -938,7 +938,7 @@ describe('the webgpu renderer', () => {
     const scene = stub.device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'post.sceneColor');
-    expect((scene?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+    expect((scene?.size as number[] | undefined)?.slice(0, 2)).toEqual([640, 480]);
   });
 
   it('REFUSES TO SHRINK WITHOUT A COMPOSITE, because there would be nothing to enlarge from', () => {
@@ -956,7 +956,7 @@ describe('the webgpu renderer', () => {
     const depth = stub.device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'flat.depth');
-    expect((depth?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+    expect((depth?.size as number[] | undefined)?.slice(0, 2)).toEqual([640, 480]);
   });
 
   /**
@@ -1394,7 +1394,7 @@ describe('the webgpu renderer', () => {
       const scene = stub.device.createTexture.mock.calls
         .map(([descriptor]) => descriptor)
         .find((descriptor) => descriptor.label === 'post.sceneColor');
-      expect((scene?.size as number[]).slice(0, 2)).toEqual([640, 480]);
+      expect((scene?.size as number[] | undefined)?.slice(0, 2)).toEqual([640, 480]);
     } finally {
       warned.mockRestore();
     }
@@ -1554,7 +1554,7 @@ describe('the webgpu renderer', () => {
     const scene = stub.device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'post.sceneColor');
-    const [width = 0, height = 0] = scene?.size as number[];
+    const [width = 0, height = 0] = (scene?.size ?? []) as number[];
     const levels = bloomLevelSizes(width, height).length;
 
     /* One down each step and one back up, which is what `bloomPass.ts` runs on the other side. */
@@ -2181,7 +2181,7 @@ describe('the webgpu renderer', () => {
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'shadow.sun');
     /* Width and height; the third is how many of the sun's maps the profile keeps as layers. */
-    expect([...(allocated?.size as number[])].slice(0, 2)).toEqual([
+    expect([...((allocated?.size ?? []) as number[])].slice(0, 2)).toEqual([
       renderer.shadowMapSize,
       renderer.shadowMapSize,
     ]);
@@ -2298,7 +2298,7 @@ describe('the webgpu renderer', () => {
     const tintTexture = stub.device.createTexture.mock.calls
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'shadow.sunTint');
-    const edge = (tintTexture?.size as number[])[0] as number;
+    const edge = (tintTexture?.size as number[] | undefined)?.[0] as number;
     expect(tintTexture?.mipLevelCount).toBe(Math.floor(Math.log2(edge)) + 1);
     expect(stub.encoder.copyTextureToTexture, 'every layer held is carried').toHaveBeenCalledTimes(
       3,
@@ -2319,7 +2319,7 @@ describe('the webgpu renderer', () => {
     const tintPass = stub.encoder.beginRenderPass.mock.calls
       .map(([descriptor]) => descriptor)
       .find((descriptor) => descriptor.label === 'shadow.tint');
-    const colour = (tintPass?.colorAttachments as GPURenderPassColorAttachment[])[0];
+    const colour = (tintPass?.colorAttachments as GPURenderPassColorAttachment[] | undefined)?.[0];
     expect(colour?.loadOp).toBe('clear');
     expect(colour?.clearValue).toEqual([1, 1, 1, 1]);
     expect(tintPass?.depthStencilAttachment).toBeUndefined();
@@ -7767,8 +7767,12 @@ describe('glass in a lamp s shadow', () => {
     stub.device.createTexture.mockClear();
     bake(renderer, true);
     const made = stub.device.createTexture.mock.calls.map(([d]) => d);
-    expect((made.find((d) => d.label === 'pointShadow.tint')?.size as number[])[0]).toBe(512);
-    expect((made.find((d) => d.label === 'pointShadow.array')?.size as number[])[0]).toBe(1024);
+    expect(
+      (made.find((d) => d.label === 'pointShadow.tint')?.size as number[] | undefined)?.[0],
+    ).toBe(512);
+    expect(
+      (made.find((d) => d.label === 'pointShadow.array')?.size as number[] | undefined)?.[0],
+    ).toBe(1024);
   });
 });
 

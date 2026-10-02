@@ -105,7 +105,7 @@ export type Stmt = At &
     | {
         readonly k: 'if';
         readonly condition: Expr;
-        readonly then: readonly Stmt[];
+        readonly body: readonly Stmt[];
         readonly otherwise: readonly Stmt[] | null;
       }
     | { readonly k: 'with'; readonly items: readonly Expr[]; readonly body: readonly Stmt[] }

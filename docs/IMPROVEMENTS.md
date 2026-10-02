@@ -48,6 +48,54 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### Installing the engine prints seven deprecation warnings, and none of them is the engine's code
+
+**Filed 2026-10-02.** `npm install` reports seven deprecated packages, and every one arrives through
+a published package's dependencies, so a consumer sees them too. Lint, typecheck, the build and the
+suites print none.
+
+- **Four through `@driftengine/package`**: `electron-builder` 26.15.3, the latest, pins
+  `@electron/asar` 3.4.1 (`glob` 7, `inflight`), `@electron/get` 3 (`global-agent`, `boolean`) and
+  `electron-winstaller` (`temp`, `rimraf` 2). They leave when it moves past them.
+- **One through `@driftengine/native-host`**: `node-web-audio-api` 2.2.0, the latest, depends on
+  `node-fetch` 3, which pulls `node-domexception`.
+- **One more through native-host, and the fix for it breaks the host.** `@kmamal/gpu` 0.2.1 drops
+  `node-gyp` and with it `glob` 10, but its newer Dawn fails three of the eight checks in
+  `npm run native:check`: a frame drawn into the canvas reads back as `0,0,0,0`, a texture view is
+  refused for a swizzle without the `TextureComponentSwizzle` feature, and the alpha copy's bind
+  group is refused for its sample type. 0.2.0 passes all eight on the same machine. Taking 0.2.1
+  means finding which of those is the binding and which the engine, with `native:check` and
+  `native:gate` as the proof.
+- **One direct**: `@driftengine/media` uses `mp4-muxer` 5.2.2, deprecated in favour of Mediabunny,
+  which is MPL-2.0. That licence is file-level copyleft and adds obligations to a bundle that
+  carries it, so it was not taken; an MIT or Apache-2.0 muxer would be.
+
+### A WebXR session can be entered and read, and nothing can be drawn into it
+
+**Filed 2026-10-02.** `@driftengine/xr` enters a session, builds its layer (`XRWebGLLayer`, or a
+projection layer through `XRGPUBinding`), and reads the head, the controllers and the hands, and
+`eyeViews` with `aimCameraAtEye` turns a pose into each eye's camera. The renderer then has nowhere
+to draw that camera: both backends draw into their own canvas, and `RendererApi` has no call that
+points a frame at the layer's framebuffer and one eye's viewport on WebGL2, or at the texture the
+binding hands out for an eye on WebGPU. It does not expose its WebGL2 context or GPU device either,
+which is what `enterXr`'s `sources` asks for. The package README showed `renderer.setViewport` and
+`renderer.draw(scene, camera)`, which neither backend has; it was corrected when the XR chapter was
+written, and the chapter says plainly that a headset shows nothing. What it would take is a frame
+target on both renderers: a framebuffer or texture view, a viewport, and the size the frame's own
+targets are made at. It can be proved without a headset by drawing two eyes side by side through the
+synthetic runtime and checking that the halves differ by the eyes' parallax. The bottom of each
+renderer is small: WebGL2 binds the canvas's framebuffer in two places and WebGPU takes
+`getCurrentTexture` in one.
+
+### `probeXrSupport` takes a WebGL2 context only through a cast, and `drift/xr`'s host type is not exported
+
+**Filed 2026-10-02.** `XrCompatibleContext` has one optional member, so TypeScript treats it as a
+weak type, and the DOM types do not declare `makeXRCompatible` on `WebGL2RenderingContext`: passing
+the context a game draws with fails to compile until it is cast. The XR example casts. And
+`XrRuntime`, the object `bindModule` reads for `drift/xr`, is not exported from
+`@driftengine/script`, so a host types it as `NonNullable<HostServices['xr']>`. Both are a line
+each: accept `object | null` and test for the method, and add the type to the barrel.
+
 ### A material's maps on a mesh with no texture coordinates are ignored, and nothing says so
 
 **Filed 2026-10-02.** `MeshBuilder` writes no texture coordinates unless `build({ planarUvs: true })`
@@ -67,6 +115,26 @@ and read no layer, and no function draws in the order `layerOrder` gives, so a l
 under a later sibling and the pointer reaches the sibling through it. Either `drawUiTree` and the hit
 test take the order, or a caller is handed a draw over a flat list; the first keeps one way to draw a
 tree.
+
+### The air of one campfire costs 150 ms of a desktop's time per second of fire
+
+**Filed 2026-10-02**, measured on the chemistry example with its smoke in two chunks, 1,024 cells
+of fifteen species. `AtmosphereField.step` substeps every step for a plume rising at
+`MAX_BUOYANT_SPEED`, 12 m/s, so a second of fire is about 120 transport sweeps however gently the
+fire actually burns, and a sweep of those cells costs about 1.2 ms: 150 ms of CPU per simulated
+second, before the gas-phase reactions. At the real-time pace a game would run a fire at, that is
+15% of a core for one campfire. The example ran fifteen times faster than the clock and asked for
+more than a second of work every second, which drew three frames a second until it was paced down
+to about four times.
+
+Two changes would cut it, measured by neither yet. **Each cell's pressure once a sweep**: `face`
+sums a cell's moles and heat capacity for both of its sides, so every cell's pressure is computed
+about six times a sweep, and a sweep reads only the state at its start, so caching it is exact; it
+is most of `face`, which is most of the sweep. **Substeps from the fastest plume present**: sizing
+the CFL limit from the largest `buoyantSpeed` in the live cells and the wind, where a campfire
+rises at about 3 m/s, would take about a quarter of the sweeps. That one changes results, so it
+needs the fingerprint tests read for what moved. Fixed when a one-chunk campfire steps at real time
+in under 2% of a core.
 
 ### Seventeen of chemistry's twenty-one event kinds are never raised
 

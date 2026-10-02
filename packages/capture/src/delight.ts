@@ -189,12 +189,7 @@ export function delight(
      */
     const excess = spread[vertex] as number;
     out.roughness[vertex] = Math.min(1, Math.max(0.05, 1 - Math.min(1, excess * 4)));
-    out.confidence[vertex] = confidenceAt(
-      seen[vertex] as number,
-      minimumViews,
-      excess,
-      views.length,
-    );
+    out.confidence[vertex] = confidenceAt(seen[vertex] as number, minimumViews, excess);
   }
 }
 
@@ -411,7 +406,7 @@ function adjacency(mesh: MeshData, vertices: number): number[][] {
  * them alone is enough to make the answer wrong: too few views to reject anything, a surface whose
  * views disagree wildly — glass, a mirror, water — and a surface nobody saw at all.
  */
-function confidenceAt(seen: number, minimumViews: number, excess: number, views: number): number {
+function confidenceAt(seen: number, minimumViews: number, excess: number): number {
   if (seen === 0) return 0;
   if (seen < minimumViews) return 0.1;
   /*

@@ -17,7 +17,7 @@
  */
 import type { Value } from '../script/values.ts';
 import type { ScriptWorld } from '../script/world.ts';
-import type { RailLine, RailStop } from '../layout/monorail.ts';
+import type { RailStop } from '../layout/monorail.ts';
 import type { CityLayout } from '../layout/layout.ts';
 import type { Instance } from './instances.ts';
 import { chunks, spansOf, splineEntity } from './spans.ts';

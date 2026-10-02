@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import { buildAndroid } from './android.ts';
 import { buildIos } from './ios.ts';

@@ -36,8 +36,12 @@ export interface Stage {
   readonly canvas: HTMLCanvasElement;
   readonly renderer: RendererApi;
   readonly camera: Camera;
-  /** Start the loop. */
-  run(hooks: SceneHooks): void;
+  /**
+   * Start the loop. `maxFrameTime` is the loop's own: how much simulated time one slow frame may
+   * catch up, which an example whose step is expensive keeps short so a slow machine shows a frame
+   * instead of a backlog.
+   */
+  run(hooks: SceneHooks, loop?: { readonly maxFrameTime?: number }): void;
 }
 
 /**
@@ -166,16 +170,19 @@ export async function openStage(
     canvas,
     renderer,
     camera,
-    run(hooks) {
-      startLoop({
-        simulate(dt) {
-          hooks.simulate?.(dt);
+    run(hooks, loop = {}) {
+      startLoop(
+        {
+          simulate(dt) {
+            hooks.simulate?.(dt);
+          },
+          render(alpha) {
+            camera.updateMatrices(canvas.height > 0 ? canvas.width / canvas.height : 1);
+            hooks.render(alpha);
+          },
         },
-        render(alpha) {
-          camera.updateMatrices(canvas.height > 0 ? canvas.width / canvas.height : 1);
-          hooks.render(alpha);
-        },
-      });
+        loop.maxFrameTime === undefined ? {} : { maxFrameTime: loop.maxFrameTime },
+      );
     },
   };
 }

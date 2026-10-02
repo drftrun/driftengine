@@ -16,8 +16,6 @@
  */
 import { EventEmitter } from 'node:events';
 
-import { NativeCanvas } from '../../packages/native-host/src/canvas.ts';
-import { connectDomEvents, type EventWindow } from '../../packages/native-host/src/domEvents.ts';
 import { HostPage } from '../../packages/native-host/src/page.ts';
 import { HostWindow } from '../../packages/native-host/src/window.ts';
 

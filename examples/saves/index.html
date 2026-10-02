@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Saves · DriftEngine example</title>
+    <link rel="stylesheet" href="../common/examples.css" />
+    <style>
+      /* Save, load and clear, and the sentence each answers with. */
+      #panel {
+        position: fixed;
+        top: 64px;
+        right: 14px;
+        width: 200px;
+        padding: 10px 12px;
+        border: 1px solid #2a2d36;
+        border-radius: 10px;
+        background: rgba(22, 24, 30, 0.88);
+      }
+      #panel button {
+        display: block;
+        width: 100%;
+        margin: 0 0 6px;
+        font: inherit;
+        color: #c9cdd6;
+        background: #22252e;
+        border: 1px solid #343845;
+        border-radius: 6px;
+        padding: 4px 8px;
+        cursor: pointer;
+        text-align: left;
+      }
+      #note {
+        min-height: 1.5em;
+        margin: 4px 0 0;
+        color: #e3a46c;
+        line-height: 1.4;
+      }
+      @media (max-width: 640px) {
+        #panel {
+          width: 150px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <p id="backend">starting…</p>
+    <a id="home" href="../">← all examples</a>
+    <aside id="panel">
+      <button type="button" data-act="save">Save</button>
+      <button type="button" data-act="load">Load</button>
+      <button type="button" data-act="autosave">Load the autosave</button>
+      <button type="button" data-act="clear">Clear the bed</button>
+      <p id="note"></p>
+    </aside>
+    <nav id="controls"></nav>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

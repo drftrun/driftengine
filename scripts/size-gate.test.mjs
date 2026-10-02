@@ -24,43 +24,6 @@ import { FLOORS } from './size-floors.mjs';
 
 const TOLERANCE = 0.03;
 
-/**
- * The bundled JavaScript for a fixture, minified, as text.
- *
- * Separate from `bundleBytes` because the two answer different questions and one of them is not
- * about size at all. Bundling twice costs a fraction of a second and keeps each test reading as
- * what it asserts.
- */
-function bundleSource(fixture) {
-  const out = mkdtempSync(path.join(tmpdir(), 'size-'));
-  try {
-    execFileSync(
-      ESBUILD,
-      [
-        path.join(ROOT, 'scripts', 'fixtures', 'size', `${fixture}.ts`),
-        '--bundle',
-        '--minify',
-        '--format=esm',
-        '--platform=browser',
-        /*
-         * **Measure the source, and say so rather than inherit it.** Since the default export
-         * condition became `dist`, a bundler that is not told otherwise resolves an engine import
-         * to a build this gate does not make — and CI never builds, so every fixture failed to
-         * resolve at once. `dist` is a type strip with no code generation, so bundling it would
-         * measure the same bytes anyway; naming the condition keeps the floors comparable to the
-         * ones already recorded and keeps this gate independent of whether anything is built.
-         */
-        '--conditions=drift-source',
-        `--outfile=${path.join(out, 'bundle.js')}`,
-      ],
-      { cwd: ROOT, stdio: 'pipe' },
-    );
-    return readFileSync(path.join(out, 'bundle.js'), 'utf8');
-  } finally {
-    rmSync(out, { recursive: true, force: true });
-  }
-}
-
 function bundleBytes(fixture) {
   const out = mkdtempSync(path.join(tmpdir(), 'size-'));
   try {

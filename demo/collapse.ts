@@ -260,7 +260,6 @@ class CollapseHandle implements DemoHandle {
   constructor(renderer: RendererApi, canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.renderer = renderer;
-    const renderer_ = renderer;
 
     const ramp = buildRamp();
     this.ramp = renderer.createMesh(ramp.mesh);

@@ -1,0 +1,36 @@
+// What the page does with a headset: a lamp over the table that the right trigger turns up, and
+// whether the left hand's index fingertip is still being tracked. Every read comes from drift/xr.
+//
+// Under `npm run examples`, change a rule and save: the lamp follows it from the next frame. Try a
+// lamp the squeeze turns up instead, one that only comes on while the hand is held, or one that
+// snaps to the trigger with no easing at all.
+
+import { holding, jointY, presenting, trigger } from "drift/xr"
+import { min } from "std/math"
+
+data Lamp {
+    // How bright the lamp is, 0 to 1, easing toward what the trigger asks for.
+    level: f32 = 0
+    // How much of the gap to the trigger closes in a second.
+    ease: f32 = 6
+}
+
+// #region lamp
+// The lamp follows the right trigger while a session is running and the controller is tracked. A
+// headset taken off ends the session, and the lamp goes out with it.
+fn light(lamp: mut Lamp, dt: f32) {
+    var want: f32 = 0
+    if xr.presenting() && xr.holding("right") {
+        want = xr.trigger("right")
+    }
+    lamp.level = lamp.level + (want - lamp.level) * math.min(1, lamp.ease * dt)
+}
+// #endregion
+
+// #region tip
+// A joint the runtime stops reporting reads as zero, the way a fingertip that goes behind the other
+// hand does on a real headset. The page colours the hand when this says so.
+fn tipSeen() -> bool {
+    return xr.jointY("left", "index-finger-tip") != 0
+}
+// #endregion

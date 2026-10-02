@@ -158,7 +158,6 @@ export function decimate(mesh: MeshData, budget: number, options: DecimateOption
     faces,
     faceAlive,
     faceCount,
-    mesh,
   );
 }
 
@@ -405,7 +404,6 @@ function rebuild(
   faces: Int32Array,
   faceAlive: Uint8Array,
   faceCount: number,
-  source: MeshData,
 ): MeshData {
   const renumbered = new Map<number, number>();
   const positions: number[] = [];

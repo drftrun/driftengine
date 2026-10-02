@@ -136,9 +136,11 @@ export function deserializeWorld(
       const instance: Record<string, unknown> = {};
       for (const field of from.fields) instance[field.name] = saved[field.id];
 
+      /* A field the file does not have takes the value the component declares for it, and zero or
+         nothing where it declares none. */
       const defaults: Record<string, unknown> = {};
       for (const field of type.schema.fields)
-        defaults[field.name] = field.type === 'String' ? null : 0;
+        defaults[field.name] = type.defaults[field.name] ?? (field.type === 'String' ? null : 0);
 
       const result = migrate(instance, from, type.schema, defaults);
       if (!result.migrated) return { loaded: false, reason: result.reason };

@@ -139,11 +139,27 @@ export interface ComponentType {
   readonly id: number;
   /** Fields typed `Entity`, which a scene load has to rewrite through its id map. */
   readonly entityFields: readonly string[];
+  /**
+   * The value each field was declared with, by field name; a field with none is absent and starts
+   * at zero, `false` or nothing.
+   *
+   * **Read wherever a field is not given**: an entity added with some of its fields, a prefab that
+   * names a few, a saved scene from before the field existed. A DriftScript component's come from
+   * the module's metadata (`seed: u32 = 7`); before they were read, every one of those paths
+   * filled zero and nothing said so.
+   */
+  readonly defaults: Readonly<Record<string, ComponentDefault>>;
 }
+
+/** A field's declared value: a number for every numeric and enum column, a flag, or a string. */
+export type ComponentDefault = number | string | boolean;
 
 let nextComponentId = 0;
 
-export function defineComponent(schema: Schema): ComponentType;
+export function defineComponent(
+  schema: Schema,
+  defaults?: Readonly<Record<string, ComponentDefault>>,
+): ComponentType;
 export function defineComponent(
   name: string,
   fields: Readonly<Record<string, string>>,
@@ -168,8 +184,16 @@ export function defineComponent(
  */
 export function defineComponent(
   first: Schema | string,
-  fields?: Readonly<Record<string, string>>,
+  second?: Readonly<Record<string, string>> | Readonly<Record<string, ComponentDefault>>,
 ): ComponentType {
+  const fields =
+    typeof first === 'string'
+      ? (second as Readonly<Record<string, string>> | undefined)
+      : undefined;
+  const defaults =
+    typeof first === 'string'
+      ? {}
+      : ((second as Readonly<Record<string, ComponentDefault>> | undefined) ?? {});
   const schema: Schema =
     typeof first === 'string'
       ? {
@@ -194,10 +218,31 @@ export function defineComponent(
     }
   }
 
+  /* A default names a field and fits its column, or the type is refused here, where a wrong one
+     is a fault in whoever declared it and not a value some later entity quietly starts with. */
+  for (const [name, value] of Object.entries(defaults)) {
+    const field = schema.fields.find((candidate) => candidate.name === name);
+    if (field === undefined) {
+      throw new Error(
+        `\`${schema.name}\` has a default for \`${name}\`, which is not one of its fields: ` +
+          `${schema.fields.map((f) => `\`${f.name}\``).join(', ')}.`,
+      );
+    }
+    const inner = optionInner(field.type) ?? field.type;
+    const wanted = inner === 'String' ? 'string' : inner === 'bool' ? 'boolean' : 'number';
+    if (typeof value !== wanted) {
+      throw new Error(
+        `\`${schema.name}.${name}\` is \`${field.type}\` and its default is the ${typeof value} ` +
+          `${JSON.stringify(value)}.`,
+      );
+    }
+  }
+
   return {
     name: schema.name,
     id: nextComponentId++,
     schema,
+    defaults: { ...defaults },
     /* An optional handle is still a handle, so a scene load has to rewrite it through the id map
        exactly as it rewrites a required one. Leaving it out would serialise a handle into a world
        whose indices mean something else. */
@@ -354,7 +399,9 @@ export class ComponentStore {
     for (const field of this.type.schema.fields) {
       const column = this.columns.get(field.name);
       if (column === undefined) continue;
-      const given = values[field.name];
+      /* Omitted takes the declared value; a `null` given for an optional field is its absence. */
+      const own = values[field.name];
+      const given = own === undefined ? this.type.defaults[field.name] : own;
       if (Array.isArray(column)) column[at] = given ?? null;
       else (column as NumericColumn)[at] = typeof given === 'number' ? given : Number(given ?? 0);
       /*

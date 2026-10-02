@@ -10,15 +10,7 @@
 import { linear } from '../mesh/materials.ts';
 import { pairTargets, rows } from '../layout/rows.ts';
 import type { Row } from '../layout/rows.ts';
-import type {
-  CameraRow,
-  JobRow,
-  LifeData,
-  PersonRow,
-  Rgb,
-  TaxiRow,
-  VehicleRow,
-} from '../../data/life.ts';
+import type { CameraRow, LifeData, PersonRow, Rgb, TaxiRow, VehicleRow } from '../../data/life.ts';
 import { readCityTables } from '../layout/tables.ts';
 import type { ScriptRead } from '../script/reader.ts';
 import type { Value } from '../script/values.ts';

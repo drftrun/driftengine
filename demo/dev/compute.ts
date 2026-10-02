@@ -23,7 +23,7 @@
  *   - **The first 64 correct and the rest zero** — one workgroup ran. The dispatch count is wrong.
  *   - **Values present but shifted** — the staging copy read the wrong offset, not the shader.
  *
- * Nothing here is engine API, and nothing under `packages/*​/src` may import it.
+ * Nothing here is engine API, and nothing under `packages/<name>/src` may import it.
  */
 import { createRenderer } from '../../packages/core/src/index';
 import type { ComputeContext, ComputeDevice, RendererApi } from '../../packages/core/src/index';

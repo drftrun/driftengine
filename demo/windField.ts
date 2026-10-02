@@ -320,7 +320,6 @@ class WindFieldHandle implements DemoHandle {
     this.gl = canvas.getContext('webgl2');
     this.canvas = canvas;
     this.renderer = renderer;
-    const renderer_ = renderer;
 
     const random = mulberry32(0x0f1e_2d3c);
 

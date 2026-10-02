@@ -21,12 +21,10 @@ import {
   BrowserFileDialogs,
   BrowserStore,
   Camera,
-  DEFAULT_TEXT_STYLE,
   DEFAULT_RENDER_QUALITY,
   GpuDrivenPass,
   atmosphereFog,
   createFogTarget,
-  textHeightPx,
   createRenderer,
   InputSource,
   TouchControls,
@@ -59,13 +57,7 @@ import { Hud } from './voxelSandbox/hud';
 import { Player } from './voxelSandbox/player';
 import { Splash } from './voxelSandbox/splash';
 import { VoxelAudio } from './voxelSandbox/audio';
-import {
-  autosave,
-  loadFromFile,
-  restore,
-  saveToFile,
-  type SaveData,
-} from './voxelSandbox/saveLoad';
+import { autosave, loadFromFile, saveToFile, type SaveData } from './voxelSandbox/saveLoad';
 import {
   PORT_SHADOW_RADIUS,
   sandboxEnvironment,
@@ -457,7 +449,7 @@ class VoxelSandboxHandle implements DemoHandle {
     if (terrain !== null) renderer.drawPass(terrain.handle);
     this.highlight.draw(this.camera, this.env);
     this.falling.draw(this.camera, env);
-    this.mobs.draw(this.camera, env);
+    this.mobs.draw();
     this.particles.draw(this.camera, env);
     /* After the terrain and the water, so the sky only fills what nothing else covered. */
     this.sky.draw(renderer, this.camera, env);

@@ -82,6 +82,8 @@ function nameAndValue(condition: string): [string, string | null] {
 }
 
 export class MediaQueryList extends HostNode {
+  /* Defined on the prototype by `HostNode.handles` below; declared here for the checker. */
+  declare onchange: ((event: Event) => unknown) | null;
   private last: boolean;
   constructor(
     readonly media: string,
@@ -110,10 +112,6 @@ export class MediaQueryList extends HostNode {
   static {
     HostNode.handles(MediaQueryList.prototype, ['change']);
   }
-}
-
-export interface MediaQueryList {
-  onchange: ((event: Event) => unknown) | null;
 }
 
 export class MediaQueries {

@@ -2,22 +2,7 @@ import { AmbientLoop } from './ambientLoop.ts';
 import { KickDetector } from './rhythm/kickDetector.ts';
 import type { FetchLike } from './registry.ts';
 import { SoundRegistry } from './registry.ts';
-import {
-  LIFT_FLOOR_HZ,
-  SLAM_ATTACK_SEC,
-  SLAM_CLIP_KNEE,
-  SLAM_CLOSED_HZ,
-  SLAM_DECAY_SEC,
-  SLAM_DRIVE,
-  SLAM_DUCK,
-  SLAM_OPEN_HZ,
-  SLAM_SHELF_DB,
-  SLAM_SHELF_HZ,
-  clamp01,
-  cutoffForSpeed,
-  liftFrequencyHz,
-  liftGainFor,
-} from './filters.ts';
+import { clamp01 } from './filters.ts';
 import { audioContextConstructor, claimPlaybackSession, errorName } from './session.ts';
 import { MixConsole } from './mix/console.ts';
 import { defaultLayout, type DefaultLayout } from './mix/defaultLayout.ts';
@@ -141,11 +126,6 @@ const RAMP = 0.08;
  * hears a transient.
  */
 const FADE_OUT = 0.008;
-
-const LONG_REVERB_SECONDS = 6;
-const LONG_REVERB_DECAY = 1.5;
-/** Baseline delay feedback: one clear repeat, not a rhythm of its own. */
-const DELAY_FEEDBACK = 0.34;
 
 export class AudioGraph {
   readonly context: BaseAudioContext;
@@ -762,44 +742,4 @@ export class AudioGraph {
     param.cancelScheduledValues(at);
     param.setTargetAtTime(value, at, RAMP);
   }
-}
-
-/**
- * A synthesised impulse response: exponentially decaying noise.
- *
- * Not a real hall — a real one is a file, and files are what the registry is
- * for. This exists so reverb works before any asset has been recorded, on the
- * same principle as every other sound here.
- */
-/**
- * A soft clipper, transparent until it is driven and saturating hard after.
- *
- * `tanh` rather than a hard corner: a hard clip of a bass note is a square wave, and
- * a square wave's odd harmonics march all the way up the spectrum as buzz. `tanh`
- * rounds the corner, so what comes out is the second and third harmonic — which is
- * what "driven" sounds like as opposed to "broken".
- *
- * Odd-length so there is a sample exactly at zero, which keeps silence silent.
- */
-function softClipCurve(): Float32Array<ArrayBuffer> {
-  const samples = 2049;
-  const curve = new Float32Array(new ArrayBuffer(2049 * 4));
-  for (let i = 0; i < samples; i++) {
-    const x = (i / (samples - 1)) * 2 - 1;
-    curve[i] = Math.tanh(x * SLAM_CLIP_KNEE) / Math.tanh(SLAM_CLIP_KNEE);
-  }
-  return curve;
-}
-
-function impulseResponse(context: BaseAudioContext, seconds: number, decay: number): AudioBuffer {
-  const rate = context.sampleRate;
-  const length = Math.max(1, Math.floor(rate * seconds));
-  const buffer = context.createBuffer(2, length, rate);
-  for (let channel = 0; channel < 2; channel++) {
-    const data = buffer.getChannelData(channel);
-    for (let i = 0; i < length; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** decay;
-    }
-  }
-  return buffer;
 }

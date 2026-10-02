@@ -255,7 +255,7 @@ function runStatement(s: Stmt, ctx: StmtCtx): void {
         );
       }
       const taken = condition.k === 'runtime' || numberOf(condition, 'a condition') !== 0;
-      const branch = taken ? s.then : s.otherwise;
+      const branch = taken ? s.body : s.otherwise;
       if (branch !== null) runStatements(branch, nested(ctx, ctx.self));
       return;
     }

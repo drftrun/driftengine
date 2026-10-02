@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { BODY_DYNAMIC, BODY_STATIC } from './bodies.ts';
-import { EVENT_ENTER, EVENT_EXIT, EVENT_STAY } from './events.ts';
 import { boxShape, sphereShape } from './shape.ts';
 import { PhysicsWorld } from './world.ts';
 

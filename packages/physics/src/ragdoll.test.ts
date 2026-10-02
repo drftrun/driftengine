@@ -149,12 +149,12 @@ describe('building a ragdoll', () => {
     const qy = world.bodies.rotY[b] ?? 0;
     const qz = world.bodies.rotZ[b] ?? 0;
     const qw = world.bodies.rotW[b] ?? 1;
-    const tx = 2 * (qy * 0 - qz * 1);
-    const ty = 2 * (qz * 0 - qx * 0);
-    const tz = 2 * (qx * 1 - qy * 0);
-    const ax = 0 + qw * tx + (qy * tz - qz * ty);
-    const ay = 1 + qw * ty + (qz * tx - qx * tz);
-    const az = 0 + qw * tz + (qx * ty - qy * tx);
+    // v + qw t + q x t, with t = 2 (q x v) for the axis v = (0, 1, 0); t has no y.
+    const tx = -2 * qz;
+    const tz = 2 * qx;
+    const ax = qw * tx + qy * tz;
+    const ay = 1 + (qz * tx - qx * tz);
+    const az = qw * tz - qy * tx;
     expect(ax).toBeCloseTo(1, 4);
     expect(ay).toBeCloseTo(0, 4);
     expect(az).toBeCloseTo(0, 4);

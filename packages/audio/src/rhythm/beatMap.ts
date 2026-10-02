@@ -182,7 +182,7 @@ function buildCurves(samples: Float32Array, sampleRate: number): Curves {
     const start = hop * hopSamples;
     measureBands(samples, start, hopSamples, filters, energies);
 
-    const { sub, punch, sweet, bassline, mud, lowMid, high } = energies;
+    const { sub, punch, bassline, mud, lowMid, high } = energies;
 
     if (!settling) {
       energyAccum += sub + punch + bassline + mud + lowMid + high;

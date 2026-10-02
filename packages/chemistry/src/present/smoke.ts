@@ -41,9 +41,6 @@ export interface SmokeOptions {
 const SOOT_ALBEDO = 0.03;
 const AEROSOL_ALBEDO = 0.92;
 
-/** The extinction the field's own visibility is derived from, m²/kg. */
-const SOOT_EXTINCTION = 8700;
-
 /**
  * The colour of a mixture of soot and aerosol, by mass.
  *

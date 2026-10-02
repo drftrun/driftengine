@@ -840,7 +840,7 @@ test('every import the docs print names something the package exports', () => {
   };
 
   const missing = [];
-  for (const file of walk(ROOT, (f) => /\.md$/.test(f))) {
+  for (const file of walk(ROOT, (f) => f.endsWith('.md'))) {
     if (path.basename(file) === 'PORTING.md' || namesFuture(file)) continue;
     for (const statement of readFileSync(file, 'utf8').matchAll(
       /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*'@driftengine\/([a-z]+)'/g,

@@ -22,13 +22,20 @@ tyres to ice.
 ## The car
 
 ```ts sample=vehicle/main.ts#car
-/** The chassis, a box of about 1,200 kilograms, and four wheels: the front ones steer, all drive. */
+/**
+ * The chassis, a box of about 1,200 kilograms, and four wheels: the front ones steer, all drive.
+ *
+ * It starts on the line through the middle of the ramp, facing it, so the first press of W goes
+ * straight up and off the end. Seven metres short of the ramp the chassis clears the outer ring of
+ * cones by almost a metre; started at twelve, it overlapped one and came to rest propped on it with
+ * two wheels in the air, and no key moved it.
+ */
 const chassis = world.addBody({
   type: BODY_DYNAMIC,
   shape: boxShape(0.9, 0.35, 2),
   x: 18,
   y: 1.2,
-  z: -12,
+  z: -7,
   density: 240,
 });
 const WHEELS = [

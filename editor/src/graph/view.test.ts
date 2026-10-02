@@ -135,7 +135,7 @@ describe('one transform, used by the draw and by the hit test', () => {
 
 describe('hit testing reads what was drawn', () => {
   it('finds a port at its drawn position', () => {
-    const { view, geometry } = scene();
+    const { geometry } = scene();
     expect(drawnPortPoint(geometry, 1, 'output', 0, xy)).toBe(true);
     expect([...xy]).toEqual([140, 28]);
     expect(hitTestGraph(geometry, 140, 28)).toEqual({
@@ -166,7 +166,7 @@ describe('hit testing reads what was drawn', () => {
   });
 
   it('prefers a port to the body it sits on', () => {
-    const { view, geometry } = scene();
+    const { geometry } = scene();
     /* Two pixels inside the right edge, which is both inside the node's box and on its port. */
     expect(hitTestGraph(geometry, 138, 28)).toEqual({
       kind: 'port',
@@ -178,7 +178,7 @@ describe('hit testing reads what was drawn', () => {
   });
 
   it('finds nothing where nothing is', () => {
-    const { view, geometry } = scene();
+    const { geometry } = scene();
     expect(hitTestGraph(geometry, 900, 900)).toBeNull();
   });
 
@@ -216,7 +216,7 @@ describe('hit testing reads what was drawn', () => {
   });
 
   it('follows the link where it was drawn, not the straight line', () => {
-    const { view, geometry } = scene();
+    const { geometry } = scene();
     /*
      * The curve from (140, 28) to (340, 228) passes through (199.375, 59.25) at a quarter along.
      * The nearest point of the chord is (185.3125, 73.3125), nineteen and nine tenths away — so a

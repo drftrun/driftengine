@@ -182,13 +182,6 @@ export function syntheticXr(options: SyntheticOptions = {}): SyntheticSystem {
       };
     });
 
-    const viewport = (index: number): XrViewport => ({
-      x: index * 512,
-      y: 0,
-      width: 512,
-      height: 512,
-    });
-
     const frameFor = (session: SyntheticSession): XrFrame => ({
       session,
       getViewerPose(): XrViewerPose | null {

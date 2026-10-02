@@ -48,7 +48,7 @@
  * figure alone does not say which this is.
  *
  * `scripts/bounce-check.mjs` reads `__bounceCheck`. Nothing here is engine API and nothing under
- * `packages/*​/src` may import it.
+ * `packages/<name>/src` may import it.
  */
 
 import {

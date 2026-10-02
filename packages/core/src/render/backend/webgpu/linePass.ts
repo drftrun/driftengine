@@ -5,7 +5,6 @@ import {
   LINE_VERT_WGSL,
 } from '../../shaders/generated/line.wgsl.ts';
 import { buildSegmentQuads } from '../../segmentQuads.ts';
-import type { LineSegments } from '../../linePoints.ts';
 import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';

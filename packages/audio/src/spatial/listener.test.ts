@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { stubContext, type StubContext } from '../audioHarness.ts';
+import { stubContext } from '../audioHarness.ts';
 import { MixConsole } from '../mix/console.ts';
 import { createListener } from './listener.ts';
 

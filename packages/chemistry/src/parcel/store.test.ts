@@ -9,7 +9,6 @@ import { ParcelStore } from './store.ts';
 const T_MELT = 273.15;
 const T_BOIL = 373.15;
 const CP_LIQUID = 4182;
-const VAPORISATION = 2256400;
 
 describe('ParcelStore', () => {
   let species: SpeciesRegistry;

@@ -377,7 +377,6 @@ class StormSeaHandle implements DemoHandle {
   constructor(renderer: RendererApi, canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.renderer = renderer;
-    const renderer_ = renderer;
     this.random = mulberry32(0x51e_a570);
 
     this.tower = renderer.createMesh(buildLighthouse(this.random));

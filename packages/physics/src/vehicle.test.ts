@@ -227,7 +227,6 @@ describe('the vehicle as a whole', () => {
     // The chassis's own up, still pointing up.
     const qx = world.bodies.rotX[chassis] ?? 0;
     const qz = world.bodies.rotZ[chassis] ?? 0;
-    const qw = world.bodies.rotW[chassis] ?? 1;
     const upY = 1 - 2 * (qx * qx + qz * qz);
     expect(upY).toBeGreaterThan(0.8);
   });

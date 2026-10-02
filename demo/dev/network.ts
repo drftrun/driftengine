@@ -112,9 +112,10 @@ function cube(size: number, colour: Vec3): MeshData {
 }
 
 /** One peer: a world with two bodies, a rewind loop over it, and the input log they share. */
-function makePeer(seedOffset: number) {
+function makePeer() {
   const world = new World();
-  const rng = savableMulberry32(9001 + seedOffset * 0);
+  /* One seed for both peers: a rollback peer replays the other's inputs on the same sequence. */
+  const rng = savableMulberry32(9001);
   const entities = [world.create(), world.create()];
   for (const e of entities) world.add(e, Body, { x: 0, vx: 0 });
 
@@ -170,8 +171,8 @@ const IMPAIRED: Impairment = {
 /** A lockstep pair, run to completion. `redundancy` of one is the control. */
 function runLockstep(redundancy: number): { a: number; b: number; replays: number } {
   const net = new LoopbackNetwork();
-  const a = makePeer(0);
-  const b = makePeer(1);
+  const a = makePeer();
+  const b = makePeer();
   const sessionA = new LockstepSession({
     transport: net.open({ self: 0, seed: 11, impairment: IMPAIRED }),
     loop: a.loop,
@@ -206,8 +207,8 @@ function runLockstep(redundancy: number): { a: number; b: number; replays: numbe
 /** An authority and a client. `predict` off is the control. */
 function runAuthority(predict: boolean): { client: number; host: number; corrections: number } {
   const net = new LoopbackNetwork();
-  const hostSide = makePeer(0);
-  const clientSide = makePeer(1);
+  const hostSide = makePeer();
+  const clientSide = makePeer();
 
   const replicatorFor = (side: ReturnType<typeof makePeer>): Replicator => {
     const view = new DataView(new ArrayBuffer(16));

@@ -126,7 +126,7 @@ class Peer {
   }
 }
 
-function adapterFor(peer: Peer): NavigationAdapter<Peer> {
+function adapterFor(): NavigationAdapter<Peer> {
   return {
     graphOf: (world) => world.graph,
     positionOf: (world, agentId, out) => {
@@ -220,8 +220,7 @@ function side(
   >],
 ): Side {
   const registry = new ToolRegistry<Peer>();
-  for (const tool of navigationBridge(adapterFor(peer), { snapDistance: 6 }))
-    registry.register(tool);
+  for (const tool of navigationBridge(adapterFor(), { snapDistance: 6 })) registry.register(tool);
   const log = new CommandLog(512);
   const session = new AgentSession<Peer>({
     agentId: AGENTS[0] as string,

@@ -21,7 +21,6 @@ import {
   createEnvironment,
   createLineSegments,
 } from '@driftengine/core';
-import type { MeshHandle, Vec3 } from '@driftengine/core';
 import { bindModule, registerEntityModule } from '@driftengine/script';
 import type { ComponentRegistry } from '@driftengine/script';
 import { loadModule, patchModule } from 'driftscript';

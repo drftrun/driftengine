@@ -377,7 +377,7 @@ describe('the geometry a rig hangs off', () => {
     const mesh = read(rigged()).meshes[0];
 
     expect(mesh?.indices.length, 'a quad, fanned into two triangles').toBe(6);
-    expect(mesh?.positions.length ?? 0 / 3, 'over the four control points it names').toBe(4 * 3);
+    expect(mesh?.positions.length ?? 0, 'over the four control points it names').toBe(4 * 3);
     expect(Array.from(mesh?.indices ?? []), 'the fan, in order').toEqual([0, 1, 2, 0, 2, 3]);
   });
 });

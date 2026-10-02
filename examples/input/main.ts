@@ -317,7 +317,9 @@ const BOOSTING: Vec3 = [1.6, 0.7, 0.15];
 const BRAKING: Vec3 = [1.4, 0.12, 0.08];
 const rimTint: Vec3 = [0, 0, 0];
 const model = new Float32Array(IDENTITY);
-const readout = createReadout(renderer, 3);
+/* Clear of the bindings panel, which shares the top of the frame with these lines. */
+const bindings = document.querySelector<HTMLElement>('#bindings');
+const readout = createReadout(renderer, 3, { clearRight: () => (bindings?.offsetWidth ?? 0) + 24 });
 let time = 0;
 
 /** What to press, said for the device the player last used. */

@@ -31,7 +31,7 @@
  *   - **The first frame right and the rest black on WebGL2** — `prepare` left its own framebuffer
  *     bound, and the frame after it drew into a 64-pixel texture.
  *
- * Nothing here is engine API, and nothing under `packages/*​/src` may import it.
+ * Nothing here is engine API, and nothing under `packages/<name>/src` may import it.
  */
 import { createPassAttachment, createRenderer } from '../../packages/core/src/index';
 import type {

@@ -1,7 +1,7 @@
 {
   "name": "@driftengine/workspace",
   "private": true,
-  "version": "4.7.3",
+  "version": "4.7.4",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [
@@ -63,13 +63,13 @@
     "native:startup": "node demo/native/startup.mjs"
   },
   "devDependencies": {
-    "@driftengine/assets": "4.7.3",
-    "@driftengine/core": "4.7.3",
-    "@driftengine/drft": "4.7.3",
+    "@driftengine/assets": "4.7.4",
+    "@driftengine/core": "4.7.4",
+    "@driftengine/drft": "4.7.4",
     "@jsquash/jpeg": "1.6.0",
     "@types/node": "^26.2.0",
     "@webgpu/glslang": "^0.0.15",
-    "driftscript": "1.13.1",
+    "driftscript": "1.14.0",
     "esbuild": "0.28.2",
     "oxlint": "^1.82.0",
     "prettier": "^3.9.6",

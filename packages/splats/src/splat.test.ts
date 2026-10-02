@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { halfToFloat } from './half.ts';
-import { SPLAT_WORDS } from './splatData.ts';
 import { SPLAT_RECORD_BYTES, readSplat } from './splat.ts';
 
 /** One record, built from known values rather than captured from a run. */
@@ -56,7 +55,8 @@ describe('readSplat', () => {
      * scales — which is the property that says the reorder and the encoding are both right.
      */
     const data = readSplat(fileOf(record()));
-    const at = 0 * SPLAT_WORDS;
+    /* The first splat, whose words start at zero. */
+    const at = 0;
     const pair = (word: number): number[] => [
       halfToFloat((data.packed[word] ?? 0) & 0xffff),
       halfToFloat((data.packed[word] ?? 0) >>> 16),

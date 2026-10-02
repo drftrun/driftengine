@@ -70,8 +70,10 @@ The other options:
 ## Baking and following
 
 ```ts sample=driftlight/main.ts#frame
-/* A few bricks a frame until the field is whole; it then fades in over half a second. */
-if (!field.ready) field.bake(64);
+/* Bricks until four milliseconds of this frame are spent, so the walk stays smooth on a slow
+   machine too; once the field is whole it fades in over half a second. */
+const until = performance.now() + 4;
+while (!field.ready && performance.now() < until) field.bake(4);
 
 const [x, y, z] = camera.position;
 selectPointLights(candles, x, y, z, chosen, time, DEFAULT_POINT_LIGHT_VIEW_RANGE);
@@ -86,10 +88,12 @@ field.follow(chosen.complete, x, y, z, time - shadedAt);
 shadedAt = time;
 ```
 
-`bake(bricks)` bakes that many bricks and no more, so a scene paces it as it paces anything else it
-builds. `progress` is how much is done, for a loading screen, and `ready` says the field is whole.
-The volume is not used until every brick has landed, then fades in. The bake reads no clock, so it
-is deterministic.
+`bake(bricks)` bakes that many bricks and no more, and reads no clock, so the build is
+deterministic and pacing it is the scene's. The example bakes four at a time until four
+milliseconds of the frame are gone, so the walk stays smooth while the field fills, on a slow
+machine too; a fixed count per frame costs a fast machine nothing and stalls a slow one. `progress`
+is how much is done, for a loading screen, and `ready` says the field is whole. The volume is not
+used until every brick has landed, then fades in.
 
 `follow(complete, x, y, z, dt)` tells the field where the frame's exact choice is complete. The
 selection's `complete` is a distance from its centre: a point nearer than that is reached only by

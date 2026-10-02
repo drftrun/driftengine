@@ -38,10 +38,8 @@ import {
   prepareFbxInflate,
   prepareZipInflate,
   readModel,
-  readZip,
   weldMesh,
 } from '@driftengine/assets';
-import type { Inflate } from '@driftengine/assets';
 
 /** Keeps a missing image's ordinal meaning what it meant. See the loop that uses it. */
 const WHITE_PIXEL = new Uint8Array([255, 255, 255, 255]);

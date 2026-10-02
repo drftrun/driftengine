@@ -38,7 +38,6 @@ import type { ModelProgress, ModelReply, ModelRequest } from './modelFormats';
 import {
   Camera,
   MeshBuilder,
-  TAU,
   buildShellFill,
   createEnvironment,
   createPointLightBuffer,
@@ -56,12 +55,10 @@ import type {
   RenderBackend,
   RendererApi,
   ShellStation,
-  SurfaceTexture,
   Vec3,
 } from '../packages/core/src/index';
-import { CODEC_PNG, CODEC_RAW, CODEC_WEBP, streamDrft } from '@driftengine/drft';
-import type { DrftMaterial, DrftTexture } from '@driftengine/drft';
-import { DEFAULT_COARSE_CELLS, DrftLoader, TextureSet } from '@driftengine/assets';
+import type { DrftMaterial } from '@driftengine/drft';
+import { DEFAULT_COARSE_CELLS, DrftLoader } from '@driftengine/assets';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -155,7 +152,6 @@ const FLOOR: Vec3 = [0.2, 0.21, 0.23];
 const FLOOR_DARK: Vec3 = [0.14, 0.145, 0.16];
 const WALL: Vec3 = [0.62, 0.63, 0.66];
 const TRIM: Vec3 = [0.32, 0.34, 0.38];
-const LIGHT_PANEL: Vec3 = [1, 0.98, 0.94];
 const TURNTABLE: Vec3 = [0.1, 0.105, 0.115];
 /** The recess between floor tiles, and the panel the far wall puts something on. */
 const FLOOR_JOINT: Vec3 = [0.1, 0.105, 0.12];
@@ -558,39 +554,6 @@ function paint(mesh: MeshData, material: DrftMaterial | undefined): MeshData {
 }
 
 /**
- * An embedded texture into something the GPU can take.
- *
- * `createImageBitmap` is the browser's own decoder, so a `.drft` carrying JPEG, PNG or WEBP
- * costs this engine no decoder and no dependency. `RAW` is uncompressed RGBA8 and is what
- * the baker substitutes for a texture it could not find, so it has to work: without it a
- * missing file would take the whole model down at load rather than leaving one surface flat.
- *
- * **Straight alpha and no colour conversion**, as `@driftengine/assets`' loader decodes: premultiplied,
- * the emblem's transparent texels lose the colour padded past its edge and filtering draws that as
- * a dark rim, and colour management would rewrite the normal and ORM maps' values.
- */
-async function decode(texture: DrftTexture): Promise<ImageBitmap> {
-  if (texture.codec === CODEC_RAW) {
-    const pixels = new Uint8ClampedArray(texture.bytes.slice().buffer);
-    return createImageBitmap(new ImageData(pixels, texture.width, texture.height), AS_AUTHORED);
-  }
-  const type =
-    texture.codec === CODEC_PNG
-      ? 'image/png'
-      : texture.codec === CODEC_WEBP
-        ? 'image/webp'
-        : 'image/jpeg';
-  /* `slice` because the bytes are a view over the whole asset, and a Blob over the view
-     would otherwise carry the entire file. */
-  return createImageBitmap(new Blob([texture.bytes.slice()], { type }), AS_AUTHORED);
-}
-
-const AS_AUTHORED = {
-  premultiplyAlpha: 'none',
-  colorSpaceConversion: 'none',
-} as const satisfies ImageBitmapOptions;
-
-/**
  * What a car looks like from the side, for the engine's interior fill.
  *
  * **The only part of this the scene still owns.** Closing the inside of a hollow model is an
@@ -883,9 +846,10 @@ function buildRoom(): MeshData {
     rx /= across;
     rz /= across;
     /* up = forward x right, which for a right-handed frame closes it. */
-    const upx = fy * rz - fz * 0;
+    /* Right has no y, so two of the cross product's terms are zero. */
+    const upx = fy * rz;
     const upy = fz * rx - fx * rz;
-    const upz = fx * 0 - fy * rx;
+    const upz = -fy * rx;
     const upLength = Math.hypot(upx, upy, upz) || 1;
 
     const barrel = new MeshBuilder();

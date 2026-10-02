@@ -1,5 +1,31 @@
 [
   {
+    "version": "4.7.4",
+    "date": "2026-10-02",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A component's declared field values fill every field an entity is not given: an add with some fields, a prefab that leaves one out, a script's instantiate, a save from before the field.",
+        "text": "**`driftscript` moves to 1.14.0**, whose compiler now carries the value each component field was declared with (`seed: u32 = 7`). Before, the value was parsed and dropped, so every entity started at zero and nothing said so. A component type has `defaults`, and `defineComponent(schema, defaults)` refuses one that names no field or does not fit its column. The store fills an omitted field from them, so `world.add` with some of the fields, a prefab that leaves one out and a script's `ecs.instantiate` all start at the declared values; a `null` given for an optional field is still its absence. `deserializeWorld` gives a field the saved scene does not have its declared value, so a save loads across an added field with what the component says. DriftScript 1.14.0 also type-checks a component's defaults, which nothing did before, and refuses one that is computed (DS0275)."
+      },
+      {
+        "kind": "added",
+        "short": "The manual gains XR, and a Systems section that opens with saves and preferences, each chapter built on an example that runs live and keeps its behaviour in DriftScript.",
+        "text": "**XR** covers asking a browser what it can present, entering a session, and reading the head, the controllers and a tracked hand, from TypeScript and from `drift/xr`, through the simulated runtime the package tests against. It says plainly that the renderer cannot draw into a headset yet, and the xr README's sample, which called `renderer.setViewport` and `renderer.draw`, now stops where the renderer does. **Saves and preferences** covers the synchronous store and why it is synchronous, preferences checked field by field, `RemoteSaveStore` over a backend that answers later, `serializeWorld` and `deserializeWorld` with a save read back across an added field, and `drift/persistence`, around a garden bed that saves to a server the page can make slow or take offline."
+      },
+      {
+        "kind": "fixed",
+        "short": "Four examples behave on any machine: the vehicle starts clear of the cones, readouts fit a small frame, chemistry holds 60 fps, and DriftLight starts smoothly on a slow CPU.",
+        "text": "The vehicle spawned overlapping a cone and came to rest on it with two wheels in the air; it starts on the ramp's line. A readout is sized to the frame it is in, so the manual's 768 by 432 frames no longer cut lines off, and it can keep clear of a panel. Chemistry stepped a quarter second sixty times a second and drew 3 fps once smoke filled the air; it steps a sixteenth, about four times the clock, at 60 fps, and `stage.run` takes loop options so a slow frame catches up two ticks at most. DriftLight baked 64 bricks a frame and ran at 1 to 8 fps for its first ten seconds on a CPU three times slower; it bakes for four milliseconds a frame and stays above 18. Under that throttling 44 of the 46 examples hold 57 to 60 fps, and chemistry 16."
+      },
+      {
+        "kind": "changed",
+        "short": "The repository lints without a warning: oxlint's 170 are fixed, one of them a test that divided its fallback where it meant to check a length.",
+        "text": "Unused imports, constants, functions, variables and parameters are gone, products by zero are written as the terms that remain, and optional chains in tests stay optional to the end. Inside the native host, the window, the document and the canvas take their `on<type>` attributes from a base class that declares them, in place of an interface merged into each class, and fdlibm's constants are spelled with the digits a double holds, each parsing to the same value."
+      }
+    ]
+  },
+  {
     "version": "4.7.3",
     "date": "2026-10-02",
     "entries": [

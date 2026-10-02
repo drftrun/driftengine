@@ -134,7 +134,7 @@ test('AN ARRAY COPIES EVERY IMAGE TO ITS OWN LAYER and is read as one 2d-array v
   const images = [0, 1, 2].map(() => ({ width: 4, height: 4 }) as unknown as TexImageSource);
   const array = new GpuSurfaceTexture(device, PIPELINES, images, { mipmap: false });
   const create = device.createTexture as unknown as ReturnType<typeof vi.fn>;
-  expect((create.mock.calls[0]?.[0] as GPUTextureDescriptor).size).toEqual([4, 4, 3]);
+  expect((create.mock.calls[0]?.[0] as GPUTextureDescriptor | undefined)?.size).toEqual([4, 4, 3]);
   const copy = device.queue.copyExternalImageToTexture as unknown as ReturnType<typeof vi.fn>;
   expect(copy.mock.calls.map((call) => [call[0].source, call[1].origin])).toEqual([
     [images[0], [0, 0, 0]],

@@ -25,7 +25,7 @@ import type { SubstanceRegistry } from '../substance/registry.ts';
 import { conductShells } from './conduction.ts';
 import { MAX_SUBSTANCE_SPECIES, reactShell } from '../reaction/solver.ts';
 import { ELEMENT_COUNT } from '../element/elements.ts';
-import { MAX_SHELLS, shellGeometry } from './shells.ts';
+import { MAX_SHELLS } from './shells.ts';
 import {
   TIER_CADENCE,
   TIER_HERO,

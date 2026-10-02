@@ -83,7 +83,8 @@ describe('temperatureFromCapacity', () => {
   it('round-trips against sensibleEnthalpy for a mixture', () => {
     /* Half water and half steam by mass, which is what a boiling shell holds. */
     const A = 0.5 * 4182 + 0.5 * 1996;
-    const B = 0.5 * 0 + 0.5 * 0.4;
+    /* Water's capacity has no slope with temperature here, so only steam's half contributes. */
+    const B = 0.5 * 0.4;
     for (const dT of [-60, 0, 60, 300]) {
       const h = A * dT + (B * dT * dT) / 2;
       expect(temperatureFromCapacity(A, B, h)).toBeCloseTo(STANDARD_TEMPERATURE + dT, 6);

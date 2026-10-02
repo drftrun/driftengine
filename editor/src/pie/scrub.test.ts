@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Snapshotter } from '@driftengine/network';
 import { advancePie, startPie, type PieSession } from './session.ts';
-import { createTimeline, fingerprintAt, recordFrame, type Timeline } from './timeline.ts';
+import { createTimeline, fingerprintAt, recordFrame } from './timeline.ts';
 import { scrubTo, sessionFrame } from './scrub.ts';
 
 interface World {

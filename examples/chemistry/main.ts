@@ -6,7 +6,8 @@
  * The camp is a DriftScript module through `drift/chemistry`: the rain, a keeper who lays a new log
  * on the fire, seasoned or green, and a notebook read from the chemistry's event buffer. Lay a green
  * log and it steams and does not catch; let it rain and the smoke turns white; let the wind blow and
- * the embers brighten. The fire runs fifteen times faster than the clock, a quarter second a tick.
+ * the embers brighten. The fire runs about four times faster than the clock, a sixteenth of a
+ * second a tick.
  */
 import {
   MeshBuilder,
@@ -42,8 +43,17 @@ const { renderer, camera } = stage;
 // #region install
 /** Three families of substance, and a world with air over it: one metre cells, 8³ to a chunk. */
 const chem = installChemistry({ libraries: [ORGANIC, FOOD, METAL], maxChunks: 8 });
-/** The fire's own fixed step: a quarter second of chemistry each tick of the page. */
-const DT = 0.25;
+/**
+ * The fire's own fixed step: a sixteenth of a second of chemistry each tick of the page, so it runs
+ * about four times faster than the clock.
+ *
+ * **Fifteen times was the first choice, and it was more than the air can afford.** The air steps in
+ * substeps a step's length decides, so what it costs follows how many seconds of fire pass each
+ * second: about 77 ms of a desktop's time per second of fire with the smoke in two chunks. A quarter
+ * second sixty times a second asked for more than a second of work every second, and the page fell
+ * to three frames a second while the fire went on burning.
+ */
+const DT = 1 / 16;
 /** The hearth sits at (4, 4, 4) in the air's cells, and the scene is drawn in those same metres. */
 const HEARTH: Vec3 = [4, 4, 4];
 // #endregion
@@ -298,108 +308,117 @@ const chosen = createPointLightBuffer(renderer.shadedLights);
 const readout = createReadout(renderer, 3);
 let ticks = 0;
 
-stage.run({
-  simulate() {
-    ticks += 1;
-    // #region tick
-    /* The embers radiate; every parcel is offered a flame, which is one of the five conditions. */
-    chem.world.sources.clear();
-    chem.world.sources.add(hx, hy + 0.05, hz, 1150, 0.2, 90000);
-    chem.world.contacts.clear();
-    for (const thing of things) chem.parcels.ignite(thing.parcel);
-    exported<Weather>(camp, 'weather')(notes, chem, DT);
-    chem.world.simulate(DT, wind, 0);
-    /* The events are cleared at the top of the next step, so they are read now. */
-    exported<Notice>(camp, 'notice')(notes, chem, named('kettle').parcel, named('ice').parcel);
-    // #endregion
-  },
-  render() {
-    camera.fovYDeg = 50;
-    camera.position[0] = hx + 1.25;
-    camera.position[1] = hy + 1.05;
-    camera.position[2] = hz + 1.55;
-    camera.lookAt(hx - 0.05, hy + 0.08, hz);
+/*
+ * At most two ticks of catching up a frame. A step of air costs about 11 ms on a desktop, and a
+ * machine a third as fast cannot keep up with sixty a second; with the loop's own quarter second to
+ * catch up it ran fifteen ticks a frame and drew three frames a second. Two keeps the picture
+ * moving there, and the fire runs behind the clock instead.
+ */
+stage.run(
+  {
+    simulate() {
+      ticks += 1;
+      // #region tick
+      /* The embers radiate; every parcel is offered a flame, which is one of the five conditions. */
+      chem.world.sources.clear();
+      chem.world.sources.add(hx, hy + 0.05, hz, 1150, 0.2, 90000);
+      chem.world.contacts.clear();
+      for (const thing of things) chem.parcels.ignite(thing.parcel);
+      exported<Weather>(camp, 'weather')(notes, chem, DT);
+      chem.world.simulate(DT, wind, 0);
+      /* The events are cleared at the top of the next step, so they are read now. */
+      exported<Notice>(camp, 'notice')(notes, chem, named('kettle').parcel, named('ice').parcel);
+      // #endregion
+    },
+    render() {
+      camera.fovYDeg = 50;
+      camera.position[0] = hx + 1.25;
+      camera.position[1] = hy + 1.05;
+      camera.position[2] = hz + 1.55;
+      camera.lookAt(hx - 0.05, hy + 0.08, hz);
 
-    // #region surface
-    /* Every reading a picture needs: char colour, Planck glow, wetness, and what is left of it. */
-    writeSurface(
-      chem.parcels,
-      things.map((thing) => thing.parcel),
-      surface,
-    );
-    emitSmoke(chem.air, hx - 4, hy, hz - 4, 8, smoke, {
-      threshold: 2e-6,
-      size: 0.3,
-      wind: wind * 0.3,
-    });
-    /* The air's cells are a metre across, so a puff in the cell the camera is in fills the view. */
-    for (let i = 0; i < smoke.count; i += 1) {
-      const dx = (smoke.positions[i * 3] ?? 0) - camera.position[0];
-      const dy = (smoke.positions[i * 3 + 1] ?? 0) - camera.position[1];
-      const dz = (smoke.positions[i * 3 + 2] ?? 0) - camera.position[2];
-      if (dx * dx + dy * dy + dz * dz < 1.5) smoke.alphas[i] = 0;
-    }
-    // #endregion
-
-    renderer.beginShadowPass(lightMatrix, 'static');
-    renderer.drawShadowCasters((sink) => sink.mesh(stoneMesh, IDENTITY));
-    renderer.endShadowPass();
-    selectPointLights(
-      fireLight,
-      camera.position[0],
-      camera.position[1],
-      camera.position[2],
-      chosen,
-      ticks / 60,
-    );
-    env.lightCount = chosen.count;
-    env.lightPositions = chosen.positions;
-    env.lightColors = chosen.colors;
-    env.lightRadii = chosen.radii;
-    env.lightSourceRadii = chosen.sourceRadii;
-    env.lightWeights = chosen.weights;
-    renderer.beginFrame([0.02, 0.025, 0.04]);
-    renderer.bindMeshPass(camera, env);
-    renderer.drawMesh(stoneMesh, IDENTITY);
-    renderer.drawMesh(emberMesh, IDENTITY);
-    things.forEach((thing, at) => {
-      if (!chem.parcels.alive(thing.parcel) || thing.label === 'kettle') return;
-      const char = chem.parcels.charFractionOf(thing.parcel);
-      const step = Math.min(CHAR_STEPS - 1, Math.round(char * (CHAR_STEPS - 1)));
-      const scale = surface.scales[at] ?? 1;
-      /* The glow is an emissive map one texel wide and white, scaled to the colour the chemistry
-         says this thing radiates: `emissiveScale` scales a map, and without one it does nothing. */
-      renderer.setMaterial({
-        emissive: glowMap,
-        emissiveScale: [
-          surface.emissives[at * 3] ?? 0,
-          surface.emissives[at * 3 + 1] ?? 0,
-          surface.emissives[at * 3 + 2] ?? 0,
-        ],
+      // #region surface
+      /* Every reading a picture needs: char colour, Planck glow, wetness, and what is left of it. */
+      writeSurface(
+        chem.parcels,
+        things.map((thing) => thing.parcel),
+        surface,
+      );
+      emitSmoke(chem.air, hx - 4, hy, hz - 4, 8, smoke, {
+        threshold: 2e-6,
+        size: 0.3,
+        wind: wind * 0.3,
       });
-      model.set([scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, ...thing.at, 1]);
-      renderer.drawMesh(thing.meshes[step] as MeshHandle, model);
-    });
-    renderer.setMaterial(null);
-    renderer.drawParticles(smokeBatch, smoke, camera, env, ticks * DT);
+      /* The air's cells are a metre across, so a puff in the cell the camera is in fills the view. */
+      for (let i = 0; i < smoke.count; i += 1) {
+        const dx = (smoke.positions[i * 3] ?? 0) - camera.position[0];
+        const dy = (smoke.positions[i * 3 + 1] ?? 0) - camera.position[1];
+        const dz = (smoke.positions[i * 3 + 2] ?? 0) - camera.position[2];
+        if (dx * dx + dy * dy + dz * dz < 1.5) smoke.alphas[i] = 0;
+      }
+      // #endregion
 
-    const celsius = (label: string): string =>
-      `${(chem.parcels.surfaceTemperatureOf(named(label).parcel) - 273.15).toFixed(0)}`;
-    const seconds = Math.floor(ticks * DT);
-    const oak = named('oak').parcel;
-    readout.set(
-      0,
-      `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}  OAK ${celsius('oak')}C, CORE ${(chem.parcels.coreTemperatureOf(oak) - 273.15).toFixed(0)}C, ${(chem.parcels.charFractionOf(oak) * 100).toFixed(0)}% CHAR`,
-    );
-    readout.set(
-      1,
-      `KETTLE ${celsius('kettle')}C  ICE ${celsius('ice')}C  NAIL ${celsius('nail')}C  COIN ${celsius('coin')}C`,
-    );
-    readout.set(
-      2,
-      `${notes.caught} CAUGHT  ${notes.putOut} PUT OUT${notes.boiled ? '  KETTLE BOILED' : ''}${notes.melting ? '  ICE MELTING' : ''}`,
-    );
-    readout.draw(ticks / 60);
-    renderer.endFrame();
+      renderer.beginShadowPass(lightMatrix, 'static');
+      renderer.drawShadowCasters((sink) => sink.mesh(stoneMesh, IDENTITY));
+      renderer.endShadowPass();
+      selectPointLights(
+        fireLight,
+        camera.position[0],
+        camera.position[1],
+        camera.position[2],
+        chosen,
+        ticks / 60,
+      );
+      env.lightCount = chosen.count;
+      env.lightPositions = chosen.positions;
+      env.lightColors = chosen.colors;
+      env.lightRadii = chosen.radii;
+      env.lightSourceRadii = chosen.sourceRadii;
+      env.lightWeights = chosen.weights;
+      renderer.beginFrame([0.02, 0.025, 0.04]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawMesh(stoneMesh, IDENTITY);
+      renderer.drawMesh(emberMesh, IDENTITY);
+      things.forEach((thing, at) => {
+        if (!chem.parcels.alive(thing.parcel) || thing.label === 'kettle') return;
+        const char = chem.parcels.charFractionOf(thing.parcel);
+        const step = Math.min(CHAR_STEPS - 1, Math.round(char * (CHAR_STEPS - 1)));
+        const scale = surface.scales[at] ?? 1;
+        /* The glow is an emissive map one texel wide and white, scaled to the colour the chemistry
+         says this thing radiates: `emissiveScale` scales a map, and without one it does nothing. */
+        renderer.setMaterial({
+          emissive: glowMap,
+          emissiveScale: [
+            surface.emissives[at * 3] ?? 0,
+            surface.emissives[at * 3 + 1] ?? 0,
+            surface.emissives[at * 3 + 2] ?? 0,
+          ],
+        });
+        model.set([scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, ...thing.at, 1]);
+        renderer.drawMesh(thing.meshes[step] as MeshHandle, model);
+      });
+      renderer.setMaterial(null);
+      renderer.drawParticles(smokeBatch, smoke, camera, env, ticks * DT);
+
+      const celsius = (label: string): string =>
+        `${(chem.parcels.surfaceTemperatureOf(named(label).parcel) - 273.15).toFixed(0)}`;
+      const seconds = Math.floor(ticks * DT);
+      const oak = named('oak').parcel;
+      readout.set(
+        0,
+        `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}  OAK ${celsius('oak')}C, CORE ${(chem.parcels.coreTemperatureOf(oak) - 273.15).toFixed(0)}C, ${(chem.parcels.charFractionOf(oak) * 100).toFixed(0)}% CHAR`,
+      );
+      readout.set(
+        1,
+        `KETTLE ${celsius('kettle')}C  ICE ${celsius('ice')}C  NAIL ${celsius('nail')}C  COIN ${celsius('coin')}C`,
+      );
+      readout.set(
+        2,
+        `${notes.caught} CAUGHT  ${notes.putOut} PUT OUT${notes.boiled ? '  KETTLE BOILED' : ''}${notes.melting ? '  ICE MELTING' : ''}`,
+      );
+      readout.draw(ticks / 60);
+      renderer.endFrame();
+    },
   },
-});
+  { maxFrameTime: 2 / 60 },
+);

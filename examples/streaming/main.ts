@@ -17,7 +17,6 @@ import {
   Camera,
   MeshBuilder,
   cellCoordsOf,
-  cellIdFrom,
   cellPredictor,
   cellsInRadius,
   computeLightMatrix,

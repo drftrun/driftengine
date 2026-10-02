@@ -194,7 +194,6 @@ test('jittery frames still come out evenly spaced, and never twice for one frame
    */
   const random = jitter(20260802);
   const pacer = new FramePacer(30);
-  const interval = 1000 / 30;
   // The shortest an animation frame can be here: 16.667 ms less the jitter.
   const shortestFrame = 16.667 - 4;
 

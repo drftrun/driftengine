@@ -51,7 +51,6 @@ import {
   CHUNK_MATL,
   CHUNK_TEXS,
   KNOWN_CHUNKS,
-  MATERIAL_ENTRY_BYTES,
   align,
   fourCCName,
   CHUNK_ANIM,

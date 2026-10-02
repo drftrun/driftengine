@@ -19,7 +19,8 @@ const ROOT = new URL('../', import.meta.url).pathname;
  * The engine modules an example's script may import. Most need no host service; the ones that do
  * are handed theirs by the example that uses them: `drift/navigation` its graph, `drift/ecs` its
  * components and prefabs, `drift/chemistry` its world, `drift/behavior` and `drift/ai` the
- * routines and agents they act on, and `drift/audio` its mix and sounds.
+ * routines and agents they act on, `drift/audio` its mix and sounds, `drift/xr` the session it
+ * reads, and `drift/persistence` the store it writes to.
  */
 const SCRIPTED = [
   'drift/render',
@@ -38,6 +39,8 @@ const SCRIPTED = [
   'drift/camera',
   'drift/2d',
   'drift/ui',
+  'drift/xr',
+  'drift/persistence',
 ];
 
 export default {

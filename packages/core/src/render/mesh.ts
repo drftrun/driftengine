@@ -30,8 +30,6 @@ import { validateMeshData } from '@driftengine/drft';
  * well. Both halves are fixed — `flat.ts` normalises the lobe, and this is the width that
  * actually matches.
  */
-/* The engine's fixed lobe, stated once in `vertexDefaults.ts` so both backends read one number. */
-const DEFAULT_ROUGHNESS = ABSENT_ATTRIBUTE['roughness']?.[0] ?? 0.4277;
 
 /** Attribute locations are fixed engine-wide (`layout(location = n)` in GLSL). */
 const ATTR_POSITION = 0;

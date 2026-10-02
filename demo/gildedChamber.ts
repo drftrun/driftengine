@@ -1977,7 +1977,6 @@ class GildedChamberHandle implements DemoHandle {
     this.gl = canvas.getContext('webgl2');
     this.canvas = canvas;
     this.renderer = renderer;
-    const renderer_ = renderer;
 
     const chamber = buildChamber();
     this.chamber = renderer.createMesh(chamber.mesh);

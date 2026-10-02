@@ -89,7 +89,7 @@ test('GELU IS THE EXACT ONE, x·Φ(x), NOT THE tanh APPROXIMATION', () => {
   gelu(Float32Array.from([-3, 0, 3]), out);
   expect(out[0]).toBeCloseTo(-0.0040496940948902, 7);
   expect(out[1]).toBe(0);
-  expect(out[2]).toBeCloseTo(2.9959503059051097, 6);
+  expect(out[2]).toBeCloseTo(2.99595030590511, 6);
 });
 
 test('SOFTMAX OF LOGITS NEAR A THOUSAND IS A DISTRIBUTION, NOT NaN', () => {

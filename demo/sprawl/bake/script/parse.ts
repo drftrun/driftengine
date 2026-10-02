@@ -270,16 +270,16 @@ class StatementParser extends ExprParser {
   private ifStatement(): Body {
     this.next();
     const condition = this.expression('element');
-    const then = this.block();
+    const body = this.block();
     let j = 0;
     while (this.peek(j).kind === 'nl') j += 1;
-    if (!this.is('else', j)) return { k: 'if', condition, then, otherwise: null };
+    if (!this.is('else', j)) return { k: 'if', condition, body, otherwise: null };
     this.i += j + 1;
     if (this.is('if')) {
       const line = this.peek().line;
-      return { k: 'if', condition, then, otherwise: [{ ...this.ifStatement(), line } as Stmt] };
+      return { k: 'if', condition, body, otherwise: [{ ...this.ifStatement(), line } as Stmt] };
     }
-    return { k: 'if', condition, then, otherwise: this.block() };
+    return { k: 'if', condition, body, otherwise: this.block() };
   }
 
   /** `"post_{i}_{p}"` as its literal runs and its expressions. */

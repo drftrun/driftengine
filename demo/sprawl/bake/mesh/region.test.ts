@@ -74,7 +74,7 @@ describe('the city cut into regions', () => {
 
   it('WHAT REPEATS UNCHANGED IS ONE MESH PLACED BY A MATRIX A COPY, in the region it stands in', () => {
     expect(city.prototypes).toHaveLength(1);
-    const [a, b] = city.regions;
+    const [a] = city.regions;
     const translations = (r: typeof a) =>
       Array.from(r?.groups[0]?.transforms ?? []).filter((_, i) => i % 16 >= 12 && i % 16 <= 14);
     expect(translations(a)).toEqual([5, 0, 5, 50, 0, 5]);

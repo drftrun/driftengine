@@ -62,38 +62,8 @@ export interface PlumeOptions {
   tint?: Vec3;
 }
 
-/**
- * Blades in each plume's cross, and the vertices that costs.
- *
- * **Two, crossed at 90°, instead of one card turned to face the viewer.** A single
- * billboard has no three-dimensional structure to see: orbiting a fire showed the
- * identical silhouette from every angle, because every card shared one camera-derived
- * axis and the whole plume swivelled as a sheet. Reported twice: the fire did not read
- * as three-dimensional, it read as something that moved with the camera — and after a
- * first attempt that only *leaned* edge-on cards toward the viewer, it still did,
- * correctly, because leaning still rotates whichever cards are edge-on, so the ensemble
- * still tracks the viewer.
- *
- * A cross cannot track anything: both blades are fixed in world space, so turning
- * around a fire genuinely brings one broadside as the other goes edge-on, which is
- * the parallax a volume has. It also removes the reason billboarding existed — a
- * blade going edge-on no longer vanishes, because its partner is square-on at that
- * exact moment.
- *
- * Two rather than three because the plumes blend additively and are drawn in
- * quantity: the third blade costs 50% more geometry for a difference the eye does not
- * separate at the sizes these are drawn.
- */
-const BLADES = 2;
 /* The shared count, so both backends step a plume's vertices the same way. */
 const VERTS_PER_PLUME = PLUME_VERTS;
-
-const CORNERS = [
-  [-1, -1],
-  [1, -1],
-  [1, 1],
-  [-1, 1],
-] as const;
 
 export class PlumeRenderer {
   private readonly program: WebGLProgram;

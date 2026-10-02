@@ -276,6 +276,7 @@ describe('option columns', () => {
     name: 'Target',
     id: 900,
     entityFields: [],
+    defaults: {},
     schema: {
       name: 'Target',
       fields: [{ id: 'test::Target::of', name: 'of', type: 'option:Entity' }],

@@ -9,7 +9,6 @@ import { SHAPE_SLAB } from '../parcel/shells.ts';
 import { ParcelStore } from '../parcel/store.ts';
 import { AtmosphereField } from '../field/atmosphere.ts';
 import { STANDARD_AIR } from '../field/ambient.ts';
-import { maxElementDrift } from '../testing/drift.ts';
 import { ChemistryWorld } from './world.ts';
 
 describe('ChemistryWorld', () => {

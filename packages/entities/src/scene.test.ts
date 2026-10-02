@@ -293,3 +293,77 @@ describe('a scene', () => {
     expect(loaded.liveCount).toBe(2);
   });
 });
+
+describe("a component's declared values", () => {
+  /*
+   * Before these were read, a component declared `seed: u32 = 7` started every entity at zero:
+   * one added without the field, one made from a prefab that left it out, and one loaded from a
+   * scene written before the field existed. Nothing said so, because zero is a valid value.
+   */
+  const BED = {
+    name: 'Bed',
+    fields: [
+      { id: 't::Bed::seed', name: 'seed', type: 'u32' },
+      { id: 't::Bed::pace', name: 'pace', type: 'f32' },
+      { id: 't::Bed::open', name: 'open', type: 'bool' },
+      { id: 't::Bed::label', name: 'label', type: 'String' },
+      { id: 't::Bed::sown', name: 'sown', type: 'u32' },
+    ],
+  };
+  const Bed = defineComponent(BED, { seed: 7, pace: -0.5, open: true, label: 'bed' });
+
+  it('fill a field an entity is added without, and give way to one that is given', () => {
+    const world = new World();
+    const bare = world.create();
+    world.add(bare, Bed, { sown: 3 });
+    expect(world.read(bare, Bed, 'seed')).toBe(7);
+    expect(world.read(bare, Bed, 'pace')).toBe(-0.5);
+    expect(world.read(bare, Bed, 'open')).toBe(1);
+    expect(world.read(bare, Bed, 'label')).toBe('bed');
+    expect(world.read(bare, Bed, 'sown')).toBe(3);
+
+    const given = world.create();
+    world.add(given, Bed, { seed: 2, open: false });
+    expect(world.read(given, Bed, 'seed')).toBe(2);
+    expect(world.read(given, Bed, 'open')).toBe(0);
+  });
+
+  it('reach an entity made from a prefab that leaves the field out', () => {
+    const world = new World();
+    const made = instantiate(world, definePrefab('Seedbed', [[Bed, { sown: 1 }]]));
+    expect(world.read(made, Bed, 'seed')).toBe(7);
+    expect(world.read(made, Bed, 'sown')).toBe(1);
+  });
+
+  it('fill a field a scene was written before, and a value the scene holds is kept', () => {
+    const Older = defineComponent({ name: 'Bed', fields: BED.fields.slice(0, 2) });
+    const source = new World();
+    const entity = source.create();
+    source.add(entity, Older, { seed: 3, pace: 2 });
+    const scene = serializeWorld(source, [Older]);
+
+    const loaded = new World();
+    const result = deserializeWorld(loaded, scene, [Bed]);
+    if (!result.loaded) throw new Error(result.reason);
+    const [bed] = result.entities;
+    expect(loaded.read(bed as number, Bed, 'seed')).toBe(3);
+    expect(loaded.read(bed as number, Bed, 'label')).toBe('bed');
+    expect(loaded.read(bed as number, Bed, 'open')).toBe(1);
+    expect(loaded.read(bed as number, Bed, 'sown')).toBe(0);
+  });
+
+  it('are refused when they name no field or do not fit its column', () => {
+    expect(() => defineComponent(BED, { missing: 1 })).toThrow(/not one of its fields/);
+    expect(() => defineComponent(BED, { seed: 'seven' })).toThrow(/`Bed.seed` is `u32`/);
+    expect(() => defineComponent(BED, { open: 1 })).toThrow(/`Bed.open` is `bool`/);
+  });
+
+  it('leave a component declared without any at zero, as before', () => {
+    const Plain = defineComponent(BED);
+    const world = new World();
+    const entity = world.create();
+    world.add(entity, Plain, {});
+    expect(world.read(entity, Plain, 'seed')).toBe(0);
+    expect(world.read(entity, Plain, 'label')).toBe(null);
+  });
+});

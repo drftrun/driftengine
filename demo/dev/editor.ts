@@ -60,8 +60,6 @@ const ROW: Vec3 = [0.22, 0.24, 0.3];
 const SELECTED: Vec3 = [0.95, 0.62, 0.15];
 const PANEL: Vec3 = [0.08, 0.09, 0.12];
 
-const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
 const Health = defineComponent('Health', { current: 'f32' });
 const TYPES = [Health];
 

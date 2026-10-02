@@ -21,10 +21,10 @@
  * `ParticlePool` for a second and reports what it did. Both are the arithmetic the frame would do,
  * checked; the pixels are Wave 2C Task 9's, with the rest of the browser host.
  */
-import { addUiChild, createUiNode, type Theme, type UiNode } from '@driftengine/ui2d';
+import { addUiChild, createUiNode, type Theme } from '@driftengine/ui2d';
 import { createDecodeRegisters, decodeCpu, type DecodeResources } from '@driftengine/texture';
 import { ParticlePool } from '@driftengine/core';
-import { type Command, emptyPanel, type Panel, type UiEvent } from '@driftengine/tools';
+import { type Command, emptyPanel, type Panel } from '@driftengine/tools';
 import type { Graph, Vocabulary } from '../graph/model.ts';
 import {
   buildGraphGeometry,

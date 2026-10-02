@@ -84,15 +84,6 @@ function check(name, ok, detail) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}: ${detail}`);
 }
 
-/*
- * The cones stand at z = -3.4 and z = +6.8 - 3.4, and the camera is at x 9.5, z 11 looking at the
- * origin — so the nearer cone is on the right of the frame and the further one on the left. The
- * split is taken at the middle rather than measured, and the assertion below is not sensitive to
- * where it falls: a half that contains all of one cone and none of the other is enough, and each
- * half is compared against the same half of its own solo capture.
- */
-const HALF = Math.floor(CSS_WIDTH / 2);
-
 /** Each backend's two-cone frame, so the two can be held against each other at the end. */
 const byBackend = {};
 /**
@@ -140,7 +131,6 @@ for (const backend of ['webgl2', 'webgpu']) {
 
   const scale = both.image.width / CSS_WIDTH;
   const bottom = Math.floor(READOUT_TOP * scale);
-  const split = Math.floor(HALF * scale);
 
   /*
    * **The premise every assertion below rests on, and it is not free.** If the second cone landed

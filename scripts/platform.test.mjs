@@ -2,7 +2,7 @@
  * No package — and no part of the editor — reaches for a platform API a consumer might supply.
  *
  * **The editor joined the scope on 2026-09-15 and was already clean.** It walked
- * `packages/*​/src` alone, which is the third list in this repository found describing less than
+ * `packages/<name>/src` alone, which is the third list in this repository found describing less than
  * it was believed to: `tsconfig.json` had left the editor out of typechecking and four workspaces
  * had undeclared dependencies, both on the same day. The rule applies to the editor for a reason
  * of its own — native is a second *host*, so a product that fetched `document` would have to be

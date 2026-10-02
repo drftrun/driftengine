@@ -28,7 +28,7 @@
  * option it never took the lock at all and reported an *unlocked* cursor: whole screen pixels that
  * stop dead at the edge of the display, which is a different device and not the one under test.
  *
- * Nothing here is engine API and nothing under `packages/*​/src` may import it.
+ * Nothing here is engine API and nothing under `packages/<name>/src` may import it.
  */
 import { askForPointerLock } from '../../packages/core/src/input/input';
 

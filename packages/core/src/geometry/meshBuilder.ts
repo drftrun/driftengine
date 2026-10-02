@@ -969,8 +969,9 @@ export class MeshBuilder {
         // later one is transported from it, so the choice never shows.
         const ax = Math.abs(tx) < 0.9 ? 1 : 0;
         const ay = Math.abs(tx) < 0.9 ? 0 : 1;
-        ux = ay * tz - 0 * ty;
-        uy = 0 * tx - ax * tz;
+        // (ax, ay, 0) x tangent, with the terms the zero removes left out.
+        ux = ay * tz;
+        uy = -ax * tz;
         uz = ax * ty - ay * tx;
         seeded = true;
       }

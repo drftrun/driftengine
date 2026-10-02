@@ -52,7 +52,6 @@ import {
 } from '../../packages/core/src/index';
 import type {
   AreaLightSource,
-  MeshHandle,
   PointLightSource,
   RendererApi,
   ShadowCasters,
@@ -75,14 +74,6 @@ function identity(): Float32Array {
   m[5] = 1;
   m[10] = 1;
   m[15] = 1;
-  return m;
-}
-
-function at(x: number, y: number, z: number): Float32Array {
-  const m = identity();
-  m[12] = x;
-  m[13] = y;
-  m[14] = z;
   return m;
 }
 

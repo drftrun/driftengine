@@ -28,11 +28,7 @@
  * drawn at the origin (paging, or the kit drawn as parts); the two backends differing.
  */
 import { Camera, createEnvironment, createRenderer } from '../../packages/core/src/index';
-import type {
-  RendererApi,
-  SurfaceLayerEffect,
-  SurfaceTextureHandle,
-} from '../../packages/core/src/index';
+import type { RendererApi } from '../../packages/core/src/index';
 import { DrftLoader } from '../../packages/assets/src/index';
 import type { LoadedRegion } from '../../packages/assets/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';

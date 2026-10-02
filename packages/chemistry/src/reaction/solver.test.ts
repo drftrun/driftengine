@@ -10,7 +10,6 @@ import { maxElementDrift } from '../testing/drift.ts';
 import { KIND_CHAR_OXIDATION, KIND_PYROLYSIS, ReactionRegistry } from './registry.ts';
 
 const C = elementIndex('C');
-const O = elementIndex('O');
 
 describe('the reaction solver', () => {
   let species: SpeciesRegistry;

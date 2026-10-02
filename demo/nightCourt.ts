@@ -686,7 +686,7 @@ function buildEnvironment(): Environment {
   });
 }
 
-function buildSky(env: Environment): SkyColors {
+function buildSky(): SkyColors {
   return {
     top: [0, 0, 0],
     horizon: [0, 0, 0],
@@ -868,11 +868,10 @@ class NightCourtHandle implements DemoHandle {
      * with the attributes the engine wants rather than with its own. See `DemoScene`.
      */
     this.renderer = renderer;
-    const renderer_ = renderer;
     this.mesh = renderer.createMesh(buildCourt());
     this.lights = buildLights();
     this.env = buildEnvironment();
-    this.sky = buildSky(this.env);
+    this.sky = buildSky();
     this.body = buildWaterBody();
 
     /*

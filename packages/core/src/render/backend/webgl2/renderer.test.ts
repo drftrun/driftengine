@@ -1244,7 +1244,7 @@ test('A LAMP DRAWS ITS GLASS INTO ITS OWN LAYERS, and the lit pass reads the int
       c.name === 'uniform1iv' &&
       (c.args[0] as { name?: string } | null)?.name === 'uPointShadowLayer[0]',
   );
-  const layers = [...(upload?.args[1] as Int32Array)];
+  const layers = [...((upload?.args[1] ?? []) as Int32Array)];
   const pool = (
     renderer as unknown as { pointShadows: { mapForLight(i: number): { layer: number } } }
   ).pointShadows;

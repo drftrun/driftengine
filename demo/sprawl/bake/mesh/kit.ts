@@ -459,19 +459,10 @@ export class Kit {
       const path: number[] = [];
       for (let k = 0; k <= slices; k++) {
         const t = k / slices;
-        const [h00, h10, h01, h11] = [
-          2 * t ** 3 - 3 * t * t + 1,
-          t ** 3 - 2 * t * t + t,
-          -2 * t ** 3 + 3 * t * t,
-          t ** 3 - t * t,
-        ];
+        /* Hermite from the origin to the chord: the start point is zero, so its term drops. */
+        const [h10, h01, h11] = [t ** 3 - 2 * t * t + t, -2 * t ** 3 + 3 * t * t, t ** 3 - t * t];
         for (let a = 0; a < 3; a++) {
-          path.push(
-            h10 * (t0[a] as number) +
-              h01 * (chord[a] as number) +
-              h11 * (t1[a] as number) +
-              h00 * 0,
-          );
+          path.push(h10 * (t0[a] as number) + h01 * (chord[a] as number) + h11 * (t1[a] as number));
         }
       }
       const key = JSON.stringify(

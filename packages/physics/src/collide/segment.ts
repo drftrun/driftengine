@@ -1,5 +1,4 @@
 import { ColliderSet } from '../colliderSet.ts';
-import type { Aabb } from './aabb.ts';
 import { hits } from './scratch.ts';
 
 /** What a ray hits: a segment tested against a collider set. */
@@ -39,9 +38,6 @@ export function segmentHit(
     hits,
   );
   const data = boxes.data;
-  // Support of the contact that finally clamps the move; true when unblocked.
-  let clampSupport = true;
-
   for (let h = 0; h < count; h++) {
     const index = hits[h] ?? 0;
     const o = index * 6;

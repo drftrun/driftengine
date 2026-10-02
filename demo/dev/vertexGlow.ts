@@ -18,7 +18,7 @@
  * the three rows have to rise together and agree.
  *
  * `scripts/vertex-glow-check.mjs` reads `__vertexGlow`. Nothing here is engine API and nothing
- * under `packages/*​/src` may import it.
+ * under `packages/<name>/src` may import it.
  */
 import { ADDRESS_MODE, DECODE_OP } from '@driftengine/texture';
 

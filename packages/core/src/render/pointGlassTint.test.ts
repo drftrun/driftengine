@@ -16,7 +16,7 @@ test('THE TINT IS A LAYER A LIGHT, BORN CLEAR, AT THE EDGE IT WAS ASKED FOR', ()
   expect(storage?.args.slice(1)).toEqual([10, gl.RGBA8, 512, 512, 4]);
   const clears = calls.filter((c) => c.name === 'clearBufferfv' && c.args[0] === gl.COLOR);
   expect(clears.length, 'every layer born white').toBe(4);
-  expect([...(clears[0]?.args[2] as Float32Array)]).toEqual([1, 1, 1, 1]);
+  expect([...((clears[0]?.args[2] ?? []) as Float32Array)]).toEqual([1, 1, 1, 1]);
   const scratch = calls.find(
     (c) => c.name === 'texStorage2D' && c.args[2] === gl.RGBA8 && c.args[1] === 1,
   );

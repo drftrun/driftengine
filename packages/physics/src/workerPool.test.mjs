@@ -81,7 +81,10 @@ function granted(world) {
   return world.parallelism.running;
 }
 
-const spawn = () => new Worker(new URL('./islandWorker.ts', import.meta.url));
+/* `stdout: true` keeps each worker's stdout off this process's: piped, every live worker adds a
+   listener to one stream, and a pool of this machine's size passes Node's warning at ten. The
+   island worker writes nothing there; a failure arrives as an `error` event either way. */
+const spawn = () => new Worker(new URL('./islandWorker.ts', import.meta.url), { stdout: true });
 
 /** Many islands, so there is something to hand out, plus a joint and a shared static floor. */
 function scene(world, stacks, high) {

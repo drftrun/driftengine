@@ -140,7 +140,7 @@ export class SceneNode {
    */
   attachChild(child: SceneNode): void {
     if (child === this) throw new Error('SceneNode: a node cannot be its own child (cycle)');
-    for (let at: SceneNode | null = this; at !== null; at = at.parent) {
+    for (let at = this.parent; at !== null; at = at.parent) {
       if (at === child) throw new Error('SceneNode: that would make a cycle');
     }
     if (child.parent === this) return;

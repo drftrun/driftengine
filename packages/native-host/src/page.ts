@@ -21,7 +21,7 @@
 
 import { UserActivation } from './activation.ts';
 import type { NativeCanvas } from './canvas.ts';
-import { type Handlers, HostNode } from './domTree.ts';
+import { HostNode, withHandlers } from './domTree.ts';
 import { installEventClasses } from './eventClasses.ts';
 import { PageFullscreen } from './fullscreen.ts';
 import { MediaQueries, type MediaQueryList } from './mediaQueries.ts';
@@ -38,7 +38,6 @@ export const INPUT_TYPES = [
   ...['touchstart', 'touchmove', 'touchend', 'touchcancel', 'fullscreenchange', 'fullscreenerror'],
 ] as const;
 
-type InputType = (typeof INPUT_TYPES)[number];
 const WINDOW_TYPES = ['resize', 'beforeunload', 'gamepadconnected', 'gamepaddisconnected'] as const;
 const DOCUMENT_TYPES = [
   'visibilitychange',
@@ -48,11 +47,7 @@ const DOCUMENT_TYPES = [
   'fullscreenerror',
 ] as const;
 
-/* The attributes `HostNode.handles` defines below, declared for the checker. */
-export interface PageWindow extends Handlers<InputType | (typeof WINDOW_TYPES)[number]> {}
-export interface PageDocument extends Handlers<InputType | (typeof DOCUMENT_TYPES)[number]> {}
-
-export class PageWindow extends HostNode {
+export class PageWindow extends withHandlers([...INPUT_TYPES, ...WINDOW_TYPES]) {
   canvas: NativeCanvas | null = null;
   /** Answered by the page, which knows what a query asks about (`mediaQueries.ts`). */
   matchMedia: (query: string) => MediaQueryList = () => {
@@ -67,12 +62,9 @@ export class PageWindow extends HostNode {
   get devicePixelRatio(): number {
     return this.canvas?.pixelRatio ?? 1;
   }
-  static {
-    HostNode.handles(PageWindow.prototype, [...INPUT_TYPES, ...WINDOW_TYPES]);
-  }
 }
 
-export class PageDocument extends HostNode {
+export class PageDocument extends withHandlers([...INPUT_TYPES, ...DOCUMENT_TYPES]) {
   visibilityState: DocumentVisibilityState = 'visible';
   pointerLockElement: Element | null = null;
   /** What is focused: the canvas, once it is focusable and asked, or nothing. */
@@ -111,10 +103,6 @@ export class PageDocument extends HostNode {
 
   createElement(tag: string): never {
     throw new Error(`[driftengine] the native host has no DOM to make a <${tag}> in`);
-  }
-
-  static {
-    HostNode.handles(PageDocument.prototype, [...INPUT_TYPES, ...DOCUMENT_TYPES]);
   }
 }
 

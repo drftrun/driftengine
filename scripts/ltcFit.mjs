@@ -200,7 +200,6 @@ import {
   frameOf,
   lobeScale,
   brdf,
-  ggxD,
   integrateOverQuad,
   quadFacing,
   dot,
@@ -339,17 +338,6 @@ function sampleLtc(u1, u2, m) {
 }
 
 /* --------------------------------------------------------------- the fit */
-
-/** A deterministic low-discrepancy pair, so a run reproduces exactly. */
-function hammersley(i, n) {
-  let bits = i >>> 0;
-  bits = ((bits << 16) | (bits >>> 16)) >>> 0;
-  bits = (((bits & 0x55555555) << 1) | ((bits & 0xaaaaaaaa) >>> 1)) >>> 0;
-  bits = (((bits & 0x33333333) << 2) | ((bits & 0xcccccccc) >>> 2)) >>> 0;
-  bits = (((bits & 0x0f0f0f0f) << 4) | ((bits & 0xf0f0f0f0) >>> 4)) >>> 0;
-  bits = (((bits & 0x00ff00ff) << 8) | ((bits & 0xff00ff00) >>> 8)) >>> 0;
-  return [i / n, bits * 2.3283064365386963e-10];
-}
 
 /**
  * How far below an entry's own peak a sample stops being weighed relatively.
