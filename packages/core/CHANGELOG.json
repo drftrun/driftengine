@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.7.2",
+    "date": "2026-10-02",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A game's bundle no longer carries the directory it was built in: DriftScript 1.13.1 names each .drs module by its path from the project root.",
+        "text": "**`driftscript` moves to 1.13.1.** Its Vite plugin named each `.drs` module by the absolute path the bundler handed it, and the compiler writes that name into the module it emits and into every field id a hot patch matches on, so a shipped bundle carried the directory of the machine that built it, and two checkouts built different output from the same source. A module is now named by its path from the project root, which is the same on every machine, and a hot edit still patches the running module in place. A game changes nothing; a message that prints a module's name prints the shorter one."
+      }
+    ]
+  },
+  {
     "version": "4.7.1",
     "date": "2026-10-02",
     "entries": [
