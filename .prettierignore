@@ -8,3 +8,6 @@ packages/core/CHANGELOG.json
 packages/script/capabilities.json
 package-lock.json
 .vitest
+# Its tables are written by `npm run manual:sync`, and a gate compares them to the generator's
+# output; padded to prettier's alignment, every signature would set the width of 341 rows.
+docs/manual/scripting/reach.md

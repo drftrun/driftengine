@@ -30,6 +30,12 @@
       ]
     },
     {
+      "id": "scripting",
+      "title": "DriftScript",
+      "blurb": "The engine's scripting language and how a game uses it: what belongs in a script and what stays in TypeScript, setting it up, the patterns the examples use, every function a script can call, and testing and shipping it.",
+      "pages": ["driftscript", "setting-up", "patterns", "reach", "testing"]
+    },
+    {
       "id": "rendering",
       "title": "Rendering",
       "blurb": "Everything that puts pixels on the screen: meshes and materials, lights and shadows, the sky, the air and water, DriftLight and DriftRay, post-processing, the GPU-driven pipeline, and passes of your own.",

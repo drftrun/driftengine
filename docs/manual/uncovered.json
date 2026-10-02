@@ -3,8 +3,6 @@
     "Host",
     "Packaging",
     "Boot",
-    "Scripting",
-    "Scripting reach",
     "Graph canvas",
     "Material graphs",
     "Particle graphs",
@@ -28,5 +26,5 @@
     "@driftengine/package",
     "@driftengine/tools"
   ],
-  "areas": ["ui", "dev", "host", "editor", "media", "network", "package", "script", "tools"]
+  "areas": ["ui", "dev", "host", "editor", "media", "network", "package", "tools"]
 }

@@ -87,7 +87,7 @@ Call `tick(performance.now())` once per frame, outside the simulation, so a hold
 
 ```ts sample=first-game/main.ts#simulate
 function simulate(dt: number): void {
-  if (phase !== 'playing') {
+  if (round.phase !== 'playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }
@@ -119,21 +119,16 @@ function simulate(dt: number): void {
     const dx = orb.x - player.x;
     const dy = orb.y - player.y;
     const dz = orb.z - player.z;
-    if (dx * dx + dy * dy + dz * dz < 1) {
+    if (rules.reaches(dx, dy, dz)) {
       orb.taken = true;
-      gathered += 1;
+      rules.gather(round);
       chime();
     }
   }
 
   if (player.y < -10) player.teleport(START[0], START[1], START[2]);
 
-  remaining -= dt;
-  if (gathered === orbs.length) phase = 'won';
-  else if (remaining <= 0) {
-    remaining = 0;
-    phase = 'lost';
-  }
+  rules.tick(round, dt);
 }
 ```
 

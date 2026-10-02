@@ -1,6 +1,7 @@
 /**
  * The smallest thing that is still a game: a lit cube on a ground plane, turning on a fixed
- * timestep, drawn through whichever backend the browser actually handed over.
+ * timestep, drawn through whichever backend the browser actually handed over, at a rate a
+ * DriftScript rule decides.
  *
  * Everything here is reached through the public barrel, because that barrel is the whole of
  * what a consumer receives. A starter that reached past it would be demonstrating privileged
@@ -15,6 +16,9 @@ import {
   createRenderer,
   startLoop,
 } from '@driftengine/core';
+import { bindModule } from '@driftengine/script';
+import { loadModule, patchModule } from 'driftscript';
+import * as spinScript from './spin.drs';
 // #endregion
 
 // #region renderer
@@ -82,6 +86,24 @@ camera.position[2] = 8;
 camera.lookAt(0, 1, 0);
 // #endregion
 
+// #region script
+/*
+ * How fast the cube turns is a rule, and rules live in DriftScript: `spin.drs`. The bundler compiles
+ * the file, `loadModule` makes a module of it, and `bindModule` gives it the engine capabilities it
+ * imports. Saving the file while the page is open replaces its function in place.
+ */
+const spinModule = loadModule(spinScript as Record<string, unknown>);
+const bound = bindModule(spinModule, {});
+if (!bound.bound) throw new Error(bound.reason);
+const rules = spinModule.exports as unknown as { spinRate(time: number): number };
+
+if (import.meta.hot) {
+  import.meta.hot.accept('./spin.drs', (next) => {
+    if (next !== undefined) patchModule(spinModule, next as Record<string, unknown>);
+  });
+}
+// #endregion
+
 // #region loop
 /*
  * Two angles, because that is what `alpha` is for. The simulation advances in fixed steps and
@@ -91,11 +113,13 @@ camera.lookAt(0, 1, 0);
  */
 let spin = 0;
 let previousSpin = 0;
+let time = 0;
 
 startLoop({
   simulate(dt) {
     previousSpin = spin;
-    spin += dt * 0.8;
+    time += dt;
+    spin += dt * rules.spinRate(time);
   },
   render(alpha) {
     spinner.setRotationAxisAngle(0, 1, 0, previousSpin + (spin - previousSpin) * alpha);

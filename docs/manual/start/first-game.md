@@ -1,8 +1,9 @@
 ---
 title: Your first game
-description: A complete 3D game in one file. An arena with physics, a character, crates to push, orbs to gather against the clock, sound, shadows and a HUD.
-packages: ['@driftengine/core', '@driftengine/audio']
+description: A complete 3D game. An arena with physics, a character, crates to push, orbs to gather against the clock, sound, shadows, a HUD, and rules in DriftScript.
+packages: ['@driftengine/core', '@driftengine/audio', '@driftengine/script']
 areas: ['physics', 'audio']
+plain: ['Round', 'ROUND_SECONDS']
 ---
 
 # Your first game
@@ -18,8 +19,11 @@ Move with WASD, the arrow keys, the left stick or a thumb on the left of a touch
 Space, the bottom face button or a hold on the right of the screen. P pauses, and R starts a new
 round once one has ended.
 
-The whole program is one file, `examples/first-game/main.ts`. Each section here is one region of
-it, in the order the file runs.
+The program is two files. `examples/first-game/main.ts` holds everything that touches the engine:
+the renderer, the physics world, the player, input and sound. `examples/first-game/round.drs` holds
+the round's rules in DriftScript, the engine's scripting language: how long a round lasts, how close
+counts as reaching an orb, and when the round is won or lost. Each section here is one region of
+them, in the order the program runs.
 
 ## The rules
 
@@ -27,14 +31,14 @@ it, in the order the file runs.
 /** Half the arena's width, in metres. */
 const ARENA = 12;
 const ORB_COUNT = 8;
-const ROUND_SECONDS = 60;
 /** The same seed lays out the same rounds, in the same order, on every machine. */
 const SEED = 2026;
 ```
 
-Constants first, so tuning the game means editing one block. The seed matters more than it looks:
+Constants first, so the shape of the game is one block. The seed matters more than it looks:
 everything random in the game draws from a generator made from it, which is what lets a round be
-replayed.
+replayed. The numbers a round is tuned by, its length and how close the player has to come to an
+orb, are not here; they are in the script, below, where changing them does not restart the game.
 
 ## A renderer with shadows
 
@@ -279,16 +283,23 @@ key directions, and `jump`, `restart` and `pause` to keys and buttons.
 ## Sound
 
 ```ts sample=first-game/main.ts#sound
-const sound = await AudioGraph.create({ stemCount: 0 });
-sound?.registry.register('orb', {
-  urls: [],
-  synth: (ctx) => toneBuffer(ctx, 0.2, 660, 1320, 3),
-});
-if (sound !== null) void sound.registry.load(sound.context);
-
-// A browser starts audio only after a gesture, so the first press anywhere wakes it.
-addEventListener('pointerdown', () => sound?.wake());
-addEventListener('keydown', () => sound?.wake());
+// A browser lets a page make sound only after a gesture, so the graph is made on the first press.
+let sound: AudioGraph | null = null;
+let soundAsked = false;
+async function startSound(): Promise<void> {
+  if (soundAsked) return;
+  soundAsked = true;
+  const graph = await AudioGraph.create({ stemCount: 0 });
+  if (graph === null) return;
+  graph.registry.register('orb', {
+    urls: [],
+    synth: (ctx) => toneBuffer(ctx, 0.2, 660, 1320, 3),
+  });
+  sound = graph;
+  await graph.registry.load(graph.context);
+}
+addEventListener('pointerdown', () => void startSound());
+addEventListener('keydown', () => void startSound());
 
 function chime(): void {
   sound?.play(sound.registry.get('orb'), 0.45);
@@ -300,24 +311,133 @@ synthesises a stand-in when none of them loads. This one lists no files, so the 
 stand-in: a sine sweep from 660 to 1320 Hz. Drop an `orb.opus` into the game's assets and add it to
 `urls`, and the real sound replaces it with no other change.
 
-Browsers only start audio after the player touches something, so the first key or tap wakes the
-graph. `AudioGraph.create` returns `null` only when the browser has no audio at all, and every use
-of `sound` here is written to cope with that.
+A browser starts audio only after the player touches something, and warns about a page that makes
+an audio context before then, so the game makes its graph on the first key or tap. Until then, and
+in a browser with no audio at all, where `AudioGraph.create` returns `null`, `sound` is `null` and
+`chime` plays nothing.
+
+## The round, in DriftScript
+
+```drs sample=first-game/round.drs#rules
+// How long a round lasts, in seconds, and how close the player has to come to an orb, in metres.
+let ROUND_SECONDS: f32 = 60
+let REACH: f32 = 1
+
+// One round, which the page owns and hands to every rule below.
+data Round {
+    remaining: f32 = 60
+    gathered: u32 = 0
+    total: u32 = 8
+    // "playing", "won" or "lost".
+    phase: String = "playing"
+}
+```
+
+The round's state is a `data` record, `Round`, and the two numbers it is tuned by are constants
+beside it. A `.drs` file is compiled by the bundler like any other import, so it needs no build step
+of its own, and it is checked before the page loads: a misspelt field or a number where a string
+belongs is an error in the terminal, not a surprise in the browser.
+
+```drs sample=first-game/round.drs#start
+// A new round: a full clock, nothing gathered yet, and the number of orbs the page laid out.
+fn start(round: mut Round, total: u32) {
+    round.remaining = ROUND_SECONDS
+    round.gathered = 0
+    round.total = total
+    round.phase = "playing"
+}
+
+// Whether the player, this far from an orb on each axis, is close enough to take it. Pure: it reaches
+// nothing outside its arguments and the constants above, which the compiler checks.
+@pure
+fn reaches(dx: f32, dy: f32, dz: f32) -> bool {
+    return dx * dx + dy * dy + dz * dz < REACH * REACH
+}
+
+fn gather(round: mut Round) {
+    round.gathered = round.gathered + 1
+}
+```
+
+```drs sample=first-game/round.drs#tick
+// The clock, once a step. Every orb taken wins the round; the clock reaching zero first loses it.
+// Deterministic: the same round and the same step give the same answer on every machine, so a
+// recorded round replays exactly. Reading input or the wall clock here would not compile.
+@deterministic
+fn tick(round: mut Round, dt: f32) {
+    if round.phase != "playing" {
+        return
+    }
+    round.remaining = round.remaining - dt
+    if round.gathered == round.total {
+        round.phase = "won"
+    } else if round.remaining <= 0 {
+        round.remaining = 0
+        round.phase = "lost"
+    }
+}
+```
+
+Each rule is a function the page calls. `round: mut Round` is the record the page passes in,
+which the function may change. Nothing here can reach the renderer, the physics world or the
+player: the page works out how far the player is from an orb and asks `reaches`, and the script
+answers. That is the split this whole engine is written around. A script decides; the page, which
+holds the engine's objects, acts.
+
+```ts sample=first-game/main.ts#script
+/*
+ * The round's rules are a DriftScript module. Loading it builds the module, binding it hands it
+ * the engine capabilities it imports, which here is none, and `createRound` makes the record it
+ * keeps the round in. The page owns that record and passes it to every rule.
+ */
+const roundModule = loadModule(roundScript as Record<string, unknown>);
+const bound = bindModule(roundModule, {});
+if (!bound.bound) throw new Error(bound.reason);
+
+interface Round {
+  remaining: number;
+  gathered: number;
+  total: number;
+  phase: string;
+}
+/* Read through the module each call, so a rule patched by a save is the rule that runs. */
+const rules = roundModule.exports as unknown as {
+  createRound(): Round;
+  start(round: Round, total: number): void;
+  reaches(dx: number, dy: number, dz: number): boolean;
+  gather(round: Round): void;
+  tick(round: Round, dt: number): void;
+};
+const round = rules.createRound();
+
+/* Saving `round.drs` replaces its functions and keeps `round` as it was: the clock carries on. */
+if (import.meta.hot) {
+  import.meta.hot.accept('./round.drs', (next) => {
+    if (next !== undefined)
+      patchModule(roundModule, next as Record<string, unknown>, { Round: [round] });
+  });
+}
+```
+
+`loadModule` turns the compiled file into a module, and `bindModule` gives it the engine
+capabilities it imports, here none. `createRound` is made by the compiler from the `data`
+declaration, and the record it returns belongs to the page from then on. The rules are read
+through the module on every call, so a function replaced by a save is the one that runs next.
+
+Run the example with `npm run examples`, start a round, then change `ROUND_SECONDS` or the `tick`
+rule and save: the game carries on with the clock where it was and plays by the new rule from the
+next step. That is the point of keeping rules in a script. [DriftScript in a game](../scripting/driftscript.md)
+says what belongs in one and what does not, and [Setting up scripts](../scripting/setting-up.md)
+covers the build and the hot reload in full.
 
 ## A round
 
 ```ts sample=first-game/main.ts#round
-type Phase = 'playing' | 'won' | 'lost';
-let phase: Phase = 'playing';
-let remaining = ROUND_SECONDS;
-let gathered = 0;
 let paused = false;
 
 function newRound(): void {
   scatter();
-  gathered = 0;
-  remaining = ROUND_SECONDS;
-  phase = 'playing';
+  rules.start(round, orbs.length);
   player.teleport(START[0], START[1], START[2]);
   playerBefore.x = player.x;
   playerBefore.y = player.y;
@@ -325,7 +445,8 @@ function newRound(): void {
 }
 ```
 
-`newRound` resets the score and the clock, lays out new orbs and puts the player back at the start.
+`newRound` lays out new orbs, has the script start a round over them, and puts the player back at the
+start.
 It also resets `playerBefore`, so the first frame of a round doesn't draw the player sliding back
 from wherever the last round ended.
 
@@ -333,7 +454,7 @@ from wherever the last round ended.
 
 ```ts sample=first-game/main.ts#simulate
 function simulate(dt: number): void {
-  if (phase !== 'playing') {
+  if (round.phase !== 'playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }
@@ -365,21 +486,16 @@ function simulate(dt: number): void {
     const dx = orb.x - player.x;
     const dy = orb.y - player.y;
     const dz = orb.z - player.z;
-    if (dx * dx + dy * dy + dz * dz < 1) {
+    if (rules.reaches(dx, dy, dz)) {
       orb.taken = true;
-      gathered += 1;
+      rules.gather(round);
       chime();
     }
   }
 
   if (player.y < -10) player.teleport(START[0], START[1], START[2]);
 
-  remaining -= dt;
-  if (gathered === orbs.length) phase = 'won';
-  else if (remaining <= 0) {
-    remaining = 0;
-    phase = 'lost';
-  }
+  rules.tick(round, dt);
 }
 ```
 
@@ -388,8 +504,8 @@ The order is the whole design:
 1. Read input into a direction.
 2. Move the player against the world.
 3. Step the world, so crates the player pushed respond, recording crates before and after.
-4. Collect any orb close enough.
-5. Count the clock down and decide whether the round is over.
+4. Collect any orb the rules say is close enough.
+5. Let the rules count the clock down and decide whether the round is over.
 
 Everything here reads state, the step's input and the seeded generator. Nothing reads the time of
 day, so a recording of the inputs replays the round exactly.
@@ -551,26 +667,26 @@ let hudStyle: typeof DEFAULT_TEXT_STYLE = {
 const shown = { gathered: -1, seconds: -1, phase: '', paused: false };
 
 function drawHud(): void {
-  const seconds = Math.ceil(remaining);
+  const seconds = Math.ceil(round.remaining);
   if (
-    gathered !== shown.gathered ||
+    round.gathered !== shown.gathered ||
     seconds !== shown.seconds ||
-    phase !== shown.phase ||
+    round.phase !== shown.phase ||
     paused !== shown.paused
   ) {
-    shown.gathered = gathered;
+    shown.gathered = round.gathered;
     shown.seconds = seconds;
-    shown.phase = phase;
+    shown.phase = round.phase;
     shown.paused = paused;
     renderer.setText(
       hud,
       paused
         ? 'PAUSED. PRESS P TO CARRY ON'
-        : phase === 'won'
+        : round.phase === 'won'
           ? 'ALL GATHERED. PRESS R OR TAP TO PLAY AGAIN'
-          : phase === 'lost'
+          : round.phase === 'lost'
             ? 'OUT OF TIME. PRESS R OR TAP TO PLAY AGAIN'
-            : `ORBS ${gathered}/${orbs.length}   TIME ${seconds}`,
+            : `ORBS ${round.gathered}/${round.total}   TIME ${seconds}`,
     );
   }
 
@@ -613,6 +729,8 @@ The game is small on purpose, and every part of it has somewhere to grow:
 - Swap the follow camera for the third-person rig, which keeps the lens out of walls.
 - Turn on bloom, so the orbs glow past their edges.
 - Record the inputs for each tick and play a round back, which the fixed step already makes exact.
+- Move more of the game into `round.drs`: a bonus orb that adds time, crates that score when pushed
+  off the platform, a round that gets shorter each time it is won.
 
 Next, [A 2D game](a-2d-game.md) shows that the same engine draws a flat game with no special mode,
 and [Shipping to the web](shipping-to-the-web.md) turns either into something you can put online.

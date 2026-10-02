@@ -13,10 +13,15 @@ quoting a stale one is a red suite rather than a thing somebody notices.
 scene, no mesh, no mix bus. This package is the other half — it describes each engine subsystem as
 capabilities a script may call, and supplies the implementations at link time.
 
-Twelve modules are bound: `drift/animation`, `audio`, `camera`, `ecs`, `events`, `input`,
-`persistence`, `physics`, `prefab`, `random`, `scene` and `time`. **`drift/core` is deliberately
-unbound**, because its provider is `startLoop`, which drives a script rather than being called by
-one.
+Every `drift/*` module a script can import, and every function in each with its signature and
+whether it is deterministic, is listed in the manual's
+[What a script can reach](https://driftengine.dev/docs/scripting/reach), which is written from
+`capabilities.json` and so cannot fall behind it. **`drift/core` is deliberately unbound**, because
+its provider is `startLoop`, which drives a script rather than being called by one.
+
+**Using DriftScript in a game**, what belongs in a script and what stays in TypeScript, binding,
+hot reload, testing and the patterns the examples share, is the manual's
+[DriftScript section](https://driftengine.dev/docs/scripting/driftscript).
 
 **Four of `drift/ecs`'s capabilities are ones nobody writes by hand.** `query`, `next`, `view` and
 `without` are what a `for … in query<…>()` loop compiles to, so their documentation describes the

@@ -34,6 +34,7 @@ import {
   runDirectives,
   symbolMentions,
 } from './manual.mjs';
+import { GENERATORS, generatedBlocksOf } from './manual-generated.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manual = readManual(ROOT);
@@ -142,6 +143,27 @@ test('every block of TypeScript is a region the compiler checks, and says exactl
           `${where}: a block in "${fence.lang || 'no language'}"; a page writes only ${[...INLINE_LANGUAGES].join(', ')} inline`,
         );
       }
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+/*
+ * Every generated block says what its generator says today. A page that lists every function a
+ * script can call is right the day it is written and wrong the day a function is added; this is what
+ * notices, and `npm run manual:sync` is what fixes it.
+ */
+test('every generated block matches what generates it', () => {
+  const problems = [];
+  for (const page of present) {
+    for (const block of generatedBlocksOf(page.body)) {
+      const where = `${page.relative}:${page.bodyLine + block.start - 1}`;
+      const generate = GENERATORS[block.name];
+      if (generate === undefined) problems.push(`${where}: no generator is called "${block.name}"`);
+      else if (block.end < 0)
+        problems.push(`${where}: "${block.name}" has no <!-- end generated -->`);
+      else if (generate(ROOT) !== block.text)
+        problems.push(`${where}: "${block.name}" is out of date; run npm run manual:sync`);
     }
   }
   assert.deepEqual(problems, []);
@@ -336,4 +358,13 @@ test("the core README's quickstart is the starter example", () => {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   assert.equal(block[1].trim(), program);
+  /* The page imports `spin.drs`, so the README carries it, held to the starter's the same way. */
+  const rule = /```drs\n([\s\S]*?)```/.exec(after);
+  assert.ok(rule, 'packages/core/README.md has no drs block under "## Quickstart"');
+  const spin = readFileSync(path.join(ROOT, 'examples/starter/spin.drs'), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\/\/ #(end)?region\b/.test(line))
+    .join('\n')
+    .trim();
+  assert.equal(rule[1].trim(), spin);
 });

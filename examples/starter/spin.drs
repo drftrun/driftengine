@@ -1,0 +1,13 @@
+// How the cube turns. The page owns the cube; this file only says how fast it goes.
+//
+// Save it while the page is open and the cube takes the new rate without the page reloading. Try a
+// steady 2, a cube that stops every few seconds, or one that turns the other way.
+
+import { sin } from "std/math"
+
+// #region rate
+// Radians a second: a steady turn that quickens and eases every few seconds.
+fn spinRate(time: f32) -> f32 {
+    return 0.8 + 0.4 * math.sin(time * 0.5)
+}
+// #endregion

@@ -46,9 +46,9 @@ const DOC = path.join(ROOT, 'docs', 'CAPABILITIES.md');
  * known to be a full one by comparing its file count against this walk, so a root the suite runs and
  * the walk misses makes every full run look filtered. `docs.test.mjs` reads the configuration's own
  * list and fails if this one falls behind it. `tools` joined when the reconstruction trainer's tests
- * did.
+ * did, and `examples` when the first game's rules were tested beside their script.
  */
-export const TEST_ROOTS = ['packages', 'demo', 'editor', 'tools'];
+export const TEST_ROOTS = ['packages', 'demo', 'editor', 'tools', 'examples'];
 
 export function surveyTestFiles() {
   let total = 0;

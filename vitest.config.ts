@@ -95,12 +95,14 @@ export default defineConfig({
      *
      */
     /* `tools/` for the trainers that live outside every package, whose exports are checked against
-       the runtime's own evaluator. */
+       the runtime's own evaluator. `examples/` for tests kept beside an example's script, which the
+       manual's DriftScript section quotes. */
     include: [
       'packages/*/src/**/*.test.ts',
       'demo/**/*.test.ts',
       'editor/src/**/*.test.ts',
       'tools/**/*.test.ts',
+      'examples/**/*.test.ts',
     ],
     /*
      * **Thirty seconds, because the default five is mis-set for this suite.**

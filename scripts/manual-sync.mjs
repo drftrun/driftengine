@@ -1,5 +1,6 @@
 /*
- * Rewrite every sampled block in the manual from the region it names.
+ * Rewrite every sampled block in the manual from the region it names, and every generated block
+ * from its generator (`manual-generated.mjs`).
  *
  * `manual.test.mjs` fails when a block and its region differ, and this is the other half: the
  * command that makes them agree. A block is only ever rewritten from its region, never the other
@@ -19,6 +20,7 @@ import {
   parseFrontmatter,
   resolveSample,
 } from './manual.mjs';
+import { GENERATORS, generatedBlocksOf } from './manual-generated.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -42,6 +44,20 @@ export function syncManual(root = ROOT) {
       }
       if (resolved.code === fence.code) continue;
       lines.splice(fence.line, fence.length, ...resolved.code.split('\n'));
+      rewrote = true;
+    }
+
+    /* Generated blocks after the samples, from the bottom up, so each splice leaves the line numbers
+       of the blocks above it where they were. */
+    for (const block of generatedBlocksOf(lines.join('\n')).reverse()) {
+      const generate = GENERATORS[block.name];
+      if (generate === undefined || block.end < 0) {
+        problems.push(`${relative}: generated block "${block.name}" has no generator or no end`);
+        continue;
+      }
+      const text = generate(root);
+      if (text === block.text) continue;
+      lines.splice(block.start, block.end - block.start, ...text.split('\n'));
       rewrote = true;
     }
 

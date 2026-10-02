@@ -21,11 +21,13 @@ frame is drawn between the last two simulated states.
  */
 let spin = 0;
 let previousSpin = 0;
+let time = 0;
 
 startLoop({
   simulate(dt) {
     previousSpin = spin;
-    spin += dt * 0.8;
+    time += dt;
+    spin += dt * rules.spinRate(time);
   },
   render(alpha) {
     spinner.setRotationAxisAngle(0, 1, 0, previousSpin + (spin - previousSpin) * alpha);
@@ -151,7 +153,6 @@ the same order on every machine:
 /** Half the arena's width, in metres. */
 const ARENA = 12;
 const ORB_COUNT = 8;
-const ROUND_SECONDS = 60;
 /** The same seed lays out the same rounds, in the same order, on every machine. */
 const SEED = 2026;
 ```

@@ -36,6 +36,9 @@ import {
   createRenderer,
   startLoop,
 } from '@driftengine/core';
+import { bindModule } from '@driftengine/script';
+import { loadModule, patchModule } from 'driftscript';
+import * as spinScript from './spin.drs';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#stage');
 if (canvas === null) throw new Error('the page must carry <canvas id="stage">');
@@ -95,6 +98,22 @@ camera.position[2] = 8;
 camera.lookAt(0, 1, 0);
 
 /*
+ * How fast the cube turns is a rule, and rules live in DriftScript: `spin.drs`. The bundler compiles
+ * the file, `loadModule` makes a module of it, and `bindModule` gives it the engine capabilities it
+ * imports. Saving the file while the page is open replaces its function in place.
+ */
+const spinModule = loadModule(spinScript as Record<string, unknown>);
+const bound = bindModule(spinModule, {});
+if (!bound.bound) throw new Error(bound.reason);
+const rules = spinModule.exports as unknown as { spinRate(time: number): number };
+
+if (import.meta.hot) {
+  import.meta.hot.accept('./spin.drs', (next) => {
+    if (next !== undefined) patchModule(spinModule, next as Record<string, unknown>);
+  });
+}
+
+/*
  * Two angles, because that is what `alpha` is for. The simulation advances in fixed steps and
  * the display does not, so a frame almost never lands on a step boundary: drawing `spin`
  * directly judders at any refresh rate that is not a multiple of the step. Interpolating
@@ -102,11 +121,13 @@ camera.lookAt(0, 1, 0);
  */
 let spin = 0;
 let previousSpin = 0;
+let time = 0;
 
 startLoop({
   simulate(dt) {
     previousSpin = spin;
-    spin += dt * 0.8;
+    time += dt;
+    spin += dt * rules.spinRate(time);
   },
   render(alpha) {
     spinner.setRotationAxisAngle(0, 1, 0, previousSpin + (spin - previousSpin) * alpha);
@@ -122,6 +143,26 @@ startLoop({
   },
 });
 ```
+
+How fast the cube turns is a rule, so it lives in DriftScript, in `spin.drs` beside the page:
+
+```drs
+// How the cube turns. The page owns the cube; this file only says how fast it goes.
+//
+// Save it while the page is open and the cube takes the new rate without the page reloading. Try a
+// steady 2, a cube that stops every few seconds, or one that turns the other way.
+
+import { sin } from "std/math"
+
+// Radians a second: a steady turn that quickens and eases every few seconds.
+fn spinRate(time: f32) -> f32 {
+    return 0.8 + 0.4 * math.sin(time * 0.5)
+}
+```
+
+The bundler compiles it with DriftScript's Vite plugin, set up as in the starter's `vite.config.ts`;
+[Installation](https://driftengine.dev/docs/start/installation#driftscript) has the two packages and
+the config.
 
 This is the engine's `examples/starter`, and a test keeps the two the same.
 [Hello world](https://driftengine.dev/docs/start/hello-world) walks through it, and

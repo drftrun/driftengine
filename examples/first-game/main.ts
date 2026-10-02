@@ -4,7 +4,8 @@
  *
  * The manual's "Your first game" chapter is built from this file, one region at a time. It uses
  * only what a consumer installs: `@driftengine/core` for the renderer, the loop, input and physics,
- * and `@driftengine/audio` for one sound that is synthesised, so the game needs no asset at all.
+ * `@driftengine/audio` for one sound that is synthesised, so the game needs no asset at all, and
+ * DriftScript for the round's rules, which live in `round.drs` and reload while the game runs.
  */
 import { AudioGraph, toneBuffer } from '@driftengine/audio';
 import {
@@ -29,12 +30,14 @@ import {
   startLoop,
 } from '@driftengine/core';
 import type { ShadowCasters, Vec3 } from '@driftengine/core';
+import { bindModule } from '@driftengine/script';
+import { loadModule, patchModule } from 'driftscript';
+import * as roundScript from './round.drs';
 
 // #region rules
 /** Half the arena's width, in metres. */
 const ARENA = 12;
 const ORB_COUNT = 8;
-const ROUND_SECONDS = 60;
 /** The same seed lays out the same rounds, in the same order, on every machine. */
 const SEED = 2026;
 // #endregion
@@ -225,34 +228,70 @@ const move = { x: 0, y: 0 };
 // #endregion
 
 // #region sound
-const sound = await AudioGraph.create({ stemCount: 0 });
-sound?.registry.register('orb', {
-  urls: [],
-  synth: (ctx) => toneBuffer(ctx, 0.2, 660, 1320, 3),
-});
-if (sound !== null) void sound.registry.load(sound.context);
-
-// A browser starts audio only after a gesture, so the first press anywhere wakes it.
-addEventListener('pointerdown', () => sound?.wake());
-addEventListener('keydown', () => sound?.wake());
+// A browser lets a page make sound only after a gesture, so the graph is made on the first press.
+let sound: AudioGraph | null = null;
+let soundAsked = false;
+async function startSound(): Promise<void> {
+  if (soundAsked) return;
+  soundAsked = true;
+  const graph = await AudioGraph.create({ stemCount: 0 });
+  if (graph === null) return;
+  graph.registry.register('orb', {
+    urls: [],
+    synth: (ctx) => toneBuffer(ctx, 0.2, 660, 1320, 3),
+  });
+  sound = graph;
+  await graph.registry.load(graph.context);
+}
+addEventListener('pointerdown', () => void startSound());
+addEventListener('keydown', () => void startSound());
 
 function chime(): void {
   sound?.play(sound.registry.get('orb'), 0.45);
 }
 // #endregion
 
+// #region script
+/*
+ * The round's rules are a DriftScript module. Loading it builds the module, binding it hands it
+ * the engine capabilities it imports, which here is none, and `createRound` makes the record it
+ * keeps the round in. The page owns that record and passes it to every rule.
+ */
+const roundModule = loadModule(roundScript as Record<string, unknown>);
+const bound = bindModule(roundModule, {});
+if (!bound.bound) throw new Error(bound.reason);
+
+interface Round {
+  remaining: number;
+  gathered: number;
+  total: number;
+  phase: string;
+}
+/* Read through the module each call, so a rule patched by a save is the rule that runs. */
+const rules = roundModule.exports as unknown as {
+  createRound(): Round;
+  start(round: Round, total: number): void;
+  reaches(dx: number, dy: number, dz: number): boolean;
+  gather(round: Round): void;
+  tick(round: Round, dt: number): void;
+};
+const round = rules.createRound();
+
+/* Saving `round.drs` replaces its functions and keeps `round` as it was: the clock carries on. */
+if (import.meta.hot) {
+  import.meta.hot.accept('./round.drs', (next) => {
+    if (next !== undefined)
+      patchModule(roundModule, next as Record<string, unknown>, { Round: [round] });
+  });
+}
+// #endregion
+
 // #region round
-type Phase = 'playing' | 'won' | 'lost';
-let phase: Phase = 'playing';
-let remaining = ROUND_SECONDS;
-let gathered = 0;
 let paused = false;
 
 function newRound(): void {
   scatter();
-  gathered = 0;
-  remaining = ROUND_SECONDS;
-  phase = 'playing';
+  rules.start(round, orbs.length);
   player.teleport(START[0], START[1], START[2]);
   playerBefore.x = player.x;
   playerBefore.y = player.y;
@@ -262,7 +301,7 @@ function newRound(): void {
 
 // #region simulate
 function simulate(dt: number): void {
-  if (phase !== 'playing') {
+  if (round.phase !== 'playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }
@@ -294,21 +333,16 @@ function simulate(dt: number): void {
     const dx = orb.x - player.x;
     const dy = orb.y - player.y;
     const dz = orb.z - player.z;
-    if (dx * dx + dy * dy + dz * dz < 1) {
+    if (rules.reaches(dx, dy, dz)) {
       orb.taken = true;
-      gathered += 1;
+      rules.gather(round);
       chime();
     }
   }
 
   if (player.y < -10) player.teleport(START[0], START[1], START[2]);
 
-  remaining -= dt;
-  if (gathered === orbs.length) phase = 'won';
-  else if (remaining <= 0) {
-    remaining = 0;
-    phase = 'lost';
-  }
+  rules.tick(round, dt);
 }
 // #endregion
 
@@ -442,26 +476,26 @@ let hudStyle: typeof DEFAULT_TEXT_STYLE = {
 const shown = { gathered: -1, seconds: -1, phase: '', paused: false };
 
 function drawHud(): void {
-  const seconds = Math.ceil(remaining);
+  const seconds = Math.ceil(round.remaining);
   if (
-    gathered !== shown.gathered ||
+    round.gathered !== shown.gathered ||
     seconds !== shown.seconds ||
-    phase !== shown.phase ||
+    round.phase !== shown.phase ||
     paused !== shown.paused
   ) {
-    shown.gathered = gathered;
+    shown.gathered = round.gathered;
     shown.seconds = seconds;
-    shown.phase = phase;
+    shown.phase = round.phase;
     shown.paused = paused;
     renderer.setText(
       hud,
       paused
         ? 'PAUSED. PRESS P TO CARRY ON'
-        : phase === 'won'
+        : round.phase === 'won'
           ? 'ALL GATHERED. PRESS R OR TAP TO PLAY AGAIN'
-          : phase === 'lost'
+          : round.phase === 'lost'
             ? 'OUT OF TIME. PRESS R OR TAP TO PLAY AGAIN'
-            : `ORBS ${gathered}/${orbs.length}   TIME ${seconds}`,
+            : `ORBS ${round.gathered}/${round.total}   TIME ${seconds}`,
     );
   }
 

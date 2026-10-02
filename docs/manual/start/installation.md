@@ -1,7 +1,7 @@
 ---
 title: Installation
-description: Add DriftEngine to a project, set up the page and TypeScript, pick a backend for testing, and know what the licence asks of you.
-packages: ['@driftengine/core']
+description: Add DriftEngine to a project, set up the page, TypeScript and DriftScript, pick a backend for testing, and know what the licence asks of you.
+packages: ['@driftengine/core', '@driftengine/script']
 ---
 
 # Installation
@@ -87,6 +87,61 @@ The template's settings are fine. What the engine relies on is a target that all
 
 The packages ship compiled JavaScript with declaration files, so nothing else is needed to get
 types.
+
+## DriftScript
+
+A game's rules are written in DriftScript, the engine's scripting language, and a project needs two
+packages beside the engine for it:
+
+```sh
+npm install @driftengine/script driftscript
+```
+
+`driftscript` is the language: its compiler, its runtime and the Vite plugin. `@driftengine/script`
+is what connects it to the engine. The plugin goes in the Vite config:
+
+```ts sample=starter/vite.config.ts#plugin
+import { fileURLToPath } from 'node:url';
+import { driftScript } from 'driftscript/vite';
+import { defineConfig } from 'vite';
+
+export default defineConfig(({ command }) => ({
+  plugins: [
+    driftScript({
+      /* The engine's capabilities, as data: every `drift/*` function, its types and its effects. */
+      capabilities: fileURLToPath(import.meta.resolve('@driftengine/script/capabilities.json')),
+      /* The engine modules a script in this game may import. Add one here when a script needs it;
+         an import of a module not named is refused when the file compiles, naming the module. */
+      manifest: { name: 'my-game', provides: ['drift/random', 'drift/scene', 'drift/input'] },
+      /* `vite build` compiles for shipping: the editor's metadata stays out of the bundle. */
+      mode: command === 'build' ? 'production' : 'development',
+    }),
+  ],
+  build: {
+    target: 'es2022',
+    /* Just above the engine's WebGPU renderer, one module of about 2,100 kB minified that loads only
+       where WebGPU does. Vite warns past 500 kB by default; anything larger than the renderer still
+       warns. */
+    chunkSizeWarningLimit: 2200,
+  },
+}));
+```
+
+`capabilities` is the engine's description of every function a script can call, as data, which is
+what the compiler checks a call and infers its effects against. `manifest.provides` names the engine
+modules this game's scripts may import; a script that imports one not named is refused when it
+compiles, and the error names the module. [What a script can reach](../scripting/reach.md) lists
+them all.
+
+TypeScript resolves a `.drs` import through one declaration file anywhere in the project:
+
+```ts sample=starter/drs.d.ts#types
+/// <reference types="driftscript/drs" />
+```
+
+The editor extension for VS Code, `DriftTech.driftscript-vscode` on the marketplace, highlights
+`.drs` files and reports the build's own errors as you type. [Setting up scripts](../scripting/setting-up.md)
+covers loading, binding and hot reload.
 
 ## Choosing a backend while you test
 
