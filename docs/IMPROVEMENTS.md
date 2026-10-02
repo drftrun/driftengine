@@ -48,6 +48,16 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### `World.add` takes a field name the component does not have, and says nothing
+
+**Filed 2026-10-03.** A store fills every field its schema declares and never looks at the other
+keys it is handed, so `world.add(entity, Resident, { house: 4 })` against a component whose field
+is `home` stores nothing for `home` and drops `house` without a word. Found in a consumer moving to
+4.7.4, where one such key has been dropped since the component was written. The field went unread,
+so nothing broke, which is why nobody noticed. `defineComponent` already refuses a default that
+names no field; an add, a write and a prefab's values naming one want the same refusal, at least
+in development, where the cost of checking every key is nothing.
+
 ### Installing the engine prints seven deprecation warnings, and none of them is the engine's code
 
 **Filed 2026-10-02.** `npm install` reports seven deprecated packages, and every one arrives through
