@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_POINT_LIGHTS } from './lightBudget.ts';
+import { MAX_POINT_LIGHTS, resolvePointLights } from './lightBudget.ts';
 import {
   CLUSTER_COUNT,
   CLUSTER_TEXELS,
@@ -22,6 +22,17 @@ import {
   POINT_LIGHT_COS_OUTER,
   createClusterTable,
   sliceOfViewDepth,
+  LIGHT_FIXTURE_FLAG,
+  clusteredMode,
+  createClusterLightSet,
+  fillClusterLightSet,
+  halfBits,
+  halfValue,
+  lampSourceRadius,
+  lightHasFixture,
+  packSizeAndWeight,
+  writeLightRecord,
+  type ClusterLightSet,
 } from './clusteredLights.ts';
 
 describe("the cluster table's shape", () => {
@@ -196,9 +207,19 @@ describe('binning lights into froxels', () => {
     expect(record[0]).toBeCloseTo(0.7698, 4);
     expect(record[2]).toBeCloseTo(-12, 4);
     expect(record[3], 'the radius rides in w beside the position').toBeCloseTo(0.5, 4);
-    expect(record[7], 'and the emitter size beside the colour').toBeCloseTo(0.1, 4);
-    expect(record[8], 'with the weight in the third texel').toBeCloseTo(1, 4);
-    expect(record[9], 'and the shadow slot beside it').toBeCloseTo(0, 4);
+    /* The emitter size and the weight share the colour's texel as two halves; the binner was
+       handed shadow slots, so this light is flagged as having a fixture to read. */
+    const packed = table[LIGHT_RECORD.sizeAndWeight] ?? 0;
+    expect(halfValue(packed & 0x7fff), 'and the emitter size beside the colour').toBeCloseTo(
+      0.1,
+      3,
+    );
+    expect(halfValue(packed >>> 16), 'with the weight beside it').toBe(1);
+    expect(packed & LIGHT_FIXTURE_FLAG).toBe(LIGHT_FIXTURE_FLAG);
+    expect(record[LIGHT_RECORD.shadowSlot], 'and the shadow slot in the third texel').toBeCloseTo(
+      0,
+      4,
+    );
   });
 
   it('gives a light past the shadow pool no slot rather than one that is not there', () => {
@@ -415,5 +436,207 @@ describe('binning lights into froxels', () => {
     const first = Uint32Array.from(table);
     bin(set, table);
     expect(Array.from(table)).toEqual(Array.from(first));
+  });
+});
+
+/*
+ * **The record a plain light is read in two texels of**, and every piece that keeps that exact: the
+ * half precision the size and weight share a word at, the flag that says the rest is worth reading,
+ * and the one assembly both renderers fill the binner's input with.
+ */
+describe('the two-texel record', () => {
+  const floatOf = (bits: number): number => {
+    const word = new Uint32Array([bits]);
+    return new Float32Array(word.buffer)[0] ?? Number.NaN;
+  };
+
+  function oneLight(extra: Partial<ClusterLightSet> = {}): ClusterLightSet {
+    return {
+      count: 1,
+      positions: new Float32Array([1, 2, 3]),
+      colors: new Float32Array([0.5, 0.25, 1]),
+      radii: new Float32Array([8]),
+      sourceRadii: new Float32Array([0.1]),
+      weights: new Float32Array([0.75]),
+      ...extra,
+    };
+  }
+
+  it('rounds to the nearest half, ties to even', () => {
+    expect(halfBits(1)).toBe(0x3c00);
+    expect(halfBits(-2)).toBe(0xc000);
+    expect(halfBits(0.1)).toBe(0x2e66);
+    expect(halfBits(65504)).toBe(0x7bff);
+    /* Past the largest half by more than half a step, which is infinity. */
+    expect(halfBits(65520)).toBe(0x7c00);
+    /* Exactly between 1 and the next half: even wins, which is 1. Between the next two: up. */
+    expect(halfBits(1 + 2 ** -11)).toBe(0x3c00);
+    expect(halfBits(1 + 3 * 2 ** -11)).toBe(0x3c02);
+    expect(halfBits(-0)).toBe(0x8000);
+    expect(halfBits(Number.NaN) & 0x7c00).toBe(0x7c00);
+  });
+
+  it('flushes what only a subnormal half could hold to a signed zero', () => {
+    expect(halfBits(2 ** -14)).toBe(0x0400);
+    expect(halfBits(6e-5)).toBe(0);
+    expect(halfBits(-6e-5)).toBe(0x8000);
+  });
+
+  it('reads every normal half and zero back to the bits it came from', () => {
+    for (let half = 0; half < 0x10000; half++) {
+      const exponent = (half >>> 10) & 0x1f;
+      if (exponent === 0x1f || (exponent === 0 && (half & 0x3ff) !== 0)) continue;
+      expect(halfBits(halfValue(half))).toBe(half);
+    }
+  });
+
+  it('packs the size in the low half, the weight in the high, and the flag in the size sign', () => {
+    const plain = packSizeAndWeight(0.1, 0.75, false);
+    expect(plain & 0xffff).toBe(halfBits(0.1));
+    expect(plain >>> 16).toBe(halfBits(0.75));
+    expect(plain & LIGHT_FIXTURE_FLAG).toBe(0);
+    const fixture = packSizeAndWeight(0.1, 0.75, true);
+    expect(fixture & LIGHT_FIXTURE_FLAG).toBe(LIGHT_FIXTURE_FLAG);
+    expect(fixture & 0x7fff).toBe(halfBits(0.1));
+    /* A negative size reads as its magnitude, so it cannot pose as the flag. */
+    expect(packSizeAndWeight(-0.1, 1, false) & LIGHT_FIXTURE_FLAG).toBe(0);
+    /* A negative weight keeps its sign: a DriftLight field's own light carries one. */
+    expect(halfValue(packSizeAndWeight(0, -0.5, false) >>> 16)).toBe(-0.5);
+  });
+
+  it('writes a plain light that the shader can stop reading after two texels', () => {
+    const record = new Uint32Array(LIGHT_TEXELS * 4);
+    writeLightRecord(oneLight(), 0, 0, record, 0);
+    expect(floatOf(record[LIGHT_RECORD.positionY] ?? 0)).toBe(2);
+    expect(floatOf(record[LIGHT_RECORD.radius] ?? 0)).toBe(8);
+    expect(floatOf(record[LIGHT_RECORD.colorG] ?? 0)).toBe(0.25);
+    const packed = record[LIGHT_RECORD.sizeAndWeight] ?? 0;
+    expect(packed & LIGHT_FIXTURE_FLAG).toBe(0);
+    expect(halfValue(packed & 0x7fff)).toBe(lampSourceRadius(0.1));
+    expect(halfValue(packed >>> 16)).toBe(0.75);
+    /* What the shader assumes in place of texels two to four is exactly what they hold. */
+    expect(floatOf(record[LIGHT_RECORD.shadowSlot] ?? 0)).toBe(NO_SHADOW_SLOT);
+    expect(floatOf(record[LIGHT_RECORD.directionX] ?? 0)).toBe(0);
+    expect(floatOf(record[LIGHT_RECORD.cosInner] ?? 0)).toBe(POINT_LIGHT_COS_INNER);
+    expect(floatOf(record[LIGHT_RECORD.cosOuter] ?? 0)).toBe(POINT_LIGHT_COS_OUTER);
+    expect(floatOf(record[LIGHT_RECORD.iesProfile] ?? 0)).toBe(NO_IES_PROFILE);
+    expect(floatOf(record[LIGHT_RECORD.cookie] ?? 0)).toBe(NO_IES_PROFILE);
+    expect(floatOf(record[LIGHT_RECORD.iesAxisZ] ?? 0)).toBe(0);
+    expect(record[19]).toBe(0);
+  });
+
+  it('flags a light with a shadow slot, a cone, a profile or a cookie, and nothing else', () => {
+    const flagged = (set: ClusterLightSet, slots = 0): boolean => {
+      const record = new Uint32Array(LIGHT_TEXELS * 4);
+      writeLightRecord(set, 0, slots, record, 0);
+      return ((record[LIGHT_RECORD.sizeAndWeight] ?? 0) & LIGHT_FIXTURE_FLAG) !== 0;
+    };
+    expect(flagged(oneLight())).toBe(false);
+    /* A direction alone is not a fixture: with no cone it changes nothing the shader computes. */
+    expect(flagged(oneLight({ directions: new Float32Array([0, -1, 0]) }))).toBe(false);
+    expect(flagged(oneLight(), 1)).toBe(true);
+    expect(flagged(oneLight({ coneCos: new Float32Array([0.9, 0.8]) }))).toBe(true);
+    expect(flagged(oneLight({ iesProfiles: new Float32Array([0]) }))).toBe(true);
+    expect(flagged(oneLight({ cookies: new Float32Array([3]) }))).toBe(true);
+    expect(lightHasFixture(oneLight(), 0, 1)).toBe(true);
+    expect(lightHasFixture(oneLight(), 0, 0)).toBe(false);
+  });
+
+  it('names the frame plain until one light carries a fixture', () => {
+    const many = (extra: Partial<ClusterLightSet> = {}): ClusterLightSet => ({
+      ...oneLight(),
+      count: 3,
+      positions: new Float32Array(9),
+      colors: new Float32Array(9),
+      radii: new Float32Array([1, 1, 1]),
+      sourceRadii: new Float32Array(3),
+      weights: new Float32Array([1, 1, 1]),
+      ...extra,
+    });
+    expect(clusteredMode(many(), 3, 0)).toBe(1);
+    expect(
+      clusteredMode(many({ coneCos: new Float32Array([-1, -2, -1, -2, 0.9, 0.8]) }), 3, 0),
+    ).toBe(2);
+    /* The third light's cone is past the count, so it is not this frame's. */
+    expect(
+      clusteredMode(many({ coneCos: new Float32Array([-1, -2, -1, -2, 0.9, 0.8]) }), 2, 0),
+    ).toBe(1);
+    expect(clusteredMode(many(), 3, 16)).toBe(2);
+  });
+
+  /*
+   * The defect this assembly replaced: both renderers copied five arrays and dropped the rest, so
+   * every spot, profile and cookie shaded as a bare point light with clustering on.
+   */
+  it('carries every fixture field, and no emitter size where none was given', () => {
+    const directions = new Float32Array([0, -1, 0]);
+    const coneCos = new Float32Array([0.9, 0.8]);
+    const iesProfiles = new Float32Array([1]);
+    const iesAxes = new Float32Array([1, 0, 0]);
+    const cookies = new Float32Array([2]);
+    const set = fillClusterLightSet(
+      {
+        lightCount: 1,
+        lightPositions: new Float32Array(3),
+        lightColors: new Float32Array(3),
+        lightRadii: new Float32Array([5]),
+        lightWeights: new Float32Array([1]),
+        lightDirections: directions,
+        lightConeCos: coneCos,
+        lightIesProfiles: iesProfiles,
+        lightIesAxes: iesAxes,
+        lightCookies: cookies,
+      },
+      createClusterLightSet(),
+    );
+    expect(set.directions).toBe(directions);
+    expect(set.coneCos).toBe(coneCos);
+    expect(set.iesProfiles).toBe(iesProfiles);
+    expect(set.iesAxes).toBe(iesAxes);
+    expect(set.cookies).toBe(cookies);
+    /* The fixed arm reads a missing size as none; this read the radius, a five-metre emitter. */
+    expect(set.sourceRadii[0] ?? 0).toBe(0);
+  });
+
+  it('rounds the fixed arm the way the record rounds it', () => {
+    const resolved = resolvePointLights(
+      {
+        lightCount: 1,
+        lightPositions: new Float32Array(MAX_POINT_LIGHTS * 3),
+        lightColors: new Float32Array(MAX_POINT_LIGHTS * 3),
+        lightRadii: new Float32Array(MAX_POINT_LIGHTS).fill(8),
+        lightSourceRadii: new Float32Array(MAX_POINT_LIGHTS).fill(0.1),
+        lightWeights: new Float32Array(MAX_POINT_LIGHTS).fill(0.3),
+      },
+      'smooth',
+      {
+        count: 0,
+        falloff: 0,
+        positions: new Float32Array(0),
+        colors: new Float32Array(0),
+        radii: new Float32Array(0),
+        sourceRadii: new Float32Array(0),
+        weights: new Float32Array(0),
+        directions: new Float32Array(0),
+        coneCos: new Float32Array(0),
+        iesProfiles: new Float32Array(0),
+        iesAxes: new Float32Array(0),
+        cookies: new Float32Array(0),
+        heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
+        heldWeights: new Float32Array(MAX_POINT_LIGHTS),
+      },
+    );
+    const record = new Uint32Array(LIGHT_TEXELS * 4);
+    writeLightRecord(
+      oneLight({ sourceRadii: new Float32Array([0.1]), weights: new Float32Array([0.3]) }),
+      0,
+      0,
+      record,
+      0,
+    );
+    const packed = record[LIGHT_RECORD.sizeAndWeight] ?? 0;
+    expect(resolved.sourceRadii[0]).toBe(Math.fround(halfValue(packed & 0x7fff)));
+    expect(resolved.weights[0]).toBe(Math.fround(halfValue(packed >>> 16)));
+    expect(resolved.weights[0]).not.toBe(Math.fround(0.3));
   });
 });

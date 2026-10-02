@@ -71,7 +71,7 @@ test('the fixed light path is unchanged by the clustered arm existing beside it'
 
   /* And the branch is on a uniform, so it is uniform control flow in every fragment. */
   expect(source).toContain('uniform int uClustered;');
-  expect(source).toContain('if (uClustered == 1)');
+  expect(source).toContain('if (uClustered != 0)');
 });
 
 /**
@@ -90,6 +90,41 @@ function digest(text: string): string {
   }
   return `${hash.toString(16).padStart(8, '0')}:${text.length}`;
 }
+
+/*
+ * **The order the clustered arm reads a record in is the performance, so it is asserted.** A plain
+ * light costs two texels only while the range test comes before the second and the fixture's three
+ * stay inside a branch a whole frame of plain lights never enters; moving either line back reads
+ * five texels a light again, and the picture would not change to say so. See `LIGHT_TEXELS`.
+ */
+test('the clustered arm reads a plain light in two texels, and out of reach in one', () => {
+  const source = flatFrag(optionsFor(ALL_ON));
+  const start = source.indexOf('uvec4 rec0 = clusterTexel(record);');
+  const arm = source.slice(start, source.indexOf('i = slot;', start));
+  const second = arm.indexOf('clusterTexel(record + 1)');
+  expect(start).toBeGreaterThan(0);
+  expect(arm.indexOf('>= lightRadius) continue;')).toBeGreaterThan(0);
+  expect(arm.indexOf('>= lightRadius) continue;')).toBeLessThan(second);
+  const mode = arm.indexOf('if (uClustered == 2) {');
+  const flag = arm.indexOf('if ((rec1.w & LIGHT_FIXTURE_FLAG) != 0u) {');
+  expect(mode).toBeGreaterThan(second);
+  expect(flag).toBeGreaterThan(mode);
+  for (const texel of [2, 3, 4])
+    expect(arm.indexOf(`clusterTexel(record + ${texel})`)).toBeGreaterThan(flag);
+});
+
+test('a scene with no photometric profile reads no profile', () => {
+  const source = flatFrag(optionsFor(ALL_ON));
+  const guard = source.indexOf(
+    'if (uIesAtlasRows > 1.0) {',
+    source.indexOf('float photometric = 1.0;'),
+  );
+  expect(guard).toBeGreaterThan(0);
+  expect(source.indexOf('float iesGain = textureLod(uFixtureAtlas', guard)).toBeGreaterThan(guard);
+  expect(source.indexOf('float iesAngle = acos(')).toBeGreaterThan(
+    source.indexOf('if (uIesAtlasRows > 1.0) {'),
+  );
+});
 
 test('the vertex source is stable', () => {
   for (const morphed of [false, true]) {

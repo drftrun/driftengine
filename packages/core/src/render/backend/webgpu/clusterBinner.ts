@@ -1,14 +1,11 @@
 import {
   CLUSTER_COUNT,
-  LIGHT_RECORD,
   LIGHT_TEXELS,
-  NO_IES_PROFILE,
-  POINT_LIGHT_COS_INNER,
-  POINT_LIGHT_COS_OUTER,
   MAX_CLUSTERED_LIGHTS,
   TABLE_HEIGHT,
   TABLE_WIDTH,
   type ClusterLightSet,
+  writeLightRecord,
 } from '../../clusteredLights.ts';
 import { MAX_POINT_LIGHTS } from '../../lightBudget.ts';
 import type { ComputeContext, ComputeDefinition, ComputeDevice } from '../../compute.ts';
@@ -77,7 +74,8 @@ export class ClusterBinner {
   private readonly paramsStaging = new ArrayBuffer(PARAMS_BYTES);
   private readonly paramsFloats = new Float32Array(this.paramsStaging);
   private readonly paramsUints = new Uint32Array(this.paramsStaging);
-  private readonly lightStaging = new Float32Array(MAX_CLUSTERED_LIGHTS * LIGHT_TEXELS * 4);
+  /* The records as bits, because one slot holds two halves that must not pass through a float. */
+  private readonly lightStaging = new Uint32Array(MAX_CLUSTERED_LIGHTS * LIGHT_TEXELS * 4);
 
   private frame: ClusterBinnerFrame | null = null;
 
@@ -172,48 +170,17 @@ export class ClusterBinner {
     const count = Math.min(frame.lights.count, MAX_CLUSTERED_LIGHTS);
 
     /*
-     * The records, in exactly the order `buildLightClusters` writes them, because the shader
+     * The records, by the function `buildLightClusters` writes them with, because the shader
      * copies them into the table verbatim and the lit pass reads one layout on both backends.
      */
     for (let light = 0; light < count; light++) {
-      const at = light * LIGHT_TEXELS * 4;
-      this.lightStaging[at] = frame.lights.positions[light * 3] ?? 0;
-      this.lightStaging[at + 1] = frame.lights.positions[light * 3 + 1] ?? 0;
-      this.lightStaging[at + 2] = frame.lights.positions[light * 3 + 2] ?? 0;
-      this.lightStaging[at + 3] = frame.lights.radii[light] ?? 0;
-      this.lightStaging[at + 4] = frame.lights.colors[light * 3] ?? 0;
-      this.lightStaging[at + 5] = frame.lights.colors[light * 3 + 1] ?? 0;
-      this.lightStaging[at + 6] = frame.lights.colors[light * 3 + 2] ?? 0;
-      this.lightStaging[at + 7] = frame.lights.sourceRadii[light] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.weight] = frame.lights.weights[light] ?? 1;
-      this.lightStaging[at + LIGHT_RECORD.shadowSlot] = light < frame.shadowSlots ? light : -1;
-      /*
-       * The cone, addressed through `LIGHT_RECORD` rather than by number. Two writers fill this
-       * record — the CPU binner in `clusteredLights.ts` and this — and the 2026-08-17 rule is that
-       * two implementations of one decision drift invisibly when the constants are identical. They
-       * now read the same table of offsets, so a field can only move in both at once.
-       *
-       * `POINT_LIGHT_COS_OUTER` and its inner twin are what make a light with no cone collapse to
-       * exactly the arithmetic a point light had. `scripts/cluster-check.mjs` compares the two
-       * tables byte for byte and is what would catch this being wrong anyway.
-       */
-      const directions = frame.lights.directions;
-      const cone = frame.lights.coneCos;
-      this.lightStaging[at + LIGHT_RECORD.directionX] = directions?.[light * 3] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.directionY] = directions?.[light * 3 + 1] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.directionZ] = directions?.[light * 3 + 2] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.cosInner] = cone?.[light * 2] ?? POINT_LIGHT_COS_INNER;
-      this.lightStaging[at + LIGHT_RECORD.cosOuter] =
-        cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER;
-      this.lightStaging[at + LIGHT_RECORD.iesProfile] =
-        frame.lights.iesProfiles?.[light] ?? NO_IES_PROFILE;
-      /* The azimuth reference an asymmetric profile is oriented by; zero where a consumer gave
-         none, which the shader reads as no usable reference and leaves on the first plane. */
-      const axes = frame.lights.iesAxes;
-      this.lightStaging[at + LIGHT_RECORD.iesAxisX] = axes?.[light * 3] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.iesAxisY] = axes?.[light * 3 + 1] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.iesAxisZ] = axes?.[light * 3 + 2] ?? 0;
-      this.lightStaging[at + LIGHT_RECORD.cookie] = frame.lights.cookies?.[light] ?? NO_IES_PROFILE;
+      writeLightRecord(
+        frame.lights,
+        light,
+        frame.shadowSlots,
+        this.lightStaging,
+        light * LIGHT_TEXELS * 4,
+      );
     }
 
     this.paramsFloats.set(frame.view, 0);

@@ -54,8 +54,12 @@ struct Params {
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
-/** Three vec4s a light, in exactly the record order \`buildLightClusters\` writes. */
-@group(0) @binding(1) var<storage, read> lights: array<vec4<f32>>;
+/**
+ * The records as \`writeLightRecord\` lays them out, as bits. **\`u32\`, not \`f32\`**, because one
+ * slot holds two halves, and a zero weight read as a float would be a subnormal a GPU is free to
+ * flush on the way through; read as bits, the copy into the table cannot change them.
+ */
+@group(0) @binding(1) var<storage, read> lights: array<vec4<u32>>;
 /**
  * Write-only, which is all core WGSL offers and all the fixed-slot layout needs.
  *
@@ -81,7 +85,7 @@ fn distanceSqToBounds(p: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> f32 {
 
 /** A light's view-space centre, with depth positive along the view direction. */
 fn viewOf(light: u32) -> vec3<f32> {
-  let world = lights[light * LIGHT_TEXELS];
+  let world = bitcast<vec4<f32>>(lights[light * LIGHT_TEXELS]);
   let v = params.view * vec4<f32>(world.xyz, 1.0);
   return vec3<f32>(v.x, v.y, -v.z);
 }
@@ -113,7 +117,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (id < params.lightCount) {
     let record = id * LIGHT_TEXELS;
     for (var t: u32 = 0u; t < LIGHT_TEXELS; t = t + 1u) {
-      textureStore(table, texelAt(record + t), bitcast<vec4<u32>>(lights[record + t]));
+      textureStore(table, texelAt(record + t), lights[record + t]);
     }
   }
 
@@ -157,7 +161,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   /* Increasing light index, which is what makes the list sorted without a sort. */
   for (var light: u32 = 0u; light < params.lightCount; light = light + 1u) {
-    let radius = lights[light * LIGHT_TEXELS].w;
+    let radius = bitcast<f32>(lights[light * LIGHT_TEXELS].w);
     let v = viewOf(light);
     if (v.z + radius <= 0.0) {
       continue;

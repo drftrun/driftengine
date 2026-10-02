@@ -56,12 +56,13 @@ import { boundsVisible } from '../../visibility.ts';
 import { createPassRegistry, drainRegistry, passAt, registerIn, unregisterIn } from '../../pass.ts';
 import type { ComputeDefinition, ComputeHandle } from '../../compute.ts';
 import {
-  MAX_CLUSTERED_LIGHTS,
   TABLE_HEIGHT,
   TABLE_WIDTH,
   buildLightClusters,
+  clusteredMode,
+  createClusterLightSet,
   createClusterTable,
-  type ClusterLightSet,
+  fillClusterLightSet,
 } from '../../clusteredLights.ts';
 import type {
   PassContext,
@@ -2211,21 +2212,7 @@ export class WebGL2Renderer implements RendererApi {
   private clusterTexture: WebGLTexture | null = null;
   private clusterTable: Uint32Array | null = null;
   /** Refilled per frame; holds references and allocates nothing. See `resolvePointLights`. */
-  private readonly clusterLights: {
-    count: number;
-    positions: Float32Array;
-    colors: Float32Array;
-    radii: Float32Array;
-    sourceRadii: Float32Array;
-    weights: Float32Array;
-  } = {
-    count: 0,
-    positions: new Float32Array(0),
-    colors: new Float32Array(0),
-    radii: new Float32Array(0),
-    sourceRadii: new Float32Array(0),
-    weights: new Float32Array(0),
-  };
+  private readonly clusterLights = createClusterLightSet();
   /** near, far, tan(fovY/2), aspect — written per frame, uploaded as one vec4. */
   private readonly clusterFrustum = new Float32Array(4);
 
@@ -2378,15 +2365,11 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniformMatrix4fv(u['uView'] ?? null, false, camera.view);
 
     this.clusterTable ??= createClusterTable();
-    const lights = this.clusterLights;
-    lights.count = Math.min(env.lightCount ?? 0, MAX_CLUSTERED_LIGHTS);
-    lights.positions = env.lightPositions;
-    lights.colors = env.lightColors;
-    lights.radii = env.lightRadii;
-    lights.sourceRadii = env.lightSourceRadii ?? env.lightRadii;
-    lights.weights = env.lightWeights;
+    const lights = fillClusterLightSet(env, this.clusterLights);
+    /* A slot is read only under `POINT_SHADOWS`; see `lightHasFixture`. */
+    const shadowSlots = this.quality.pointShadows ? this.lightBudget.maxLights : 0;
     buildLightClusters(
-      lights as ClusterLightSet,
+      lights,
       camera.view as Float32Array,
       near,
       far,
@@ -2400,8 +2383,9 @@ export class WebGL2Renderer implements RendererApi {
        * to name, and saying so here is what stops the shader having to discover it. The shader
        * guards the read as well, for a build that reaches it another way.
        */
-      this.lightBudget.maxLights,
+      shadowSlots,
     );
+    gl.uniform1i(u['uClustered'] ?? null, clusteredMode(lights, lights.count, shadowSlots));
     gl.texSubImage2D(
       gl.TEXTURE_2D,
       0,

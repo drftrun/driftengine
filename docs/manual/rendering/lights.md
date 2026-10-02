@@ -392,6 +392,12 @@ on the GPU on WebGPU: measured at 0.411 ms with sixteen lights and 2.6 ms with 2
 follows a light's area on screen, so a scene of a few enormous lights pays most and gains least, and
 the fixed path is the better choice there. Off by default.
 
+Shading cost follows how many lights each froxel holds, which grows with how much the lights overlap
+on screen. At 3840 by 2160, 320 lights of radius 8 crowded around the view hold 13.5 lights in an
+occupied froxel on average and cost 7.4 ms of shading on a desktop GPU; at radius 12 the same lights
+cost 12.7 ms. A light with a cone, a profile, a cookie or a point shadow is read in five texels and a
+plain one in two, and a frame whose lights are all plain never reads the other three.
+
 ## Light from surfaces
 
 Emissive surfaces glow in their own colour, by vertex or by map; see [Materials](materials.md).

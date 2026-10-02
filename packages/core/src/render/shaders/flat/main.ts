@@ -939,7 +939,7 @@ export const MAIN_GLSL = `void main() {
     int clusterBaseTexel = LIGHT_REGION_TEXELS
       + (clusterTileX + clusterTileY * CLUSTER_X + clusterSlice * CLUSTER_X * CLUSTER_Y)
         * CLUSTER_TEXELS;
-    int clusterLights = uClustered == 1 ? int(clusterTexel(clusterBaseTexel).x) : 0;
+    int clusterLights = uClustered != 0 ? int(clusterTexel(clusterBaseTexel).x) : 0;
 
     /* The fixture atlas's size, asked once: its cookie band and its profile rows are found from it. */
     vec2 fixtureSize = vec2(textureSize(uFixtureAtlas, 0));
@@ -968,7 +968,7 @@ export const MAIN_GLSL = `void main() {
       float iesProfile;
       vec3 iesAxis;
       float cookie;
-      if (uClustered == 1) {
+      if (uClustered != 0) {
       if (slot >= clusterLights) break;
       /*
        * Four indices to a texel. Selected with compares rather than by indexing the vector,
@@ -983,32 +983,65 @@ export const MAIN_GLSL = `void main() {
       i = int(packed);
       int record = i * LIGHT_TEXELS;
       uvec4 rec0 = clusterTexel(record);
-      uvec4 rec1 = clusterTexel(record + 1);
-      uvec4 rec2 = clusterTexel(record + 2);
       lightPos = vec3(
         uintBitsToFloat(rec0.x), uintBitsToFloat(rec0.y), uintBitsToFloat(rec0.z));
       lightRadius = uintBitsToFloat(rec0.w);
+      /*
+       * **Out of reach is decided on the first texel, before the rest of the record is read.**
+       * A froxel holds every light whose sphere touches its box, so most of the lights a fragment
+       * walks never reach it, and each one used to cost all five texels before the falloff below
+       * said so. Both falloffs are zero at and past the radius, so this skips only lights the
+       * \`continue\` after the falloff would have skipped anyway: 17.5 ms of a 4K main pass with
+       * 320 lamps was 12.3 with this and the profile guard below, byte for byte the same picture.
+       */
+      if (length(lightPos - vWorldPos) >= lightRadius) continue;
+      /*
+       * **The second texel, and for a plain point light the last one.** The emitter size and the
+       * weight are two halves in one word, which is how nine numbers fit in two texels;
+       * \`unpackHalf2x16\` widens them exactly, and the fixed arm reads the same two values rounded
+       * the same way, so the arms stay one picture. See \`packSizeAndWeight\`.
+       */
+      uvec4 rec1 = clusterTexel(record + 1);
       lightColor = vec3(
         uintBitsToFloat(rec1.x), uintBitsToFloat(rec1.y), uintBitsToFloat(rec1.z));
-      lightSourceRadius = uintBitsToFloat(rec1.w);
-      lightWeight = uintBitsToFloat(rec2.x);
-      shadowSlot = int(uintBitsToFloat(rec2.y));
+      vec2 sizeAndWeight = unpackHalf2x16(rec1.w);
+      lightSourceRadius = abs(sizeAndWeight.x);
+      lightWeight = sizeAndWeight.y;
       /*
-       * The fourth texel, which is the cone. See LIGHT_RECORD in clusteredLights.ts: the
-       * direction spans rec2.z, rec2.w and rec3.x, because the record is a run of floats rather
-       * than a struct and a vec3 does not respect texel boundaries.
+       * **The fixture, read only for a light that has one.** What a plain light's record holds in
+       * the last three texels is exactly these values, so a light carrying no shadow slot, cone,
+       * profile or cookie shades the same whether they are read or assumed, and at heavy overlap
+       * reading them was a third of the pass. A branch on a value from a texture around
+       * \`texelFetch\` is not the 2026-08-07 case: an integer fetch takes no derivative.
+       *
+       * **Inside a branch on \`uClustered\` first**, which is 2 only in a frame where some light
+       * carries a fixture. The test on each light's flag is a branch on a value read from a
+       * texture, which a compiler may run both sides of, and it cost 1.3 ms of a 4K pass whose 320
+       * lamps were all plain; a uniform branch costs nothing, so such a frame never reaches it.
        */
-      uvec4 rec3 = clusterTexel(record + 3);
-      lightDir = vec3(
-        uintBitsToFloat(rec2.z), uintBitsToFloat(rec2.w), uintBitsToFloat(rec3.x));
-      lightCone = vec2(uintBitsToFloat(rec3.y), uintBitsToFloat(rec3.z));
-      iesProfile = uintBitsToFloat(rec3.w);
-      /* The fifth texel, which is the photometric azimuth. See LIGHT_RECORD in clusteredLights.ts
-         for why it costs a texel rather than being derived from the direction. */
-      uvec4 rec4 = clusterTexel(record + 4);
-      iesAxis = vec3(
-        uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
-      cookie = uintBitsToFloat(rec4.w);
+      shadowSlot = -1;
+      lightDir = vec3(0.0);
+      lightCone = vec2(-1.0, -2.0);
+      iesProfile = -1.0;
+      iesAxis = vec3(0.0);
+      cookie = -1.0;
+      if (uClustered == 2) {
+        if ((rec1.w & LIGHT_FIXTURE_FLAG) != 0u) {
+          uvec4 rec2 = clusterTexel(record + 2);
+          uvec4 rec3 = clusterTexel(record + 3);
+          uvec4 rec4 = clusterTexel(record + 4);
+          shadowSlot = int(uintBitsToFloat(rec2.x));
+          lightDir = vec3(
+            uintBitsToFloat(rec2.y), uintBitsToFloat(rec2.z), uintBitsToFloat(rec2.w));
+          lightCone = vec2(uintBitsToFloat(rec3.x), uintBitsToFloat(rec3.y));
+          iesProfile = uintBitsToFloat(rec3.z);
+          cookie = uintBitsToFloat(rec3.w);
+          /* The photometric azimuth. See LIGHT_RECORD in clusteredLights.ts for why it costs a
+             texel rather than being derived from the direction. */
+          iesAxis = vec3(
+            uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
+        }
+      }
       } else {
       i = slot;
       if (i >= uLightCount || i >= MAX_LIGHTS) break;
@@ -1227,20 +1260,25 @@ export const MAIN_GLSL = `void main() {
        * and the result is selected afterwards with a \`mix\` on a compare — which is arithmetic
        * rather than control flow.
        *
-       * **What it costs** is one texture fetch per light per fragment on every scene, whether or
-       * not anything loaded a profile. **What would make it wrong** is a scene where that fetch is
-       * measurable against the shadow taps in the same loop, which would be a scene with many
-       * lights and no shadows at all — at which point the honest answer is a permutation flag, and
-       * \`ARCHITECTURE.md\` section 1 has the arithmetic for whether it earns one.
+       * **And skipped outright where nothing loaded a profile**, behind \`uIesAtlasRows\`, which is
+       * one while the atlas holds only its row of ones. A uniform is provably uniform control
+       * flow, so this branch is not the one the rule forbids. It was paid on every scene until a
+       * 4K frame of 320 lamps and no shadows measured it at 0.7 ms of the main pass, rising to
+       * 2.3 ms with the lamps overlapping, which is the scene this note used to say would make
+       * the fetch wrong. Every light then reads 1, which is what \`step(0.0, iesProfile)\` gave
+       * each of them anyway.
        */
       float iesRow = max(iesProfile, 0.0);
       /* The direction the fixture throws toward this fragment, which both angles are measured on. */
       vec3 iesRay = -toLight / max(dist, 1e-4);
       /* The angle from the fixture's axis, as a fraction of the 0-to-180 arc every row spans. */
-      float iesAngle = acos(clamp(dot(iesRay, lightDir), -1.0, 1.0));
-      /* Clamped to the row's first and last texel centres, which is what the edge clamp of a
-         texture exactly one row wide gave; the atlas can be wider now, with cookies beside it. */
-      float iesU = clamp(iesAngle / PI_IES * IES_WIDTH, 0.5, IES_WIDTH - 0.5) / fixtureSize.x;
+      float iesU = 0.0;
+      if (uIesAtlasRows > 1.0) {
+        float iesAngle = acos(clamp(dot(iesRay, lightDir), -1.0, 1.0));
+        /* Clamped to the row's first and last texel centres, which is what the edge clamp of a
+           texture exactly one row wide gave; the atlas can be wider now, with cookies beside it. */
+        iesU = clamp(iesAngle / PI_IES * IES_WIDTH, 0.5, IES_WIDTH - 0.5) / fixtureSize.x;
+      }
       /*
        * **The azimuth about the fixture's own axis**, behind a branch on a uniform so a scene whose
        * profiles are all axially symmetric pays none of this arithmetic. A \`uniform float\` is
@@ -1315,14 +1353,15 @@ export const MAIN_GLSL = `void main() {
        * version this replaced took two explicit fetches and a \`mix\`, and cost **18,315 gzipped
        * bytes on \`core-only\`** across the sixteen fragment permutations.
        */
-      float iesBase = iesRow * (uIesPlaneCount + 1.0);
-      /* The profiles are the atlas's bottom rows, below any cookies. */
-      float iesTop = fixtureSize.y - uIesAtlasRows;
-      float iesV = uIesAtlasRows <= 1.0
-        ? (iesTop + 0.5) / fixtureSize.y
-        : (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
-      float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
-      float photometric = mix(1.0, iesGain, step(0.0, iesProfile));
+      float photometric = 1.0;
+      if (uIesAtlasRows > 1.0) {
+        float iesBase = iesRow * (uIesPlaneCount + 1.0);
+        /* The profiles are the atlas's bottom rows, below any cookies. */
+        float iesTop = fixtureSize.y - uIesAtlasRows;
+        float iesV = (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
+        float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
+        photometric = mix(1.0, iesGain, step(0.0, iesProfile));
+      }
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
       glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;

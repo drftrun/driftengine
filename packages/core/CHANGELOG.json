@@ -1,5 +1,21 @@
 [
   {
+    "version": "4.7.3",
+    "date": "2026-10-02",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "Clustered lighting at high resolution costs about a third less: a light out of reach is skipped after one texel, and a plain point light is read in two of its record's five.",
+        "text": "**The lit pass decides a clustered light is out of reach on the first texel of its record**, before reading the rest, and skips the photometric lookup when no profile is loaded. **A plain point light's emitter size and weight share one word as two halves**, so it is read in two texels of five; a light with a shadow slot, a cone, a profile or a cookie reads the other three, and only in a frame that has one. The uniform arm rounds size and weight the same way, so the two arms still draw one picture, and scenes of plain lights are byte-identical to 4.7.2 on both backends. At 3840 by 2160 with 320 lamps the main pass went from 17.5 to 12.0 ms at radius 8, from 26.2 to 17.2 at radius 12 and from 34.8 to 25.1 at radius 24, on WebGPU; building the clusters was 0.15 ms of the first. `demo/dev/clusterStress.html` is the workload and `scripts/cluster-stress.mjs` times every pass of it."
+      },
+      {
+        "kind": "fixed",
+        "short": "With clustered lights on, spots, photometric profiles and cookies shade as they do with it off: both renderers had been handing the binner every light as a plain point light.",
+        "text": "**Both renderers built the clustered light set from five arrays** and left out the direction, the cone, the profile, its axis and the cookie, so the record and the shader were right and the fixture never arrived: every spot lit the scene as a bare bulb. On a page holding one spot with a profile and a cookie the two arms differed by 357,706 pixels, and now differ by none on either backend. `fillClusterLightSet` is the one assembly both use. **A light given no emitter size now has none on both arms**, where the clustered arm read the light's radius in its place and widened every highlight it laid on a specular surface."
+      }
+    ]
+  },
+  {
     "version": "4.7.2",
     "date": "2026-10-02",
     "entries": [

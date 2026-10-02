@@ -1,7 +1,12 @@
 /** Fixed point-light budget shared by CPU selection and the flat shader. */
 import type { AreaLightBuffer } from './areaLights.ts';
 import type { ResolvedAreaShadows } from './areaShadowSet.ts';
-import { POINT_LIGHT_COS_INNER, POINT_LIGHT_COS_OUTER } from './clusteredLights.ts';
+import {
+  POINT_LIGHT_COS_INNER,
+  POINT_LIGHT_COS_OUTER,
+  lampSourceRadius,
+  lampWeight,
+} from './clusteredLights.ts';
 
 /**
  * How many point lights the shading pass shades against at once.
@@ -531,6 +536,14 @@ export interface ResolvedPointLights {
   iesProfiles: Float32Array;
   iesAxes: Float32Array;
   cookies: Float32Array;
+  /**
+   * Owned, `MAX_POINT_LIGHTS` long: the emitter sizes and weights as the froxel record carries
+   * them, at half precision. `sourceRadii` and `weights` point here once a light set resolves, so
+   * a lamp on the uniform path and the same lamp in the table shade with the same numbers. See
+   * `lampSourceRadius`.
+   */
+  readonly heldSourceRadii: Float32Array;
+  readonly heldWeights: Float32Array;
 }
 
 /** One per GL binder, refilled per call: holds references, allocates nothing. */
@@ -547,6 +560,8 @@ const glLights: ResolvedPointLights = {
   iesProfiles: NO_PROFILES,
   iesAxes: NO_IES_AXES,
   cookies: NO_COOKIES,
+  heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
+  heldWeights: new Float32Array(MAX_POINT_LIGHTS),
 };
 
 /**
@@ -659,8 +674,13 @@ export function resolvePointLights(
   out.positions = positions;
   out.colors = colors;
   out.radii = radii;
-  out.sourceRadii = sourceRadii;
-  out.weights = weights;
+  /* Rounded as the clustered record rounds them; see `heldSourceRadii`. */
+  for (let light = 0; light < MAX_POINT_LIGHTS; light++) {
+    out.heldSourceRadii[light] = lampSourceRadius(sourceRadii[light] ?? 0);
+    out.heldWeights[light] = lampWeight(weights[light] ?? 1);
+  }
+  out.sourceRadii = out.heldSourceRadii;
+  out.weights = out.heldWeights;
   out.directions = directions;
   out.coneCos = coneCos;
   out.iesProfiles = iesProfiles;

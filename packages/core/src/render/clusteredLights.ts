@@ -69,8 +69,16 @@ export const MAX_LIGHTS_PER_CLUSTER = (CLUSTER_TEXELS - 1) * 4;
 export const MAX_CLUSTERED_LIGHTS = 320;
 
 /**
- * Texels one light's record occupies: position and radius, colour and emitter size, then the
- * weight and the shadow slot.
+ * Texels one light's record occupies: position and radius, then colour with the emitter size and
+ * the weight, then the shadow slot and the fixture: direction, cone, profile, cookie and azimuth.
+ *
+ * **A plain point light is read in two of the five.** The lit pass fetches this record once per
+ * light per fragment, and at eight megapixels with lights crowded together that fetch is the
+ * frame: 320 lamps of radius 12 cost 26.2 ms of a 4K main pass when all five texels were read for
+ * every light, and 12.7 ms read in two, on the RX 9070 XT `demo/dev/clusterStress.html` was
+ * measured on. So the second texel carries a flag, `LIGHT_FIXTURE_FLAG`, and the last three are
+ * fetched only for a light that has a shadow slot, a cone, a profile or a cookie. What a plain light
+ * would have read there is what the shader assumes in their place, so the picture is the same.
  *
  * **The shadow slot is an index into the existing sixteen-wide shadow uniforms, not a layer.**
  * Clustering lifts how many lights *shade* a fragment; it does not lift how many shadow maps
@@ -109,6 +117,11 @@ export const LIGHT_TEXELS = 5;
  * rotating through that direction would snap its pattern round. The two obvious constructions put
  * that singularity where these fixtures actually point: `cross(worldUp, dir)` fails for a light
  * aimed straight down, which is a street light.
+ *
+ * **Reordered 2026-10-02 so a plain light's fields are the first eight**, which is what lets the
+ * shader stop after two texels. Nine values are needed by every light and eight fit in two
+ * texels, so the emitter size and the weight share slot 7 as two halves; see `packSizeAndWeight`.
+ * Slot 19 is spare.
  */
 export const LIGHT_RECORD = {
   positionX: 0,
@@ -118,22 +131,100 @@ export const LIGHT_RECORD = {
   colorR: 4,
   colorG: 5,
   colorB: 6,
-  sourceRadius: 7,
-  weight: 8,
-  shadowSlot: 9,
-  directionX: 10,
-  directionY: 11,
-  directionZ: 12,
-  cosInner: 13,
-  cosOuter: 14,
-  iesProfile: 15,
+  /** The emitter size and the weight, two halves in one word, and the fixture flag. */
+  sizeAndWeight: 7,
+  shadowSlot: 8,
+  directionX: 9,
+  directionY: 10,
+  directionZ: 11,
+  cosInner: 12,
+  cosOuter: 13,
+  iesProfile: 14,
+  /** A tile of the cookie atlas, or negative for none. */
+  cookie: 15,
   /** The fixture's azimuth zero, in world space. See the note above on why it cannot be derived. */
   iesAxisX: 16,
   iesAxisY: 17,
   iesAxisZ: 18,
-  /** A tile of the cookie atlas, or negative for none. Slot 19, the one the fifth texel spared. */
-  cookie: 19,
 } as const;
+
+/** Texels the lit pass reads for a light whose record carries no fixture. */
+export const PLAIN_LIGHT_TEXELS = 2;
+
+/**
+ * The bit of `sizeAndWeight` that says the record's last three texels hold something: the sign of
+ * the emitter size's half, which a size never needs.
+ */
+export const LIGHT_FIXTURE_FLAG = 0x8000;
+
+const halfScratch = new Float32Array(1);
+const halfScratchBits = new Uint32Array(halfScratch.buffer);
+
+/**
+ * A number as the sixteen bits of an IEEE half: rounded to the nearest, ties to even.
+ *
+ * **Computed here, once, and copied by both binners rather than converted on the GPU.** WGSL and
+ * GLSL both leave the rounding of `pack2x16float` to the implementation, and two producers of one
+ * table that round differently would make `scripts/cluster-check.mjs` compare noise.
+ *
+ * **A value only a subnormal half could hold is flushed to a signed zero.** A GPU may flush a
+ * subnormal it unpacks, and the fixed arm reads the same value from a uniform where nothing would;
+ * flushing it here means both arms read zero. Nothing is lost that a pixel could show: the largest
+ * value flushed is 6.1e-5, a weight no lamp is visible at.
+ */
+export function halfBits(value: number): number {
+  halfScratch[0] = value;
+  const x = halfScratchBits[0] ?? 0;
+  const sign = (x >>> 16) & 0x8000;
+  const exponent = (x >>> 23) & 0xff;
+  const mantissa = x & 0x7fffff;
+  if (exponent === 0xff) return sign | 0x7c00 | (mantissa === 0 ? 0 : 0x200);
+  const e = exponent - 127 + 15;
+  if (e >= 0x1f) return sign | 0x7c00;
+  if (e <= 0) return sign;
+  const truncated = (e << 10) | (mantissa >>> 13);
+  const rest = mantissa & 0x1fff;
+  /* A carry out of the mantissa lands in the exponent, which is the correct rounding up. */
+  const rounded =
+    rest > 0x1000 || (rest === 0x1000 && (truncated & 1) === 1) ? truncated + 1 : truncated;
+  return sign | rounded;
+}
+
+/** The number a half's bits hold. Exact: every half is also a float. */
+export function halfValue(half: number): number {
+  const sign = (half & 0x8000) === 0 ? 1 : -1;
+  const exponent = (half >>> 10) & 0x1f;
+  const mantissa = half & 0x3ff;
+  if (exponent === 0) return sign * mantissa * 2 ** -24;
+  if (exponent === 0x1f) return mantissa === 0 ? sign * Infinity : Number.NaN;
+  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
+}
+
+/**
+ * A lamp's emitter size as both arms read it: its magnitude, at half precision.
+ *
+ * **The fixed arm is rounded too, and that is what keeps the two arms one picture.**
+ * `resolvePointLights` passes the sixteen uniform lights through this and `lampWeight`, so a light
+ * moved from the uniform path to the froxel table shades with the same numbers. A negative size was
+ * never meaningful and now reads as its magnitude on both.
+ */
+export function lampSourceRadius(value: number): number {
+  return halfValue(halfBits(Math.abs(value)));
+}
+
+/** A lamp's weight as both arms read it: at half precision, sign kept. See `lampSourceRadius`. */
+export function lampWeight(value: number): number {
+  return halfValue(halfBits(value));
+}
+
+/**
+ * Slot 7 of a record: the emitter size's half in the low bits, the weight's in the high, and the
+ * fixture flag in the size's sign. The shader unpacks it with `unpackHalf2x16`, which is exact.
+ */
+export function packSizeAndWeight(sourceRadius: number, weight: number, fixture: boolean): number {
+  const size = halfBits(Math.abs(sourceRadius)) & 0x7fff;
+  return ((halfBits(weight) << 16) | size | (fixture ? LIGHT_FIXTURE_FLAG : 0)) >>> 0;
+}
 
 /**
  * The cone a light with no cone has: one that admits every direction, exactly.
@@ -312,6 +403,71 @@ export interface ClusterLightSet {
   readonly iesProfiles?: Float32Array;
 }
 
+/** Where `fillClusterLightSet` reads a frame's lights from: the arrays `Environment` carries. */
+export interface ClusterLightArrays {
+  readonly lightCount?: number;
+  readonly lightPositions: Float32Array;
+  readonly lightColors: Float32Array;
+  readonly lightRadii: Float32Array;
+  readonly lightWeights: Float32Array;
+  readonly lightSourceRadii?: Float32Array;
+  readonly lightDirections?: Float32Array;
+  readonly lightConeCos?: Float32Array;
+  readonly lightIesProfiles?: Float32Array;
+  readonly lightIesAxes?: Float32Array;
+  readonly lightCookies?: Float32Array;
+}
+
+/** A `ClusterLightSet` a renderer refills every frame. */
+export type ClusterLightScratch = { -readonly [K in keyof ClusterLightSet]: ClusterLightSet[K] };
+
+/** No emitter size at all, which is what the fixed arm reads for a light that was given none. */
+const NO_SOURCE_SIZES = new Float32Array(0);
+
+export function createClusterLightSet(): ClusterLightScratch {
+  return {
+    count: 0,
+    positions: NO_SOURCE_SIZES,
+    colors: NO_SOURCE_SIZES,
+    radii: NO_SOURCE_SIZES,
+    sourceRadii: NO_SOURCE_SIZES,
+    weights: NO_SOURCE_SIZES,
+  };
+}
+
+/**
+ * A frame's lights as the binner reads them, in place, holding references and allocating nothing.
+ *
+ * **One assembly for both renderers, and it used to be two that had each dropped the same five
+ * fields.** Each backend copied the position, colour, radius, size and weight arrays and nothing
+ * else, so a spot's direction and cone, a profile, its axis and a cookie never reached the record:
+ * with clustering on, every fixture shaded as a bare point light. On a probe page holding one
+ * spot with a profile and a cookie the two arms differed by 357,706 pixels, the clustered one
+ * flooding the scene the cone was meant to cut. The record and both shaders were right throughout;
+ * the light never arrived.
+ *
+ * **And a light given no emitter size has none**, as the fixed arm reads it. This read the light's
+ * radius in its place, an emitter as wide as the light reaches, which widened every lamp's
+ * highlight on a specular surface on the clustered arm alone.
+ */
+export function fillClusterLightSet(
+  env: ClusterLightArrays,
+  out: ClusterLightScratch,
+): ClusterLightSet {
+  out.count = Math.min(env.lightCount ?? 0, MAX_CLUSTERED_LIGHTS);
+  out.positions = env.lightPositions;
+  out.colors = env.lightColors;
+  out.radii = env.lightRadii;
+  out.sourceRadii = env.lightSourceRadii ?? NO_SOURCE_SIZES;
+  out.weights = env.lightWeights;
+  out.directions = env.lightDirections;
+  out.coneCos = env.lightConeCos;
+  out.iesProfiles = env.lightIesProfiles;
+  out.iesAxes = env.lightIesAxes;
+  out.cookies = env.lightCookies;
+  return out;
+}
+
 /*
  * Scratch, at module scope, because `buildLightClusters` runs per frame on WebGL2 and the house
  * rule forbids allocating there.
@@ -355,6 +511,108 @@ function distanceSqToBounds(x: number, y: number, z: number, b: Float32Array): n
   const dy = y < (b[1] ?? 0) ? (b[1] ?? 0) - y : y > (b[4] ?? 0) ? y - (b[4] ?? 0) : 0;
   const dz = z < (b[2] ?? 0) ? (b[2] ?? 0) - z : z > (b[5] ?? 0) ? z - (b[5] ?? 0) : 0;
   return dx * dx + dy * dy + dz * dz;
+}
+
+/**
+ * Whether a light's record needs its last three texels: it holds a shadow slot, a cone, a profile
+ * or a cookie. Everything else is a plain light, read in `PLAIN_LIGHT_TEXELS`.
+ *
+ * **`shadowSlots` is zero where the lit shader has no point shadows**, and both binners are handed
+ * it that way: a slot is only read under `POINT_SHADOWS`, so a light holding one in a build without
+ * them was paying for three texels the shader then ignored.
+ */
+export function lightHasFixture(
+  lights: ClusterLightSet,
+  light: number,
+  shadowSlots: number,
+): boolean {
+  const cone = lights.coneCos;
+  return (
+    light < shadowSlots ||
+    (cone?.[light * 2] ?? POINT_LIGHT_COS_INNER) !== POINT_LIGHT_COS_INNER ||
+    (cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER) !== POINT_LIGHT_COS_OUTER ||
+    (lights.iesProfiles?.[light] ?? NO_IES_PROFILE) >= 0 ||
+    (lights.cookies?.[light] ?? NO_IES_PROFILE) >= 0
+  );
+}
+
+/**
+ * The value of `uClustered` for a frame: 0 with clustering off, 1 when every light is plain, 2 when
+ * any carries a fixture.
+ *
+ * **The third state is a uniform the shader can branch on for free.** The flag test on each light is
+ * a branch on a value read from a texture, and a compiler may run both sides of one; 1.3 ms of a 4K
+ * main pass of 320 plain lamps was that test. Asked once a frame here, a scene whose lights are all
+ * plain never reaches it.
+ */
+export function clusteredMode(lights: ClusterLightSet, count: number, shadowSlots: number): 1 | 2 {
+  for (let light = 0; light < count; light++) {
+    if (lightHasFixture(lights, light, shadowSlots)) return 2;
+  }
+  return 1;
+}
+
+/**
+ * One light's record, at `at` in `out`, as the lit pass reads it.
+ *
+ * **The one writer.** The CPU binner calls this into the table and the GPU binner's staging calls
+ * it into the buffer its kernel copies verbatim, so a field can only move in both at once; the
+ * 2026-08-17 rule is that two implementations of one decision drift invisibly when the constants
+ * are identical, and these were two.
+ *
+ * **A light is plain unless it has a shadow slot, a cone, a profile or a cookie**, and then the
+ * flag is clear and the shader reads two texels. Every slot is still written, so a record holds no
+ * bytes from a light that was there last frame and the two binners' tables stay comparable.
+ *
+ * The shadow slot is signed and carried as a float's bits like everything else in the record. The
+ * first `MAX_POINT_LIGHTS` lights keep the shadow slots they already have, because
+ * `resolvePointLights` orders them so the ones worth shadowing come first, and everything past that
+ * is a light without a map, which is what a scene with two hundred lamps has anyway.
+ */
+export function writeLightRecord(
+  lights: ClusterLightSet,
+  light: number,
+  shadowSlots: number,
+  out: Uint32Array,
+  at: number,
+): void {
+  const directions = lights.directions;
+  const cone = lights.coneCos;
+  const axes = lights.iesAxes;
+  const shadowSlot = light < shadowSlots ? light : NO_SHADOW_SLOT;
+  const cosInner = cone?.[light * 2] ?? POINT_LIGHT_COS_INNER;
+  const cosOuter = cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER;
+  const profile = lights.iesProfiles?.[light] ?? NO_IES_PROFILE;
+  const cookie = lights.cookies?.[light] ?? NO_IES_PROFILE;
+  const fixture = lightHasFixture(lights, light, shadowSlots);
+
+  out[at + LIGHT_RECORD.positionX] = floatBits(lights.positions[light * 3] ?? 0);
+  out[at + LIGHT_RECORD.positionY] = floatBits(lights.positions[light * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.positionZ] = floatBits(lights.positions[light * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.radius] = floatBits(lights.radii[light] ?? 0);
+  out[at + LIGHT_RECORD.colorR] = floatBits(lights.colors[light * 3] ?? 0);
+  out[at + LIGHT_RECORD.colorG] = floatBits(lights.colors[light * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.colorB] = floatBits(lights.colors[light * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.sizeAndWeight] = packSizeAndWeight(
+    lights.sourceRadii[light] ?? 0,
+    lights.weights[light] ?? 1,
+    fixture,
+  );
+  out[at + LIGHT_RECORD.shadowSlot] = floatBits(shadowSlot);
+  /* A light that declared no cone gets the one that admits everything; see the constants. */
+  out[at + LIGHT_RECORD.directionX] = floatBits(directions?.[light * 3] ?? 0);
+  out[at + LIGHT_RECORD.directionY] = floatBits(directions?.[light * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.directionZ] = floatBits(directions?.[light * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.cosInner] = floatBits(cosInner);
+  out[at + LIGHT_RECORD.cosOuter] = floatBits(cosOuter);
+  out[at + LIGHT_RECORD.iesProfile] = floatBits(profile);
+  out[at + LIGHT_RECORD.cookie] = floatBits(cookie);
+  /* Zero where a consumer gave none, which the shader reads as "no usable reference" and falls
+     back to the first plane, the behaviour every symmetric profile has anyway. */
+  out[at + LIGHT_RECORD.iesAxisX] = floatBits(axes?.[light * 3] ?? 0);
+  out[at + LIGHT_RECORD.iesAxisY] = floatBits(axes?.[light * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.iesAxisZ] = floatBits(axes?.[light * 3 + 2] ?? 0);
+  out[at + 19] = 0;
 }
 
 /**
@@ -434,51 +692,7 @@ export function buildLightClusters(
     const radius = lights.radii[light] ?? 0;
 
     /* The record, as the shader reads it. World space; see the note above. */
-    const record = lightBase(light);
-    table[record] = floatBits(x);
-    table[record + 1] = floatBits(y);
-    table[record + 2] = floatBits(z);
-    table[record + 3] = floatBits(radius);
-    table[record + 4] = floatBits(lights.colors[light * 3] ?? 0);
-    table[record + 5] = floatBits(lights.colors[light * 3 + 1] ?? 0);
-    table[record + 6] = floatBits(lights.colors[light * 3 + 2] ?? 0);
-    table[record + 7] = floatBits(lights.sourceRadii[light] ?? 0);
-    table[record + 8] = floatBits(lights.weights[light] ?? 1);
-    /*
-     * Signed, and carried as a float's bits like everything else in the record so the shader
-     * reads the whole texel one way. The first `MAX_POINT_LIGHTS` lights keep the shadow slots
-     * they already have — `resolvePointLights` orders them so the ones worth shadowing come
-     * first — and everything past that is a light without a map, which is what a scene with two
-     * hundred lamps has anyway.
-     */
-    table[record + LIGHT_RECORD.shadowSlot] = floatBits(
-      light < shadowSlots ? light : NO_SHADOW_SLOT,
-    );
-
-    /*
-     * The cone, and a light that declared none gets the one that admits everything. Written for
-     * every light rather than only for spots, because the shader reads the same six slots either
-     * way and a record left at whatever the last frame put there is a cone nobody asked for.
-     */
-    const cone = lights.coneCos;
-    const directions = lights.directions;
-    const iesAxes = lights.iesAxes;
-    table[record + LIGHT_RECORD.directionX] = floatBits(directions?.[light * 3] ?? 0);
-    table[record + LIGHT_RECORD.directionY] = floatBits(directions?.[light * 3 + 1] ?? 0);
-    table[record + LIGHT_RECORD.directionZ] = floatBits(directions?.[light * 3 + 2] ?? 0);
-    table[record + LIGHT_RECORD.cosInner] = floatBits(cone?.[light * 2] ?? POINT_LIGHT_COS_INNER);
-    table[record + LIGHT_RECORD.cosOuter] = floatBits(
-      cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER,
-    );
-    table[record + LIGHT_RECORD.iesProfile] = floatBits(
-      lights.iesProfiles?.[light] ?? NO_IES_PROFILE,
-    );
-    /* Zero where a consumer gave none, which the shader reads as "no usable reference" and falls
-       back to the first plane — the behaviour every symmetric profile has anyway. */
-    table[record + LIGHT_RECORD.iesAxisX] = floatBits(iesAxes?.[light * 3] ?? 0);
-    table[record + LIGHT_RECORD.iesAxisY] = floatBits(iesAxes?.[light * 3 + 1] ?? 0);
-    table[record + LIGHT_RECORD.iesAxisZ] = floatBits(iesAxes?.[light * 3 + 2] ?? 0);
-    table[record + LIGHT_RECORD.cookie] = floatBits(lights.cookies?.[light] ?? NO_IES_PROFILE);
+    writeLightRecord(lights, light, shadowSlots, table, lightBase(light));
 
     /* Column-major, as gl-matrix builds it. The view looks down -z, so depth is -vz. */
     const vx = (view[0] ?? 0) * x + (view[4] ?? 0) * y + (view[8] ?? 0) * z + (view[12] ?? 0);

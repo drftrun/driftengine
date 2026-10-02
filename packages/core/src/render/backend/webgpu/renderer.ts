@@ -553,7 +553,11 @@ import { OcclusionBuffer } from '../../occlusion.ts';
 import { boundsVisible } from '../../visibility.ts';
 import { createPassRegistry, drainRegistry, passAt, registerIn, unregisterIn } from '../../pass.ts';
 import { ClusterBinner } from './clusterBinner.ts';
-import { MAX_CLUSTERED_LIGHTS, type ClusterLightSet } from '../../clusteredLights.ts';
+import {
+  clusteredMode,
+  createClusterLightSet,
+  fillClusterLightSet,
+} from '../../clusteredLights.ts';
 import {
   computeAt,
   createComputeRegistry,
@@ -5169,6 +5173,8 @@ export class WebGPURenderer implements RendererApi {
     iesProfiles: new Float32Array(0),
     iesAxes: new Float32Array(0),
     cookies: new Float32Array(0),
+    heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
+    heldWeights: new Float32Array(MAX_POINT_LIGHTS),
   };
   /** Refilled per frame rather than allocated; see `resolveAtmosphere`. */
   private readonly medium: ResolvedAtmosphere = {
@@ -13548,21 +13554,7 @@ export class WebGPURenderer implements RendererApi {
   /** near, far, tan(fovY/2), aspect. Written per frame into the fragment block. */
   private readonly clusterFrustum = new Float32Array(4);
   /** Refilled per frame; holds references and allocates nothing. */
-  private readonly clusterLights: {
-    count: number;
-    positions: Float32Array;
-    colors: Float32Array;
-    radii: Float32Array;
-    sourceRadii: Float32Array;
-    weights: Float32Array;
-  } = {
-    count: 0,
-    positions: new Float32Array(0),
-    colors: new Float32Array(0),
-    radii: new Float32Array(0),
-    sourceRadii: new Float32Array(0),
-    weights: new Float32Array(0),
-  };
+  private readonly clusterLights = createClusterLightSet();
 
   /**
    * Reused per dispatch rather than allocated, for the reason `passContext` gives beside it: a
@@ -13662,21 +13654,18 @@ export class WebGPURenderer implements RendererApi {
     f[frustumAt + 3] = aspect;
     f.set(camera.view as Float32Array, at('uView'));
 
-    const set = this.clusterLights;
-    set.count = Math.min(env.lightCount ?? 0, MAX_CLUSTERED_LIGHTS);
-    set.positions = env.lightPositions;
-    set.colors = env.lightColors;
-    set.radii = env.lightRadii;
-    set.sourceRadii = env.lightSourceRadii ?? env.lightRadii;
-    set.weights = env.lightWeights;
+    const set = fillClusterLightSet(env, this.clusterLights);
+    /* A slot is read only under `POINT_SHADOWS`; see `lightHasFixture`. */
+    const shadowSlots = this.quality.pointShadows ? MAX_POINT_LIGHTS : 0;
+    i[at('uClustered')] = clusteredMode(set, set.count, shadowSlots);
     binner.setFrame({
-      lights: set as ClusterLightSet,
+      lights: set,
       view: camera.view as Float32Array,
       near,
       far,
       tanHalfFovY,
       aspect,
-      shadowSlots: MAX_POINT_LIGHTS,
+      shadowSlots,
     });
     this.dispatchCompute(this.clusterHandle);
   }
