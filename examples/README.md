@@ -117,3 +117,7 @@ lesson:
   not, so anything that moves is interpolated between the last two states.
 - **No game's nouns.** No example names a product, and a test in
   [`scripts/docs.test.mjs`](../scripts/docs.test.mjs) fails if one starts to.
+- **A still beside each.** `still.webp` is what the site's gallery shows, captured on a real GPU
+  by `node scripts/example-stills.mjs <name>`. A test in
+  [`scripts/manual.test.mjs`](../scripts/manual.test.mjs) fails for an example without one, and an
+  example that changes how it looks takes a new still in the same commit.

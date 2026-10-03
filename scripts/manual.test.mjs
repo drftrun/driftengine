@@ -206,6 +206,21 @@ test('every example a page runs is an example', () => {
 });
 
 /*
+ * The site's gallery shows a still of every example, and a browser in CI has no GPU to draw one,
+ * so the still is committed beside its example and a new example without one fails here.
+ */
+test('every example has a still for the gallery', () => {
+  const dir = path.join(ROOT, EXAMPLES_DIR);
+  const missing = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => existsSync(path.join(dir, name, 'index.html')))
+    .filter((name) => existsSync(path.join(dir, name, 'main.ts')))
+    .filter((name) => !existsSync(path.join(dir, name, 'still.webp')));
+  assert.deepEqual(missing, [], 'node scripts/example-stills.mjs <name> writes one');
+});
+
+/*
  * The test that catches a rename.
  *
  * A barrel renames `Foo` to `Bar`, every sample is updated because it stops compiling, and the
