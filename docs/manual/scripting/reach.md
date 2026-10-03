@@ -51,7 +51,7 @@ types, records and the rest, is at [script.driftengine.dev](https://script.drift
 
 ### std/math
 
-Part of the language: every script may import it and no host binds it. Effects: `pure`. Used by [Animation](../simulation/animation.md), [Characters](../simulation/characters.md), [Colour and motion](../rendering/colour-and-motion.md), [Entities](../simulation/entities.md), [Fog and weather](../rendering/fog-and-weather.md), [Hello world](../start/hello-world.md), [Input](../interface/input.md), [Large worlds](../worlds/large-worlds.md), [Light in the air](../rendering/light-in-the-air.md), [Navigation](../simulation/navigation.md), [Procedural solids](../worlds/procedural-solids.md), [Queries and colliders](../simulation/queries.md), [Saves and preferences](../systems/saves.md), [Sound and music](../content/audio.md), [Sprites and tilemaps](../interface/sprites.md), [Terrain](../worlds/terrain.md), [Vehicles](../simulation/vehicles.md), [Wet surfaces](../rendering/wet-surfaces.md), [XR](../interface/xr.md).
+Part of the language: every script may import it and no host binds it. Effects: `pure`. Used by [Animation](../simulation/animation.md), [Characters](../simulation/characters.md), [Colour and motion](../rendering/colour-and-motion.md), [Entities](../simulation/entities.md), [Fog and weather](../rendering/fog-and-weather.md), [Hello world](../start/hello-world.md), [Input](../interface/input.md), [Large worlds](../worlds/large-worlds.md), [Light in the air](../rendering/light-in-the-air.md), [Navigation](../simulation/navigation.md), [Networking and rollback](../systems/networking.md), [Procedural solids](../worlds/procedural-solids.md), [Queries and colliders](../simulation/queries.md), [Saves and preferences](../systems/saves.md), [Sound and music](../content/audio.md), [Sprites and tilemaps](../interface/sprites.md), [Terrain](../worlds/terrain.md), [Vehicles](../simulation/vehicles.md), [Wet surfaces](../rendering/wet-surfaces.md), [XR](../interface/xr.md).
 
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
@@ -158,14 +158,16 @@ Bound when the host passes `services.audio` to `bindModule`; without it, an impo
 
 Bound when the host passes `services.behavior` to `bindModule`; without it, an import of this module is refused at bind with a sentence saying so. Effects: `behavior.read`, `behavior.write`. Used by [Agents and behaviour](../simulation/agents.md).
 
+`TreeStatus`: `Failure`, `Success`, `Running`. What a behaviour tree answered: it failed, it finished, or it is still going.
+
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
-| `tick` | `fn(behavior: Behavior) -> i32` | no | Advance the routine one tick. |
-| `step` | `fn(behavior: Behavior) -> i32` | no | Advance one tick even while paused, which is what a step button is. |
+| `tick` | `fn(behavior: Behavior) -> TreeStatus` | no | Advance the routine one tick, and answer whether it failed, finished or is still going. |
+| `step` | `fn(behavior: Behavior) -> TreeStatus` | no | Advance one tick even while paused, which is what a step button is. |
 | `restart` | `fn(behavior: Behavior) -> void` | no | Forget where the routine had got to, so the next tick starts it from the top. |
 | `setPaused` | `fn(behavior: Behavior, paused: bool) -> void` | no | Hold this one agent while the world carries on. |
 | `paused` | `fn(behavior: Behavior) -> bool` | yes | Whether it is being held. |
-| `status` | `fn(behavior: Behavior) -> i32` | yes | What the last tick answered, without ticking again. |
+| `status` | `fn(behavior: Behavior) -> TreeStatus` | yes | What the last tick answered, without ticking again. |
 | `doing` | `fn(behavior: Behavior, node: String) -> bool` | yes | Whether the agent is currently inside a node of this name — the routine's own answer, not a copy of it. |
 | `depth` | `fn(behavior: Behavior) -> i32` | yes | How deep in the tree the last tick reached. |
 
@@ -181,6 +183,10 @@ Bound always: what each function acts on arrives as an argument the host passes 
 ### drift/chemistry
 
 Bound when the host passes `services.chemistry` to `bindModule`; without it, an import of this module is refused at bind with a sentence saying so. Effects: `chemistry.read`, `chemistry.write`. Used by [Chemistry](../simulation/chemistry.md).
+
+`MatterPhase`: `Solid`, `Liquid`, `Gas`, `Mixed`. What a parcel is made of now. Mixed is a real answer: wet wood is a solid and a liquid at once.
+
+`ChemistryEvent`: `Ignited`, `Extinguished`, `SmoulderStart`, `SmoulderEnd`, `Consumed`, `Charred`, `StructuralFail`, `Frozen`, `Melted`, `Boiled`, `Condensed`, `Sublimed`, `Corroded`, `Calcined`, `Dissolved`, `Denatured`, `Browned`, `Caramelised`, `Fermented`, `Decayed`, `Exploded`. What happened to a parcel this tick: it caught, went out, melted, boiled and the rest.
 
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
@@ -200,7 +206,7 @@ Bound when the host passes `services.chemistry` to `bindModule`; without it, an 
 | `charDepth` | `fn(chem: Chemistry, parcel: i32) -> f32` | yes | Metres of char measured inward from the surface. |
 | `wetness` | `fn(chem: Chemistry, parcel: i32) -> f32` | yes | kg of liquid water on the surface, per square metre of it. |
 | `wettable` | `fn(chem: Chemistry, parcel: i32) -> bool` | yes | Whether this material can hold liquid water, which is what `wet` asks. |
-| `phase` | `fn(chem: Chemistry, parcel: i32) -> i32` | yes | 0 solid, 1 liquid, 2 gas, 3 mixed. |
+| `phase` | `fn(chem: Chemistry, parcel: i32) -> MatterPhase` | yes | Whether the parcel is solid, liquid, gas or mixed. |
 | `burning` | `fn(chem: Chemistry, parcel: i32) -> bool` | yes | Whether a flame stands over it. |
 | `smouldering` | `fn(chem: Chemistry, parcel: i32) -> bool` | yes | Whether it is glowing with no flame. |
 | `heatRelease` | `fn(chem: Chemistry, parcel: i32) -> f32` | yes | kW the reactions released last tick. |
@@ -233,7 +239,7 @@ Bound when the host passes `services.chemistry` to `bindModule`; without it, an 
 | `release` | `fn(chem: Chemistry, species: Species, kilograms: f32, x: f32, y: f32, z: f32) -> void` | yes | A gas release into the air: a leak, a vent, an extinguisher. |
 | `addAirHeat` | `fn(chem: Chemistry, joules: f32, x: f32, y: f32, z: f32) -> void` | yes | Joules into a cell of air, which is what a heater does and what a fire does to the room. |
 | `eventCount` | `fn(chem: Chemistry) -> i32` | yes | Events this tick. |
-| `eventKind` | `fn(chem: Chemistry, index: i32) -> i32` | yes | 0 ignited, 1 extinguished, 2 smoulderStart, 3 smoulderEnd, 4 consumed, 5 charred, 6 structuralFail, 7 frozen, 8 melted, 9 boiled, 10 condensed, 11 sublimed, 12 corroded, 13 calcined, 14 dissolved, 15 denatured, 16 browned, 17 caramelised, 18 fermented, 19 decayed, 20 exploded. |
+| `eventKind` | `fn(chem: Chemistry, index: i32) -> ChemistryEvent` | yes | What happened in one of this tick’s events. |
 | `eventParcel` | `fn(chem: Chemistry, index: i32) -> i32` | yes | Which parcel it happened to. |
 | `eventSpecies` | `fn(chem: Chemistry, index: i32) -> i32` | yes | Which species, or -1 where the kind does not name one. |
 | `eventValue` | `fn(chem: Chemistry, index: i32) -> f32` | yes | The kind's own quantity. |
@@ -266,18 +272,28 @@ Bound when the host passes `services.entities` to `bindModule`; without it, an i
 
 Bound always: what each function acts on arrives as an argument the host passes in. Effects: `editor`.
 
+`GizmoMode`: `Translate`, `Rotate`, `Scale`. Which tool a gizmo is: it moves, turns or scales.
+
+`GizmoSpace`: `World`, `Local`. Which axes a gizmo’s handles point along: the world’s or the object’s own.
+
+`GizmoHandle`: `None`, `TranslateX`, `TranslateY`, `TranslateZ`, `TranslateYZ`, `TranslateZX`, `TranslateXY`, `RotateX`, `RotateY`, `RotateZ`, `ScaleX`, `ScaleY`, `ScaleZ`, `ScaleUniform`. Which handle the pointer is over, or `None`.
+
+`EditorMode`: `Edit`, `Play`, `Paused`. Whether the editor is editing, playing the world, or paused part way through playing it.
+
+`FieldKind`: `Number`, `Integer`, `Boolean`, `Text`, `Entity`, `Enum`. How an inspector field is shown, taken from the type it was declared with.
+
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
 | `translateMode` | `fn(gizmo: Gizmo) -> void` | no | Make this an arrow gizmo, which moves what it is on. |
 | `rotateMode` | `fn(gizmo: Gizmo) -> void` | no | Make this a ring gizmo, which turns what it is on. |
 | `scaleMode` | `fn(gizmo: Gizmo) -> void` | no | Make this a scale gizmo. |
-| `gizmoMode` | `fn(gizmo: Gizmo) -> String` | no | Which of the three the gizmo is: "translate", "rotate" or "scale". |
+| `gizmoMode` | `fn(gizmo: Gizmo) -> GizmoMode` | no | Which of the three the gizmo is: translate, rotate or scale. |
 | `worldSpace` | `fn(gizmo: Gizmo) -> void` | no | Point the handles along the world axes. |
 | `localSpace` | `fn(gizmo: Gizmo) -> void` | no | Point the handles along the object’s own axes. |
-| `space` | `fn(gizmo: Gizmo) -> String` | no | Which the handles are pointing along: "world" or "local". |
+| `space` | `fn(gizmo: Gizmo) -> GizmoSpace` | no | Which the handles are pointing along: the world or the object. |
 | `size` | `fn(gizmo: Gizmo) -> f32` | no | How big the gizmo is in metres. |
 | `setSize` | `fn(gizmo: Gizmo, metres: f32) -> void` | no | Set how big the gizmo is in metres. |
-| `hovered` | `fn(gizmo: Gizmo) -> String` | no | What the pointer is over, as a name: "none", or one of "translate.x", "translate.yz", "rotate.y", "scale.uniform" and their siblings. |
+| `hovered` | `fn(gizmo: Gizmo) -> GizmoHandle` | no | What the pointer is over: `None`, or a handle such as `TranslateX`, `TranslateYZ`, `RotateY` or `ScaleUniform`. |
 | `dragging` | `fn(gizmo: Gizmo) -> bool` | no | Whether a drag is running. |
 | `dragAngle` | `fn(gizmo: Gizmo) -> f32` | no | How far a rotation drag has turned, in radians, signed and past a full turn if it went that far. |
 | `positionX` | `fn(gizmo: Gizmo) -> f32` | no | Where the thing being edited is, along x. |
@@ -291,7 +307,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `rotationY` | `fn(gizmo: Gizmo) -> f32` | no | The same: y. |
 | `rotationZ` | `fn(gizmo: Gizmo) -> f32` | no | The same: z. |
 | `rotationW` | `fn(gizmo: Gizmo) -> f32` | no | The same: w. |
-| `mode` | `fn(editor: Editor) -> String` | no | What the editor is doing: "edit", "play" or "paused". |
+| `mode` | `fn(editor: Editor) -> EditorMode` | no | What the editor is doing: editing, playing or paused. |
 | `playing` | `fn(editor: Editor) -> bool` | no | Whether the world is advancing. |
 | `play` | `fn(editor: Editor) -> bool` | no | Start playing, taking a snapshot of the world first so `stop` can put it back. |
 | `pause` | `fn(editor: Editor) -> void` | no | Hold the world where it is. |
@@ -308,7 +324,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `fieldCount` | `fn(editor: Editor) -> i32` | no | How many fields the inspector is showing. |
 | `fieldLabel` | `fn(editor: Editor, field: i32) -> String` | no | A field’s name as it was declared, or "" for a field that does not exist. |
 | `fieldGroup` | `fn(editor: Editor, field: i32) -> String` | no | What a field belongs to: a component’s name, or "transform" for a node. |
-| `fieldKind` | `fn(editor: Editor, field: i32) -> String` | no | How to show a field: "number", "integer", "boolean", "text", "entity" or "enum". |
+| `fieldKind` | `fn(editor: Editor, field: i32) -> FieldKind` | no | How to show a field: a number, an integer, a boolean, text, an entity or an enum. |
 | `fieldNumber` | `fn(editor: Editor, field: i32) -> f32` | no | A field’s value as a number. |
 | `setFieldNumber` | `fn(editor: Editor, field: i32, value: f32) -> bool` | no | Write a number into a field. |
 
@@ -382,17 +398,21 @@ Bound always: what each function acts on arrives as an argument the host passes 
 
 Bound always: what each function acts on arrives as an argument the host passes in. Effects: `persistence.read`, `persistence.write`. Used by [Saves and preferences](../systems/saves.md).
 
+`SaveStatus`: `Idle`, `Pending`, `Saving`, `Failed`. Whether a store’s writes have landed: idle, waiting to send, sending, or failed.
+
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
 | `read` | `fn(store: Store, key: String) -> String?` | no | What is stored under a key. |
 | `write` | `fn(store: Store, key: String, value: String) -> void` | no | Store a value under a key. |
 | `remove` | `fn(store: Store, key: String) -> void` | no | Forget a key. |
-| `saveStatus` | `fn(store: Store) -> String` | no | Whether writes have landed: `idle`, `pending`, `saving` or `failed`. |
+| `saveStatus` | `fn(store: Store) -> SaveStatus` | no | Whether writes have landed: idle, pending, saving or failed. |
 | `pendingSaves` | `fn(store: Store) -> u32` | no | How many keys are waiting to reach the backend. |
 
 ### drift/physics
 
 Bound always: what each function acts on arrives as an argument the host passes in. Effects: `physics.read`, `physics.write`. Used by [Queries and colliders](../simulation/queries.md), [Rigid bodies](../simulation/rigid-bodies.md).
+
+`ContactKind`: `Enter`, `Stay`, `Exit`. Whether two bodies began touching this step, are still touching, or have parted.
 
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
@@ -429,7 +449,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `hitNormalZ` | `fn(world: PhysicsWorld) -> f32` | yes | The surface normal the last raycast struck, along z. |
 | `hitFraction` | `fn(world: PhysicsWorld) -> f32` | yes | How far along the ray the last hit was, from 0 to 1. |
 | `contactCount` | `fn(world: PhysicsWorld) -> i32` | yes | How many contact events the last step produced. |
-| `contactKind` | `fn(world: PhysicsWorld, index: i32) -> i32` | yes | An event's kind: 0 entered, 1 still touching, 2 left. |
+| `contactKind` | `fn(world: PhysicsWorld, index: i32) -> ContactKind` | yes | An event's kind: the two bodies began touching, are still touching, or have parted. |
 | `contactA` | `fn(world: PhysicsWorld, index: i32) -> i32` | yes | The lower-indexed body of a contact event. |
 | `contactB` | `fn(world: PhysicsWorld, index: i32) -> i32` | yes | The higher-indexed body of a contact event. |
 | `applyImpulse` | `fn(world: PhysicsWorld, body: i32, px: f32, py: f32, pz: f32, atX: f32, atY: f32, atZ: f32) -> void` | no | Apply an impulse at a world point. |
@@ -550,6 +570,10 @@ Bound always: what each function acts on arrives as an argument the host passes 
 
 Bound when the host passes `services.xr` to `bindModule`; without it, an import of this module is refused at bind with a sentence saying so. Effects: `input.read`, `scene.read`. Used by [XR](../interface/xr.md).
 
+`Hand`: `Left`, `Right`, `None`. Which hand: left, right, or the input source with no side.
+
+`HandJoint`: `Wrist`, `ThumbMetacarpal`, `ThumbPhalanxProximal`, `ThumbPhalanxDistal`, `ThumbTip`, `IndexFingerMetacarpal`, `IndexFingerPhalanxProximal`, `IndexFingerPhalanxIntermediate`, `IndexFingerPhalanxDistal`, `IndexFingerTip`, `MiddleFingerMetacarpal`, `MiddleFingerPhalanxProximal`, `MiddleFingerPhalanxIntermediate`, `MiddleFingerPhalanxDistal`, `MiddleFingerTip`, `RingFingerMetacarpal`, `RingFingerPhalanxProximal`, `RingFingerPhalanxIntermediate`, `RingFingerPhalanxDistal`, `RingFingerTip`, `PinkyFingerMetacarpal`, `PinkyFingerPhalanxProximal`, `PinkyFingerPhalanxIntermediate`, `PinkyFingerPhalanxDistal`, `PinkyFingerTip`. One of the twenty-five joints WebXR tracks on a hand, from the wrist to each fingertip.
+
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
 | `presenting` | `fn() -> bool` | no | Whether a session is running. |
@@ -557,11 +581,11 @@ Bound when the host passes `services.xr` to `bindModule`; without it, an import 
 | `headX` | `fn() -> f32` | no | Where the viewer’s head is, in metres. |
 | `headY` | `fn() -> f32` | no | Where the viewer’s head is, in metres. |
 | `headZ` | `fn() -> f32` | no | Where the viewer’s head is, in metres. |
-| `trigger` | `fn(hand: String) -> f32` | no | How far a hand’s trigger is pulled, 0 to 1. |
-| `squeeze` | `fn(hand: String) -> f32` | no | How far a hand’s grip is squeezed, 0 to 1. |
-| `holding` | `fn(hand: String) -> bool` | no | Whether a hand is tracked this frame. |
-| `jointX` | `fn(hand: String, joint: String) -> f32` | no | Where a named hand joint is, in metres. |
-| `jointY` | `fn(hand: String, joint: String) -> f32` | no | Where a named hand joint is, in metres. |
-| `jointZ` | `fn(hand: String, joint: String) -> f32` | no | Where a named hand joint is, in metres. |
-| `pinching` | `fn(hand: String) -> bool` | no | Whether a hand’s thumb and index tips are close enough to count as a pinch. |
+| `trigger` | `fn(hand: Hand) -> f32` | no | How far a hand’s trigger is pulled, 0 to 1. |
+| `squeeze` | `fn(hand: Hand) -> f32` | no | How far a hand’s grip is squeezed, 0 to 1. |
+| `holding` | `fn(hand: Hand) -> bool` | no | Whether a hand is tracked this frame. |
+| `jointX` | `fn(hand: Hand, joint: HandJoint) -> f32` | no | Where a hand joint is, in metres. |
+| `jointY` | `fn(hand: Hand, joint: HandJoint) -> f32` | no | Where a hand joint is, in metres. |
+| `jointZ` | `fn(hand: Hand, joint: HandJoint) -> f32` | no | Where a hand joint is, in metres. |
+| `pinching` | `fn(hand: Hand) -> bool` | no | Whether a hand’s thumb and index tips are close enough to count as a pinch. |
 <!-- end generated -->

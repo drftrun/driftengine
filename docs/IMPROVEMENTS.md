@@ -149,7 +149,7 @@ in under 2% of a core.
 ### Seventeen of chemistry's twenty-one event kinds are never raised
 
 **Filed 2026-10-02.** `ignition/events.ts` declares twenty-one kinds, the README advertised all of
-them and `drift/chemistry`'s `eventKind` lists them by number, and four are ever pushed: ignited,
+them and `drift/chemistry`'s `ChemistryEvent` has a variant for each, and four are ever pushed: ignited,
 extinguished, and a smoulder starting and ending, all from `transport/world.ts`. Melted, boiled,
 frozen, condensed, sublimed, consumed, charred, structural failure, corroded, calcined, dissolved,
 denatured, browned, caramelised, fermented, decayed and exploded are names with nothing behind them.

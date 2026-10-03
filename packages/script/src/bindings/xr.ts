@@ -37,12 +37,39 @@
  */
 
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
-import { JOINT_INDEX } from '@driftengine/xr';
+import { type Variant, hostEnum } from './variants.ts';
+import { HAND_JOINTS, JOINT_INDEX } from '@driftengine/xr';
 import type { ControllerState, HandSkeleton, Handedness, XrSupport } from '@driftengine/xr';
 
 export const XR_MODULE = 'drift/xr';
 
-export const XR_TYPES: readonly OpaqueType[] = [];
+/** Which hand, one variant per `Handedness`; `None` is the source a runtime gives no side. */
+const HAND = hostEnum(
+  XR_MODULE,
+  'Hand',
+  ['Left', 'Right', 'None'],
+  'Which hand: left, right, or the input source with no side.',
+);
+const HANDEDNESS: readonly Handedness[] = ['left', 'right', 'none'];
+
+/**
+ * A hand joint, one variant per name in `@driftengine/xr`'s `HAND_JOINTS`, in its order:
+ * `index-finger-tip` is `IndexFingerTip`. Derived from that list, so a joint the package adds is a
+ * variant here with nothing else to change, and a script cannot ask for one it misspelt.
+ */
+const HAND_JOINT = hostEnum(
+  XR_MODULE,
+  'HandJoint',
+  HAND_JOINTS.map((name) =>
+    name
+      .split('-')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(''),
+  ),
+  'One of the twenty-five joints WebXR tracks on a hand, from the wrist to each fingertip.',
+);
+
+export const XR_TYPES: readonly OpaqueType[] = [HAND.type, HAND_JOINT.type];
 
 const define = (
   name: string,
@@ -68,8 +95,8 @@ const define = (
     implementation,
   });
 
-/** `left`, `right`, or anything else for the source with no handedness. */
-const HAND = { name: 'hand', type: 'String' };
+const HAND_PARAM = { name: 'hand', type: 'Hand' };
+const JOINT_PARAM = { name: 'joint', type: 'HandJoint' };
 
 export const XR_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
@@ -128,7 +155,7 @@ export const XR_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
   define(
     'trigger',
-    [HAND],
+    [HAND_PARAM],
     'f32',
     ['input.read'],
     'How far a hand’s trigger is pulled, 0 to 1. Zero for a hand that is not there.',
@@ -136,7 +163,7 @@ export const XR_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
   define(
     'squeeze',
-    [HAND],
+    [HAND_PARAM],
     'f32',
     ['input.read'],
     'How far a hand’s grip is squeezed, 0 to 1. Zero for a hand that is not there.',
@@ -144,7 +171,7 @@ export const XR_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
   define(
     'holding',
-    [HAND],
+    [HAND_PARAM],
     'bool',
     ['input.read'],
     'Whether a hand is tracked this frame. False while a controller is set down or out of view.',
@@ -159,31 +186,31 @@ export const XR_CAPABILITIES: readonly CapabilityDefinition[] = [
    */
   define(
     'jointX',
-    [HAND, { name: 'joint', type: 'String' }],
+    [HAND_PARAM, JOINT_PARAM],
     'f32',
     ['input.read'],
-    'Where a named hand joint is, in metres. Zero for a joint that is not tracked.',
+    'Where a hand joint is, in metres. Zero for a joint that is not tracked.',
     'XrRuntime.jointX',
   ),
   define(
     'jointY',
-    [HAND, { name: 'joint', type: 'String' }],
+    [HAND_PARAM, JOINT_PARAM],
     'f32',
     ['input.read'],
-    'Where a named hand joint is, in metres. Zero for a joint that is not tracked.',
+    'Where a hand joint is, in metres. Zero for a joint that is not tracked.',
     'XrRuntime.jointY',
   ),
   define(
     'jointZ',
-    [HAND, { name: 'joint', type: 'String' }],
+    [HAND_PARAM, JOINT_PARAM],
     'f32',
     ['input.read'],
-    'Where a named hand joint is, in metres. Zero for a joint that is not tracked.',
+    'Where a hand joint is, in metres. Zero for a joint that is not tracked.',
     'XrRuntime.jointZ',
   ),
   define(
     'pinching',
-    [HAND],
+    [HAND_PARAM],
     'bool',
     ['input.read'],
     'Whether a hand’s thumb and index tips are close enough to count as a pinch.',
@@ -208,8 +235,8 @@ export interface XrRuntime {
 /** How close two fingertips count as a pinch, in metres. */
 const PINCH_METRES = 0.025;
 
-function handOf(value: string): Handedness {
-  return value === 'left' ? 'left' : value === 'right' ? 'right' : 'none';
+function handOf(hand: Variant): Handedness {
+  return HANDEDNESS[HAND.code(hand)] ?? 'none';
 }
 
 export function xrImplementation(runtime: XrRuntime): Readonly<Record<string, unknown>> {
@@ -218,13 +245,13 @@ export function xrImplementation(runtime: XrRuntime): Readonly<Record<string, un
 
   const head = (axis: number): number => runtime.headPosition?.[axis] ?? 0;
 
-  const joint = (hand: string, name: string, axis: number): number => {
+  const joint = (hand: Variant, name: Variant, axis: number): number => {
     const skeleton = runtime.hand(handOf(hand));
     if (skeleton === null) return 0;
     /* The flat arrays the package already fills are read directly. `jointPosition` would answer the
        same question through a `Float32Array` this would then have to unpack, three times per joint
        per frame. */
-    const index = jointIndexOf(name);
+    const index = HAND_JOINT.code(name);
     if (index < 0 || skeleton.tracked[index] !== 1) return 0;
     return skeleton.matrices[index * 16 + 12 + axis] ?? 0;
   };
@@ -236,13 +263,13 @@ export function xrImplementation(runtime: XrRuntime): Readonly<Record<string, un
     headX: (): number => head(0),
     headY: (): number => head(1),
     headZ: (): number => head(2),
-    trigger: (hand: string): number => runtime.controller(handOf(hand))?.buttons[0] ?? 0,
-    squeeze: (hand: string): number => runtime.controller(handOf(hand))?.buttons[1] ?? 0,
-    holding: (hand: string): boolean => runtime.controller(handOf(hand))?.tracked ?? false,
-    jointX: (hand: string, name: string): number => joint(hand, name, 0),
-    jointY: (hand: string, name: string): number => joint(hand, name, 1),
-    jointZ: (hand: string, name: string): number => joint(hand, name, 2),
-    pinching: (hand: string): boolean => {
+    trigger: (hand: Variant): number => runtime.controller(handOf(hand))?.buttons[0] ?? 0,
+    squeeze: (hand: Variant): number => runtime.controller(handOf(hand))?.buttons[1] ?? 0,
+    holding: (hand: Variant): boolean => runtime.controller(handOf(hand))?.tracked ?? false,
+    jointX: (hand: Variant, name: Variant): number => joint(hand, name, 0),
+    jointY: (hand: Variant, name: Variant): number => joint(hand, name, 1),
+    jointZ: (hand: Variant, name: Variant): number => joint(hand, name, 2),
+    pinching: (hand: Variant): boolean => {
       const skeleton = runtime.hand(handOf(hand));
       if (skeleton === null) return false;
       const thumb = jointIndexOf('thumb-tip');

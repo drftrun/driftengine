@@ -67,3 +67,15 @@ export interface Transport {
   drain(into: MessageSink): void;
   close(): void;
 }
+
+/**
+ * The message as a view of an `ArrayBuffer`, which is what a socket or a channel will send.
+ *
+ * Everything this package sends is already one, so this is a check and no copy. A message on
+ * shared memory, which a browser refuses to send, is copied off it.
+ */
+export function sendable(message: Uint8Array): Uint8Array<ArrayBuffer> {
+  return message.buffer instanceof ArrayBuffer
+    ? (message as Uint8Array<ArrayBuffer>)
+    : message.slice();
+}

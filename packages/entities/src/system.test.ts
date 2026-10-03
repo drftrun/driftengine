@@ -510,3 +510,44 @@ describe('a system that throws', () => {
     expect(seen.some((line) => line.includes('second'))).toBe(true);
   });
 });
+
+describe('a failure reporter', () => {
+  const schedule = () =>
+    buildSchedule([
+      { name: 'undeclared', run: (view) => void view.query(Mark) },
+      { name: 'after', writes: [Health], run: () => undefined },
+    ]);
+
+  it('is handed every failure, every tick, with the system and the tick, and nothing is logged', () => {
+    const world = new World();
+    const failures: { system: string; tick: number; error: unknown }[] = [];
+    const logged: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]): void => void logged.push(args[0]);
+    try {
+      for (let tick = 0; tick < 3; tick += 1) {
+        runSchedule(world, schedule(), tick, (failure) => failures.push(failure));
+      }
+    } finally {
+      console.error = original;
+    }
+    expect(failures.map((f) => `${f.system}@${f.tick}`)).toEqual([
+      'undeclared@0',
+      'undeclared@1',
+      'undeclared@2',
+    ]);
+    const first = failures[0]?.error;
+    expect(first).toBeInstanceOf(Error);
+    expect(first instanceof Error ? first.message : '').toContain('SMark');
+    expect(logged).toEqual([]);
+  });
+
+  it('makes a failure fatal by throwing, which stops the schedule there', () => {
+    const world = new World();
+    expect(() =>
+      runSchedule(world, schedule(), 0, (failure) => {
+        throw failure.error;
+      }),
+    ).toThrow(/SMark/);
+  });
+});

@@ -27,12 +27,11 @@ component Fly {
     turns: u32 = 0
 }
 
-// A frog: how far its tongue reaches, whether it has its eye on a fly and which, how many it has
-// caught, how long before it can catch again, and how long its tongue stays out and where it went.
+// A frog: how far its tongue reaches, the fly it has its eye on if any, how many it has caught,
+// how long before it can catch again, and how long its tongue stays out and where it went.
 component Frog {
     reach: f32 = 2.5
-    aiming: bool = false
-    target: Entity
+    target: Entity?
     caught: u32 = 0
     resting: f32 = 0
     tongue: f32 = 0
@@ -114,7 +113,7 @@ system Hunt {
                 continue
             }
             var best = frog.Frog.reach * frog.Frog.reach
-            frog.Frog.aiming = false
+            frog.Frog.target = none
             for fly in query<Fly, Position>() {
                 let dx = fly.Position.x - frog.Position.x
                 let dy = fly.Position.y - frog.Position.y
@@ -122,8 +121,7 @@ system Hunt {
                 let distance = dx * dx + dy * dy + dz * dz
                 if distance < best {
                     best = distance
-                    frog.Frog.aiming = true
-                    frog.Frog.target = fly
+                    frog.Frog.target = some(fly)
                 }
             }
         }
@@ -141,8 +139,7 @@ system Catch {
         for frog in query<Frog, Position>() {
             frog.Frog.tongue = math.max(frog.Frog.tongue - 1 / 60, 0)
             frog.Frog.resting = math.max(frog.Frog.resting - 1 / 60, 0)
-            if frog.Frog.aiming {
-                let fly = frog.Frog.target
+            if let fly = frog.Frog.target {
                 if ecs.alive(world, fly) {
                     frog.Frog.tongueX = fly.Position.x
                     frog.Frog.tongueY = fly.Position.y
@@ -152,7 +149,7 @@ system Catch {
                     frog.Frog.caught = frog.Frog.caught + 1
                     ecs.destroy(world, fly)
                 }
-                frog.Frog.aiming = false
+                frog.Frog.target = none
             }
         }
     }

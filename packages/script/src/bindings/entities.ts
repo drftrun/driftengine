@@ -399,10 +399,17 @@ export function entitiesImplementation(services: EntityServices): Record<string,
     attach: (w: World, entity: Entity, component: string) => w.add(entity, resolve(component)),
     detach: (w: World, entity: Entity, component: string) => w.remove(entity, resolve(component)),
     read: (w: World, entity: Entity, component: string, field: string) => {
-      const value = w.read(entity, resolve(component), field);
-      /* An entity without the component reads `undefined`, and a script's `f64` may not hold one:
-         the language has no null, so the honest zero is what a missing value is. */
-      return typeof value === 'number' ? value : 0;
+      const type = resolve(component);
+      const value = w.read(entity, type, field);
+      if (value !== undefined) return value;
+      /*
+       * Nothing to read: an absent optional field, or an entity without the component. An optional
+       * field answers `undefined`, which the generated code turns into `none`; the compiler wraps
+       * every read of one. Any other field answers zero, since a script's `f64` cannot hold
+       * nothing. Answering zero for an optional field too was what made it unreadable: `none` and
+       * a stored zero were the same answer.
+       */
+      return optionalField(type, field) ? undefined : 0;
     },
     write: (w: World, entity: Entity, component: string, field: string, value: number) =>
       w.write(entity, resolve(component), field, value),
@@ -550,4 +557,9 @@ export function entitiesImplementation(services: EntityServices): Record<string,
 interface QuerySource {
   query(a: ComponentType, b?: ComponentType, c?: ComponentType, d?: ComponentType): QueryCursor;
   view(type: ComponentType, forWriting: boolean): ComponentView;
+}
+
+/** Whether a component declared this field as an option, `option:<inner>` in its schema. */
+function optionalField(type: ComponentType, field: string): boolean {
+  return type.schema.fields.some((f) => f.name === field && f.type.startsWith('option:'));
 }

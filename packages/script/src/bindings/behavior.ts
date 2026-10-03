@@ -1,7 +1,16 @@
 import { BehaviorRunner } from '@driftengine/core';
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
+import { hostEnum } from './variants.ts';
 
 export const BEHAVIOR_MODULE = 'drift/behavior';
+
+/** What a tick answered, in the engine's own order: `FAILURE`, `SUCCESS`, `RUNNING`. */
+const TREE_STATUS = hostEnum(
+  BEHAVIOR_MODULE,
+  'TreeStatus',
+  ['Failure', 'Success', 'Running'],
+  'What a behaviour tree answered: it failed, it finished, or it is still going.',
+);
 
 /**
  * `drift/behavior` — driving and watching a behaviour tree from a script.
@@ -29,6 +38,7 @@ export const BEHAVIOR_TYPES: readonly OpaqueType[] = [
     name: 'Behavior',
     doc: 'One agent running one behaviour tree: where it is in its routine.',
   },
+  TREE_STATUS.type,
 ];
 
 const define = (
@@ -55,15 +65,15 @@ export const BEHAVIOR_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'tick',
     [{ name: 'behavior', type: 'Behavior' }],
-    'i32',
+    'TreeStatus',
     ['behavior.write'],
-    'Advance the routine one tick. Answers 0 failed, 1 finished, 2 still going. Does nothing while paused.',
+    'Advance the routine one tick, and answer whether it failed, finished or is still going. Does nothing while paused.',
     false,
   ),
   define(
     'step',
     [{ name: 'behavior', type: 'Behavior' }],
-    'i32',
+    'TreeStatus',
     ['behavior.write'],
     'Advance one tick even while paused, which is what a step button is.',
     false,
@@ -97,7 +107,7 @@ export const BEHAVIOR_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'status',
     [{ name: 'behavior', type: 'Behavior' }],
-    'i32',
+    'TreeStatus',
     ['behavior.read'],
     'What the last tick answered, without ticking again.',
   ),
@@ -142,14 +152,16 @@ export function behaviorImplementation(services: BehaviorServices): Record<strin
   let scratch: Uint32Array<ArrayBuffer> = new Uint32Array(32);
 
   return {
-    tick: (character: BehaviorRunner<unknown>) => character.tick(services.context(character)),
-    step: (character: BehaviorRunner<unknown>) => character.stepOnce(services.context(character)),
+    tick: (character: BehaviorRunner<unknown>) =>
+      TREE_STATUS.of[character.tick(services.context(character))],
+    step: (character: BehaviorRunner<unknown>) =>
+      TREE_STATUS.of[character.stepOnce(services.context(character))],
     restart: (character: BehaviorRunner<unknown>) => character.reset(),
     setPaused: (character: BehaviorRunner<unknown>, paused: boolean) => {
       character.paused = paused;
     },
     paused: (character: BehaviorRunner<unknown>) => character.paused,
-    status: (character: BehaviorRunner<unknown>) => character.status,
+    status: (character: BehaviorRunner<unknown>) => TREE_STATUS.of[character.status],
     depth(character: BehaviorRunner<unknown>): number {
       scratch = fit(scratch, character);
       return character.activePath(scratch);

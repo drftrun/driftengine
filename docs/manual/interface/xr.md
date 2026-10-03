@@ -206,8 +206,8 @@ allocating.
 // headset taken off ends the session, and the lamp goes out with it.
 fn light(lamp: mut Lamp, dt: f32) {
     var want: f32 = 0
-    if xr.presenting() && xr.holding("right") {
-        want = xr.trigger("right")
+    if xr.presenting() && xr.holding(Hand.Right) {
+        want = xr.trigger(Hand.Right)
     }
     lamp.level = lamp.level + (want - lamp.level) * math.min(1, lamp.ease * dt)
 }
@@ -226,7 +226,7 @@ eyes is the host's.
 // A joint the runtime stops reporting reads as zero, the way a fingertip that goes behind the other
 // hand does on a real headset. The page colours the hand when this says so.
 fn tipSeen() -> bool {
-    return xr.jointY("left", "index-finger-tip") != 0
+    return xr.jointY(Hand.Left, HandJoint.IndexFingerTip) != 0
 }
 ```
 

@@ -1,5 +1,46 @@
 [
   {
+    "version": "4.8.0",
+    "date": "2026-10-03",
+    "entries": [
+      {
+        "kind": "changed",
+        "short": "A drift/* answer that is one of a few things is an enum a script matches on: a contact, a phase of matter, a chemistry event, a tree's or a save's status, the editor's modes, a hand and its joints.",
+        "text": "Twelve enums are declared by the engine for DriftScript 1.15.0's host enums: `TreeStatus`, `MatterPhase`, `ChemistryEvent`, `ContactKind`, `SaveStatus`, `GizmoMode`, `GizmoSpace`, `GizmoHandle`, `EditorMode`, `FieldKind`, `Hand` and `HandJoint`. `behavior.tick`, `step` and `status`, `chemistry.phase` and `eventKind`, `physics.contactKind`, `persistence.saveStatus` and the editor's `gizmoMode`, `space`, `hovered`, `mode` and `fieldKind` answer a variant where they answered a number or a string, and `drift/xr` takes a `Hand` and a `HandJoint` where it took `\"right\"` and `\"index-finger-tip\"`. A script that compared one of these against a number or a string no longer compiles, which is the point: those comparisons were checked by nothing, and a misspelt joint read zero. Each variant list is tested against the engine constants it translates. `contactKind`, `eventKind` and `fieldKind` refuse an index past what exists, where they answered a stale entry or nothing."
+      },
+      {
+        "kind": "fixed",
+        "short": "An optional component field reads and writes as an option from a script, in a query loop and through a handle: a cleared one reads none, and writing one no longer stores NaN.",
+        "text": "**`driftscript` moves to 1.16.0.** A loop read only an optional field's value column and an assignment put the option object into it, which stored `NaN` marked present; through a handle the read answered a bare number. The compiler now reads and writes the presence column beside the value, and `drift/ecs`'s `read` answers `undefined` for an absent optional field where it answered zero, which the compiler turns into `none`. The entities example's frogs keep their target as an `Entity?`, where they kept a flag beside a plain `Entity` because of this."
+      },
+      {
+        "kind": "fixed",
+        "short": "A lockstep session whose player holds a control on the first tick stays in step: the ticks before anyone can publish an input are neutral on every peer, where each peer guessed its own.",
+        "text": "No peer can publish an input for the ticks before its first tick plus the input delay, so every peer guessed them and nothing ever corrected the guess. A guess repeats the newest input the log holds, and for a peer's own participant that was the input it had just submitted for a later tick, which the other peer cannot know. So a key held when the match began split the two worlds, and the first fingerprint halted the session. `LockstepSession` settles those ticks as neutral for every participant on its first `submit`."
+      },
+      {
+        "kind": "fixed",
+        "short": "WebSocketTransport takes a browser WebSocket as it is typed: the socket shape asked for any buffer, which a browser's send does not accept, so the package's own example did not compile.",
+        "text": "`SocketLike.send` and `DataChannelLike.send` take a view of an `ArrayBuffer`, which is what a browser's `WebSocket` and `RTCDataChannel` accept, and both transports copy a message on shared memory off it before sending, since a browser refuses to send one."
+      },
+      {
+        "kind": "added",
+        "short": "runSchedule takes a failure reporter: every system failure, every tick, with the system's name, the tick and the error, where it logged once per system and nothing else could see it.",
+        "text": "`runSchedule(world, schedule, tick, report)`. Without a reporter a failing system is still skipped and logged once per system per world, as before. With one, nothing is logged and the reporter decides: count failures, show them in an overlay, send them to telemetry, or throw to make a failure fatal while developing, which stops the schedule at that system."
+      },
+      {
+        "kind": "changed",
+        "short": "A system's component access follows its calls into other files, so DS0291 stops calling a correct declaration unused and an undeclared write is a compile error, not a refusal at runtime.",
+        "text": "From DriftScript 1.16.0. Access was inferred from a module's own functions, so a helper imported from another file touched nothing as far as a system was concerned: a declaration of what it wrote drew `DS0291`, and leaving it out drew no `DS0288` and left the write out of the metadata the engine builds its schedule from. And from 1.15.0, `==` compares what two values hold, so an enum variant still equals itself after a hot reload; it compared objects by identity, and a rule written `if round.phase != Phase.Playing` returned forever after the first save."
+      },
+      {
+        "kind": "added",
+        "short": "The manual gains a DriftScript section and a networking chapter: what a script is for, setting one up, patterns, everything it can reach, testing, and two peers in one match over a lossy link.",
+        "text": "**DriftScript in a game** says what belongs in a script and what stays in TypeScript, **Setting up scripts** covers the build, binding, services and hot reload, **Patterns** names the shapes the examples share, **What a script can reach** lists every module, function and enum from the capability file, and **Determinism, testing and shipping** covers `@deterministic`, testing a script in Node and what reaches the bundle. The starter and the first game keep their rules in `.drs` files, the starter carries the Vite config and declaration a copied project needs and builds without a warning, and the first game's round is tested in Node. **Networking and rollback** is built on the new netplay example: two peers in one page over an impaired loopback, with the link, the redundancy and the input delay as live switches."
+      }
+    ]
+  },
+  {
     "version": "4.7.4",
     "date": "2026-10-02",
     "entries": [

@@ -35,7 +35,7 @@ export { World, createWorldSnapshot } from './world.ts';
 export type { SystemDefinition, SystemView } from './system.ts';
 export { BoundSystem } from './system.ts';
 
-export type { Schedule } from './schedule.ts';
+export type { Schedule, SystemFailure, SystemFailureReporter } from './schedule.ts';
 export { buildSchedule, runSchedule } from './schedule.ts';
 
 export type { Prefab } from './prefab.ts';

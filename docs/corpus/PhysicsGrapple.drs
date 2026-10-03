@@ -61,8 +61,8 @@ fn settleLandings(world: PhysicsWorld) {
     let count = physics.contactCount(world)
     var i: i32 = 0
     while i < count {
-        // Kind 0 is "entered", which is the only tick a landing happens on.
-        if physics.contactKind(world, i) == 0 {
+        // `Enter` is the only step a landing happens on.
+        if physics.contactKind(world, i) == ContactKind.Enter {
             if physics.hitNormalY(world) > 0.7 {
                 let body = physics.contactA(world, i)
                 physics.setVelocity(world, body, 0, 0, 0)

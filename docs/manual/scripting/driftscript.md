@@ -64,15 +64,15 @@ rule left in TypeScript is a rule tuned by reloading.
 // recorded round replays exactly. Reading input or the wall clock here would not compile.
 @deterministic
 fn tick(round: mut Round, dt: f32) {
-    if round.phase != "playing" {
+    if round.phase != Phase.Playing {
         return
     }
     round.remaining = round.remaining - dt
     if round.gathered == round.total {
-        round.phase = "won"
+        round.phase = Phase.Won
     } else if round.remaining <= 0 {
         round.remaining = 0
-        round.phase = "lost"
+        round.phase = Phase.Lost
     }
 }
 ```

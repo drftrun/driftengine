@@ -2,7 +2,7 @@
 title: Fog and weather
 description: Height fog and linear fog, the underwater atmosphere, one wind for the scene, rain that stops under roofs, lightning, and storm debris.
 packages: ['@driftengine/core', '@driftengine/script']
-plain: ['Weather']
+plain: ['Weather', 'Sky']
 ---
 
 # Fog and weather
@@ -15,46 +15,43 @@ it rains. The example runs one street through three weathers; switch them in the
 
 ## The weather, in DriftScript
 
-The example's weather is a DriftScript module, and the page draws what it says. Each kind of sky
-names what it does to the fog, the gloom, the rain and the wind:
+The example's weather is a DriftScript module, and the page draws what it says. The kinds of sky are
+an enum, `Sky`, and a `match` for each quantity names what each kind does to the fog, the gloom, the
+rain and the wind, so a fourth sky does not compile until it has its numbers:
 
 ```drs sample=weather/weather.drs#kinds
-// Each quantity, for each kind of sky.
-fn fogFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 0.014
+// Each quantity, for each kind of sky. A sky added to `Sky` stops these compiling until it has its
+// own numbers.
+fn fogFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0.003
+        Rain => 0.012
+        Storm => 0.014
     }
-    if kind == 1 {
-        return 0.012
-    }
-    return 0.003
 }
 
-fn gloomFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 1
+fn gloomFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0
+        Rain => 0.3
+        Storm => 1
     }
-    if kind == 1 {
-        return 0.3
-    }
-    return 0
 }
 
-fn rainFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 1
+fn rainFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0
+        Rain => 0.6
+        Storm => 1
     }
-    if kind == 1 {
-        return 0.6
-    }
-    return 0
 }
 
-fn windFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 9
+fn windFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 3
+        Rain => 3
+        Storm => 9
     }
-    return 3
 }
 ```
 
@@ -78,7 +75,7 @@ fn advance(sky: mut Weather, dt: f32) -> bool {
     }
     sky.flash = math.max(sky.flash - dt * 4, 0)
 
-    if sky.kind != 2 {
+    if sky.kind != Sky.Storm {
         return false
     }
     sky.nextStrike = sky.nextStrike - dt

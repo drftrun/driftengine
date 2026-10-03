@@ -85,7 +85,15 @@ const input = (participant: number, tick: number): Uint8Array =>
 
 const INPUT_DELAY = 2;
 
-function runPair(impairment: Impairment, ticks: number, redundancy?: number, rewindDepth?: number) {
+type Inputs = (participant: number, tick: number) => Uint8Array;
+
+function runPair(
+  impairment: Impairment,
+  ticks: number,
+  redundancy?: number,
+  rewindDepth?: number,
+  inputs: Inputs = input,
+) {
   const net = new LoopbackNetwork();
   const a = makePeer(0, net.open({ self: 0, seed: 11, impairment }), redundancy, rewindDepth);
   const b = makePeer(1, net.open({ self: 1, seed: 22, impairment }), redundancy, rewindDepth);
@@ -93,8 +101,8 @@ function runPair(impairment: Impairment, ticks: number, redundancy?: number, rew
   for (let tick = 0; tick < ticks; tick++) {
     a.session?.poll();
     b.session?.poll();
-    a.session?.submit(tick, input(0, tick));
-    b.session?.submit(tick, input(1, tick));
+    a.session?.submit(tick, inputs(0, tick));
+    b.session?.submit(tick, inputs(1, tick));
     a.session?.advance(FIXED_DT, tick);
     b.session?.advance(FIXED_DT, tick);
     net.advance(1000 / 60);
@@ -111,7 +119,7 @@ function runPair(impairment: Impairment, ticks: number, redundancy?: number, rew
  * against it would fail for a reason that has nothing to do with rollback. That mistake is what
  * this comment is here to stop somebody repeating.
  */
-function runReference(ticks: number) {
+function runReference(ticks: number, inputs: Inputs = input) {
   const solo = makePeer(0, null);
   for (let tick = 0; tick < ticks; tick++) {
     /*
@@ -124,7 +132,7 @@ function runReference(ticks: number) {
     solo.inputs.retain(Math.max(0, tick - 20));
     for (let p = 0; p < PARTICIPANTS; p++) {
       if (tick < INPUT_DELAY) continue;
-      const accepted = solo.inputs.set(p, tick, input(p, tick - INPUT_DELAY));
+      const accepted = solo.inputs.set(p, tick, inputs(p, tick - INPUT_DELAY));
       expect(accepted || tick === 0, `reference input for tick ${tick} was refused`).toBe(true);
     }
     solo.loop.advance(FIXED_DT, tick);
@@ -163,6 +171,28 @@ describe('a lockstep session', () => {
     expect(b.loop.digestOf(at)).toBe(reference.loop.digestOf(at));
     /* And the digest is of something, rather than null on all three. */
     expect(reference.loop.digestOf(at)).not.toBe(null);
+  });
+
+  /**
+   * **A control already held when the session starts.** Nobody publishes an input for the ticks
+   * before the input delay has run out, so every peer has to guess them, and nothing ever arrives
+   * to correct the guess. A peer guessed its *own* participant from the input it had just
+   * submitted for a later tick, which the other peer cannot know, so a player holding a key on the
+   * first tick split the two worlds and the first fingerprint halted the session. Neutral is the
+   * one guess every peer can make alike, and it is what the reference has always used.
+   */
+  it('agrees from the first tick when a player is already holding a control', () => {
+    const ticks = 60;
+    const holding: Inputs = (participant, tick) =>
+      participant === 1 ? new Uint8Array([1]) : input(participant, tick);
+    const { a, b } = runPair({ latencyMs: 0 }, ticks, undefined, undefined, holding);
+    const reference = runReference(ticks, holding);
+
+    const at = agreementTick(ticks);
+    expect(a.session?.reason).toBe('');
+    expect(b.session?.reason).toBe('');
+    expect(a.loop.digestOf(at)).toBe(reference.loop.digestOf(at));
+    expect(b.loop.digestOf(at)).toBe(reference.loop.digestOf(at));
   });
 
   /**

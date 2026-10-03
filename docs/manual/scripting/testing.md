@@ -20,15 +20,15 @@ what a build checks and what it ships.
 // recorded round replays exactly. Reading input or the wall clock here would not compile.
 @deterministic
 fn tick(round: mut Round, dt: f32) {
-    if round.phase != "playing" {
+    if round.phase != Phase.Playing {
         return
     }
     round.remaining = round.remaining - dt
     if round.gathered == round.total {
-        round.phase = "won"
+        round.phase = Phase.Won
     } else if round.remaining <= 0 {
         round.remaining = 0
-        round.phase = "lost"
+        round.phase = Phase.Lost
     }
 }
 ```
@@ -67,7 +67,7 @@ fn start(round: mut Round, total: u32) {
     round.remaining = ROUND_SECONDS
     round.gathered = 0
     round.total = total
-    round.phase = "playing"
+    round.phase = Phase.Playing
 }
 
 // Whether the player, this far from an orb on each axis, is close enough to take it. Pure: it reaches
@@ -103,7 +103,7 @@ interface Round {
   remaining: number;
   gathered: number;
   total: number;
-  phase: string;
+  phase: { tag: 'Playing' | 'Won' | 'Lost' };
 }
 const rules = loadModule(roundScript as Record<string, unknown>).exports as unknown as {
   createRound(): Round;
@@ -120,7 +120,7 @@ describe('a round', () => {
     rules.gather(round);
     rules.gather(round);
     rules.tick(round, 1 / 60);
-    expect(round.phase).toBe('won');
+    expect(round.phase.tag).toBe('Won');
   });
 
   it('is lost when the clock runs out first, with the clock stopped at zero', () => {
@@ -128,7 +128,7 @@ describe('a round', () => {
     rules.start(round, 2);
     rules.gather(round);
     for (let step = 0; step < 61 * 60; step += 1) rules.tick(round, 1 / 60);
-    expect(round.phase).toBe('lost');
+    expect(round.phase.tag).toBe('Lost');
     expect(round.remaining).toBe(0);
   });
 

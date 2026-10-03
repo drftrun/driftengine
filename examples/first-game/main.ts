@@ -261,11 +261,12 @@ const roundModule = loadModule(roundScript as Record<string, unknown>);
 const bound = bindModule(roundModule, {});
 if (!bound.bound) throw new Error(bound.reason);
 
+/* A variant reaches the page as its tag: `round.phase.tag` is `'Playing'`, `'Won'` or `'Lost'`. */
 interface Round {
   remaining: number;
   gathered: number;
   total: number;
-  phase: string;
+  phase: { tag: 'Playing' | 'Won' | 'Lost' };
 }
 /* Read through the module each call, so a rule patched by a save is the rule that runs. */
 const rules = roundModule.exports as unknown as {
@@ -301,7 +302,7 @@ function newRound(): void {
 
 // #region simulate
 function simulate(dt: number): void {
-  if (round.phase !== 'playing') {
+  if (round.phase.tag !== 'Playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }
@@ -480,20 +481,20 @@ function drawHud(): void {
   if (
     round.gathered !== shown.gathered ||
     seconds !== shown.seconds ||
-    round.phase !== shown.phase ||
+    round.phase.tag !== shown.phase ||
     paused !== shown.paused
   ) {
     shown.gathered = round.gathered;
     shown.seconds = seconds;
-    shown.phase = round.phase;
+    shown.phase = round.phase.tag;
     shown.paused = paused;
     renderer.setText(
       hud,
       paused
         ? 'PAUSED. PRESS P TO CARRY ON'
-        : round.phase === 'won'
+        : round.phase.tag === 'Won'
           ? 'ALL GATHERED. PRESS R OR TAP TO PLAY AGAIN'
-          : round.phase === 'lost'
+          : round.phase.tag === 'Lost'
             ? 'OUT OF TIME. PRESS R OR TAP TO PLAY AGAIN'
             : `ORBS ${round.gathered}/${round.total}   TIME ${seconds}`,
     );

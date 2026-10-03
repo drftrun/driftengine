@@ -107,9 +107,18 @@ const anchorOf = (heading) =>
 
 /** Every module a script can import, what each holds, and every function in it. */
 function scriptReach(root) {
-  const all = JSON.parse(
+  const file = JSON.parse(
     readFileSync(path.join(root, 'packages/script/capabilities.json'), 'utf8'),
-  ).capabilities;
+  );
+  const all = file.capabilities;
+  /* The enums each module declares: an engine answer that is one of a few things. */
+  const enums = new Map();
+  for (const type of file.types) {
+    if (type.variants === undefined) continue;
+    const list = enums.get(type.module) ?? [];
+    list.push(type);
+    enums.set(type.module, list);
+  }
   const grouped = new Map();
   for (const fn of all) {
     const list = grouped.get(fn.module) ?? [];
@@ -178,6 +187,10 @@ function scriptReach(root) {
           ? ''
           : ` Used by ${unique.map((c) => `[${c.title}](${c.link})`).join(', ')}.`),
     );
+    for (const type of enums.get(module) ?? []) {
+      out.push('');
+      out.push(`\`${type.name}\`: ${type.variants.map((v) => `\`${v}\``).join(', ')}. ${type.doc}`);
+    }
     out.push('');
     out.push('| Function | Signature | Deterministic | What it does |');
     out.push('|---|---|---|---|');

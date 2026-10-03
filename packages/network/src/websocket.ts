@@ -29,13 +29,19 @@ import {
   type PeerId,
   type Transport,
   type TransportState,
+  sendable,
 } from './transport.ts';
 
 /** What a browser `WebSocket` and a Node `ws` both satisfy. Named here so neither is imported. */
 export interface SocketLike {
   readonly readyState: number;
   binaryType?: string;
-  send(data: ArrayBufferView | ArrayBuffer): void;
+  /**
+   * A view of an `ArrayBuffer`, never of shared memory: that is what a browser's `WebSocket.send`
+   * takes, and declaring any buffer here made a browser socket not fit its own transport, so
+   * `new WebSocketTransport({ socket: new WebSocket(url) })` did not typecheck.
+   */
+  send(data: ArrayBufferView<ArrayBuffer> | ArrayBuffer): void;
   close(): void;
   addEventListener(type: string, listener: (event: unknown) => void): void;
 }
@@ -108,7 +114,7 @@ export class WebSocketTransport implements Transport {
    */
   send(_to: PeerId, message: Uint8Array): void {
     if (this.state !== 'open') return;
-    this.socket.send(message);
+    this.socket.send(sendable(message));
   }
 
   drain(into: MessageSink): void {

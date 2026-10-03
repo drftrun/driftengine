@@ -1,0 +1,124 @@
+// The match: two craft and a ball on a pitch, each craft steered by what its pilot held that tick.
+//
+// Both peers run every rule here, and a rewind runs them again over ticks already played, so each
+// rule has to give the same answer on both peers every time. Nothing here reads the controls or the
+// clock: the page decodes each tick's input from the session into `Pilot` before the step runs.
+//
+// Under `npm run examples`, change a rule and save: both peers take it from the next tick, and the
+// match carries on. Try a heavier ball, a wider goal, or craft that turn faster.
+
+import { abs, clamp, sqrt } from "std/math"
+
+// #region components
+// What one participant held this tick, decoded by the page: -1, 0 or 1 on each axis.
+component Pilot {
+    x: f32 = 0
+    z: f32 = 0
+}
+
+component Craft {
+    x: f32 = 0
+    z: f32 = 0
+    vx: f32 = 0
+    vz: f32 = 0
+}
+
+component Ball {
+    x: f32 = 0
+    z: f32 = 0
+    vx: f32 = 0
+    vz: f32 = 0
+}
+
+// Goals scored at each end. Cyan defends the near end and magenta the far one.
+component Score {
+    cyan: u32 = 0
+    magenta: u32 = 0
+}
+// #endregion
+
+// #region rules
+// The pitch, in metres from its middle, and how wide the mouth of each goal is.
+let HALF_WIDTH: f32 = 4
+let HALF_LENGTH: f32 = 6
+let GOAL: f32 = 1.5
+// How hard a craft accelerates, how quickly it slows, and how close it has to come to touch the ball.
+let THRUST: f32 = 20
+let DRAG: f32 = 3
+let TOUCH: f32 = 0.85
+// How much of its speed the ball keeps each second.
+let ROLL: f32 = 0.55
+// #endregion
+
+// #region fly
+// Every craft turns its pilot's input into speed, and stays on the pitch.
+system Fly {
+    reads Pilot
+    writes Craft
+
+    update {
+        for e in query<Pilot, Craft>() {
+            e.Craft.vx = e.Craft.vx + (e.Pilot.x * THRUST - e.Craft.vx * DRAG) / 60
+            e.Craft.vz = e.Craft.vz + (e.Pilot.z * THRUST - e.Craft.vz * DRAG) / 60
+            e.Craft.x = math.clamp(e.Craft.x + e.Craft.vx / 60, 0 - HALF_WIDTH, HALF_WIDTH)
+            e.Craft.z = math.clamp(e.Craft.z + e.Craft.vz / 60, 0 - HALF_LENGTH, HALF_LENGTH)
+        }
+    }
+}
+// #endregion
+
+// #region kick
+// A craft that touches the ball sends it off the way it was hit; the ball rolls, slows, bounces off
+// the sides, and a goal puts it back on the spot.
+system Kick {
+    reads Craft
+    writes Ball
+    writes Score
+
+    update {
+        for ball in query<Ball>() {
+            for craft in query<Craft>() {
+                let dx = ball.Ball.x - craft.Craft.x
+                let dz = ball.Ball.z - craft.Craft.z
+                let reach = dx * dx + dz * dz
+                if reach < TOUCH * TOUCH && reach > 0.0001 {
+                    let d = math.sqrt(reach)
+                    ball.Ball.x = craft.Craft.x + dx / d * TOUCH
+                    ball.Ball.z = craft.Craft.z + dz / d * TOUCH
+                    ball.Ball.vx = dx / d * 5 + craft.Craft.vx * 0.6
+                    ball.Ball.vz = dz / d * 5 + craft.Craft.vz * 0.6
+                }
+            }
+
+            let keep = 1 - (1 - ROLL) / 60
+            ball.Ball.vx = ball.Ball.vx * keep
+            ball.Ball.vz = ball.Ball.vz * keep
+            ball.Ball.x = ball.Ball.x + ball.Ball.vx / 60
+            ball.Ball.z = ball.Ball.z + ball.Ball.vz / 60
+
+            if math.abs(ball.Ball.x) > HALF_WIDTH {
+                ball.Ball.x = math.clamp(ball.Ball.x, 0 - HALF_WIDTH, HALF_WIDTH)
+                ball.Ball.vx = 0 - ball.Ball.vx
+            }
+            if math.abs(ball.Ball.z) > HALF_LENGTH {
+                if math.abs(ball.Ball.x) < GOAL {
+                    for score in query<Score>() {
+                        if ball.Ball.z < 0 {
+                            score.Score.cyan = score.Score.cyan + 1
+                        } else {
+                            score.Score.magenta = score.Score.magenta + 1
+                        }
+                    }
+                    ball.Ball.x = 0
+                    ball.Ball.z = 0
+                    ball.Ball.vx = 0
+                    ball.Ball.vz = 0
+                } else {
+                    ball.Ball.z = math.clamp(ball.Ball.z, 0 - HALF_LENGTH, HALF_LENGTH)
+                    ball.Ball.vz = 0 - ball.Ball.vz
+                }
+            }
+        }
+    }
+}
+// #endregion

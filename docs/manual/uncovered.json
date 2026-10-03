@@ -22,9 +22,8 @@
     "@driftengine/editor",
     "@driftengine/media",
     "@driftengine/native-host",
-    "@driftengine/network",
     "@driftengine/package",
     "@driftengine/tools"
   ],
-  "areas": ["ui", "dev", "host", "editor", "media", "network", "package", "tools"]
+  "areas": ["ui", "dev", "host", "editor", "media", "package", "tools"]
 }

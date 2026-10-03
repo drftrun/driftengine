@@ -1,9 +1,83 @@
 import type { Gizmo, SceneNode } from '@driftengine/core';
 import type { EditorHost } from '@driftengine/editor';
+import type { EditorMode, FieldKind } from '@driftengine/editor';
 import type { CapabilityDefinition, OpaqueType } from 'driftscript';
 import { defineCapability } from 'driftscript';
+import { type Variant, hostEnum } from './variants.ts';
 
 export const EDITOR_MODULE = 'drift/editor';
+
+/** Which tool the gizmo is, one variant per `Gizmo.mode`. */
+const GIZMO_MODE = hostEnum(
+  EDITOR_MODULE,
+  'GizmoMode',
+  ['Translate', 'Rotate', 'Scale'],
+  'Which tool a gizmo is: it moves, turns or scales.',
+);
+
+/** Which axes the handles follow, one variant per `Gizmo.space`. */
+const GIZMO_SPACE = hostEnum(
+  EDITOR_MODULE,
+  'GizmoSpace',
+  ['World', 'Local'],
+  'Which axes a gizmo’s handles point along: the world’s or the object’s own.',
+);
+
+/**
+ * The handle under the pointer, in the order of `Gizmo`'s integer constants, `None` first.
+ *
+ * A variant per handle where this used to answer a name such as `"translate.yz"`, which a script
+ * compared as a string: a misspelt name compared false forever and nothing said so. A handle added
+ * in the middle now changes this list, and every script `match` over it that misses it stops
+ * compiling.
+ */
+const GIZMO_HANDLE = hostEnum(
+  EDITOR_MODULE,
+  'GizmoHandle',
+  [
+    'None',
+    'TranslateX',
+    'TranslateY',
+    'TranslateZ',
+    'TranslateYZ',
+    'TranslateZX',
+    'TranslateXY',
+    'RotateX',
+    'RotateY',
+    'RotateZ',
+    'ScaleX',
+    'ScaleY',
+    'ScaleZ',
+    'ScaleUniform',
+  ],
+  'Which handle the pointer is over, or `None`.',
+);
+
+/** What the editor is doing, one variant per `EditorMode`. */
+const EDITOR_MODE = hostEnum(
+  EDITOR_MODULE,
+  'EditorMode',
+  ['Edit', 'Play', 'Paused'],
+  'Whether the editor is editing, playing the world, or paused part way through playing it.',
+);
+
+/** How the inspector shows a field, one variant per `FieldKind`. */
+const FIELD_KIND = hostEnum(
+  EDITOR_MODULE,
+  'FieldKind',
+  ['Number', 'Integer', 'Boolean', 'Text', 'Entity', 'Enum'],
+  'How an inspector field is shown, taken from the type it was declared with.',
+);
+
+const byName = (names: readonly string[], of: readonly Variant[]): ReadonlyMap<string, Variant> =>
+  new Map(names.map((name, index) => [name, of[index] as Variant]));
+const GIZMO_MODE_OF = byName(['translate', 'rotate', 'scale'], GIZMO_MODE.of);
+const GIZMO_SPACE_OF = byName(['world', 'local'], GIZMO_SPACE.of);
+const EDITOR_MODE_OF = byName(['edit', 'play', 'paused'] satisfies EditorMode[], EDITOR_MODE.of);
+const FIELD_KIND_OF = byName(
+  ['number', 'integer', 'boolean', 'text', 'entity', 'enum'] satisfies FieldKind[],
+  FIELD_KIND.of,
+);
 
 /**
  * `drift/editor` — the transform tool, driven from a script that never ships.
@@ -37,13 +111,16 @@ export const EDITOR_MODULE = 'drift/editor';
  *
  * ## Three capabilities where an argument would have done, deliberately
  *
- * `translateMode`, `rotateMode` and `scaleMode` rather than `setMode(gizmo, mode)`. The language has
- * no enum, so the argument would be a string or a number, and an unrecognised one leaves exactly two
- * options — change nothing, the silent no-op `host.ts` rules out, or throw inside a frame, which
- * `AGENTS.md` rules out. Three names make the invalid call impossible to write, and the checker
- * rather than a runtime branch is what refuses it. `space` is the same argument again.
+ * `translateMode`, `rotateMode` and `scaleMode` rather than `setMode(gizmo, mode)`. When these were
+ * written a host could not declare an enum, so the argument would have been a string or a number,
+ * and an unrecognised one leaves exactly two options — change nothing, the silent no-op `host.ts`
+ * rules out, or throw inside a frame, which `AGENTS.md` rules out. Three names make the invalid call
+ * impossible to write, and the checker rather than a runtime branch is what refuses it. A
+ * `GizmoMode` argument would do the same now; the three stay because scripts call them. `space` is
+ * the same argument again.
  *
- * The *readers* are strings because a reader is total: there is no invalid value to answer.
+ * The *readers* answer variants, a `GizmoMode`, a `GizmoSpace` and a `GizmoHandle`, so a script
+ * that matches on one is told when a mode or a handle is added.
  */
 export const EDITOR_TYPES: readonly OpaqueType[] = [
   {
@@ -56,6 +133,11 @@ export const EDITOR_TYPES: readonly OpaqueType[] = [
     name: 'Editor',
     doc: 'An editing session: what is selected, the tree of what exists, and whether the world is playing.',
   },
+  GIZMO_MODE.type,
+  GIZMO_SPACE.type,
+  GIZMO_HANDLE.type,
+  EDITOR_MODE.type,
+  FIELD_KIND.type,
 ];
 
 const define = (
@@ -103,13 +185,18 @@ export const EDITOR_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'gizmoMode',
     OF,
-    'String',
-    'Which of the three the gizmo is: "translate", "rotate" or "scale".',
+    'GizmoMode',
+    'Which of the three the gizmo is: translate, rotate or scale.',
   ),
 
   define('worldSpace', OF, 'void', 'Point the handles along the world axes.'),
   define('localSpace', OF, 'void', 'Point the handles along the object’s own axes.'),
-  define('space', OF, 'String', 'Which the handles are pointing along: "world" or "local".'),
+  define(
+    'space',
+    OF,
+    'GizmoSpace',
+    'Which the handles are pointing along: the world or the object.',
+  ),
 
   define(
     'size',
@@ -125,15 +212,16 @@ export const EDITOR_CAPABILITIES: readonly CapabilityDefinition[] = [
   ),
 
   /*
-   * **A name rather than a number, and total.** The handles are integer constants in TypeScript, and
-   * a script comparing against a magic number is a script that breaks silently the day a handle is
-   * added in the middle. `"none"` is a real answer rather than a missing one.
+   * **A variant, and total.** The handles are integer constants in TypeScript, and a script comparing
+   * against a magic number breaks silently the day a handle is added in the middle; a script
+   * comparing against a name breaks silently the day it misspells one. `None` is a real answer
+   * rather than a missing one.
    */
   define(
     'hovered',
     OF,
-    'String',
-    'What the pointer is over, as a name: "none", or one of "translate.x", "translate.yz", "rotate.y", "scale.uniform" and their siblings.',
+    'GizmoHandle',
+    'What the pointer is over: `None`, or a handle such as `TranslateX`, `TranslateYZ`, `RotateY` or `ScaleUniform`.',
   ),
   define('dragging', OF, 'bool', 'Whether a drag is running.'),
   define(
@@ -172,7 +260,7 @@ export const EDITOR_CAPABILITIES: readonly CapabilityDefinition[] = [
    * **The session, from `@driftengine/editor`.** Everything above drives one tool; everything below
    * drives the editor around it — which is what an `@editor` script is actually for.
    */
-  define('mode', ON, 'String', 'What the editor is doing: "edit", "play" or "paused".'),
+  define('mode', ON, 'EditorMode', 'What the editor is doing: editing, playing or paused.'),
   define(
     'playing',
     ON,
@@ -254,8 +342,8 @@ export const EDITOR_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'fieldKind',
     [...ON, { name: 'field', type: 'i32' }],
-    'String',
-    'How to show a field: "number", "integer", "boolean", "text", "entity" or "enum". Taken from the declared type, because a read cannot tell them apart.',
+    'FieldKind',
+    'How to show a field: a number, an integer, a boolean, text, an entity or an enum. Taken from the declared type, because a read cannot tell them apart. A field outside `fieldCount` is refused, naming both.',
   ),
   define(
     'fieldNumber',
@@ -269,28 +357,6 @@ export const EDITOR_CAPABILITIES: readonly CapabilityDefinition[] = [
     'bool',
     'Write a number into a field. False where the field does not exist or will not take one.',
   ),
-];
-
-/**
- * Handle constants as the names a script reads, in the order the constants run.
- *
- * A table rather than a `switch`, so adding a handle is one line here and the reader stays total.
- */
-const HANDLE_NAMES: readonly string[] = [
-  'none',
-  'translate.x',
-  'translate.y',
-  'translate.z',
-  'translate.yz',
-  'translate.zx',
-  'translate.xy',
-  'rotate.x',
-  'rotate.y',
-  'rotate.z',
-  'scale.x',
-  'scale.y',
-  'scale.z',
-  'scale.uniform',
 ];
 
 /**
@@ -312,7 +378,7 @@ export function editorImplementation(): Record<string, unknown> {
     scaleMode: (gizmo: Gizmo) => {
       gizmo.mode = 'scale';
     },
-    gizmoMode: (gizmo: Gizmo) => gizmo.mode,
+    gizmoMode: (gizmo: Gizmo) => GIZMO_MODE_OF.get(gizmo.mode),
 
     worldSpace: (gizmo: Gizmo) => {
       gizmo.space = 'world';
@@ -320,14 +386,14 @@ export function editorImplementation(): Record<string, unknown> {
     localSpace: (gizmo: Gizmo) => {
       gizmo.space = 'local';
     },
-    space: (gizmo: Gizmo) => gizmo.space,
+    space: (gizmo: Gizmo) => GIZMO_SPACE_OF.get(gizmo.space),
 
     size: (gizmo: Gizmo) => gizmo.size,
     setSize: (gizmo: Gizmo, metres: number) => {
       gizmo.size = metres;
     },
 
-    hovered: (gizmo: Gizmo) => HANDLE_NAMES[gizmo.hovered] ?? 'none',
+    hovered: (gizmo: Gizmo) => GIZMO_HANDLE.of[gizmo.hovered] ?? GIZMO_HANDLE.of[0],
     dragging: (gizmo: Gizmo) => gizmo.dragging,
     dragAngle: (gizmo: Gizmo) => gizmo.dragAngle,
 
@@ -349,7 +415,7 @@ export function editorImplementation(): Record<string, unknown> {
     rotationZ: (gizmo: Gizmo) => gizmo.rotation[2] ?? 0,
     rotationW: (gizmo: Gizmo) => gizmo.rotation[3] ?? 1,
 
-    mode: (editor: EditorHost) => editor.mode,
+    mode: (editor: EditorHost) => EDITOR_MODE_OF.get(editor.mode),
     playing: (editor: EditorHost) => editor.mode === 'play',
     play: (editor: EditorHost) => editor.play(),
     pause: (editor: EditorHost) => {
@@ -382,7 +448,15 @@ export function editorImplementation(): Record<string, unknown> {
     fieldCount: (editor: EditorHost) => editor.inspector.fields.length,
     fieldLabel: (editor: EditorHost, field: number) => editor.inspector.fields[field]?.label ?? '',
     fieldGroup: (editor: EditorHost, field: number) => editor.inspector.fields[field]?.group ?? '',
-    fieldKind: (editor: EditorHost, field: number) => editor.inspector.fields[field]?.kind ?? '',
+    fieldKind(editor: EditorHost, field: number) {
+      const found = editor.inspector.fields[field];
+      if (found === undefined) {
+        throw new RangeError(
+          `field ${field} is outside the ${editor.inspector.fields.length} shown`,
+        );
+      }
+      return FIELD_KIND_OF.get(found.kind);
+    },
     fieldNumber: (editor: EditorHost, field: number) => {
       const value = editor.inspector.fields[field]?.value;
       return typeof value === 'number' ? value : 0;

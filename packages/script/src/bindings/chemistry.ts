@@ -45,6 +45,7 @@ import {
 } from '@driftengine/chemistry';
 import { type ComponentType, defineComponent } from '@driftengine/entities';
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
+import { hostEnum } from './variants.ts';
 
 export const CHEMISTRY_MODULE = 'drift/chemistry';
 
@@ -67,6 +68,44 @@ const define = (
     doc,
     implementation: `${CHEMISTRY_MODULE}.${name}`,
   });
+
+/** A parcel's phase, in the package's order: `PHASE_SOLID`, `_LIQUID`, `_GAS`, then `PHASE_MIXED`. */
+export const MATTER_PHASE = hostEnum(
+  CHEMISTRY_MODULE,
+  'MatterPhase',
+  ['Solid', 'Liquid', 'Gas', 'Mixed'],
+  'What a parcel is made of now. Mixed is a real answer: wet wood is a solid and a liquid at once.',
+);
+
+/** What happened to a parcel this tick, in the order of the package's `EVENT_*` constants. */
+export const CHEMISTRY_EVENT = hostEnum(
+  CHEMISTRY_MODULE,
+  'ChemistryEvent',
+  [
+    'Ignited',
+    'Extinguished',
+    'SmoulderStart',
+    'SmoulderEnd',
+    'Consumed',
+    'Charred',
+    'StructuralFail',
+    'Frozen',
+    'Melted',
+    'Boiled',
+    'Condensed',
+    'Sublimed',
+    'Corroded',
+    'Calcined',
+    'Dissolved',
+    'Denatured',
+    'Browned',
+    'Caramelised',
+    'Fermented',
+    'Decayed',
+    'Exploded',
+  ],
+  'What happened to a parcel this tick: it caught, went out, melted, boiled and the rest.',
+);
 
 /**
  * The three opaque types `§20.2` names.
@@ -91,6 +130,8 @@ export const CHEMISTRY_TYPES: readonly OpaqueType[] = [
     name: 'Species',
     doc: 'A registered chemical species, such as `O2` or `cellulose`.',
   },
+  MATTER_PHASE.type,
+  CHEMISTRY_EVENT.type,
 ];
 
 const READ = ['chemistry.read'] as const;
@@ -199,9 +240,9 @@ export const CHEMISTRY_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'phase',
     [P, PARCEL],
-    'i32',
+    'MatterPhase',
     READ,
-    '0 solid, 1 liquid, 2 gas, 3 mixed. Mixed is a real answer: wet wood is a solid and a liquid at once.',
+    'Whether the parcel is solid, liquid, gas or mixed. Mixed is a real answer: wet wood is a solid and a liquid at once.',
   ),
   define('burning', [P, PARCEL], 'bool', READ, 'Whether a flame stands over it.'),
   define(
@@ -401,9 +442,9 @@ export const CHEMISTRY_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     'eventKind',
     [P, { name: 'index', type: 'i32' }],
-    'i32',
+    'ChemistryEvent',
     READ,
-    '0 ignited, 1 extinguished, 2 smoulderStart, 3 smoulderEnd, 4 consumed, 5 charred, 6 structuralFail, 7 frozen, 8 melted, 9 boiled, 10 condensed, 11 sublimed, 12 corroded, 13 calcined, 14 dissolved, 15 denatured, 16 browned, 17 caramelised, 18 fermented, 19 decayed, 20 exploded.',
+    'What happened in one of this tick’s events. An index outside `eventCount` is refused, naming both.',
   ),
   define(
     'eventParcel',
@@ -496,7 +537,7 @@ export function chemistryImplementation(services: ChemistryServices): Record<str
     charDepth: (_: unknown, parcel: number) => parcels.charDepthOf(parcel),
     wetness: (_: unknown, parcel: number) => parcels.wetnessOf(parcel),
     wettable: (_: unknown, parcel: number) => parcels.wettable(parcel),
-    phase: (_: unknown, parcel: number) => parcels.parcelPhaseOf(parcel),
+    phase: (_: unknown, parcel: number) => MATTER_PHASE.of[parcels.parcelPhaseOf(parcel)],
     burning: (_: unknown, parcel: number) => parcels.burning(parcel),
     smouldering: (_: unknown, parcel: number) => parcels.smouldering(parcel),
     /* Watts inside, kilowatts out: a fire is quoted in kW everywhere a person reads one. */
@@ -548,7 +589,14 @@ export function chemistryImplementation(services: ChemistryServices): Record<str
       air.addHeat(x, y, z, joules),
 
     eventCount: () => world.events.count,
-    eventKind: (_: unknown, index: number) => world.events.kindOf(index),
+    eventKind(_: unknown, index: number) {
+      /* The buffer is read unchecked, and past `count` it holds the last tick's events or nothing:
+         a kind that did not happen this tick, or no variant at all. */
+      if (!(index >= 0 && index < world.events.count)) {
+        throw new RangeError(`event ${index} is outside this tick's ${world.events.count}`);
+      }
+      return CHEMISTRY_EVENT.of[world.events.kindOf(index)];
+    },
     eventParcel: (_: unknown, index: number) => world.events.parcelOf(index),
     eventSpecies: (_: unknown, index: number) => world.events.speciesOf(index),
     eventValue: (_: unknown, index: number) => world.events.valueOf(index),

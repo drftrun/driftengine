@@ -122,6 +122,8 @@ export class LockstepSession<S> {
   private readonly ourDigests = new Map<number, string>();
 
   private statusValue: LockstepStatus = 'running';
+  /** The tick of this session's first `submit`, or -1 before it. See `open`. */
+  private openedAt = -1;
   private desyncValue: Desync | null = null;
   private haltReason = '';
   private confirmedValue = -1;
@@ -180,6 +182,7 @@ export class LockstepSession<S> {
   submit(tick: number, payload: Uint8Array): void {
     if (this.statusValue !== 'running') return;
     const at = tick + this.inputDelay;
+    if (this.openedAt < 0) this.open(tick);
 
     if (!this.inputs.holds(at)) {
       this.halt(`an input for tick ${at} is outside the log's window`);
@@ -201,6 +204,29 @@ export class LockstepSession<S> {
       return;
     }
     this.transport.send(BROADCAST, this.outgoing.subarray(0, length));
+  }
+
+  /**
+   * The ticks before anybody's first input, settled as neutral for every participant.
+   *
+   * **Nobody can publish an input for them**: the earliest a peer publishes is its first tick plus
+   * the input delay. So nothing will ever arrive to confirm or correct them, and whatever a peer
+   * guesses for them is final. A guess repeats the newest input the log holds, and for this peer's
+   * own participant that was the input just submitted for a *later* tick, which no other peer can
+   * know: a player holding a control on the first tick split the worlds there, and the first
+   * fingerprint halted the session. Neutral is the one answer every peer reaches alone, because
+   * nobody had pressed anything before the game began. Lockstep peers start on the same tick, so
+   * they all settle the same ticks.
+   */
+  private open(tick: number): void {
+    this.openedAt = tick;
+    const neutral = new Uint8Array(this.inputs.inputBytes);
+    for (let at = tick; at < tick + this.inputDelay; at++) {
+      if (!this.inputs.holds(at)) continue;
+      for (let participant = 0; participant < this.participants; participant++) {
+        this.inputs.set(participant, at, neutral);
+      }
+    }
   }
 
   /**

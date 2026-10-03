@@ -8,9 +8,16 @@
 import { range } from "drift/random"
 import { clamp, max } from "std/math"
 
+// The skies the switch offers.
+enum Sky {
+    Clear
+    Rain
+    Storm
+}
+
 data Weather {
-    // What the switch asked for: 0 clear, 1 rain, 2 storm.
-    kind: i32 = 1
+    // What the switch asked for.
+    kind: Sky = Sky.Rain
     // Where each quantity is now; each eases toward what the kind wants.
     fog: f32 = 0.003
     gloom: f32 = 0
@@ -24,42 +31,38 @@ data Weather {
 }
 
 // #region kinds
-// Each quantity, for each kind of sky.
-fn fogFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 0.014
+// Each quantity, for each kind of sky. A sky added to `Sky` stops these compiling until it has its
+// own numbers.
+fn fogFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0.003
+        Rain => 0.012
+        Storm => 0.014
     }
-    if kind == 1 {
-        return 0.012
-    }
-    return 0.003
 }
 
-fn gloomFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 1
+fn gloomFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0
+        Rain => 0.3
+        Storm => 1
     }
-    if kind == 1 {
-        return 0.3
-    }
-    return 0
 }
 
-fn rainFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 1
+fn rainFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 0
+        Rain => 0.6
+        Storm => 1
     }
-    if kind == 1 {
-        return 0.6
-    }
-    return 0
 }
 
-fn windFor(kind: i32) -> f32 {
-    if kind == 2 {
-        return 9
+fn windFor(kind: Sky) -> f32 {
+    return match kind {
+        Clear => 3
+        Rain => 3
+        Storm => 9
     }
-    return 3
 }
 
 // #endregion
@@ -84,7 +87,7 @@ fn advance(sky: mut Weather, dt: f32) -> bool {
     }
     sky.flash = math.max(sky.flash - dt * 4, 0)
 
-    if sky.kind != 2 {
+    if sky.kind != Sky.Storm {
         return false
     }
     sky.nextStrike = sky.nextStrike - dt

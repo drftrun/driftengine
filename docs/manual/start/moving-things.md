@@ -87,7 +87,7 @@ Call `tick(performance.now())` once per frame, outside the simulation, so a hold
 
 ```ts sample=first-game/main.ts#simulate
 function simulate(dt: number): void {
-  if (round.phase !== 'playing') {
+  if (round.phase.tag !== 'Playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }

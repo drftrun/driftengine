@@ -11,7 +11,7 @@ interface Round {
   remaining: number;
   gathered: number;
   total: number;
-  phase: string;
+  phase: { tag: 'Playing' | 'Won' | 'Lost' };
 }
 const rules = loadModule(roundScript as Record<string, unknown>).exports as unknown as {
   createRound(): Round;
@@ -28,7 +28,7 @@ describe('a round', () => {
     rules.gather(round);
     rules.gather(round);
     rules.tick(round, 1 / 60);
-    expect(round.phase).toBe('won');
+    expect(round.phase.tag).toBe('Won');
   });
 
   it('is lost when the clock runs out first, with the clock stopped at zero', () => {
@@ -36,7 +36,7 @@ describe('a round', () => {
     rules.start(round, 2);
     rules.gather(round);
     for (let step = 0; step < 61 * 60; step += 1) rules.tick(round, 1 / 60);
-    expect(round.phase).toBe('lost');
+    expect(round.phase.tag).toBe('Lost');
     expect(round.remaining).toBe(0);
   });
 

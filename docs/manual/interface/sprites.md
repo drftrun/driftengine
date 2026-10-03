@@ -147,14 +147,14 @@ fn walk(g: mut Gardener, actions: Actions, map: Tilemap, sheet: SpriteSheet, dt:
     let dy = -input.axisY(actions, "move")
     if math.abs(dx) > math.abs(dy) {
         if dx > 0 {
-            g.facing = RIGHT
+            g.facing = Facing.Right
         } else {
-            g.facing = LEFT
+            g.facing = Facing.Left
         }
     } else if dy > 0 {
-        g.facing = UP
+        g.facing = Facing.Up
     } else if dy < 0 {
-        g.facing = DOWN
+        g.facing = Facing.Down
     }
     let nx = g.x + dx * g.speed * dt
     let ny = g.y + dy * g.speed * dt
@@ -193,7 +193,7 @@ fn draw(g: Gardener, batch: SpriteBatch, map: Tilemap, sheet: SpriteSheet, viewX
         step = 1
     }
     let first = sprites.named(sheet, "down0")
-    sprites.frame(batch, sheet, first + g.facing * 2 + step, g.x - 0.5, g.y - 0.15, 1, 1)
+    sprites.frame(batch, sheet, first + row(g.facing) + step, g.x - 0.5, g.y - 0.15, 1, 1)
 }
 ```
 

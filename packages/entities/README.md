@@ -45,6 +45,15 @@ runSchedule(world, schedule, tick);
 **The declaration is enforced.** A system that writes something it did not declare is refused
 naming both — a schedule derived from a lie is worse than no schedule. `writes` implies `reads`.
 
+**A system that throws is skipped, and the others still run.** By default the failure is logged once
+per system per world. Pass a reporter as the fourth argument to take every failure, every tick, with
+the system's name, the tick and the error, and nothing is logged; throw from it to make a failure
+fatal while developing:
+
+```ts
+runSchedule(world, schedule, tick, ({ system, tick, error }) => overlay.add(system, tick, error));
+```
+
 Order is declaration order, adjusted only by `after`, which is topologically sorted with
 declaration order as the tie-break. A cycle in `after` is refused naming the systems.
 

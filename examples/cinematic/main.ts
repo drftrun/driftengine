@@ -87,15 +87,16 @@ function sourceSec(lapClock: number): number {
 // #endregion
 
 // #region shots
-/* The shots, as records the page owns. The director script answers with a place in this list. */
-const SHOTS: readonly ShotParams[] = [
-  { kind: 'chase', distance: 7, height: 2.2, fovDeg: 62 },
-  { kind: 'lowWide', distance: 9, height: 0.7, fovDeg: 48 },
-  { kind: 'orbit', distance: 8, height: 3, fovDeg: 55, orbitRate: 0.7 },
-  { kind: 'flyby', distance: 10, height: 1.6, fovDeg: 45 },
-  { kind: 'overhead', distance: 14, height: 16, fovDeg: 50 },
-  { kind: 'lookAt', distance: 11, height: 3, fovDeg: 42, anchor: TOWER },
-];
+/* The shots, as records the page owns, under the names of the director script's `Shot` variants. */
+type ShotName = 'Chase' | 'LowWide' | 'Orbit' | 'Flyby' | 'Overhead' | 'LookAt';
+const SHOTS: Readonly<Record<ShotName, ShotParams>> = {
+  Chase: { kind: 'chase', distance: 7, height: 2.2, fovDeg: 62 },
+  LowWide: { kind: 'lowWide', distance: 9, height: 0.7, fovDeg: 48 },
+  Orbit: { kind: 'orbit', distance: 8, height: 3, fovDeg: 55, orbitRate: 0.7 },
+  Flyby: { kind: 'flyby', distance: 10, height: 1.6, fovDeg: 45 },
+  Overhead: { kind: 'overhead', distance: 14, height: 16, fovDeg: 50 },
+  LookAt: { kind: 'lookAt', distance: 11, height: 3, fovDeg: 42, anchor: TOWER },
+};
 /* The rig keeps its boom out of the rocks, so it is given them. */
 const ROCKS: Vec3[] = [
   [6, 0.8, 3],
@@ -111,8 +112,9 @@ let rigClock = 0;
 
 // #region director
 const script = hostScript(directorScript);
+/* A variant reaches the page as `{ tag }`, and an option as `{ tag: 'some', value }` or `none`. */
 interface Director {
-  shot: number;
+  shot: { tag: ShotName };
   cuts: number;
 }
 const director = exported<() => Director>(script, 'createDirector')();
@@ -121,7 +123,7 @@ type Direct = (
   camera: CinematicCamera,
   airborne: boolean,
   nearTower: boolean,
-) => number;
+) => { tag: 'none' } | { tag: 'some'; value: { tag: ShotName } };
 if (import.meta.hot) {
   import.meta.hot.accept('./director.drs', (next) => {
     if (next !== undefined) {
@@ -186,7 +188,7 @@ controls([
     change: (value) => {
       mode = value;
       player.reset();
-      rig.cut(SHOTS[director.shot] as ShotParams, rigClock);
+      rig.cut(SHOTS[director.shot.tag], rigClock);
     },
   },
   {
@@ -314,7 +316,7 @@ stage.run({
     caption = '';
     if (mode === 'director') {
       const shot = exported<Direct>(script, 'direct')(director, rig, airborne, nearTower);
-      if (shot >= 0) rig.cut(SHOTS[shot] as ShotParams, rigClock);
+      if (shot.tag === 'some') rig.cut(SHOTS[shot.value.tag], rigClock);
     } else if (mode === 'timeline') {
       player.update(dt);
       if (player.shotChanged && player.shot !== null) rig.cut(player.shot, rigClock);
@@ -371,6 +373,6 @@ stage.run({
 
 /** The shot the rig is in, by its kind. */
 function shotLabel(): string {
-  const shot = mode === 'timeline' ? player.shot : SHOTS[director.shot];
+  const shot = mode === 'timeline' ? player.shot : SHOTS[director.shot.tag];
   return shot === null || shot === undefined ? '' : `${shot.kind} ${rig.shotAgeSec.toFixed(1)} S`;
 }

@@ -3,7 +3,7 @@ title: Setting up scripts
 description: The build that compiles .drs files, loading and binding a script, the services a host gives it, calling it, and hot reload that keeps the game's state.
 packages: ['@driftengine/script']
 areas: ['script']
-plain: ['Lamp', 'Puck']
+plain: ['Lamp', 'Puck', 'Sky', 'ContactKind', 'MatterPhase']
 ---
 
 # Setting up scripts
@@ -155,6 +155,16 @@ which builds a record with the declared defaults. TypeScript cannot see a `.drs`
 the page states their shape once, as an interface for each record and a type for each function, and
 casts. The record belongs to the page from then on: here `puck` is created once and passed to the
 script's `drive` every step.
+
+A value crosses as what the script compiled it to. A number, a string or a `bool` is itself, and a
+record is a plain object with its fields. A variant of an enum is `{ tag: 'Won' }`, so the first
+game's page reads `round.phase.tag`, and an option is `{ tag: 'some', value }` or
+`{ tag: 'none' }`, which is how the cinematic director says whether to cut. A page that hands a
+variant in takes it from the script's exports, as the weather page takes `Sky.Storm` from its
+module, and compares a variant by its tag: a save makes a new object for every variant, so the one
+the page kept is a different object with the same tag. An engine answer that is one of a few things
+arrives the same way, as a variant of an enum the engine declares, such as `ContactKind` or
+`MatterPhase`; [What a script can reach](reach.md) lists them with their variants.
 
 Read a function through the module each time you call it, as `exported(script, 'drive')` does in
 this example and `rules.tick(...)` does in the first game. A save replaces the module's exports in

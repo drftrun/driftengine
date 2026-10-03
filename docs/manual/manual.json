@@ -118,7 +118,7 @@
       "id": "systems",
       "title": "Systems",
       "blurb": "What a game keeps between sessions and shares between players: saves and preferences, read back across a change to the game.",
-      "pages": ["saves"]
+      "pages": ["saves", "networking"]
     }
   ]
 }

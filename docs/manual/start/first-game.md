@@ -323,18 +323,25 @@ in a browser with no audio at all, where `AudioGraph.create` returns `null`, `so
 let ROUND_SECONDS: f32 = 60
 let REACH: f32 = 1
 
+// Where a round is: still being played, or over one way or the other.
+enum Phase {
+    Playing
+    Won
+    Lost
+}
+
 // One round, which the page owns and hands to every rule below.
 data Round {
     remaining: f32 = 60
     gathered: u32 = 0
     total: u32 = 8
-    // "playing", "won" or "lost".
-    phase: String = "playing"
+    phase: Phase = Phase.Playing
 }
 ```
 
 The round's state is a `data` record, `Round`, and the two numbers it is tuned by are constants
-beside it. A `.drs` file is compiled by the bundler like any other import, so it needs no build step
+beside it. Where the round is, playing, won or lost, is an enum, `Phase`, so a misspelt phase is a
+compile error and the page reads which one it is as `round.phase.tag`. A `.drs` file is compiled by the bundler like any other import, so it needs no build step
 of its own, and it is checked before the page loads: a misspelt field or a number where a string
 belongs is an error in the terminal, not a surprise in the browser.
 
@@ -344,7 +351,7 @@ fn start(round: mut Round, total: u32) {
     round.remaining = ROUND_SECONDS
     round.gathered = 0
     round.total = total
-    round.phase = "playing"
+    round.phase = Phase.Playing
 }
 
 // Whether the player, this far from an orb on each axis, is close enough to take it. Pure: it reaches
@@ -365,15 +372,15 @@ fn gather(round: mut Round) {
 // recorded round replays exactly. Reading input or the wall clock here would not compile.
 @deterministic
 fn tick(round: mut Round, dt: f32) {
-    if round.phase != "playing" {
+    if round.phase != Phase.Playing {
         return
     }
     round.remaining = round.remaining - dt
     if round.gathered == round.total {
-        round.phase = "won"
+        round.phase = Phase.Won
     } else if round.remaining <= 0 {
         round.remaining = 0
-        round.phase = "lost"
+        round.phase = Phase.Lost
     }
 }
 ```
@@ -394,11 +401,12 @@ const roundModule = loadModule(roundScript as Record<string, unknown>);
 const bound = bindModule(roundModule, {});
 if (!bound.bound) throw new Error(bound.reason);
 
+/* A variant reaches the page as its tag: `round.phase.tag` is `'Playing'`, `'Won'` or `'Lost'`. */
 interface Round {
   remaining: number;
   gathered: number;
   total: number;
-  phase: string;
+  phase: { tag: 'Playing' | 'Won' | 'Lost' };
 }
 /* Read through the module each call, so a rule patched by a save is the rule that runs. */
 const rules = roundModule.exports as unknown as {
@@ -454,7 +462,7 @@ from wherever the last round ended.
 
 ```ts sample=first-game/main.ts#simulate
 function simulate(dt: number): void {
-  if (round.phase !== 'playing') {
+  if (round.phase.tag !== 'Playing') {
     if (actions.consumePress('restart') || touch.consumePrimaryPress()) newRound();
     return;
   }
@@ -671,20 +679,20 @@ function drawHud(): void {
   if (
     round.gathered !== shown.gathered ||
     seconds !== shown.seconds ||
-    round.phase !== shown.phase ||
+    round.phase.tag !== shown.phase ||
     paused !== shown.paused
   ) {
     shown.gathered = round.gathered;
     shown.seconds = seconds;
-    shown.phase = round.phase;
+    shown.phase = round.phase.tag;
     shown.paused = paused;
     renderer.setText(
       hud,
       paused
         ? 'PAUSED. PRESS P TO CARRY ON'
-        : round.phase === 'won'
+        : round.phase.tag === 'Won'
           ? 'ALL GATHERED. PRESS R OR TAP TO PLAY AGAIN'
-          : round.phase === 'lost'
+          : round.phase.tag === 'Lost'
             ? 'OUT OF TIME. PRESS R OR TAP TO PLAY AGAIN'
             : `ORBS ${round.gathered}/${round.total}   TIME ${seconds}`,
     );

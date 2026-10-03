@@ -25,6 +25,7 @@ import {
   type Collider,
   ColliderSet,
   type KeyValueStore,
+  type SaveStatus,
   RemoteSaveStore,
   MessageQueue,
   PhysicsWorld,
@@ -41,6 +42,7 @@ import {
   wrapAngle,
 } from '@driftengine/core';
 import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
+import { type Variant, hostEnum } from './variants.ts';
 
 export const TIME_MODULE = 'drift/time';
 export const RANDOM_MODULE = 'drift/random';
@@ -71,6 +73,28 @@ const define = (
     doc,
     implementation: `${module}.${name}`,
   });
+
+/** A contact event's kind, in `@driftengine/physics`'s order: `EVENT_ENTER`, `_STAY`, `_EXIT`. */
+const CONTACT_KIND = hostEnum(
+  'drift/physics',
+  'ContactKind',
+  ['Enter', 'Stay', 'Exit'],
+  'Whether two bodies began touching this step, are still touching, or have parted.',
+);
+
+/** A remote store's `SaveStatus`, one variant per string the store answers with. */
+const SAVE_STATUS = hostEnum(
+  'drift/persistence',
+  'SaveStatus',
+  ['Idle', 'Pending', 'Saving', 'Failed'],
+  'Whether a store’s writes have landed: idle, waiting to send, sending, or failed.',
+);
+const SAVE_STATUS_OF: Readonly<Record<SaveStatus, Variant>> = {
+  idle: SAVE_STATUS.of[0] as Variant,
+  pending: SAVE_STATUS.of[1] as Variant,
+  saving: SAVE_STATUS.of[2] as Variant,
+  failed: SAVE_STATUS.of[3] as Variant,
+};
 
 /**
  * Handles a script holds and passes back, never reads into.
@@ -119,6 +143,8 @@ export const CORE_TYPES: readonly OpaqueType[] = [
     doc: 'A priority message queue with dedupe and a ceiling.',
   },
   { module: PERSISTENCE_MODULE, name: 'Store', doc: 'A key-value store the consumer supplied.' },
+  CONTACT_KIND.type,
+  SAVE_STATUS.type,
 ];
 
 /**
@@ -306,10 +332,10 @@ export const PERSISTENCE_CAPABILITIES: readonly CapabilityDefinition[] = [
     PERSISTENCE_MODULE,
     'saveStatus',
     [{ name: 'store', type: 'Store' }],
-    'String',
+    'SaveStatus',
     ['persistence.read'],
     false,
-    'Whether writes have landed: `idle`, `pending`, `saving` or `failed`. A store that writes synchronously is always `idle`, which is the true answer rather than a stub.',
+    'Whether writes have landed: idle, pending, saving or failed. A store that writes synchronously is always idle, which is the true answer rather than a stub.',
   ),
   define(
     PERSISTENCE_MODULE,
@@ -899,10 +925,10 @@ export const PHYSICS_CAPABILITIES: readonly CapabilityDefinition[] = [
       { name: 'world', type: 'PhysicsWorld' },
       { name: 'index', type: 'i32' },
     ],
-    'i32',
+    'ContactKind',
     ['physics.read'],
     true,
-    "An event's kind: 0 entered, 1 still touching, 2 left.",
+    "An event's kind: the two bodies began touching, are still touching, or have parted.",
   ),
   define(
     PHYSICS_MODULE,
@@ -1341,7 +1367,7 @@ export function persistenceImplementation(): Record<string, unknown> {
     /* `instanceof` rather than a duck-typed property check: a store that happens to carry a
        `status` field meaning something else would otherwise be read as this one. */
     saveStatus: (store: KeyValueStore) =>
-      store instanceof RemoteSaveStore ? store.status : 'idle',
+      SAVE_STATUS_OF[store instanceof RemoteSaveStore ? store.status : 'idle'],
     pendingSaves: (store: KeyValueStore) => (store instanceof RemoteSaveStore ? store.pending : 0),
   };
 }
@@ -1583,7 +1609,13 @@ export function physicsImplementation(): Record<string, unknown> {
     hitFraction: (world: PhysicsWorld) => f(hitOf(world).fraction),
 
     contactCount: (world: PhysicsWorld) => world.events.count,
-    contactKind: (world: PhysicsWorld, index: number) => world.events.data[index * 3] ?? 0,
+    contactKind(world: PhysicsWorld, index: number) {
+      /* Past `count` the buffer holds an older step's events or nothing, so neither is answered. */
+      if (!(index >= 0 && index < world.events.count)) {
+        throw new RangeError(`contact ${index} is outside this step's ${world.events.count}`);
+      }
+      return CONTACT_KIND.of[world.events.data[index * 3] as number];
+    },
     contactA: (world: PhysicsWorld, index: number) => world.events.data[index * 3 + 1] ?? 0,
     contactB: (world: PhysicsWorld, index: number) => world.events.data[index * 3 + 2] ?? 0,
 

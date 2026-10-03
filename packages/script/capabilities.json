@@ -1124,32 +1124,32 @@
     {
       "module": "drift/behavior",
       "name": "tick",
-      "signature": "fn(behavior: Behavior) -> i32",
+      "signature": "fn(behavior: Behavior) -> TreeStatus",
       "params": [
         {
           "name": "behavior",
           "type": "Behavior"
         }
       ],
-      "returns": "i32",
+      "returns": "TreeStatus",
       "effects": [
         "behavior.write"
       ],
       "deterministic": false,
-      "doc": "Advance the routine one tick. Answers 0 failed, 1 finished, 2 still going. Does nothing while paused.",
+      "doc": "Advance the routine one tick, and answer whether it failed, finished or is still going. Does nothing while paused.",
       "implementation": "drift/behavior.tick"
     },
     {
       "module": "drift/behavior",
       "name": "step",
-      "signature": "fn(behavior: Behavior) -> i32",
+      "signature": "fn(behavior: Behavior) -> TreeStatus",
       "params": [
         {
           "name": "behavior",
           "type": "Behavior"
         }
       ],
-      "returns": "i32",
+      "returns": "TreeStatus",
       "effects": [
         "behavior.write"
       ],
@@ -1218,14 +1218,14 @@
     {
       "module": "drift/behavior",
       "name": "status",
-      "signature": "fn(behavior: Behavior) -> i32",
+      "signature": "fn(behavior: Behavior) -> TreeStatus",
       "params": [
         {
           "name": "behavior",
           "type": "Behavior"
         }
       ],
-      "returns": "i32",
+      "returns": "TreeStatus",
       "effects": [
         "behavior.read"
       ],
@@ -1664,7 +1664,7 @@
     {
       "module": "drift/chemistry",
       "name": "phase",
-      "signature": "fn(chem: Chemistry, parcel: i32) -> i32",
+      "signature": "fn(chem: Chemistry, parcel: i32) -> MatterPhase",
       "params": [
         {
           "name": "chem",
@@ -1675,12 +1675,12 @@
           "type": "i32"
         }
       ],
-      "returns": "i32",
+      "returns": "MatterPhase",
       "effects": [
         "chemistry.read"
       ],
       "deterministic": true,
-      "doc": "0 solid, 1 liquid, 2 gas, 3 mixed. Mixed is a real answer: wet wood is a solid and a liquid at once.",
+      "doc": "Whether the parcel is solid, liquid, gas or mixed. Mixed is a real answer: wet wood is a solid and a liquid at once.",
       "implementation": "drift/chemistry.phase"
     },
     {
@@ -2542,7 +2542,7 @@
     {
       "module": "drift/chemistry",
       "name": "eventKind",
-      "signature": "fn(chem: Chemistry, index: i32) -> i32",
+      "signature": "fn(chem: Chemistry, index: i32) -> ChemistryEvent",
       "params": [
         {
           "name": "chem",
@@ -2553,12 +2553,12 @@
           "type": "i32"
         }
       ],
-      "returns": "i32",
+      "returns": "ChemistryEvent",
       "effects": [
         "chemistry.read"
       ],
       "deterministic": true,
-      "doc": "0 ignited, 1 extinguished, 2 smoulderStart, 3 smoulderEnd, 4 consumed, 5 charred, 6 structuralFail, 7 frozen, 8 melted, 9 boiled, 10 condensed, 11 sublimed, 12 corroded, 13 calcined, 14 dissolved, 15 denatured, 16 browned, 17 caramelised, 18 fermented, 19 decayed, 20 exploded.",
+      "doc": "What happened in one of this tick’s events. An index outside `eventCount` is refused, naming both.",
       "implementation": "drift/chemistry.eventKind"
     },
     {
@@ -3026,19 +3026,19 @@
     {
       "module": "drift/editor",
       "name": "gizmoMode",
-      "signature": "fn(gizmo: Gizmo) -> String",
+      "signature": "fn(gizmo: Gizmo) -> GizmoMode",
       "params": [
         {
           "name": "gizmo",
           "type": "Gizmo"
         }
       ],
-      "returns": "String",
+      "returns": "GizmoMode",
       "effects": [
         "editor"
       ],
       "deterministic": false,
-      "doc": "Which of the three the gizmo is: \"translate\", \"rotate\" or \"scale\".",
+      "doc": "Which of the three the gizmo is: translate, rotate or scale.",
       "implementation": "drift/editor.gizmoMode"
     },
     {
@@ -3080,19 +3080,19 @@
     {
       "module": "drift/editor",
       "name": "space",
-      "signature": "fn(gizmo: Gizmo) -> String",
+      "signature": "fn(gizmo: Gizmo) -> GizmoSpace",
       "params": [
         {
           "name": "gizmo",
           "type": "Gizmo"
         }
       ],
-      "returns": "String",
+      "returns": "GizmoSpace",
       "effects": [
         "editor"
       ],
       "deterministic": false,
-      "doc": "Which the handles are pointing along: \"world\" or \"local\".",
+      "doc": "Which the handles are pointing along: the world or the object.",
       "implementation": "drift/editor.space"
     },
     {
@@ -3138,19 +3138,19 @@
     {
       "module": "drift/editor",
       "name": "hovered",
-      "signature": "fn(gizmo: Gizmo) -> String",
+      "signature": "fn(gizmo: Gizmo) -> GizmoHandle",
       "params": [
         {
           "name": "gizmo",
           "type": "Gizmo"
         }
       ],
-      "returns": "String",
+      "returns": "GizmoHandle",
       "effects": [
         "editor"
       ],
       "deterministic": false,
-      "doc": "What the pointer is over, as a name: \"none\", or one of \"translate.x\", \"translate.yz\", \"rotate.y\", \"scale.uniform\" and their siblings.",
+      "doc": "What the pointer is over: `None`, or a handle such as `TranslateX`, `TranslateYZ`, `RotateY` or `ScaleUniform`.",
       "implementation": "drift/editor.hovered"
     },
     {
@@ -3402,19 +3402,19 @@
     {
       "module": "drift/editor",
       "name": "mode",
-      "signature": "fn(editor: Editor) -> String",
+      "signature": "fn(editor: Editor) -> EditorMode",
       "params": [
         {
           "name": "editor",
           "type": "Editor"
         }
       ],
-      "returns": "String",
+      "returns": "EditorMode",
       "effects": [
         "editor"
       ],
       "deterministic": false,
-      "doc": "What the editor is doing: \"edit\", \"play\" or \"paused\".",
+      "doc": "What the editor is doing: editing, playing or paused.",
       "implementation": "drift/editor.mode"
     },
     {
@@ -3740,7 +3740,7 @@
     {
       "module": "drift/editor",
       "name": "fieldKind",
-      "signature": "fn(editor: Editor, field: i32) -> String",
+      "signature": "fn(editor: Editor, field: i32) -> FieldKind",
       "params": [
         {
           "name": "editor",
@@ -3751,12 +3751,12 @@
           "type": "i32"
         }
       ],
-      "returns": "String",
+      "returns": "FieldKind",
       "effects": [
         "editor"
       ],
       "deterministic": false,
-      "doc": "How to show a field: \"number\", \"integer\", \"boolean\", \"text\", \"entity\" or \"enum\". Taken from the declared type, because a read cannot tell them apart.",
+      "doc": "How to show a field: a number, an integer, a boolean, text, an entity or an enum. Taken from the declared type, because a read cannot tell them apart. A field outside `fieldCount` is refused, naming both.",
       "implementation": "drift/editor.fieldKind"
     },
     {
@@ -4965,19 +4965,19 @@
     {
       "module": "drift/persistence",
       "name": "saveStatus",
-      "signature": "fn(store: Store) -> String",
+      "signature": "fn(store: Store) -> SaveStatus",
       "params": [
         {
           "name": "store",
           "type": "Store"
         }
       ],
-      "returns": "String",
+      "returns": "SaveStatus",
       "effects": [
         "persistence.read"
       ],
       "deterministic": false,
-      "doc": "Whether writes have landed: `idle`, `pending`, `saving` or `failed`. A store that writes synchronously is always `idle`, which is the true answer rather than a stub.",
+      "doc": "Whether writes have landed: idle, pending, saving or failed. A store that writes synchronously is always idle, which is the true answer rather than a stub.",
       "implementation": "drift/persistence.saveStatus"
     },
     {
@@ -5719,7 +5719,7 @@
     {
       "module": "drift/physics",
       "name": "contactKind",
-      "signature": "fn(world: PhysicsWorld, index: i32) -> i32",
+      "signature": "fn(world: PhysicsWorld, index: i32) -> ContactKind",
       "params": [
         {
           "name": "world",
@@ -5730,12 +5730,12 @@
           "type": "i32"
         }
       ],
-      "returns": "i32",
+      "returns": "ContactKind",
       "effects": [
         "physics.read"
       ],
       "deterministic": true,
-      "doc": "An event's kind: 0 entered, 1 still touching, 2 left.",
+      "doc": "An event's kind: the two bodies began touching, are still touching, or have parted.",
       "implementation": "drift/physics.contactKind"
     },
     {
@@ -6344,11 +6344,11 @@
     {
       "module": "drift/xr",
       "name": "trigger",
-      "signature": "fn(hand: String) -> f32",
+      "signature": "fn(hand: Hand) -> f32",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         }
       ],
       "returns": "f32",
@@ -6362,11 +6362,11 @@
     {
       "module": "drift/xr",
       "name": "squeeze",
-      "signature": "fn(hand: String) -> f32",
+      "signature": "fn(hand: Hand) -> f32",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         }
       ],
       "returns": "f32",
@@ -6380,11 +6380,11 @@
     {
       "module": "drift/xr",
       "name": "holding",
-      "signature": "fn(hand: String) -> bool",
+      "signature": "fn(hand: Hand) -> bool",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         }
       ],
       "returns": "bool",
@@ -6398,15 +6398,15 @@
     {
       "module": "drift/xr",
       "name": "jointX",
-      "signature": "fn(hand: String, joint: String) -> f32",
+      "signature": "fn(hand: Hand, joint: HandJoint) -> f32",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         },
         {
           "name": "joint",
-          "type": "String"
+          "type": "HandJoint"
         }
       ],
       "returns": "f32",
@@ -6414,21 +6414,21 @@
         "input.read"
       ],
       "deterministic": false,
-      "doc": "Where a named hand joint is, in metres. Zero for a joint that is not tracked.",
+      "doc": "Where a hand joint is, in metres. Zero for a joint that is not tracked.",
       "implementation": "XrRuntime.jointX"
     },
     {
       "module": "drift/xr",
       "name": "jointY",
-      "signature": "fn(hand: String, joint: String) -> f32",
+      "signature": "fn(hand: Hand, joint: HandJoint) -> f32",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         },
         {
           "name": "joint",
-          "type": "String"
+          "type": "HandJoint"
         }
       ],
       "returns": "f32",
@@ -6436,21 +6436,21 @@
         "input.read"
       ],
       "deterministic": false,
-      "doc": "Where a named hand joint is, in metres. Zero for a joint that is not tracked.",
+      "doc": "Where a hand joint is, in metres. Zero for a joint that is not tracked.",
       "implementation": "XrRuntime.jointY"
     },
     {
       "module": "drift/xr",
       "name": "jointZ",
-      "signature": "fn(hand: String, joint: String) -> f32",
+      "signature": "fn(hand: Hand, joint: HandJoint) -> f32",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         },
         {
           "name": "joint",
-          "type": "String"
+          "type": "HandJoint"
         }
       ],
       "returns": "f32",
@@ -6458,17 +6458,17 @@
         "input.read"
       ],
       "deterministic": false,
-      "doc": "Where a named hand joint is, in metres. Zero for a joint that is not tracked.",
+      "doc": "Where a hand joint is, in metres. Zero for a joint that is not tracked.",
       "implementation": "XrRuntime.jointZ"
     },
     {
       "module": "drift/xr",
       "name": "pinching",
-      "signature": "fn(hand: String) -> bool",
+      "signature": "fn(hand: Hand) -> bool",
       "params": [
         {
           "name": "hand",
-          "type": "String"
+          "type": "Hand"
         }
       ],
       "returns": "bool",
@@ -7812,6 +7812,45 @@
       "doc": "A registered chemical species, such as `O2` or `cellulose`."
     },
     {
+      "module": "drift/chemistry",
+      "name": "MatterPhase",
+      "doc": "What a parcel is made of now. Mixed is a real answer: wet wood is a solid and a liquid at once.",
+      "variants": [
+        "Solid",
+        "Liquid",
+        "Gas",
+        "Mixed"
+      ]
+    },
+    {
+      "module": "drift/chemistry",
+      "name": "ChemistryEvent",
+      "doc": "What happened to a parcel this tick: it caught, went out, melted, boiled and the rest.",
+      "variants": [
+        "Ignited",
+        "Extinguished",
+        "SmoulderStart",
+        "SmoulderEnd",
+        "Consumed",
+        "Charred",
+        "StructuralFail",
+        "Frozen",
+        "Melted",
+        "Boiled",
+        "Condensed",
+        "Sublimed",
+        "Corroded",
+        "Calcined",
+        "Dissolved",
+        "Denatured",
+        "Browned",
+        "Caramelised",
+        "Fermented",
+        "Decayed",
+        "Exploded"
+      ]
+    },
+    {
       "module": "drift/scene",
       "name": "Node",
       "doc": "A node in the transform hierarchy."
@@ -7857,6 +7896,27 @@
       "doc": "A key-value store the consumer supplied."
     },
     {
+      "module": "drift/physics",
+      "name": "ContactKind",
+      "doc": "Whether two bodies began touching this step, are still touching, or have parted.",
+      "variants": [
+        "Enter",
+        "Stay",
+        "Exit"
+      ]
+    },
+    {
+      "module": "drift/persistence",
+      "name": "SaveStatus",
+      "doc": "Whether a store’s writes have landed: idle, waiting to send, sending, or failed.",
+      "variants": [
+        "Idle",
+        "Pending",
+        "Saving",
+        "Failed"
+      ]
+    },
+    {
       "module": "drift/ecs",
       "name": "World",
       "doc": "A world: its entities, their components and its systems."
@@ -7875,6 +7935,16 @@
       "module": "drift/behavior",
       "name": "Behavior",
       "doc": "One agent running one behaviour tree: where it is in its routine."
+    },
+    {
+      "module": "drift/behavior",
+      "name": "TreeStatus",
+      "doc": "What a behaviour tree answered: it failed, it finished, or it is still going.",
+      "variants": [
+        "Failure",
+        "Success",
+        "Running"
+      ]
     },
     {
       "module": "drift/navigation",
@@ -7922,6 +7992,69 @@
       "doc": "An editing session: what is selected, the tree of what exists, and whether the world is playing."
     },
     {
+      "module": "drift/editor",
+      "name": "GizmoMode",
+      "doc": "Which tool a gizmo is: it moves, turns or scales.",
+      "variants": [
+        "Translate",
+        "Rotate",
+        "Scale"
+      ]
+    },
+    {
+      "module": "drift/editor",
+      "name": "GizmoSpace",
+      "doc": "Which axes a gizmo’s handles point along: the world’s or the object’s own.",
+      "variants": [
+        "World",
+        "Local"
+      ]
+    },
+    {
+      "module": "drift/editor",
+      "name": "GizmoHandle",
+      "doc": "Which handle the pointer is over, or `None`.",
+      "variants": [
+        "None",
+        "TranslateX",
+        "TranslateY",
+        "TranslateZ",
+        "TranslateYZ",
+        "TranslateZX",
+        "TranslateXY",
+        "RotateX",
+        "RotateY",
+        "RotateZ",
+        "ScaleX",
+        "ScaleY",
+        "ScaleZ",
+        "ScaleUniform"
+      ]
+    },
+    {
+      "module": "drift/editor",
+      "name": "EditorMode",
+      "doc": "Whether the editor is editing, playing the world, or paused part way through playing it.",
+      "variants": [
+        "Edit",
+        "Play",
+        "Paused"
+      ]
+    },
+    {
+      "module": "drift/editor",
+      "name": "FieldKind",
+      "doc": "How an inspector field is shown, taken from the type it was declared with.",
+      "variants": [
+        "Number",
+        "Integer",
+        "Boolean",
+        "Text",
+        "Entity",
+        "Enum"
+      ]
+    },
+    {
       "module": "drift/network",
       "name": "Session",
       "doc": "A networking session: who this peer is, what it can see of the others, and the scalars it publishes."
@@ -7935,6 +8068,48 @@
       "module": "drift/render",
       "name": "Renderer",
       "doc": "The renderer drawing this frame. Reaches a script through `uses`."
+    },
+    {
+      "module": "drift/xr",
+      "name": "Hand",
+      "doc": "Which hand: left, right, or the input source with no side.",
+      "variants": [
+        "Left",
+        "Right",
+        "None"
+      ]
+    },
+    {
+      "module": "drift/xr",
+      "name": "HandJoint",
+      "doc": "One of the twenty-five joints WebXR tracks on a hand, from the wrist to each fingertip.",
+      "variants": [
+        "Wrist",
+        "ThumbMetacarpal",
+        "ThumbPhalanxProximal",
+        "ThumbPhalanxDistal",
+        "ThumbTip",
+        "IndexFingerMetacarpal",
+        "IndexFingerPhalanxProximal",
+        "IndexFingerPhalanxIntermediate",
+        "IndexFingerPhalanxDistal",
+        "IndexFingerTip",
+        "MiddleFingerMetacarpal",
+        "MiddleFingerPhalanxProximal",
+        "MiddleFingerPhalanxIntermediate",
+        "MiddleFingerPhalanxDistal",
+        "MiddleFingerTip",
+        "RingFingerMetacarpal",
+        "RingFingerPhalanxProximal",
+        "RingFingerPhalanxIntermediate",
+        "RingFingerPhalanxDistal",
+        "RingFingerTip",
+        "PinkyFingerMetacarpal",
+        "PinkyFingerPhalanxProximal",
+        "PinkyFingerPhalanxIntermediate",
+        "PinkyFingerPhalanxDistal",
+        "PinkyFingerTip"
+      ]
     }
   ],
   "manifest": {

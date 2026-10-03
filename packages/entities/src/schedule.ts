@@ -158,11 +158,18 @@ const reported = new WeakMap<World, Set<SystemDefinition>>();
  * function no longer throws, which is what `AGENTS.md` requires of anything the frame loop calls.
  *
  * **What it gives up** is the stack reaching a debugger's uncaught-exception break, which is how
- * somebody working on a system would rather meet it. **What would change it** is a consumer wanting
- * failures fatal in development; the answer then is a reporter this takes as a parameter rather than
- * a rule chosen here for everybody.
+ * somebody working on a system would rather meet it. So `report` takes the decision back: given one,
+ * every failure goes to it, every tick it happens, with the system's name, the tick and the error as
+ * thrown, and nothing is logged. A game can count failures, show them in a debug overlay, send them
+ * to its own telemetry, or throw from it to make a failure fatal in development, which stops the
+ * schedule there. Without one, the failure is said once per system per world, as above.
  */
-export function runSchedule(world: World, schedule: Schedule, tick: number): void {
+export function runSchedule(
+  world: World,
+  schedule: Schedule,
+  tick: number,
+  report?: SystemFailureReporter,
+): void {
   let forWorld = bound.get(world);
   if (forWorld === undefined) {
     forWorld = new Map();
@@ -181,10 +188,24 @@ export function runSchedule(world: World, schedule: Schedule, tick: number): voi
     try {
       system.run();
     } catch (error) {
-      announce(world, definition, error);
+      if (report === undefined) announce(world, definition, error);
+      else report({ system: definition.name, tick, error });
     }
   }
 }
+
+/** One system's failure in one step, as `runSchedule` hands it to a reporter. */
+export interface SystemFailure {
+  /** The failing system's name, as its definition gave it. */
+  readonly system: string;
+  /** The tick it failed on: the `tick` the schedule was run with. */
+  readonly tick: number;
+  /** What the system threw, unchanged. */
+  readonly error: unknown;
+}
+
+/** Called with every failure, every tick. Throwing from it stops the schedule at that system. */
+export type SystemFailureReporter = (failure: SystemFailure) => void;
 
 /** Say what failed, once per system per world. */
 function announce(world: World, definition: SystemDefinition, error: unknown): void {

@@ -168,11 +168,11 @@ fn notice(camp: mut Camp, chem: Chemistry, kettle: i32, ice: i32) {
     var at: i32 = 0
     while at < chemistry.eventCount(chem) {
         let kind = chemistry.eventKind(chem, at)
-        if kind == IGNITED {
+        if kind == ChemistryEvent.Ignited {
             camp.caught += 1
             camp.lastCaught = chemistry.eventParcel(chem, at)
         }
-        if kind == EXTINGUISHED {
+        if kind == ChemistryEvent.Extinguished {
             camp.putOut += 1
         }
         at += 1
@@ -180,7 +180,8 @@ fn notice(camp: mut Camp, chem: Chemistry, kettle: i32, ice: i32) {
     if chemistry.surfaceTemperature(chem, kettle) >= 99.5degC {
         camp.boiled = true
     }
-    if chemistry.phase(chem, ice) != SOLID {
+    // Ice that is no longer all solid has begun to melt: `Mixed` while some of it is water.
+    if chemistry.phase(chem, ice) != MatterPhase.Solid {
         camp.melting = true
     }
 }

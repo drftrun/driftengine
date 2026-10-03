@@ -152,6 +152,14 @@ export function proseOf(body) {
       if (i < lines.length) lines[i] = '';
     }
   }
+  /* A generated block is written from the engine's data, so what it names is checked against that
+     data where it is generated: a script's enum and its variants are names no package exports. */
+  let generated = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (/^<!-- generated [a-z0-9-]+ -->$/.test(lines[i] ?? '')) generated = true;
+    else if (lines[i] === '<!-- end generated -->') generated = false;
+    else if (generated) lines[i] = '';
+  }
   return lines.join('\n');
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/entities",
-  "version": "4.7.4",
+  "version": "4.8.0",
   "description": "Entities with generational identity, component storage, systems and scenes",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,7 +27,7 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "driftscript": "1.14.0"
+    "driftscript": "1.16.0"
   },
   "author": "Drift Technologies",
   "repository": {

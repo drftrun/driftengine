@@ -32,8 +32,12 @@ const { renderer, camera } = stage;
 // #region script
 /** The weather, hosted. Its record lives here, so an edited script carries on from the sky it had. */
 const weather = hostScript(weatherScript);
+/* A variant is `{ tag }`; the page takes the script's own from its `Sky` export. */
+interface SkyVariant {
+  tag: 'Clear' | 'Rain' | 'Storm';
+}
 interface Weather {
-  kind: number;
+  kind: SkyVariant;
   fog: number;
   gloom: number;
   wetness: number;
@@ -50,8 +54,10 @@ if (import.meta.hot) {
       patchModule(weather, next as Record<string, unknown>, { Weather: [sky] });
   });
 }
-const KINDS = ['clear', 'rain', 'storm'];
-sky.kind = Math.max(0, KINDS.indexOf(flag('weather', 'rain')));
+const Sky = exported<Record<SkyVariant['tag'], SkyVariant>>(weather, 'Sky');
+/* The switch's word for each sky, which the address bar keeps. */
+const KINDS: Record<string, SkyVariant> = { clear: Sky.Clear, rain: Sky.Rain, storm: Sky.Storm };
+sky.kind = KINDS[flag('weather', 'rain')] ?? Sky.Rain;
 // #endregion
 
 // #region switches
@@ -60,10 +66,10 @@ controls([
   {
     key: 'weather',
     label: 'weather',
-    value: KINDS[sky.kind],
-    options: KINDS.map((w) => ({ text: w, value: w })),
+    value: sky.kind.tag.toLowerCase(),
+    options: Object.keys(KINDS).map((w) => ({ text: w, value: w })),
     change: (value) => {
-      sky.kind = KINDS.indexOf(value);
+      sky.kind = KINDS[value] ?? sky.kind;
     },
   },
   {

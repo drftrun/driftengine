@@ -3,6 +3,7 @@ title: Cameras and cinematics
 description: The camera, a rig that cuts between shots for replays and cinematics, cinematics written as data, keyed camera paths, and re-timing a stretch of play.
 packages: ['@driftengine/core']
 areas: ['cinematic']
+plain: ['Shot']
 ---
 
 # Cameras and cinematics
@@ -31,15 +32,16 @@ headset's.
 ## A camera that cuts
 
 ```ts sample=cinematic/main.ts#shots
-/* The shots, as records the page owns. The director script answers with a place in this list. */
-const SHOTS: readonly ShotParams[] = [
-  { kind: 'chase', distance: 7, height: 2.2, fovDeg: 62 },
-  { kind: 'lowWide', distance: 9, height: 0.7, fovDeg: 48 },
-  { kind: 'orbit', distance: 8, height: 3, fovDeg: 55, orbitRate: 0.7 },
-  { kind: 'flyby', distance: 10, height: 1.6, fovDeg: 45 },
-  { kind: 'overhead', distance: 14, height: 16, fovDeg: 50 },
-  { kind: 'lookAt', distance: 11, height: 3, fovDeg: 42, anchor: TOWER },
-];
+/* The shots, as records the page owns, under the names of the director script's `Shot` variants. */
+type ShotName = 'Chase' | 'LowWide' | 'Orbit' | 'Flyby' | 'Overhead' | 'LookAt';
+const SHOTS: Readonly<Record<ShotName, ShotParams>> = {
+  Chase: { kind: 'chase', distance: 7, height: 2.2, fovDeg: 62 },
+  LowWide: { kind: 'lowWide', distance: 9, height: 0.7, fovDeg: 48 },
+  Orbit: { kind: 'orbit', distance: 8, height: 3, fovDeg: 55, orbitRate: 0.7 },
+  Flyby: { kind: 'flyby', distance: 10, height: 1.6, fovDeg: 45 },
+  Overhead: { kind: 'overhead', distance: 14, height: 16, fovDeg: 50 },
+  LookAt: { kind: 'lookAt', distance: 11, height: 3, fovDeg: 42, anchor: TOWER },
+};
 /* The rig keeps its boom out of the rocks, so it is given them. */
 const ROCKS: Vec3[] = [
   [6, 0.8, 3],
@@ -74,39 +76,42 @@ The colliders it is built with keep its boom out of walls and rocks.
 ```drs sample=cinematic/director.drs#direct
 // A take-off cuts at once, across the line of travel and low, the shot that sells a gap; a landing
 // cuts to an orbit round it. Otherwise a shot holds its time, the tower is framed when the buggy
-// passes it, and a long shot gives way to the next in turn.
-fn direct(director: mut Director, cam: Camera, airborne: bool, nearTower: bool) -> i32 {
+// passes it, and a long shot gives way to the next in turn. Answers the shot to cut to, or `none`
+// to hold the one on screen.
+fn direct(director: mut Director, cam: Camera, airborne: bool, nearTower: bool) -> Shot? {
     let age = camera.shotAge(cam)
     var want = director.shot
     if airborne && !director.flying {
-        want = LOW_WIDE
+        want = Shot.LowWide
     } else if !airborne && director.flying {
-        want = ORBIT
+        want = Shot.Orbit
     } else if age < director.least {
         want = director.shot
-    } else if nearTower && director.shot != LOOK_AT {
-        want = LOOK_AT
+    } else if nearTower && director.shot != Shot.LookAt {
+        want = Shot.LookAt
     } else if age > director.most {
         want = next(director.shot)
     }
     director.flying = airborne
     if want == director.shot {
-        return -1
+        return none
     }
     director.shot = want
     director.cuts += 1
-    return want
+    return some(want)
 }
 ```
 
 `drift/camera` gives a script `shotAge`, how long the current shot has held, and `snap`. A script
-cannot build a shot's record, so `cut` is not bound: the page keeps the shots in a list, the
-director answers with a place in it, and the page makes the cut.
+cannot build a shot's record, so `cut` is not bound: the page keeps each shot's record under the
+name of a variant of the director's `Shot` enum, the director answers with the variant to cut to,
+and the page makes the cut.
 
 ```ts sample=cinematic/main.ts#director
 const script = hostScript(directorScript);
+/* A variant reaches the page as `{ tag }`, and an option as `{ tag: 'some', value }` or `none`. */
 interface Director {
-  shot: number;
+  shot: { tag: ShotName };
   cuts: number;
 }
 const director = exported<() => Director>(script, 'createDirector')();
@@ -115,7 +120,7 @@ type Direct = (
   camera: CinematicCamera,
   airborne: boolean,
   nearTower: boolean,
-) => number;
+) => { tag: 'none' } | { tag: 'some'; value: { tag: ShotName } };
 if (import.meta.hot) {
   import.meta.hot.accept('./director.drs', (next) => {
     if (next !== undefined) {
@@ -129,7 +134,7 @@ if (import.meta.hot) {
 caption = '';
 if (mode === 'director') {
   const shot = exported<Direct>(script, 'direct')(director, rig, airborne, nearTower);
-  if (shot >= 0) rig.cut(SHOTS[shot] as ShotParams, rigClock);
+  if (shot.tag === 'some') rig.cut(SHOTS[shot.value.tag], rigClock);
 } else if (mode === 'timeline') {
   player.update(dt);
   if (player.shotChanged && player.shot !== null) rig.cut(player.shot, rigClock);

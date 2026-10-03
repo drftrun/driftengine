@@ -2,7 +2,7 @@
 title: Patterns
 description: How the examples split work between the page and its scripts, from a record the page owns to a rule that decides and systems over components.
 packages: ['@driftengine/script']
-plain: ['Director', 'Lamp', 'Autosave', 'Store', 'Actions']
+plain: ['Director', 'Lamp', 'Autosave', 'Store', 'Actions', 'Shot']
 ---
 
 # Patterns
@@ -18,8 +18,8 @@ pick the shape before writing the first rule.
 // headset taken off ends the session, and the lamp goes out with it.
 fn light(lamp: mut Lamp, dt: f32) {
     var want: f32 = 0
-    if xr.presenting() && xr.holding("right") {
-        want = xr.trigger("right")
+    if xr.presenting() && xr.holding(Hand.Right) {
+        want = xr.trigger(Hand.Right)
     }
     lamp.level = lamp.level + (want - lamp.level) * math.min(1, lamp.ease * dt)
 }
@@ -40,34 +40,36 @@ a field in a save, the live one gains it too, with its declared default.
 ```drs sample=cinematic/director.drs#direct
 // A take-off cuts at once, across the line of travel and low, the shot that sells a gap; a landing
 // cuts to an orbit round it. Otherwise a shot holds its time, the tower is framed when the buggy
-// passes it, and a long shot gives way to the next in turn.
-fn direct(director: mut Director, cam: Camera, airborne: bool, nearTower: bool) -> i32 {
+// passes it, and a long shot gives way to the next in turn. Answers the shot to cut to, or `none`
+// to hold the one on screen.
+fn direct(director: mut Director, cam: Camera, airborne: bool, nearTower: bool) -> Shot? {
     let age = camera.shotAge(cam)
     var want = director.shot
     if airborne && !director.flying {
-        want = LOW_WIDE
+        want = Shot.LowWide
     } else if !airborne && director.flying {
-        want = ORBIT
+        want = Shot.Orbit
     } else if age < director.least {
         want = director.shot
-    } else if nearTower && director.shot != LOOK_AT {
-        want = LOOK_AT
+    } else if nearTower && director.shot != Shot.LookAt {
+        want = Shot.LookAt
     } else if age > director.most {
         want = next(director.shot)
     }
     director.flying = airborne
     if want == director.shot {
-        return -1
+        return none
     }
     director.shot = want
     director.cuts += 1
-    return want
+    return some(want)
 }
 ```
 
-The cinematic example's director decides which shot the camera cuts to and when. It returns a
-number, the index of a shot in a list the page holds, or `-1` to stay on the current one, and the
-page makes the cut with the camera rig it owns. The script never moves the camera. It reads one
+The cinematic example's director decides which shot the camera cuts to and when. It answers a
+`Shot?`: `some` of the shot to cut to, a variant of its own `Shot` enum, or `none` to stay on the
+current one. The page holds a record for each variant and makes the cut with the camera rig it
+owns. The script never moves the camera. It reads one
 fact from it, `camera.shotAge(cam)`, through the rig the page passed in, and answers a question.
 
 This is the shape for anything with taste in it: which animation to blend to, which line a character
@@ -76,8 +78,9 @@ script. The doing needs the engine's objects, so it stays in the page:
 
 ```ts sample=cinematic/main.ts#director
 const script = hostScript(directorScript);
+/* A variant reaches the page as `{ tag }`, and an option as `{ tag: 'some', value }` or `none`. */
 interface Director {
-  shot: number;
+  shot: { tag: ShotName };
   cuts: number;
 }
 const director = exported<() => Director>(script, 'createDirector')();
@@ -86,7 +89,7 @@ type Direct = (
   camera: CinematicCamera,
   airborne: boolean,
   nearTower: boolean,
-) => number;
+) => { tag: 'none' } | { tag: 'some'; value: { tag: ShotName } };
 if (import.meta.hot) {
   import.meta.hot.accept('./director.drs', (next) => {
     if (next !== undefined) {
@@ -161,7 +164,7 @@ system Hunt {
                 continue
             }
             var best = frog.Frog.reach * frog.Frog.reach
-            frog.Frog.aiming = false
+            frog.Frog.target = none
             for fly in query<Fly, Position>() {
                 let dx = fly.Position.x - frog.Position.x
                 let dy = fly.Position.y - frog.Position.y
@@ -169,8 +172,7 @@ system Hunt {
                 let distance = dx * dx + dy * dy + dz * dz
                 if distance < best {
                     best = distance
-                    frog.Frog.aiming = true
-                    frog.Frog.target = fly
+                    frog.Frog.target = some(fly)
                 }
             }
         }

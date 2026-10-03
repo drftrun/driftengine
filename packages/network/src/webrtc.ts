@@ -36,13 +36,15 @@ import {
   type PeerId,
   type Transport,
   type TransportState,
+  sendable,
 } from './transport.ts';
 
 /** What an `RTCDataChannel` satisfies. Declared rather than imported; see `websocket.ts`. */
 export interface DataChannelLike {
   readonly readyState: string;
   binaryType?: string;
-  send(data: ArrayBufferView | ArrayBuffer): void;
+  /** An `ArrayBuffer`'s view, as for a socket: see `SocketLike.send`. */
+  send(data: ArrayBufferView<ArrayBuffer> | ArrayBuffer): void;
   close(): void;
   addEventListener(type: string, listener: (event: unknown) => void): void;
 }
@@ -116,7 +118,7 @@ export class WebRtcTransport implements Transport {
 
   send(_to: PeerId, message: Uint8Array): void {
     if (this.state !== 'open') return;
-    this.channel.send(message);
+    this.channel.send(sendable(message));
   }
 
   drain(into: MessageSink): void {

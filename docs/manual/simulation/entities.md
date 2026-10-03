@@ -44,12 +44,11 @@ component Fly {
     turns: u32 = 0
 }
 
-// A frog: how far its tongue reaches, whether it has its eye on a fly and which, how many it has
-// caught, how long before it can catch again, and how long its tongue stays out and where it went.
+// A frog: how far its tongue reaches, the fly it has its eye on if any, how many it has caught,
+// how long before it can catch again, and how long its tongue stays out and where it went.
 component Frog {
     reach: f32 = 2.5
-    aiming: bool = false
-    target: Entity
+    target: Entity?
     caught: u32 = 0
     resting: f32 = 0
     tongue: f32 = 0
@@ -72,9 +71,9 @@ lives. A store is a sparse set, so adding a component to an entity, taking it aw
 everything that has it all cost the same whoever else is in the world. A component with no data
 of its own, a marker, narrows a query by a fact, not by a value.
 
-An optional field, `T?`, keeps its absence in a column beside its value. The frogs keep their own
-`aiming` flag beside a plain `Entity` instead, because a script cannot yet write an optional field
-from inside a query loop.
+An optional field, `T?`, keeps its absence in a column beside its value, and reads and writes as an
+option from a script, in a query loop or through a handle. A frog's `target` is an `Entity?`: `none`
+while it has no fly in its eye, `some(fly)` once it has, and `if let` reads it back.
 
 ## Prefabs
 
@@ -136,7 +135,7 @@ system Hunt {
                 continue
             }
             var best = frog.Frog.reach * frog.Frog.reach
-            frog.Frog.aiming = false
+            frog.Frog.target = none
             for fly in query<Fly, Position>() {
                 let dx = fly.Position.x - frog.Position.x
                 let dy = fly.Position.y - frog.Position.y
@@ -144,8 +143,7 @@ system Hunt {
                 let distance = dx * dx + dy * dy + dz * dz
                 if distance < best {
                     best = distance
-                    frog.Frog.aiming = true
-                    frog.Frog.target = fly
+                    frog.Frog.target = some(fly)
                 }
             }
         }
@@ -169,8 +167,7 @@ system Catch {
         for frog in query<Frog, Position>() {
             frog.Frog.tongue = math.max(frog.Frog.tongue - 1 / 60, 0)
             frog.Frog.resting = math.max(frog.Frog.resting - 1 / 60, 0)
-            if frog.Frog.aiming {
-                let fly = frog.Frog.target
+            if let fly = frog.Frog.target {
                 if ecs.alive(world, fly) {
                     frog.Frog.tongueX = fly.Position.x
                     frog.Frog.tongueY = fly.Position.y
@@ -180,7 +177,7 @@ system Catch {
                     frog.Frog.caught = frog.Frog.caught + 1
                     ecs.destroy(world, fly)
                 }
-                frog.Frog.aiming = false
+                frog.Frog.target = none
             }
         }
     }
@@ -261,7 +258,9 @@ objects: a component type per `component`, registered by name, a `Prefab` per `p
 `SystemDefinition` per `system`. `bindModule` is handed the same registry and the prefabs by name,
 which is how `ecs` resolves the names a script writes. `buildSchedule(systems)` orders the systems
 and `runSchedule(world, schedule, tick)` runs one fixed step of them; the tick decides which
-strided systems are due.
+strided systems are due. A system that throws is skipped and the rest still run. The failure is
+logged once per system, or handed every time to a reporter passed as a fourth argument, which gets
+the system's name, the tick and the error and can throw to stop the schedule there.
 
 A reload keeps the registry, so every store, and with it every entity's components, survives an
 edit. The module is patched, registered again for any new component or system, and the schedule is

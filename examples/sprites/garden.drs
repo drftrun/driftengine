@@ -9,16 +9,28 @@ import { axisX, axisY } from "drift/input"
 import { abs, floor } from "std/math"
 
 // The way the gardener faces, which picks its row of steps on the sheet.
-let DOWN: i32 = 0
-let UP: i32 = 1
-let LEFT: i32 = 2
-let RIGHT: i32 = 3
+enum Facing {
+    Down
+    Up
+    Left
+    Right
+}
+
+// Where a way of facing starts on the sheet: two steps a row, from `down0`.
+fn row(facing: Facing) -> i32 {
+    return match facing {
+        Down => 0
+        Up => 2
+        Left => 4
+        Right => 6
+    }
+}
 
 data Gardener {
     // Where its feet are, in tiles, and the world's y is up.
     x: f32 = 24.5
     y: f32 = 17.5
-    facing: i32 = 0
+    facing: Facing = Facing.Down
     // How far it has walked, which picks the step.
     stride: f32 = 0
     speed: f32 = 4
@@ -33,14 +45,14 @@ fn walk(g: mut Gardener, actions: Actions, map: Tilemap, sheet: SpriteSheet, dt:
     let dy = -input.axisY(actions, "move")
     if math.abs(dx) > math.abs(dy) {
         if dx > 0 {
-            g.facing = RIGHT
+            g.facing = Facing.Right
         } else {
-            g.facing = LEFT
+            g.facing = Facing.Left
         }
     } else if dy > 0 {
-        g.facing = UP
+        g.facing = Facing.Up
     } else if dy < 0 {
-        g.facing = DOWN
+        g.facing = Facing.Down
     }
     let nx = g.x + dx * g.speed * dt
     let ny = g.y + dy * g.speed * dt
@@ -89,6 +101,6 @@ fn draw(g: Gardener, batch: SpriteBatch, map: Tilemap, sheet: SpriteSheet, viewX
         step = 1
     }
     let first = sprites.named(sheet, "down0")
-    sprites.frame(batch, sheet, first + g.facing * 2 + step, g.x - 0.5, g.y - 0.15, 1, 1)
+    sprites.frame(batch, sheet, first + row(g.facing) + step, g.x - 0.5, g.y - 0.15, 1, 1)
 }
 // #endregion
