@@ -27,7 +27,7 @@ A rule needs three things that TypeScript in a browser does not give it.
 **Changing it while the game runs.** Saving a `.drs` file replaces its functions in the running
 page, and the records the game keeps its state in stay as they were: the player is where they were,
 the clock reads what it read. Most of what makes a game feel right is found by playing it. A jump
-that floats too long, an enemy that gives up too soon, a round a few seconds too short: each is
+that floats too long, an enemy that gives up too early, a round a few seconds too short: each is
 changed by saving the file with the game still going. The same change in TypeScript reloads the
 page and starts the game again.
 
