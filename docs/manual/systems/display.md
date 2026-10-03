@@ -32,7 +32,8 @@ const files: FileDialogs = new BrowserFileDialogs();
 
 Four capabilities, each an interface with a browser implementation beside it. A desktop shell
 passes its own, and a game written against the interfaces runs in both without asking which it is
-in:
+in. A packaged game takes all of them from `createHost`, which
+[Packaging an application](packaging.md) covers:
 
 | Capability           | What it answers                                                                            |
 | -------------------- | ------------------------------------------------------------------------------------------ |

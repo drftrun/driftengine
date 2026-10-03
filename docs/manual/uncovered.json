@@ -1,6 +1,5 @@
 {
   "capabilities": [
-    "Packaging",
     "Graph canvas",
     "Material graphs",
     "Particle graphs",
@@ -16,11 +15,6 @@
     "The editor opens",
     "The script editor"
   ],
-  "packages": [
-    "@driftengine/editor",
-    "@driftengine/native-host",
-    "@driftengine/package",
-    "@driftengine/tools"
-  ],
-  "areas": ["dev", "editor", "package", "tools"]
+  "packages": ["@driftengine/editor", "@driftengine/tools"],
+  "areas": ["dev", "editor", "tools"]
 }
