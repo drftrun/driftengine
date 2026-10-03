@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tools · DriftEngine example</title>
+    <link rel="stylesheet" href="../common/examples.css" />
+    <style>
+      /* The overlay's own canvas, over the stage. Events go to the page, which routes them. */
+      #tools {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      /* Core's frame meter, which makes its own element. */
+      #fps-meter {
+        position: fixed;
+        top: 52px;
+        right: 14px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: #00000080;
+        font:
+          12px ui-monospace,
+          monospace;
+        color: #c9cdd6;
+      }
+      #fps-meter.over-budget {
+        color: #e3a46c;
+      }
+      #hint {
+        position: fixed;
+        top: 52px;
+        left: 14px;
+        margin: 0;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: #00000080;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <canvas id="tools"></canvas>
+    <p id="backend">starting…</p>
+    <a id="home" href="../">← all examples</a>
+    <p id="hint">F3 tools · Tab next ball · [ ] bounce · Ctrl+Z undo · R drop</p>
+    <nav id="controls"></nav>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

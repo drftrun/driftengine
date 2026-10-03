@@ -48,6 +48,73 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### The tools console keeps a scroll position that nothing draws
+
+**Filed 2026-10-03, against 4.8.0.** `consolePanel.build` sets `view.scrollY` to follow the newest
+entry, and `route` moves it on a wheel and hit-tests a click with it, but nothing copies it to the
+panel's root node, which is what the overlay lays out. `@driftengine/ui2d` already offsets a node's
+content by its own `scrollY`, so the overlay draws the list from the top: the oldest lines a ring
+holds, with the newest clipped away. In the tools example with a 200-entry ring, the console showed
+the first fifteen lines nine seconds in and none of the later ones. A wheel moves nothing on screen,
+and a click on the row under the pointer picks the entry `scrollY / rowHeight` rows further down.
+`viewHeight` defaults to 200 and nothing sets it from the panel's real height, so the follow is
+computed against the wrong window too. A wheel answers no command, so `overlay.route` returns
+false and the page scrolls as well.
+
+**What it would take**: `build` writing `root.scrollY = view.scrollY` and taking `viewHeight` from
+the root's rect, and the overlay taking a wheel over a panel whether or not the panel returned a
+command. Until then a page keeps a ring no longer than the console shows, as the tools example
+does with five.
+
+### The overlay's Ctrl+Shift+Z never redoes
+
+**Filed 2026-10-03, against 4.8.0.** `overlay.route` redoes on `ctrl` and `shift` with
+`event.key === 'z'`, and `keyEvent` passes the browser's key through as it is. A browser reports
+that chord's key as `'Z'`, so the comparison never matches. Measured on the tools example: one
+`]`, then Ctrl+Z, then Ctrl+Shift+Z sent with the key `'Z'` left the bounce at 0.55, and Ctrl+Y then
+took it to 0.60. Comparing the key without regard to case in `route` closes it; until then Ctrl+Y is
+the redo that works.
+
+### A lockstep session cannot be handed to the network panel's helpers
+
+**Filed 2026-10-03, against 4.8.0.** `observeSession` and `sessionReadout` take a `SessionLike`,
+which asks for `loop: { depth }`, and `LockstepSession` keeps its `loop` private, so passing a
+session fails to compile: "Property 'loop' is private in type 'LockstepSession' but not in type
+'SessionLike'". The package README says the two turn a lockstep session into a readout. A game
+builds the shape itself from the session's public fields and the `RewindLoop` it made, as the tools
+snippet does. A public `rewindDepth` on the session, with `SessionLike` asking for that, would let a
+session be passed as it is.
+
+### The inspector shows a component's fields and edits none of them
+
+**Filed 2026-10-03, against 4.8.0.** `inspectorPanel.route` returns `null`, with a comment that the
+field widgets come later, so a row can be read and never changed from the overlay. A game edits
+through `setFieldCommand` and pushes the command onto `overlay.undo` itself, which is what the tools
+example's bracket keys do, and that edit is undoable. The package README says "an in-game edit is
+undoable" over an example that routes an event through `inspectorPanel.route`, which always answers
+`null`, and that calls `createInspectorView({})`, which does not compile, since `selection` is
+required. The README wants that example replaced with the `setFieldCommand` route at the next
+release; the widgets are the larger piece.
+
+### The inspector prints an `f32` field's storage noise
+
+**Filed 2026-10-03, against 4.8.0.** `rowText` formats a value with `String`, and a component's
+`f32` field comes back from its `Float32Array` as the nearest double, so a bounce of 0.55 reads
+`0.550000011920929` and a resting height `0.3499999940395355`. The digits past the seventh are the
+storage, not the value anybody wrote. The shortest decimal that rounds back to the same `f32` is
+the honest text: `toPrecision(p)` for the smallest `p` where `Math.fround` of the result equals the
+stored value, which is `0.55` and `0.35` for those two. A row knows its kind, so an `f64` field
+keeps `String`.
+
+### The overlay paints no panel background and no panel title
+
+**Filed 2026-10-03, against 4.8.0.** `paintOverlay` paints a node's background and its text, and
+`createPanelRoot` makes a root with no background, so over a bright scene the panels are white text
+on whatever is behind them. Every panel has a `title` and nothing draws it, so a reader is left to
+tell the inspector from the profiler by what their rows say. The tools example lays a backdrop
+under each panel from `overlay.sites()` before it paints. A background on the panel root and a
+title row the overlay adds above each panel's content would make that unnecessary.
+
 ### A recording given a suspended mix keeps half a second of picture, and says nothing
 
 **Filed 2026-10-03, against 4.8.0.** `FrameRecorder` takes `audio` as a `MediaStream`, and

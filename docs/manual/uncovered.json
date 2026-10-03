@@ -8,13 +8,12 @@
     "The rollback scrubber",
     "Editing during play",
     "Divergence analysis",
-    "In-game tools",
     "What the scrubber cost",
     "Shared WGSL",
     "Gizmo drags as commands",
     "The editor opens",
     "The script editor"
   ],
-  "packages": ["@driftengine/editor", "@driftengine/tools"],
-  "areas": ["dev", "editor", "tools"]
+  "packages": ["@driftengine/editor"],
+  "areas": ["editor"]
 }

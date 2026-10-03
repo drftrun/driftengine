@@ -1,0 +1,47 @@
+// Six balls dropped on a floor, each losing a share of its speed at every bounce until it rests.
+// The tools overlay reads them as entities: the inspector shows a ball's fields, and an edit made
+// through it can be undone.
+//
+// Under `npm run examples`, change a rule and save: the balls keep where they are and bounce by
+// the new rule. Try a lighter gravity, a floor that gives more back, or balls that never rest.
+
+// #region components
+component Ball {
+    y: f32 = 3
+    vy: f32 = 0
+    // The share of its speed a ball keeps at each bounce.
+    bounce: f32 = 0.75
+    // How hard it last hit the floor, in metres a second, and how many times it has.
+    impact: f32 = 0
+    hits: u32 = 0
+}
+// #endregion
+
+// #region rules
+let GRAVITY: f32 = 9.81
+let FLOOR: f32 = 0.35
+// Slower than this at the floor and a ball stops bouncing.
+let REST: f32 = 0.4
+
+system Fall {
+    writes Ball
+
+    update {
+        for e in query<Ball>() {
+            e.Ball.vy = e.Ball.vy - GRAVITY / 60
+            e.Ball.y = e.Ball.y + e.Ball.vy / 60
+            if e.Ball.y < FLOOR {
+                e.Ball.y = FLOOR
+                let speed = 0 - e.Ball.vy
+                if speed > REST {
+                    e.Ball.impact = speed
+                    e.Ball.hits = e.Ball.hits + 1
+                    e.Ball.vy = speed * e.Ball.bounce
+                } else {
+                    e.Ball.vy = 0
+                }
+            }
+        }
+    }
+}
+// #endregion

@@ -117,8 +117,14 @@
     {
       "id": "systems",
       "title": "Systems",
-      "blurb": "What a game keeps between sessions and shares between players: saves and preferences, read back across a change to the game.",
+      "blurb": "What a game keeps, shares and ships: saves and preferences, networking and rollback, recorded clips, the window and the host, and packaged applications.",
       "pages": ["saves", "networking", "recording", "display", "packaging"]
+    },
+    {
+      "id": "tools",
+      "title": "Tools",
+      "blurb": "Looking inside a running game: the panels a shipped build can carry, and the instruments beside them.",
+      "pages": ["in-game-tools"]
     }
   ]
 }
