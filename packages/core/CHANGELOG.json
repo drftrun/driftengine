@@ -1,5 +1,21 @@
 [
   {
+    "version": "4.8.1",
+    "date": "2026-10-03",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A character controller is stopped by a beam at head height, and a capsule meets a box that only its middle or its top would touch, where it passed through.",
+        "text": "Two defects in the narrow phase, which together let a standing 1.8 m capsule walk through a beam from 1.4 to 1.7 m. A capsule against a box was measured from the two balls at the ends of its segment only, so a slab across its middle, which neither ball reaches, was not there at all; the closest point inside the segment is now found wherever the ends are not the answer, which costs nothing for a capsule standing on a floor or lying on a face. And `shapecast` advanced by the first contact's separation, which for a capsule is its lower end, so a box that only the upper end would meet was never reached. It now advances by the nearest contact. `overlap` and the solver's contacts gain the interior point too, so a capsule body lying across a rail rests on it."
+      },
+      {
+        "kind": "fixed",
+        "short": "A character climbs any step up to its step height, where a rise nearly as tall as its radius stopped it at the edge.",
+        "text": "The forward part of a step is what is left of the tick's move when the body meets the step, and that can be millimetres. With a 0.32 m radius and a 0.35 m step height, a 0.25 m rise climbed and a 0.28 m one did not: the foot came down on the step's edge, a contact too steep to stand on, slid back off, and never tried again. A step that lands on an edge now carries the body over it, so the foot comes down on the top, which moves it up to one radius further in that tick than it was going to. `shapecast` also closes on a surface it approaches at a shallow angle, where its fixed number of advances ran out first and it reported nothing there: it now advances by how fast the two close along the normal that separates them, not by the whole travel."
+      }
+    ]
+  },
+  {
     "version": "4.8.0",
     "date": "2026-10-03",
     "entries": [

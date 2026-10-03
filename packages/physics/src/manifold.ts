@@ -207,6 +207,76 @@ function roundRound(a: ConvexShape, b: ConvexShape, margin: number, out: Manifol
 
 /* ---------- sphere or capsule against a polytope ---------- */
 
+/** Where along a capsule's segment the search settles: 0.618 to the 30th of 1.2 m is under a micron. */
+const SEGMENT_STEPS = 30;
+const INV_PHI = 0.6180339887498949;
+/** Each end's direction away from the polytope, and its separation, read by the segment search. */
+const END_DIR = new Float64Array(9);
+const END_SEP = new Float64Array(2);
+/** The manifold being filled by `roundPolytope`, kept here so adding a contact allocates nothing. */
+const ROUND = { count: 0, bestSep: Infinity, nx: 0, ny: 1, nz: 0, margin: 0, flipped: false };
+
+/** Add the contact `CLOSEST` and `END_DIR[slot]` describe, at `separation`, as `feature`. */
+function emitRound(out: Manifold, slot: number, separation: number, feature: number): void {
+  if (separation > ROUND.margin || ROUND.count >= MAX_CONTACTS) return;
+  // Normal points from the round shape toward the polytope, then flipped if A was the polytope.
+  const ux = END_DIR[slot * 3] ?? 0;
+  const uy = END_DIR[slot * 3 + 1] ?? 0;
+  const uz = END_DIR[slot * 3 + 2] ?? 0;
+  if (separation < ROUND.bestSep) {
+    ROUND.bestSep = separation;
+    ROUND.nx = ROUND.flipped ? ux : -ux;
+    ROUND.ny = ROUND.flipped ? uy : -uy;
+    ROUND.nz = ROUND.flipped ? uz : -uz;
+  }
+  const at = ROUND.count * 3;
+  out.points[at] = CLOSEST[0];
+  out.points[at + 1] = CLOSEST[1];
+  out.points[at + 2] = CLOSEST[2];
+  out.separations[ROUND.count] = separation;
+  out.featureIds[ROUND.count] = feature;
+  ROUND.count++;
+}
+
+/**
+ * The signed distance from a point to the polytope, with the direction away from it left in
+ * `END_DIR[slot]`: positive outside, the deepest face's plane distance inside.
+ */
+function signedDistance(
+  poly: ConvexShape,
+  polyWorld: Float32Array,
+  faces: number,
+  px: number,
+  py: number,
+  pz: number,
+  slot: number,
+): number {
+  closestOnPolytope(poly, polyWorld, planesB, faces, px, py, pz);
+  let ux = px - CLOSEST[0];
+  let uy = py - CLOSEST[1];
+  let uz = pz - CLOSEST[2];
+  let d = Math.sqrt(ux * ux + uy * uy + uz * uz);
+  if (CLOSEST[6] < 0) {
+    // Inside: the closest face's outward normal is the direction, and depth is its plane distance.
+    ux = CLOSEST[3];
+    uy = CLOSEST[4];
+    uz = CLOSEST[5];
+    d = CLOSEST[6];
+  } else if (d === 0) {
+    ux = CLOSEST[3];
+    uy = CLOSEST[4];
+    uz = CLOSEST[5];
+  } else {
+    ux /= d;
+    uy /= d;
+    uz /= d;
+  }
+  END_DIR[slot * 3] = ux;
+  END_DIR[slot * 3 + 1] = uy;
+  END_DIR[slot * 3 + 2] = uz;
+  return d;
+}
+
 function roundPolytope(
   round: ConvexShape,
   poly: ConvexShape,
@@ -222,63 +292,92 @@ function roundPolytope(
 
   const points = round.vertices.length / 3;
   const faces = faceCount(poly);
-  let count = 0;
-  let bestSep = Infinity;
-  let nx = 0;
-  let ny = 1;
-  let nz = 0;
+  const radii = round.radius + poly.radius;
+  ROUND.count = 0;
+  ROUND.bestSep = Infinity;
+  ROUND.nx = 0;
+  ROUND.ny = 1;
+  ROUND.nz = 0;
+  ROUND.margin = margin;
+  ROUND.flipped = flipped;
 
-  for (let p = 0; p < points; p++) {
-    const px = roundWorld[p * 3] ?? 0;
-    const py = roundWorld[p * 3 + 1] ?? 0;
-    const pz = roundWorld[p * 3 + 2] ?? 0;
-    closestOnPolytope(poly, polyWorld, planesB, faces, px, py, pz);
-    let ux = px - CLOSEST[0];
-    let uy = py - CLOSEST[1];
-    let uz = pz - CLOSEST[2];
-    let d = Math.sqrt(ux * ux + uy * uy + uz * uz);
-    if (CLOSEST[6] < 0) {
-      // Inside: the closest face's outward normal is the direction, and depth is its plane distance.
-      ux = CLOSEST[3];
-      uy = CLOSEST[4];
-      uz = CLOSEST[5];
-      d = CLOSEST[6];
-    } else if (d === 0) {
-      ux = CLOSEST[3];
-      uy = CLOSEST[4];
-      uz = CLOSEST[5];
-    } else {
-      ux /= d;
-      uy /= d;
-      uz /= d;
-    }
-    const separation = d - round.radius - poly.radius;
-    if (separation > margin) continue;
-    if (count >= MAX_CONTACTS) break;
-    // Normal points from the round shape toward the polytope, then flipped if A was the polytope.
-    const sx = flipped ? ux : -ux;
-    const sy = flipped ? uy : -uy;
-    const sz = flipped ? uz : -uz;
-    if (separation < bestSep) {
-      bestSep = separation;
-      nx = sx;
-      ny = sy;
-      nz = sz;
-    }
-    const at = count * 3;
-    out.points[at] = CLOSEST[0];
-    out.points[at + 1] = CLOSEST[1];
-    out.points[at + 2] = CLOSEST[2];
-    out.separations[count] = separation;
+  for (let p = 0; p < points && p < 2; p++) {
+    const separation =
+      signedDistance(
+        poly,
+        polyWorld,
+        faces,
+        roundWorld[p * 3] ?? 0,
+        roundWorld[p * 3 + 1] ?? 0,
+        roundWorld[p * 3 + 2] ?? 0,
+        p,
+      ) - radii;
+    END_SEP[p] = separation;
     // The endpoint that produced it, which is stable while the capsule keeps its orientation.
-    out.featureIds[count] = 0x40000000 | p;
-    count++;
+    emitRound(out, p, separation, 0x40000000 | p);
   }
-  if (count === 0) return false;
-  out.nx = nx;
-  out.ny = ny;
-  out.nz = nz;
-  out.count = count;
+
+  /*
+   * **A capsule is a segment, and its middle can be the part that touches.** This used to ask only
+   * its two ends, which is exact for a ball and for a capsule lying on a face, and wrong wherever the
+   * segment crosses an edge: a standing capsule walked through a slab across its waist, because
+   * neither end ball came within reach of it, and a capsule lying across a rail fell through it.
+   *
+   * The distance from a point on the segment to a convex polytope is convex along the segment, so
+   * its least value is at an end exactly when the slope there points away from the other end. Each
+   * end's direction away from the polytope is that slope, so a capsule whose ends are the answer, as
+   * one standing on a floor always is, costs nothing more. Otherwise a fixed number of golden-section
+   * steps finds the interior point, and it is kept only where it is nearer than both ends.
+   */
+  if (points === 2) {
+    const ax = roundWorld[0] ?? 0;
+    const ay = roundWorld[1] ?? 0;
+    const az = roundWorld[2] ?? 0;
+    const sx = (roundWorld[3] ?? 0) - ax;
+    const sy = (roundWorld[4] ?? 0) - ay;
+    const sz = (roundWorld[5] ?? 0) - az;
+    const leavesFirst = sx * (END_DIR[0] ?? 0) + sy * (END_DIR[1] ?? 0) + sz * (END_DIR[2] ?? 0);
+    const leavesSecond = -(
+      sx * (END_DIR[3] ?? 0) +
+      sy * (END_DIR[4] ?? 0) +
+      sz * (END_DIR[5] ?? 0)
+    );
+    if (leavesFirst < 0 && leavesSecond < 0) {
+      let lo = 0;
+      let hi = 1;
+      let m1 = hi - (hi - lo) * INV_PHI;
+      let m2 = lo + (hi - lo) * INV_PHI;
+      let f1 = signedDistance(poly, polyWorld, faces, ax + sx * m1, ay + sy * m1, az + sz * m1, 2);
+      let f2 = signedDistance(poly, polyWorld, faces, ax + sx * m2, ay + sy * m2, az + sz * m2, 2);
+      for (let step = 0; step < SEGMENT_STEPS; step++) {
+        if (f1 <= f2) {
+          hi = m2;
+          m2 = m1;
+          f2 = f1;
+          m1 = hi - (hi - lo) * INV_PHI;
+          f1 = signedDistance(poly, polyWorld, faces, ax + sx * m1, ay + sy * m1, az + sz * m1, 2);
+        } else {
+          lo = m1;
+          m1 = m2;
+          f1 = f2;
+          m2 = lo + (hi - lo) * INV_PHI;
+          f2 = signedDistance(poly, polyWorld, faces, ax + sx * m2, ay + sy * m2, az + sz * m2, 2);
+        }
+      }
+      const at = (lo + hi) / 2;
+      const separation =
+        signedDistance(poly, polyWorld, faces, ax + sx * at, ay + sy * at, az + sz * at, 2) - radii;
+      if (separation < Math.min(END_SEP[0] ?? Infinity, END_SEP[1] ?? Infinity) - 1e-7) {
+        emitRound(out, 2, separation, 0x40000000 | 2);
+      }
+    }
+  }
+
+  if (ROUND.count === 0) return false;
+  out.nx = ROUND.nx;
+  out.ny = ROUND.ny;
+  out.nz = ROUND.nz;
+  out.count = ROUND.count;
   return true;
 }
 

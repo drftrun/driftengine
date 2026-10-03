@@ -858,7 +858,14 @@ export function shapecastWorld(
         if (chosen === undefined) break;
         copyManifold(chosen, manifold);
       } else if (!collideShapes(shape, poseA, other, poseB, 1e9, manifold)) break;
-      const gap = manifold.separations[0] ?? 0;
+      /*
+       * **The nearest contact, not the first one written.** A capsule's manifold holds a point per
+       * end, and the first is its lower end: reading only that advanced the sweep by the distance
+       * from the lower ball while the upper one was the nearer, so a standing capsule swept clean
+       * through a beam at head height.
+       */
+      let gap = Infinity;
+      for (let c = 0; c < manifold.count; c++) gap = Math.min(gap, manifold.separations[c] ?? gap);
       if (gap < 1e-4) {
         /*
          * A shape already touching a surface it is travelling *along* has not run into it.
@@ -874,7 +881,23 @@ export function shapecastWorld(
         touched = true;
         break;
       }
-      t += gap / travel;
+      /*
+       * **How far the shapes may close along the contact normal, not along the travel.** The
+       * manifold's normal separates the two by `gap`, so they cannot meet before the sweep has
+       * closed that much along it. Dividing by the whole travel was always safe and crawled
+       * wherever the travel grazes the surface: a ball dropping past the lip of a step closes on it
+       * at a sixth of its speed, and twenty-four steps ended before it arrived, so the sweep said
+       * nothing was there. A mesh keeps the old step, since one triangle's normal does not separate
+       * the whole mesh.
+       */
+      if (isMesh(shape) || isMesh(other)) {
+        t += gap / travel;
+      } else {
+        const closing = dx * manifold.nx + dy * manifold.ny + dz * manifold.nz;
+        // Not closing along the normal that separates them, so they never meet on this travel.
+        if (closing <= 1e-12) break;
+        t += gap / closing;
+      }
       if (t > 1) break;
     }
     if (brushing || !touched || t > 1) continue;

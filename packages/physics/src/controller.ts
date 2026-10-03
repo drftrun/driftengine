@@ -170,6 +170,8 @@ const SLIDE_PASSES = 4;
  * own stop margin already leaves a tenth of a millimetre of clearance, which is what a skin was for.
  */
 const SNAP_EPS = 0.001;
+/** How far past a step's edge a step that landed on the edge carries the body's axis. */
+const STEP_OVER = 0.01;
 
 export class CharacterController {
   x = 0;
@@ -603,26 +605,74 @@ export class CharacterController {
     this.z += liftZ;
     this.readPose();
     if (world.shapecast(this.shape, this.pose, flatX, flatY, flatZ, this.stepHit, this.filter)) {
-      this.x = startX;
-      this.y = startY;
-      this.z = startZ;
-      return false;
+      return this.stepBack(startX, startY, startZ);
     }
     this.x += flatX;
     this.y += flatY;
     this.z += flatZ;
     this.readPose();
-    if (world.shapecast(this.shape, this.pose, -liftX, -liftY, -liftZ, this.stepHit, this.filter)) {
-      const drop = this.stepHeight * this.stepHit.fraction - SNAP_EPS;
-      this.x -= this.upX * drop;
-      this.y -= this.upY * drop;
-      this.z -= this.upZ * drop;
-      return true;
+    if (
+      !world.shapecast(this.shape, this.pose, -liftX, -liftY, -liftZ, this.stepHit, this.filter)
+    ) {
+      // Nothing beneath the lifted position, so this was a gap rather than a step.
+      return this.stepBack(startX, startY, startZ);
     }
-    // Nothing beneath the lifted position, so this was a gap rather than a step.
-    this.x = startX;
-    this.y = startY;
-    this.z = startZ;
+    let landing =
+      this.stepHit.nx * this.upX + this.stepHit.ny * this.upY + this.stepHit.nz * this.upZ;
+    if (landing < this.slopeCos) {
+      /*
+       * **Landed on the lip, so go on over it.** The forward part of a step is what was left of
+       * the tick's move when the body met the step, and at a tick's length that can be millimetres:
+       * the foot ball then comes down on the step's edge, a contact far too steep to stand on, and
+       * the body was set there airborne, slid off, and never stepped again. Measured with a 0.32 m
+       * radius and a 0.35 m step height: a 0.25 m rise climbed and a 0.28 m one did not.
+       *
+       * The edge's normal points from the edge at the ball's centre, so its part across up is how
+       * far the axis stands short of the edge. Moving that far again, plus a centimetre, puts the
+       * ball over the step's top, where the drop meets a face. The body moves up to one radius
+       * further in that tick than it was going to, which is the price of a step taken in one tick.
+       */
+      const lipX = this.stepHit.nx - this.upX * landing;
+      const lipY = this.stepHit.ny - this.upY * landing;
+      const lipZ = this.stepHit.nz - this.upZ * landing;
+      const lip = Math.sqrt(lipX * lipX + lipY * lipY + lipZ * lipZ);
+      // An edge behind the move, or beside it, is not one this step was climbing.
+      if (lip < 1e-6 || lipX * flatX + lipY * flatY + lipZ * flatZ >= 0) {
+        return this.stepBack(startX, startY, startZ);
+      }
+      const reach = (this.radius * lip + STEP_OVER) / lip;
+      const overX = -lipX * reach;
+      const overY = -lipY * reach;
+      const overZ = -lipZ * reach;
+      this.readPose();
+      if (world.shapecast(this.shape, this.pose, overX, overY, overZ, this.stepHit, this.filter)) {
+        return this.stepBack(startX, startY, startZ);
+      }
+      this.x += overX;
+      this.y += overY;
+      this.z += overZ;
+      this.readPose();
+      if (
+        !world.shapecast(this.shape, this.pose, -liftX, -liftY, -liftZ, this.stepHit, this.filter)
+      ) {
+        return this.stepBack(startX, startY, startZ);
+      }
+      landing =
+        this.stepHit.nx * this.upX + this.stepHit.ny * this.upY + this.stepHit.nz * this.upZ;
+      if (landing < this.slopeCos) return this.stepBack(startX, startY, startZ);
+    }
+    const drop = this.stepHeight * this.stepHit.fraction - SNAP_EPS;
+    this.x -= this.upX * drop;
+    this.y -= this.upY * drop;
+    this.z -= this.upZ * drop;
+    return true;
+  }
+
+  /** Put the body back where a step began, and say the step was not taken. */
+  private stepBack(x: number, y: number, z: number): false {
+    this.x = x;
+    this.y = y;
+    this.z = z;
     return false;
   }
 

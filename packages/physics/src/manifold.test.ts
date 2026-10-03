@@ -160,6 +160,24 @@ describe('a round shape against a polytope', () => {
     expect(M.count).toBe(1);
   });
 
+  it('finds the middle of a capsule against a slab across it, which neither end reaches', () => {
+    // A standing capsule from y 0.32 to 1.48 along its axis, and a slab 0.3 thick across its middle.
+    expect(
+      collideShapes(
+        capsuleShape(0.32, 0.58),
+        at(0, 0.9, 0),
+        boxShape(1, 0.15, 1),
+        at(0, 0.9, 1.37),
+        0.2,
+        M,
+      ),
+    ).toBe(true);
+    let nearest = Infinity;
+    for (let i = 0; i < M.count; i++) nearest = Math.min(nearest, M.separations[i] ?? Infinity);
+    expect(nearest).toBeCloseTo(0.05, 5);
+    expect(M.nz).toBeCloseTo(1, 5);
+  });
+
   it('reports a sphere fully inside a box as penetrating, not as separate', () => {
     expect(collideShapes(sphereShape(0.2), at(0, 0, 0), boxShape(1, 1, 1), at(0, 0, 0), 0, M)).toBe(
       true,

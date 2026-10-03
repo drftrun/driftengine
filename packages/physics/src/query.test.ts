@@ -235,6 +235,32 @@ describe('shapecast', () => {
     expect(world.shapecast(sphereShape(0.5), at(0, 0.5, 0), 5, 0, 0, hit)).toBe(false);
   });
 
+  it('stops a standing capsule at a beam that only its upper part reaches', () => {
+    const world = new PhysicsWorld({ gravityY: 0 });
+    // A beam from 1.4 to 1.7 m, its near face at z = -1; the capsule stands 1.8 m tall.
+    world.addBody({ type: BODY_STATIC, shape: boxShape(1, 0.15, 1), y: 1.55 });
+    expect(world.shapecast(capsuleShape(0.32, 0.58), at(0, 0.9, -4), 0, 0, 3, hit)).toBe(true);
+    expect(hit.z).toBeCloseTo(-1.32, 4);
+  });
+
+  it('stops a standing capsule at a slab across its waist', () => {
+    const world = new PhysicsWorld({ gravityY: 0 });
+    world.addBody({ type: BODY_STATIC, shape: boxShape(1, 0.15, 1), y: 0.9 });
+    expect(world.shapecast(capsuleShape(0.32, 0.58), at(0, 0.9, -4), 0, 0, 3, hit)).toBe(true);
+    expect(hit.z).toBeCloseTo(-1.32, 4);
+  });
+
+  it('reaches a surface it closes on slowly, past the edge of a step', () => {
+    const world = new PhysicsWorld({ gravityY: 0 });
+    // A step whose edge is at x = 0, y = 0.3, and a ball dropping past it 4 mm inside its radius.
+    world.addBody({ type: BODY_STATIC, shape: boxShape(2, 0.15, 2), x: 2, y: 0.15 });
+    expect(world.shapecast(sphereShape(0.32), at(-0.316, 0.67, 0), 0, -0.35, 0, hit)).toBe(true);
+    // Short of the surface by the sweep's stop margin, stretched by how shallow the approach is.
+    const touching = 0.3 + Math.sqrt(0.32 * 0.32 - 0.316 * 0.316);
+    expect(hit.y).toBeGreaterThanOrEqual(touching);
+    expect(hit.y).toBeCloseTo(touching, 3);
+  });
+
   it('finds nothing on a clear sweep', () => {
     const world = row();
     expect(world.shapecast(sphereShape(0.5), at(-10, 50, 0), 30, 0, 0, hit)).toBe(false);

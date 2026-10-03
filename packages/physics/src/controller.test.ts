@@ -94,6 +94,40 @@ describe('walls and steps', () => {
     expect(c.y).toBeGreaterThan(1.2);
   });
 
+  it('climbs a rise just under its step height whatever is left of the tick at the lip', () => {
+    /*
+     * Whether a step is taken used to depend on how much of the tick's move was left when the body
+     * met it: with only millimetres left, the foot came down on the step's edge and slid back off.
+     * Starting a tick's travel apart in eighths meets the lip with every remainder.
+     */
+    const options = { radius: 0.32, halfHeight: 0.58, stepHeight: 0.35, maxSpeed: 4.6 };
+    const tick = 4.6 * DT;
+    for (let eighth = 0; eighth < 8; eighth++) {
+      const world = ground();
+      world.addBody({ type: BODY_STATIC, shape: boxShape(2, 0.15, 5), x: 9, y: 0.15 });
+      const c = stand(world, options);
+      c.teleport((eighth * tick) / 8, c.y, 0);
+      // The step spans x 7 to 11.
+      drive(world, c, 120, { moveX: 4.6 });
+      expect(c.x).toBeGreaterThan(8);
+      expect(c.y - c.halfHeight - c.radius).toBeCloseTo(0.3, 2);
+      expect(c.state).toBe(GROUNDED);
+    }
+  });
+
+  it('is stopped by a beam at head height, which only the top of the capsule reaches', () => {
+    const world = ground();
+    // A beam from 1.4 to 1.7 m, its near face at x = 4, over a body 1.8 m tall.
+    world.addBody({ type: BODY_STATIC, shape: boxShape(1.4, 0.15, 2), x: 5.4, y: 1.55 });
+    const c = stand(world, { radius: 0.32, halfHeight: 0.58, maxSpeed: 4.6 });
+    drive(world, c, 120, { moveX: 4.6 });
+    expect(c.x).toBeCloseTo(4 - 0.32, 2);
+    // And a body 1.3 m tall walks under it.
+    const low = stand(world, { radius: 0.32, halfHeight: 0.33, maxSpeed: 4.6 });
+    drive(world, low, 120, { moveX: 4.6 });
+    expect(low.x).toBeGreaterThan(7);
+  });
+
   it('is blocked by a step above the limit', () => {
     const world = ground();
     world.addBody({ type: BODY_STATIC, shape: boxShape(2, 1.5, 2), x: 4, y: 1.5 });
