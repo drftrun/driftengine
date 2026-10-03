@@ -125,6 +125,12 @@
       "title": "Tools",
       "blurb": "Looking inside a running game: the panels a shipped build can carry, and the instruments beside them.",
       "pages": ["in-game-tools"]
+    },
+    {
+      "id": "coming-from",
+      "title": "Coming from another engine",
+      "blurb": "For developers who know another web engine: what each of its ideas is called here, with the same code written in both.",
+      "pages": ["threejs", "babylonjs", "playcanvas"]
     }
   ]
 }
