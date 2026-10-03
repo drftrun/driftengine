@@ -48,6 +48,23 @@ the specification, and verify on a tiler.
 
 ## Open
 
+### A recording given a suspended mix keeps half a second of picture, and says nothing
+
+**Filed 2026-10-03, against 4.8.0.** `FrameRecorder` takes `audio` as a `MediaStream`, and
+`AudioGraph.captureStream()` answers one whether or not its context is running. A context made
+before any gesture stays suspended, and its stream's track is live and never carries a sample.
+Recorded through the recording example from a script click, which is not a gesture: the pacer
+reported 120 frames kept at 30.0 a second, and the file held 19 frames covering 0.63 s and no audio
+stream. The same press as a real click, with the context running: 120 frames, 4.0 s, 66 Opus frames.
+A plain canvas recorded the same way with no audio track keeps every frame, so it is the silent
+track that stalls the recorder's muxer.
+
+**What it would take**: `captureStream` answering `null` while the context is not running, or
+`FrameRecorder.start` dropping an audio track that has delivered nothing by the first video frame.
+The first is a one-line change and moves the decision to whoever made the graph; the second covers a
+stream from anywhere. Until then a page passes the mix only when `graph.audible`, as the recording
+example does.
+
 ### `World.add` takes a field name the component does not have, and says nothing
 
 **Filed 2026-10-03.** A store fills every field its schema declares and never looks at the other
@@ -161,20 +178,6 @@ melting and boiling could be raised where a phase-change reaction first runs in 
 it exhausts its reactant, and those are different events to a game; the same question stands for
 the cooking kinds. Until it is decided, the README says which four fire, and a script reads a
 parcel's `phase` or its temperature, as the chemistry example's camp does.
-
-### An optional component field written from a query loop stores NaN
-
-**Filed 2026-10-02, against DriftScript 1.13.0.** A component may declare `target: Entity?`, and
-the store gives it a value column and a `target$present` column, which is how `@driftengine/entities`
-keeps an absence. Inside a query loop the compiler lowers `frog.Frog.target = found` to
-`view.target[i] = found`, where `found` is the runtime's option object: a `Float64Array` stores
-`NaN`, and the presence column is never written. Reading it back with `if let` sees no value either
-way, so a frog that found a fly never knew it. Nothing caught it because nothing writes one: the
-corpus declares `watching: Entity?` and never assigns it, and no test in either repository does.
-
-**The fix is the language's**: lower an option written into a component field to the value column
-and the presence column, and an option read from one to `some` or `none` by the presence. Until then
-a script keeps an absence as a `bool` beside the field, as the entities example's frogs do.
 
 ### `drift/prefab` names its one function `spawn`, and `spawn` is a keyword
 

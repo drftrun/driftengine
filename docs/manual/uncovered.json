@@ -20,10 +20,9 @@
   ],
   "packages": [
     "@driftengine/editor",
-    "@driftengine/media",
     "@driftengine/native-host",
     "@driftengine/package",
     "@driftengine/tools"
   ],
-  "areas": ["ui", "dev", "host", "editor", "media", "package", "tools"]
+  "areas": ["dev", "host", "editor", "package", "tools"]
 }

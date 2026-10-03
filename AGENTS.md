@@ -436,6 +436,7 @@ served by `npm run examples`.
 | WebXR: probing, sessions, controllers and hands          | `examples/xr/`                                                    |
 | Saves, preferences, a remote store, worlds read back     | `examples/saves/`                                                 |
 | Lockstep, rollback, a lossy link, fingerprints           | `examples/netplay/`                                               |
+| Stills, recorded clips, rendered clips with a score      | `examples/recording/`                                             |
 
 `demo/` is not a substitute. Those scenes exist to _prove_ something about the engine — a partition
 that prunes, a pass that contributes, a governor that holds a budget — and the smallest is a thousand
