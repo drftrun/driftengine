@@ -70,6 +70,7 @@ and the page keeps running with the new code.
 | [`xr/`](xr/)                     | A headset across a room: its head, controllers and hand read each frame, a lamp on the trigger.  |
 | [`saves/`](saves/)               | A garden bed that saves to a server that can fail, loads across a change, and keeps preferences. |
 | [`recording/`](recording/)       | A still, a clip recorded as it plays, and one rendered frame by frame with its score.            |
+| [`display/`](display/)           | A video settings screen drawn from what the host says it can do, and why where it cannot.        |
 | [`netplay/`](netplay/)           | Two players in one match over a lossy link, rewinding when a guess was wrong, staying in step.   |
 
 ## Starting a project from `starter/`

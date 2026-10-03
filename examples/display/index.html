@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Display · DriftEngine example</title>
+    <link rel="stylesheet" href="../common/examples.css" />
+    <style>
+      /* A video settings screen: each line is what the host answered, each button what it allows. */
+      #panel {
+        position: fixed;
+        top: 64px;
+        right: 14px;
+        bottom: 84px;
+        width: 260px;
+        overflow-y: auto;
+        padding: 8px 12px;
+        border: 1px solid #2a2d36;
+        border-radius: 10px;
+        background: rgba(22, 24, 30, 0.9);
+        font-size: 12px;
+      }
+      #panel h2 {
+        margin: 8px 0 4px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        color: #8b91a0;
+        text-transform: uppercase;
+      }
+      #panel p {
+        margin: 2px 0;
+      }
+      #panel b {
+        color: #e8eaf0;
+        font-weight: 500;
+      }
+      #panel button {
+        font: inherit;
+        color: #c9cdd6;
+        background: #22252e;
+        border: 1px solid #343845;
+        border-radius: 6px;
+        padding: 2px 8px;
+        margin: 2px 4px 2px 0;
+        cursor: pointer;
+      }
+      #panel button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      #panel .note {
+        color: #e3a46c;
+        min-height: 1.2em;
+      }
+      /* What the platform has taken from each edge, outlined. Nothing shows on a plain window. */
+      #safe-area {
+        position: fixed;
+        pointer-events: none;
+        outline: 1px dashed rgba(240, 164, 55, 0.6);
+        outline-offset: -1px;
+      }
+      @media (max-width: 640px) {
+        #panel {
+          width: 190px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <div id="safe-area"></div>
+    <p id="backend">starting…</p>
+    <a id="home" href="../">← all examples</a>
+    <aside id="panel">
+      <h2>Window</h2>
+      <p>Mode <b id="mode"></b>, <b id="size"></b></p>
+      <button type="button" id="fullscreen">Fullscreen</button>
+      <button type="button" id="smaller">Smaller window</button>
+      <p class="note" id="size-note"></p>
+      <p>Display <b id="displays"></b></p>
+      <h2>Screen</h2>
+      <p>Orientation <b id="orientation"></b>, safe area <b id="insets"></b></p>
+      <button type="button" id="lock-portrait">Portrait</button>
+      <button type="button" id="lock-landscape">Landscape</button>
+      <button type="button" id="lock-free">Free</button>
+      <p class="note" id="lock-note"></p>
+      <button type="button" id="awake">Keep awake</button>
+      <p class="note" id="awake-note"></p>
+      <h2>Shell</h2>
+      <p>The page is <b id="focus"></b></p>
+      <button type="button" id="quit">Quit</button>
+      <p class="note" id="quit-note"></p>
+      <button type="button" id="save">Save settings</button>
+      <button type="button" id="open">Open settings</button>
+      <p class="note" id="file-note"></p>
+    </aside>
+    <nav id="controls"></nav>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

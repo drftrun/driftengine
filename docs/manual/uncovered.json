@@ -1,8 +1,6 @@
 {
   "capabilities": [
-    "Host",
     "Packaging",
-    "Boot",
     "Graph canvas",
     "Material graphs",
     "Particle graphs",
@@ -24,5 +22,5 @@
     "@driftengine/package",
     "@driftengine/tools"
   ],
-  "areas": ["dev", "host", "editor", "package", "tools"]
+  "areas": ["dev", "editor", "package", "tools"]
 }
