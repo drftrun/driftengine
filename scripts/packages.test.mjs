@@ -181,6 +181,22 @@ test('the package count the root README states is the number of packages', () =>
   );
 });
 
+test('the badges above the root README state the package count and core size that are measured', () => {
+  /*
+   * Two badges are static, because no service reports either number: npm has no count for an
+   * organisation, and bundlephobia, which the size badge used to read, answered "rate limited".
+   * The package badge said 18 from 4.0.0, which made it 23, through 4.8.3, while the sentence
+   * above the package table was corrected, because nothing read the badge.
+   */
+  const count = /img\.shields\.io\/badge\/packages-(\d+)-/.exec(rootReadme);
+  assert.ok(count !== null, 'the root README has lost its packages badge');
+  assert.equal(Number(count[1]), packages().length, 'the packages badge is stale');
+
+  const size = /img\.shields\.io\/badge\/core%20gzipped-([0-9.]+)%20KB-/.exec(rootReadme);
+  assert.ok(size !== null, 'the root README has lost its core size badge');
+  assert.equal(size[1], quotedKb('core'), 'the core size badge is not the measured floor');
+});
+
 /**
  * The costs a README quotes are the floors the gate measures.
  *

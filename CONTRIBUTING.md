@@ -5,6 +5,9 @@ by being picky about what lands in it. This page is what you need to know before
 opening an issue or a pull request; [`AGENTS.md`](AGENTS.md) is the full technical
 direction and is binding for anything that touches the code.
 
+A question about using the engine gets a faster answer on the
+[Discord](https://discord.gg/UrHMg4pAT6) than in an issue.
+
 ## Getting set up
 
 ```sh

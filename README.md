@@ -4,10 +4,13 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="npm" src="https://img.shields.io/npm/v/@driftengine/core?logo=npm&label=%40driftengine%2Fcore"></a>
+  <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="Downloads" src="https://img.shields.io/npm/dm/@driftengine/core?label=downloads"></a>
+  <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-23-blue"></a>
+  <a href="packages/core/README.md"><img alt="Core size" src="https://img.shields.io/badge/core%20gzipped-710.5%20KB-blue"></a>
   <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/npm/l/@driftengine/core?label=licence"></a>
   <a href="https://github.com/drftrun/driftengine/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/drftrun/driftengine/actions/workflows/test.yml/badge.svg"></a>
-  <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-18-blue"></a>
-  <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="Install size" src="https://img.shields.io/bundlephobia/minzip/@driftengine/core?label=core%20gzipped"></a>
+  <a href="https://driftengine.dev"><img alt="Docs" src="https://img.shields.io/badge/docs-driftengine.dev-blue"></a>
+  <a href="https://discord.gg/UrHMg4pAT6"><img alt="Discord" src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white"></a>
 </p>
 
 DriftEngine is a 3D engine written in strict TypeScript. It draws through WebGPU and falls back to
@@ -178,7 +181,7 @@ the rule that keeps them from overlapping:
 | [`ROADMAP.md`](docs/ROADMAP.md)           | What is coming, in what order, and the reasoning for that order.                                                                                |
 | [`IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) | Findings that are measured and not yet taken, so none is rediscovered twice.                                                                    |
 
-Each package carries its own README with its full surface — the table above links all twenty.
+Each package carries its own README with its full surface — the table above links all twenty-three.
 [`AGENTS.md`](AGENTS.md) is the engineering doctrine this repository is held to, and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is what a change has to satisfy.
 
@@ -1354,6 +1357,9 @@ committing anything that touches a hot path or the public barrel.
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the game/engine boundary,
 the determinism contracts, the testing doctrine and what a reviewable change
 looks like. Read it before opening a pull request.
+
+If you have a question or want to show what you're building, come to the
+[Discord](https://discord.gg/UrHMg4pAT6). Bugs belong in an issue here, where they stay findable.
 
 ## Licence
 
