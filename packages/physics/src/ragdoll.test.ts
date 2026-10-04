@@ -888,3 +888,150 @@ describe('a written pose puts every joint where its bodies are', () => {
     expect(spin(5), 'the thumb').toBe(0);
   });
 });
+
+/** Where a written pose puts every joint of any rig, walked from the root at the doll's root. */
+function walked(
+  parents: Int32Array,
+  out: PoseTarget,
+  root: [number, number, number],
+): [number, number, number][] {
+  const positions: [number, number, number][] = [];
+  const rotations: Quat[] = [];
+  for (let j = 0; j < parents.length; j++) {
+    const r = out.rotation;
+    const local: Quat = [r[j * 4] ?? 0, r[j * 4 + 1] ?? 0, r[j * 4 + 2] ?? 0, r[j * 4 + 3] ?? 1];
+    const p = parents[j] ?? -1;
+    if (p < 0) {
+      positions.push(root);
+      rotations.push(local);
+      continue;
+    }
+    const t = out.translation;
+    const along = qRotate(rotations[p] ?? IDENTITY, [
+      t[j * 3] ?? 0,
+      t[j * 3 + 1] ?? 0,
+      t[j * 3 + 2] ?? 0,
+    ]);
+    const at = positions[p] ?? [0, 0, 0];
+    positions.push([at[0] + along[0], at[1] + along[1], at[2] + along[2]]);
+    rotations.push(qMul(rotations[p] ?? IDENTITY, local));
+  }
+  return positions;
+}
+
+/*
+ * **EVERY BRANCH IS DRAWN ON ITS OWN BODY AFTER A FALL**, not only the first.
+ *
+ * A joint with several bones below — hips over a spine and two thighs, a chest over a neck and two
+ * clavicles — has one rotation, read off its first bone. That rotation placed every child by the
+ * rig's offset, so the second and third branches were swung by the first one's turn and drawn off
+ * their own bodies: reported from a game as a foot 0.24 m and an arm 0.17 m from their bodies after
+ * a fall. A synced doll cannot show it, because synced bodies sit exactly where the rig puts them;
+ * the branches have to have moved apart. Within the joints' give, which the tolerance is.
+ */
+describe('a written pose after a fall', () => {
+  it('EVERY BRANCH IS DRAWN ON ITS OWN BODY AFTER A FALL, not only the first', () => {
+    const world = ground();
+    const { parents, world: matrices } = hips();
+    const doll = ragdollFromBones(world, parents, matrices);
+    /* Thrown apart, so the three bones under the hips turn three different ways. */
+    world.setVelocity(doll.bodyOf[1] ?? 0, 3, 0, -1);
+    world.setVelocity(doll.bodyOf[2] ?? 0, -2, 1, 3);
+    world.setVelocity(doll.bodyOf[3] ?? 0, 1, -1, -3);
+    run(world, 120);
+
+    const out = pose(parents.length);
+    doll.writePose(out);
+    const got = walked(parents, out, [doll.rootX(), doll.rootY(), doll.rootZ()]);
+    /* Each bone's far end, as its body holds it: half its rest length along the body's +y. */
+    for (let j = 1; j < parents.length; j++) {
+      const head = matrices.subarray(0, 16);
+      const tail = matrices.subarray(j * 16, j * 16 + 16);
+      const half =
+        Math.hypot(
+          (tail[12] ?? 0) - (head[12] ?? 0),
+          (tail[13] ?? 0) - (head[13] ?? 0),
+          (tail[14] ?? 0) - (head[14] ?? 0),
+        ) / 2;
+      const end = alongY(world, doll.bodyOf[j] ?? 0, half);
+      const miss = Math.hypot(
+        (got[j]?.[0] ?? 0) - end[0],
+        (got[j]?.[1] ?? 0) - end[1],
+        (got[j]?.[2] ?? 0) - end[2],
+      );
+      expect(miss, `joint ${j} is drawn ${(miss * 100).toFixed(1)} cm from its body`).toBeLessThan(
+        0.03,
+      );
+    }
+  });
+});
+
+/*
+ * **A BONE TOO SHORT FOR A BODY IS TRANSPARENT**: what hangs below it hangs from the bone above it.
+ *
+ * A rig puts a joint exactly on another as often as not — a collar on the chest joint, a helper on
+ * the hips — and a bone shorter than `minLength` gets no body. The spine above such a collar was
+ * jointed to nothing, because the loop joints a bone to the bone ending at its parent joint and the
+ * collar has none; and it collided with the pole below the hips and both shoulder bones, which all
+ * meet it at one point, because the shared-end rule compared parent joints by index. Capsules out of
+ * one point separate whichever way rounding says, which is how a reaction came to depend on which
+ * way a character faced. A root, the hips at the floor, a collar on the hip joint, a spine above
+ * it and an arm off the hips.
+ */
+function collared(collarLift = 0): { parents: Int32Array; world: Float32Array } {
+  const at: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 1, 0],
+    [0, 1 + collarLift, 0],
+    [0, 1.6, 0],
+    [0.3, 1.55, 0],
+  ];
+  const parents = Int32Array.from([-1, 0, 1, 2, 1]);
+  const world = new Float32Array(at.length * 16);
+  at.forEach(([x, y, z], j) => {
+    world.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1], j * 16);
+  });
+  return { parents, world };
+}
+
+describe('a bone too short for a body', () => {
+  it('A BONE TOO SHORT FOR A BODY IS TRANSPARENT: the spine above a collar meets the pole and the arm', () => {
+    const world = ground();
+    const { parents, world: matrices } = collared();
+    const doll = ragdollFromBones(world, parents, matrices);
+    const [, pole, collar, spine, arm] = Array.from(doll.bodyOf);
+    expect(collar, 'the collar has no length, so no body').toBe(-1);
+    expect(world.pairIgnored(spine ?? 0, pole ?? 0), 'the spine and the bone below it').toBe(true);
+    expect(world.pairIgnored(spine ?? 0, arm ?? 0), 'and the arm out of the same point').toBe(true);
+  });
+
+  it('hangs the spine from the bone below it, so a limp fall does not throw it off', () => {
+    const world = ground();
+    const { parents, world: matrices } = collared();
+    const doll = ragdollFromBones(world, parents, matrices);
+    world.setVelocity(doll.bodyOf[1] ?? 0, -2, 0, 1);
+    world.setVelocity(doll.bodyOf[3] ?? 0, 3, 2, -2);
+    run(world, 120);
+    /* The pole's top and the spine's base, each half its bone along its body's +y. */
+    const top = alongY(world, doll.bodyOf[1] ?? 0, 0.5);
+    const base = alongY(world, doll.bodyOf[3] ?? 0, -0.3);
+    const gap = Math.hypot(top[0] - base[0], top[1] - base[1], top[2] - base[2]);
+    expect(gap, `the spine is ${(gap * 100).toFixed(1)} cm off the pole`).toBeLessThan(0.03);
+  });
+
+  it('anchors that joint where the two meet at rest, so a still doll does not move on its first tick', () => {
+    /* A collar a centimetre long: under the floor, so still no body, and the spine's base and the
+       pole's top a centimetre apart. A joint anchored at either end alone would pull them together. */
+    const world = new PhysicsWorld({ gravityY: 0, allowSleep: false });
+    const { parents, world: matrices } = collared(0.01);
+    const doll = ragdollFromBones(world, parents, matrices);
+    const before = Array.from(world.bodies.posY.subarray(0, world.bodies.count));
+    world.step(DT);
+    for (let b = 0; b < before.length; b++) {
+      expect(Math.abs((world.bodies.posY[b] ?? 0) - (before[b] ?? 0)), `body ${b}`).toBeLessThan(
+        1e-6,
+      );
+    }
+    expect(doll.bodyOf[2], 'the collar still has no body').toBe(-1);
+  });
+});

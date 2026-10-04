@@ -24,9 +24,10 @@ export const DEPTH_VERT_FIELDS = DEPTH_BINDINGS.DEPTH_VERT.fields;
 export const DEPTH_VERT_SIZE = DEPTH_BINDINGS.DEPTH_VERT.uniformSize;
 export const DEPTH_FRAG_SIZE = DEPTH_BINDINGS.DEPTH_FRAG.uniformSize;
 /*
- * The cutout variants' vertex blocks. The rigid one is the plain block with `uUvScale` and
- * `uAlphaCutout` after every other field, so a slot written for it is written with the plain
- * offsets plus these two; the instanced one has no model and no wind, so its two sit earlier.
+ * The cutout variants' vertex blocks. The rigid one is the plain block with `uUvScale`,
+ * `uUvOffset` and `uAlphaCutout` after every other field, so a slot written for it is written with
+ * the plain offsets plus these three; the instanced one has no model and no wind, so its three sit
+ * earlier.
  */
 export const DEPTH_CUTOUT_VERT_FIELDS = DEPTH_BINDINGS.DEPTH_CUTOUT_VERT.fields;
 export const DEPTH_CUTOUT_VERT_SIZE = DEPTH_BINDINGS.DEPTH_CUTOUT_VERT.uniformSize;

@@ -7,6 +7,7 @@ import {
 import { vertexBufferLayouts } from './buffers.ts';
 import type { LitSwitch, PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /** The material maps the flat pass reads: `2d-array` colour, filtered, not shadow maps. */
 const SURFACE_MAPS: ReadonlySet<string> = new Set([
@@ -681,7 +682,7 @@ function flatDescriptor(
                       dstFactor: 'one-minus-src-alpha',
                       operation: 'add',
                     },
-                    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                    alpha: SCENE_ALPHA_COVERS,
                   },
                 }
               : { format: cache.format }),

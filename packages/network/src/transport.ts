@@ -79,3 +79,26 @@ export function sendable(message: Uint8Array): Uint8Array<ArrayBuffer> {
     ? (message as Uint8Array<ArrayBuffer>)
     : message.slice();
 }
+
+const UTF8 = new TextEncoder();
+
+/**
+ * A received message's bytes, whatever the socket or channel handed over, or null where nothing
+ * can be read out of it — which the transport counts as dropped.
+ *
+ * Browsers deliver an `ArrayBuffer` once `binaryType` is set, `ws` under Node delivers a `Buffer`,
+ * and a **text frame** arrives as a string. A text frame is lossless UTF-8 by the protocol, so its
+ * bytes are exactly what the sender wrote, and it is read as them. It was discarded until 4.8.3,
+ * on the ground that a payload through UTF-8 loses every byte above 0x7f — which is true of binary
+ * data somebody sent as text, and not of a server that speaks text, whose every message then
+ * vanished without a count. **What this gives up** is nothing a sender can still lose: binary bytes
+ * sent as text were mangled before they reached this, by the sender.
+ */
+export function receivedBytes(data: unknown): Uint8Array | null {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data))
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (typeof data === 'string') return UTF8.encode(data);
+  return null;
+}

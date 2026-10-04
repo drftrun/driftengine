@@ -79,14 +79,32 @@ describe('the WebSocket transport', () => {
     expect(seen).toEqual([[9, 8]]);
   });
 
-  it('ignores a string frame rather than delivering mangled bytes', () => {
+  /**
+   * **A TEXT FRAME ARRIVES AS ITS UTF-8 BYTES.** A text frame is lossless UTF-8 by the protocol, so
+   * its bytes are exactly what the sender wrote — a server that sends text is not a socket left on
+   * the wrong `binaryType`, and its messages were discarded without a count, reported as a client
+   * that received nothing at all. Hand-derived: `é` is 0xc3 0xa9 and `→` is 0xe2 0x86 0x92.
+   */
+  it('A TEXT FRAME ARRIVES AS ITS UTF-8 BYTES, multi-byte characters included', () => {
     const socket = new FakeSocket();
     const transport = new WebSocketTransport({ socket });
-    socket.deliver('not bytes');
+    socket.deliver('é→a');
+
+    const seen: number[][] = [];
+    transport.drain((_from, message) => seen.push(Array.from(message)));
+    expect(seen).toEqual([[0xc3, 0xa9, 0xe2, 0x86, 0x92, 0x61]]);
+    expect(transport.dropped).toBe(0);
+  });
+
+  it('counts a frame it cannot read as dropped, rather than losing it in silence', () => {
+    const socket = new FakeSocket();
+    const transport = new WebSocketTransport({ socket });
+    socket.deliver({ size: 3 });
 
     const seen: unknown[] = [];
     transport.drain((_from, message) => seen.push(message));
     expect(seen).toEqual([]);
+    expect(transport.dropped).toBe(1);
   });
 
   /**
@@ -173,5 +191,17 @@ describe('the WebRTC transport', () => {
     transport.drain((_from, message) => seen.push(message[0] as number));
     expect(seen).toEqual([2, 3]);
     expect(transport.dropped).toBe(2);
+  });
+
+  it('reads a text message and counts an unreadable one, as the socket does', () => {
+    const channel = new FakeChannel();
+    const transport = new WebRtcTransport({ channel });
+    channel.deliver('é');
+    channel.deliver({ size: 3 });
+
+    const seen: number[][] = [];
+    transport.drain((_from, message) => seen.push(Array.from(message)));
+    expect(seen).toEqual([[0xc3, 0xa9]]);
+    expect(transport.dropped).toBe(1);
   });
 });

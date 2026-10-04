@@ -6,6 +6,7 @@ import { plumeShaders, type PlumeMaterial } from './plumeMaterial.ts';
 import { buildPlumeGeometry } from './plumeGeometry.ts';
 import type { Atmosphere } from './atmosphere.ts';
 import type { Vec3 } from '../math/color.ts';
+import { blendCovering, blendKeeping } from './sceneCoverage.ts';
 
 /**
  * Batched camera-facing quads for volumetric effects — flames, smoke, steam,
@@ -202,8 +203,8 @@ export class PlumeRenderer {
     bindAtmosphere(gl, u, atmosphere, atmosphereCameraY, underwaterEnabled);
 
     gl.enable(gl.BLEND);
-    if (this.blend === 'additive') gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-    else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    if (this.blend === 'additive') blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
+    else blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
 

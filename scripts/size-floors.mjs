@@ -812,7 +812,14 @@ export const FLOORS = {
    * culling batches drawn whole, and an interface after the present left unjittered.
    */
   /* Raised 2026-10-01 by +48, 4.6.1: every pass skips a mesh with no triangles. */
-  'core-only': 715750,
+  /*
+   * **Raised 2026-10-04 by +11,831, with every `core-*` entry by about as much, and only 708 of it
+   * is the change that measured it.** That is 4.8.3's scene coverage: the share's blend constants on
+   * every blended pipeline and the composite's one multiply, measured against the 4.8.3 commit before
+   * it. The other 11,123 had accumulated from 4.7.0 to that commit inside the 3% tolerance with no
+   * note here, which is the failure this file's header describes; it is measured, not attributed.
+   */
+  'core-only': 727581,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -828,7 +835,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-gizmo': 720742,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-gizmo': 732521,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -844,7 +852,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-audio': 722039,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-audio': 734105,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -869,7 +878,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-animation': 722205,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-animation': 733980,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -907,7 +917,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-script': 753963,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-script': 768887,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1095,7 +1106,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-splats': 732892,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-splats': 744914,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1115,7 +1127,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-terrain': 717138,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-terrain': 729012,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1144,14 +1157,16 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-ui2d': 724753,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-ui2d': 737948,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
    * regions and kit pieces arriving with container 1.23 while this floor stayed where it was.
    */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-and-assets': 738809,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-and-assets': 751288,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1165,7 +1180,8 @@ export const FLOORS = {
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
-  'core-audio-spatial': 724139,
+  /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
+  'core-audio-spatial': 736255,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *
@@ -1377,7 +1393,15 @@ export const FLOORS = {
   /* Re-measured 2026-10-01, 2 bytes under: drift through its imports, not this package. */
   'xr-only': 10848,
   /* Raised 2026-10-01 by +240: a kerb a character steps off, and scenery colliding by region. */
-  'physics-only': 46514,
+  /*
+   * **Re-measured 2026-10-04 at 48,153, and 1,052 of the 1,639 predate the change that tripped it.**
+   * Measured per tree with the fixture's import aliased to that tree's source, since the workspace
+   * link resolves every worktree to the main one: 47,566 at 4.8.2, drift inside the tolerance since
+   * the last re-measure; 47,782 with each ragdoll joint placed along its own bone's body (+216);
+   * 48,153 with a bone too short for a body made transparent to jointing and collision, the
+   * resolution table and the exact rest anchors (+371).
+   */
+  'physics-only': 48153,
   /**
    * **821 bytes, 2026-09-03, up from 633 when the rewind snapshot landed.**
    *

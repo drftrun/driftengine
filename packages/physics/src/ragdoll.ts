@@ -230,6 +230,11 @@ export function ragdollFromBones(
    * the bones meet.
    */
   const halfOf = new Float32Array(jointCount);
+  /**
+   * Each bone's rig offset over its length: 1 for a rig at unit scale, and what turns a length in
+   * metres back into the parent's own units where the rig is scaled.
+   */
+  const restScale = new Float32Array(jointCount).fill(1);
   let boneCount = 0;
   let firstBone = -1;
   /** Half the first bone's length, which is how far its head sits from the body's centre. */
@@ -273,6 +278,10 @@ export function ragdollFromBones(
     });
     bodyOf[j] = body;
     halfOf[j] = length / 2;
+    const rx = localRest[j * 3] ?? 0;
+    const ry = localRest[j * 3 + 1] ?? 0;
+    const rz = localRest[j * 3 + 2] ?? 0;
+    restScale[j] = Math.sqrt(rx * rx + ry * ry + rz * rz) / length;
     // What takes the body's rotation back to each of its two joints', captured at rest. Parents
     // come before children in a rig, so the start joint's rotation is already read.
     multiplyConjugate(TMP, restRotation, j * 4, bodyToJoint, j * 4);
@@ -288,13 +297,65 @@ export function ragdollFromBones(
     }
   }
 
+  /*
+   * **A bone too short for a body is transparent.** Each joint resolves to the nearest one at or
+   * above it that a body ends at, or to its root: what hangs from a collar sitting on the chest
+   * joint hangs from the bone that ends at the chest. A rig puts one joint exactly on another as
+   * often as not, and a bone under `minLength` gets no body, so until 4.8.3 the spine above such a
+   * collar was jointed to nothing and collided with every bone it met there — compared by index,
+   * they shared no end. **What it gives up** is the skipped bone's own length, under `minLength`,
+   * which the joints below absorb exactly at rest: see `restAnchor`.
+   */
+  const attach = new Int32Array(jointCount);
+  for (let j = 0; j < jointCount; j++) {
+    let a = j;
+    while ((bodyOf[a] ?? -1) < 0 && (parents[a] ?? -1) >= 0) a = parents[a] ?? -1;
+    attach[j] = a;
+  }
+  /** Where a bone's parent end really hangs: its parent joint, seen through any bone too short. */
+  const hangsFrom = (j: number): number => {
+    const p = parents[j] ?? -1;
+    return p < 0 ? -1 : (attach[p] ?? p);
+  };
+  /**
+   * Bone `j`'s body-frame point at joint `at`'s rest position, into `REST_ANCHOR`. Where `at` is
+   * the bone's own parent joint this is its head, `(0, -half, 0)`, exactly as before; through a
+   * short bone it is where the two bones meet at rest, so a joint anchored there moves nothing on
+   * the first tick.
+   */
+  const restAnchor = (j: number, at: number): void => {
+    const p = parents[j] ?? -1;
+    if (at === p) {
+      REST_ANCHOR[0] = 0;
+      REST_ANCHOR[1] = -(halfOf[j] ?? 0);
+      REST_ANCHOR[2] = 0;
+      return;
+    }
+    const body = bodyOf[j] ?? 0;
+    const dx = (worldMatrices[at * 16 + 12] ?? 0) - (world.bodies.posX[body] ?? 0);
+    const dy = (worldMatrices[at * 16 + 13] ?? 0) - (world.bodies.posY[body] ?? 0);
+    const dz = (worldMatrices[at * 16 + 14] ?? 0) - (world.bodies.posZ[body] ?? 0);
+    /* Into the body's frame: turned by the conjugate of its rotation. */
+    const ux = -(world.bodies.rotX[body] ?? 0);
+    const uy = -(world.bodies.rotY[body] ?? 0);
+    const uz = -(world.bodies.rotZ[body] ?? 0);
+    const w = world.bodies.rotW[body] ?? 1;
+    const cx = uy * dz - uz * dy;
+    const cy = uz * dx - ux * dz;
+    const cz = ux * dy - uy * dx;
+    REST_ANCHOR[0] = dx + 2 * (w * cx + (uy * cz - uz * cy));
+    REST_ANCHOR[1] = dy + 2 * (w * cy + (uz * cx - ux * cz));
+    REST_ANCHOR[2] = dz + 2 * (w * cz + (ux * cy - uy * cx));
+  };
+
   // Joint each bone to its parent's bone, at the shared end.
   for (let j = 0; j < jointCount; j++) {
     const body = bodyOf[j] ?? -1;
     if (body < 0) continue;
-    const p = parents[j] ?? -1;
+    const p = hangsFrom(j);
     const parentBody = p >= 0 ? (bodyOf[p] ?? -1) : -1;
     if (parentBody < 0) continue;
+    restAnchor(j, p);
     world.addJoint({
       type: JOINT_CONE_TWIST,
       bodyA: parentBody,
@@ -321,7 +382,9 @@ export function ragdollFromBones(
        * so the first tick still moves nothing.
        */
       anchorAY: halfOf[p] ?? 0,
-      anchorBY: -(halfOf[j] ?? 0),
+      anchorBX: REST_ANCHOR[0],
+      anchorBY: REST_ANCHOR[1],
+      anchorBZ: REST_ANCHOR[2],
     });
   }
 
@@ -338,13 +401,18 @@ export function ragdollFromBones(
   for (let j = 0; j < jointCount; j++) {
     const body = bodyOf[j] ?? -1;
     if (body < 0) continue;
-    const p = parents[j] ?? -1;
+    const p = hangsFrom(j);
     if (p < 0 || (bodyOf[p] ?? -1) >= 0) continue;
     const first = firstUnder[p] ?? -1;
     if (first < 0) {
       firstUnder[p] = j;
       continue;
     }
+    restAnchor(first, p);
+    const ax = REST_ANCHOR[0];
+    const ay = REST_ANCHOR[1];
+    const az = REST_ANCHOR[2];
+    restAnchor(j, p);
     world.addJoint({
       type: JOINT_CONE_TWIST,
       bodyA: bodyOf[first] ?? 0,
@@ -352,8 +420,12 @@ export function ragdollFromBones(
       swingCos: limitAt(swingCos, Math.SQRT1_2, j),
       twistSin: limitAt(twistSin, 0.3826834323650898, j),
       axisY: 1,
-      anchorAY: -(halfOf[first] ?? 0),
-      anchorBY: -(halfOf[j] ?? 0),
+      anchorAX: ax,
+      anchorAY: ay,
+      anchorAZ: az,
+      anchorBX: REST_ANCHOR[0],
+      anchorBY: REST_ANCHOR[1],
+      anchorBZ: REST_ANCHOR[2],
     });
   }
 
@@ -375,8 +447,9 @@ export function ragdollFromBones(
         world.ignorePair(body, other);
         continue;
       }
-      const pj = parents[j] ?? -1;
-      const pk = parents[k] ?? -1;
+      /* Seen through any bone too short for a body, which is where they really meet. */
+      const pj = hangsFrom(j);
+      const pk = hangsFrom(k);
       /* Jointed, either way round, or two bones hanging off the same parent joint: siblings share
          a head the way a parent and child share a point, so they overlap there too. */
       if (pk === j || pj === k || (pj === pk && pj >= 0)) world.ignorePair(body, other);
@@ -427,10 +500,32 @@ export function ragdollFromBones(
           copy4(WORLD_ROT, j * 4, out.rotation, j * 4);
         }
         if (p < 0) continue;
-        // Bones are rigid, so translation stays what the rig was built with.
-        out.translation[j * 3] = localRest[j * 3] ?? 0;
-        out.translation[j * 3 + 1] = localRest[j * 3 + 1] ?? 0;
-        out.translation[j * 3 + 2] = localRest[j * 3 + 2] ?? 0;
+        /*
+         * **Placed along its own bone as the body holds it**, at the rig's length: the body's +y,
+         * in the parent's frame. For the first bone under a joint that is the rig's offset exactly,
+         * because the joint turns with that body; for a second or third — a thigh beside the spine,
+         * a clavicle beside the neck — it is what keeps the branch on its own body. Placed by the
+         * rig's offset, every branch but the first was swung by the first one's turn: reported as
+         * a foot 0.24 m and an arm 0.17 m from their bodies after a fall. A joint with no bone of
+         * its own keeps the rig's offset. **What would make it wrong** is a bone the body
+         * stretches, which a rigid capsule cannot.
+         */
+        const body = bodyOf[j] ?? -1;
+        if (body >= 0 && KNOWN[p] === 1) {
+          boneInParentFrame(
+            world,
+            body,
+            2 * (halfOf[j] ?? 0) * (restScale[j] ?? 1),
+            WORLD_ROT,
+            p * 4,
+            out.translation,
+            j * 3,
+          );
+        } else {
+          out.translation[j * 3] = localRest[j * 3] ?? 0;
+          out.translation[j * 3 + 1] = localRest[j * 3 + 1] ?? 0;
+          out.translation[j * 3 + 2] = localRest[j * 3 + 2] ?? 0;
+        }
         out.scale[j * 3] = 1;
         out.scale[j * 3 + 1] = 1;
         out.scale[j * 3 + 2] = 1;
@@ -544,6 +639,8 @@ const WORLD_ROT = new Float32Array(256 * 4);
 /** Whether `writePose` recovered each joint's rotation this call: 1 if a body speaks for it. */
 const KNOWN = new Uint8Array(256);
 const START_ROT = new Float32Array(4);
+/** One joint anchor in a body's own frame, filled by `restAnchor` and read at once. */
+const REST_ANCHOR = new Float64Array(3);
 const PARENT_ROT = new Float32Array(4);
 const TARGET_ROT = new Float32Array(4);
 const CURRENT_ROT = new Float32Array(4);
@@ -719,6 +816,40 @@ function multiplyByConjugate(
   out[1] = aw * by - ax * bz + ay * bw + az * bx;
   out[2] = aw * bz + ax * by - ay * bx + az * bw;
   out[3] = aw * bw - ax * bx - ay * by - az * bz;
+}
+
+/**
+ * A body's own +y at `length`, turned by the body and then back by the inverse of a parent's world
+ * rotation: the bone as the body holds it, in the parent's frame.
+ */
+function boneInParentFrame(
+  world: PhysicsWorld,
+  body: number,
+  length: number,
+  parent: Float32Array,
+  parentAt: number,
+  out: Float32Array,
+  outAt: number,
+): void {
+  const bx = world.bodies.rotX[body] ?? 0;
+  const by = world.bodies.rotY[body] ?? 0;
+  const bz = world.bodies.rotZ[body] ?? 0;
+  const bw = world.bodies.rotW[body] ?? 1;
+  /* The body's +y in the world, scaled. */
+  const vx = 2 * length * (bx * by - bw * bz);
+  const vy = length * (1 - 2 * (bx * bx + bz * bz));
+  const vz = 2 * length * (by * bz + bw * bx);
+  /* Turned by the conjugate of the parent's rotation: v + 2w(u×v) + 2u×(u×v), u = −q.xyz. */
+  const ux = -(parent[parentAt] ?? 0);
+  const uy = -(parent[parentAt + 1] ?? 0);
+  const uz = -(parent[parentAt + 2] ?? 0);
+  const w = parent[parentAt + 3] ?? 1;
+  const cx = uy * vz - uz * vy;
+  const cy = uz * vx - ux * vz;
+  const cz = ux * vy - uy * vx;
+  out[outAt] = vx + 2 * (w * cx + (uy * cz - uz * cy));
+  out[outAt + 1] = vy + 2 * (w * cy + (uz * cx - ux * cz));
+  out[outAt + 2] = vz + 2 * (w * cz + (ux * cy - uy * cx));
 }
 
 /** `conj(a) · b` into `out`. */

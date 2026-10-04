@@ -243,3 +243,34 @@ test('a mix that is not running hands a recording no stream, and does once it ru
   context.state = 'suspended';
   expect(graph.captureStream(), 'and not again while it is suspended').toBeNull();
 });
+
+/*
+ * **A RESTART CAN BEGIN ANYWHERE IN THE TRACK**, every stem at the same instant and the same place.
+ *
+ * Music held to something else's clock — a demo's frame counter, a replay's tick — has to resume at
+ * a position after every skip, and the transport only ever went back to the top: a consumer ran its
+ * own source into the music bus instead, outside every stem's lock. Hand-derived: 3.5 s into a 10 s
+ * stem is 3.5 s, and into a 2 s loop it is 1.5 s, because the stems loop.
+ */
+test('A RESTART CAN BEGIN ANYWHERE IN THE TRACK, every stem locked to the same place', async () => {
+  const { graph, context } = await buildGraph();
+  graph.loadStem(0, { duration: 10, length: 480000 } as unknown as AudioBuffer);
+  graph.loadStem(1, { duration: 2, length: 96000 } as unknown as AudioBuffer);
+  graph.start();
+  const before = context.sources.length;
+
+  context.currentTime = 7;
+  const heardIn = graph.restart(3.5);
+
+  const fresh = context.sources.slice(before);
+  expect(fresh.length, 'one new source per loaded stem').toBe(2);
+  expect(fresh.map((one) => one.offsets[0])).toEqual([3.5, 1.5]);
+  expect(fresh[0]?.starts[0], 'at one instant').toBe(fresh[1]?.starts[0]);
+  expect(heardIn, 'and it says how long until that is heard').toBeGreaterThanOrEqual(0);
+
+  graph.restart();
+  expect(
+    context.sources.slice(-2).map((one) => one.offsets[0]),
+    'and from the top by default',
+  ).toEqual([0, 0]);
+});

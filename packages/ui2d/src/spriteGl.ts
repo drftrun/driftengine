@@ -1,5 +1,7 @@
 /** The WebGL2 half of the sprite pass: one program, one instance buffer, one texture slot table. */
 
+import { blendCovering } from '@driftengine/core';
+
 import { SPRITE_FRAG, SPRITE_VERT } from './shaders/sprite.ts';
 import { SPRITE_FLOATS } from './spriteBatch.ts';
 import type { SpriteBatch } from './spriteBatch.ts';
@@ -260,8 +262,9 @@ export function drawWebgl2Sprites(
    */
   gl.disable(gl.CULL_FACE);
   gl.enable(gl.BLEND);
-  /* Premultiplied `over`: the fragment stage folds alpha in, so this composes onto opaque pixels. */
-  gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  /* Premultiplied `over`: the fragment stage folds alpha in, so this composes onto opaque pixels,
+     and covers the scene's surface by its alpha so occlusion behind it does not darken it. */
+  blendCovering(gl, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.disable(gl.DEPTH_TEST);
   gl.depthMask(false);
   gl.activeTexture(gl.TEXTURE0 + SPRITE_UNIT);

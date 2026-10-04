@@ -20,8 +20,14 @@ import { PREFILTER_SAMPLE_COUNTS } from './prefilterEnvMap.ts';
  * `aces` adds filmic tone mapping before that, rolling highlights off instead of
  * clipping them flat. Together they are what three.js does by default, which is why a
  * world ported from it looks wrong until this exists.
+ *
+ * `shoulder` keeps sRGB's midtones exactly and eases only the highlights: past 0.8 the brightest
+ * channel rolls toward 1 and the other two are scaled with it, so an overbright red spark stays
+ * red where `srgb` clips each channel and turns its core pink and wide. It is the curve a ported
+ * game's own resolve applied — for a port that has to match one — and it has none of ACES's toe or
+ * desaturation. See `HIGHLIGHT_SHOULDER_GLSL` for the arithmetic.
  */
-export type OutputTransform = 'none' | 'srgb' | 'aces';
+export type OutputTransform = 'none' | 'srgb' | 'aces' | 'shoulder';
 
 /**
  * The three settings whose accepted values are a closed set, written as one.
@@ -69,7 +75,8 @@ export interface RenderQuality {
    * chooses is a look rather than a standard — three.js uses 1/0.6 and says so. This
    * engine holds no opinion and takes the number from whoever is authoring the world, so
    * that matching another renderer, or simply preferring a different grade, is a setting
-   * rather than a patch. Ignored when `outputTransform` is not `aces`.
+   * rather than a patch. Scales into `aces` and into `shoulder`, the two curves; ignored by
+   * `none` and `srgb`, which have none.
    */
   readonly outputExposure: number;
   /**

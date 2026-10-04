@@ -9,6 +9,7 @@ import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The line pass: a polyline with a real width, four vertices a segment.
@@ -222,7 +223,7 @@ export function linePipeline(
                   dstFactor: 'one-minus-src-alpha',
                   operation: 'add',
                 },
-                alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                alpha: SCENE_ALPHA_COVERS,
               },
         },
       ],

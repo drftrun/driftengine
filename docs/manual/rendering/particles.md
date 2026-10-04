@@ -56,10 +56,11 @@ const motes = new ParticlePool({
 ```
 
 A `ParticlePool` holds up to `capacity` particles. Each lives `lifeSec` seconds and moves from its
-start size, colour and opacity to its end ones over that life. `gravity` pulls it down, `drag` slows
-it per second, and `rise` pushes it up steadily, which is what makes smoke behave like smoke. Leave
-`alphaStart` and `alphaEnd` out and a particle stays opaque and fades by colour, which suits additive
-sparks; give them, and it fades for real, which smoke needs.
+start size, colour and opacity to its end ones over that life. A size is a half-width, metres from
+the centre to an edge, so a particle of size 0.5 is a metre across. `gravity` pulls it down, `drag`
+slows it per second, and `rise` pushes it up steadily, which is what makes smoke behave like smoke.
+Leave `alphaStart` and `alphaEnd` out and a particle stays opaque and fades by colour, which suits
+additive sparks; give them, and it fades for real, which smoke needs.
 
 Colours are linear and may go past one: a spark at four times white is what bloom finds.
 

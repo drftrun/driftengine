@@ -36,6 +36,7 @@ import {
   type PeerId,
   type Transport,
   type TransportState,
+  receivedBytes,
   sendable,
 } from './transport.ts';
 
@@ -94,8 +95,11 @@ export class WebRtcTransport implements Transport {
 
     this.channel.addEventListener('message', (event) => {
       const data = (event as { data?: unknown }).data;
-      const bytes = toBytes(data);
-      if (bytes === null) return;
+      const bytes = receivedBytes(data);
+      if (bytes === null) {
+        this.droppedCount += 1;
+        return;
+      }
       if (this.arrived.length >= this.maxQueued) {
         this.arrived.shift();
         this.droppedCount += 1;
@@ -131,13 +135,4 @@ export class WebRtcTransport implements Transport {
     this.arrived.length = 0;
     this.channel.close();
   }
-}
-
-function toBytes(data: unknown): Uint8Array | null {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  return null;
 }

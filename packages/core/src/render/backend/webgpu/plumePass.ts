@@ -9,6 +9,7 @@ import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import type { UniformFields } from './scatterPass.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The plume pass: crossed quads per plume, displaced and faded in the shaders.
@@ -251,7 +252,7 @@ function blendState(blend: 'additive' | 'alpha'): GPUBlendState {
       }
     : {
         color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: SCENE_ALPHA_COVERS,
       };
 }
 

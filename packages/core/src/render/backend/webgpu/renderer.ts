@@ -254,6 +254,7 @@ import {
   DECAL_TEXTURES,
   DECAL_UNIFORMS,
   PREMULTIPLIED_OVER_BLEND,
+  REFLECTION_OVER_BLEND,
   SSR_FRAG_FIELDS,
   SSR_FRAG_SIZE,
   SSR_RESOLVE_FRAG_WGSL,
@@ -492,7 +493,7 @@ import {
 import { aimReflection, createGpuReflection, type GpuReflection } from './reflectionPass.ts';
 import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
-import { FOG_RECEDE, fogModeOf } from '../drawFog.ts';
+import { FOG_OFF, FOG_RECEDE, fogModeOf } from '../drawFog.ts';
 import { DYNAMIC_ALIGNMENT as DYNAMIC_UNIFORM_ALIGNMENT, UniformRing } from './uniformRing.ts';
 import { DecalQueue, MAX_DRAWN_DECALS } from '../../decalQueue.ts';
 import { DistanceFieldScene } from '../../gi/fieldScene.ts';
@@ -2805,6 +2806,13 @@ export class WebGPURenderer implements RendererApi {
   private blankAlbedoBindGroup: GPUBindGroup;
   /** Repeats across the mesh's own UV range. Per draw, because `uUvScale` is a vertex uniform. */
   private readonly uvScale = new Float32Array([1, 1]);
+  /** Where the texture starts, after the scale. Per draw, beside `uvScale`. */
+  private readonly uvOffset = new Float32Array([0, 0]);
+  /**
+   * How the surfaces drawn next meet the medium: what `setSurfaceFog` set, and `FOG_RECEDE` from
+   * each `bindMeshPass`. A translucent draw's own fog is measured against this and puts it back.
+   */
+  private surfaceFog = FOG_RECEDE;
   /** Whether the bound material is seen from both faces. See `SurfaceMaterial.doubleSided`. */
   private materialDoubleSided = false;
   /** Whether the bound material has a map, for the warning a mesh with no coordinates earns. */
@@ -2940,6 +2948,8 @@ export class WebGPURenderer implements RendererApi {
     const albedo = material?.albedo ?? null;
     this.uvScale[0] = material?.uScale ?? 1;
     this.uvScale[1] = material?.vScale ?? 1;
+    this.uvOffset[0] = material?.uOffset ?? 0;
+    this.uvOffset[1] = material?.vOffset ?? 0;
     this.materialDoubleSided = material?.doubleSided === true;
     this.materialHasMaps = materialHasMaps(material);
     const normal = (material?.normal ?? null) as GpuSurfaceTexture | null;
@@ -3101,6 +3111,14 @@ export class WebGPURenderer implements RendererApi {
   setSurfaceGrain(amount: number): void {
     this.material((f) => {
       f[this.materialField('uGrain')] = Math.min(1, Math.max(0, amount));
+    });
+  }
+
+  /** Whether the surfaces drawn next meet the medium. See `renderer.ts`. */
+  setSurfaceFog(enabled: boolean): void {
+    this.surfaceFog = enabled ? FOG_RECEDE : FOG_OFF;
+    this.material((_f, i) => {
+      i[this.materialField('uFogEnabled')] = this.surfaceFog;
     });
   }
 
@@ -5392,17 +5410,20 @@ export class WebGPURenderer implements RendererApi {
     return group;
   }
 
-  /** The cutoff and UV scale into a cutout draw's slot, at the offsets its own variant declares. */
+  /** The cutoff and UV scale and offset into a cutout draw's slot, at its own variant's offsets. */
   private writeCutout(
     slot: number,
     cutout: CutoutCaster<unknown>,
     fields: {
       readonly uUvScale: { readonly offset: number };
+      readonly uUvOffset: { readonly offset: number };
       readonly uAlphaCutout: { readonly offset: number };
     },
   ): void {
     this.shadowDraws.writeFloat(slot, fields.uUvScale.offset, cutout.u);
     this.shadowDraws.writeFloat(slot, fields.uUvScale.offset + 4, cutout.v);
+    this.shadowDraws.writeFloat(slot, fields.uUvOffset.offset, cutout.uOffset);
+    this.shadowDraws.writeFloat(slot, fields.uUvOffset.offset + 4, cutout.vOffset);
     this.shadowDraws.writeFloat(slot, fields.uAlphaCutout.offset, cutout.cutoff);
   }
 
@@ -7783,7 +7804,8 @@ export class WebGPURenderer implements RendererApi {
      * these per draw through the material block, the same shape `uOpacity` already uses.
      */
     i[at('uLightingEnabled')] = 1;
-    i[at('uFogEnabled')] = 1;
+    i[at('uFogEnabled')] = FOG_RECEDE;
+    this.surfaceFog = FOG_RECEDE;
     i[at('uAlbedoEnabled')] = 0;
     this.materialHasMaps = false;
 
@@ -8235,6 +8257,8 @@ export class WebGPURenderer implements RendererApi {
     this.bindGroup = this.blankAlbedoBindGroup;
     this.uvScale[0] = 1;
     this.uvScale[1] = 1;
+    this.uvOffset[0] = 0;
+    this.uvOffset[1] = 0;
   }
 
   /**
@@ -8319,7 +8343,10 @@ export class WebGPURenderer implements RendererApi {
      */
     if (this.tracksMotionNow()) this.recordDrawMotion(mesh, model, previousModel);
     noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
-    this.submitMesh(mesh, model, tint, 1, false, { depthLayer });
+    /* An opaque draw meets the medium as the dial says: `submitMesh` reads an absent `fog` as
+       true, which is a translucent draw's default and would put every opaque draw back in the fog
+       `setSurfaceFog(false)` took it out of. */
+    this.submitMesh(mesh, model, tint, 1, false, { depthLayer, fog: this.surfaceFog !== FOG_OFF });
   }
 
   /**
@@ -8501,6 +8528,7 @@ export class WebGPURenderer implements RendererApi {
     /* The material's repeats, not a constant: geometry authored in metres is textured at
        whatever density the material asks for without rebuilding it. */
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvScale.offset, this.uvScale);
+    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvOffset.offset, this.uvOffset);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uLightViewProj.offset, this.lightViewProj);
     /*
      * Whether this mesh's tangent frame is real. WebGPU has no disabled attribute, so location 10
@@ -8534,7 +8562,7 @@ export class WebGPURenderer implements RendererApi {
     /* Added light fades in the medium rather than receding into it. See `drawFog.ts`. */
     const fog = fogModeOf(options.fog ?? true, blend && options.additive === true);
     const toneMapped = options.toneMapped ?? true;
-    const unlitOrUnfogged = !lit || fog !== FOG_RECEDE;
+    const unlitOrUnfogged = !lit || fog !== this.surfaceFog;
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
       this.perFrameInts[this.materialField('uFogEnabled')] = fog;
@@ -8556,7 +8584,7 @@ export class WebGPURenderer implements RendererApi {
     const refracting = this.bindSeeThrough(options);
     /* Taken for itself when any of those differs from the pass, and put back below: the rule both
        backends count material changes by. See `materialChanges.ts`. */
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
     if (own) this.materials.dirty();
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /*
@@ -8700,7 +8728,7 @@ export class WebGPURenderer implements RendererApi {
     }
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
-      this.perFrameInts[this.materialField('uFogEnabled')] = FOG_RECEDE;
+      this.perFrameInts[this.materialField('uFogEnabled')] = this.surfaceFog;
     }
     /* Back to off for every other draw in the frame, exactly as `uOpacity` is: this scratch is
        shared, so a strength left set is worn by everything drawn after it. */
@@ -8947,6 +8975,7 @@ export class WebGPURenderer implements RendererApi {
       lands ? this.correctedViewProj : this.viewProj,
     );
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvScale.offset, this.uvScale);
+    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvOffset.offset, this.uvOffset);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uLightViewProj.offset, this.lightViewProj);
     this.perDraw.writeInt(slot, FLAT_VERT_FIELDS.uHasTangents.offset, mesh.hasTangents ? 1 : 0);
 
@@ -8957,7 +8986,7 @@ export class WebGPURenderer implements RendererApi {
     const lit = options.lit ?? true;
     const fog = fogModeOf(options.fog ?? true, blend && options.additive === true);
     const toneMapped = options.toneMapped ?? true;
-    const unlitOrUnfogged = !lit || fog !== FOG_RECEDE;
+    const unlitOrUnfogged = !lit || fog !== this.surfaceFog;
     if (unlitOrUnfogged) {
       if (!lit) this.perFrameInts[this.materialField('uLightingEnabled')] = 0;
       this.perFrameInts[this.materialField('uFogEnabled')] = fog;
@@ -8970,7 +8999,7 @@ export class WebGPURenderer implements RendererApi {
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
     /* A blended batch shows what is behind it — refraction or glass — as a single draw does. */
     const refracting = blend && this.bindSeeThrough(options);
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
     if (own) this.materials.dirty();
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
@@ -9052,7 +9081,7 @@ export class WebGPURenderer implements RendererApi {
     }
     if (unlitOrUnfogged) {
       this.perFrameInts[this.materialField('uLightingEnabled')] = 1;
-      this.perFrameInts[this.materialField('uFogEnabled')] = FOG_RECEDE;
+      this.perFrameInts[this.materialField('uFogEnabled')] = this.surfaceFog;
     }
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
@@ -11614,7 +11643,7 @@ export class WebGPURenderer implements RendererApi {
         'post.ssrResolve',
         SSR_RESOLVE_FRAG_WGSL,
         this.pipelines.format,
-        PREMULTIPLIED_OVER_BLEND,
+        REFLECTION_OVER_BLEND,
       ),
     );
     resolve.setBindGroup(0, resolveGroup);

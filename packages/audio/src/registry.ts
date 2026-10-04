@@ -1,6 +1,6 @@
 /**
  * Named sound slots, resolved once at load: real file if present, synthesised
- * buffer if not.
+ * buffer if not — or, for a slot registered with no stand-in, a loud failure.
  *
  * Synthesis is a placeholder, never the destination. Addressing every sound by
  * slot means dropping a file into the assets folder replaces it — no code
@@ -23,8 +23,16 @@ export interface SoundSource {
    * the browser decodes all of these natively.
    */
   urls: readonly string[];
-  /** Built only when no candidate is present or usable. */
-  synth: (ctx: BaseAudioContext) => AudioBuffer;
+  /**
+   * Built only when no candidate is present or usable.
+   *
+   * **Omitted, the slot is required.** A stand-in is right for a footstep and wrong for a score
+   * that has to be the file or nothing a game would ship, which until now could not be registered
+   * at all and was decoded outside the registry. A required slot none of whose candidates loads is
+   * recorded in `unbuilt`, and `load` rejects — after every other slot has settled, so one absent
+   * file still silences nothing else — naming each such slot and what it tried.
+   */
+  synth?: (ctx: BaseAudioContext) => AudioBuffer;
 }
 
 /** How a slot ended up being filled. Useful in dev to see what is still synth. */
@@ -117,8 +125,15 @@ export class SoundRegistry {
     const entries = [...this.sources.entries()];
     await Promise.allSettled(entries.map(([slot, source]) => this.loadFile(ctx, slot, source)));
 
+    const missing: string[] = [];
     for (const [slot, source] of entries) {
       if (this.buffers.has(slot)) continue;
+      if (source.synth === undefined) {
+        const tried = source.urls.length === 0 ? 'no candidates' : source.urls.join(', ');
+        this.failed.set(slot, `required, and none of its files loaded: ${tried}`);
+        missing.push(`\`${slot}\` (${tried})`);
+        continue;
+      }
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
@@ -141,6 +156,12 @@ export class SoundRegistry {
       } catch (error) {
         this.failed.set(slot, error instanceof Error ? error.message : String(error));
       }
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `SoundRegistry: ${missing.length === 1 ? 'a required slot' : `${missing.length} required slots`} ` +
+          `did not load, and a required slot has no stand-in: ${missing.join('; ')}.`,
+      );
     }
   }
 

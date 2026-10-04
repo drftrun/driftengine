@@ -52,6 +52,8 @@ export class StubNode {
   readonly stops: number[] = [];
   /** Instants `start` was asked for, so a test can see an offline launch has no lead. */
   readonly starts: number[] = [];
+  /** Offsets into the buffer `start` was asked for, beside `starts`. */
+  readonly offsets: number[] = [];
   type = '';
   buffer: unknown = null;
   loop = false;
@@ -102,8 +104,9 @@ export class StubNode {
     return target;
   }
   disconnect(): void {}
-  start(at = 0): void {
+  start(at = 0, offset = 0): void {
     this.starts.push(at);
+    this.offsets.push(offset);
   }
   stop(at = 0): void {
     this.stops.push(at);

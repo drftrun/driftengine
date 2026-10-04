@@ -11,6 +11,7 @@ import {
   type WindStreakSettings,
 } from './windStreakDraw.ts';
 import type { WindField } from './windField.ts';
+import { blendCovering } from './sceneCoverage.ts';
 
 /**
  * Makes the wind visible once it is strong enough to be worth seeing.
@@ -112,7 +113,7 @@ export class WindStreakRenderer {
     gl.uniform3fv(u['uTint'] ?? null, tint);
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.bindVertexArray(this.vao);

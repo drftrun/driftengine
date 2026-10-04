@@ -105,6 +105,7 @@ export const OUTPUT_TRANSFORM_CODE: Readonly<Record<string, number>> = {
   none: 0,
   srgb: 1,
   aces: 2,
+  shoulder: 3,
 };
 
 /**

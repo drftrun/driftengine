@@ -9,6 +9,7 @@ import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_KEEPS } from '../../sceneCoverage.ts';
 
 /**
  * The film pass: a thin wet layer — an oil slick, a puddle — lying over the world.
@@ -111,7 +112,7 @@ export function filmPipeline(
           format: cache.format,
           blend: {
             color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_KEEPS,
           },
         },
       ],

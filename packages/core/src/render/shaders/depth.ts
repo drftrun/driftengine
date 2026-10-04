@@ -60,12 +60,13 @@ ${CHANNEL_BEND}
 
 #if CUTOUT
 /*
- * **What a cutout caster adds, and where.** The UV at location 5, where every mesh carries it; two
+ * **What a cutout caster adds, and where.** The UV at location 5, where every mesh carries it; three
  * uniforms declared after every other, so no field of the plain variant moves and a binder written
  * against it stays right for this one; and two outputs after vLightPosition, which keeps location 0.
  */
 layout(location = 5) in vec3 aUv;
 uniform vec2 uUvScale;
+uniform vec2 uUvOffset;
 uniform float uAlphaCutout;
 #endif
 
@@ -104,7 +105,7 @@ void main() {
   vLightPosition = uLightViewProj * vec4(bent, world.w);
   gl_Position = vLightPosition;
 #if CUTOUT
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vAlphaCutout = uAlphaCutout;
 #endif
 #if GLASS

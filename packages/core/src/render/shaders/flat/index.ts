@@ -62,6 +62,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -244,7 +249,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;

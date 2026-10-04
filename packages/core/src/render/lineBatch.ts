@@ -2,6 +2,7 @@ import { compileProgram, uniformLocations } from './shader.ts';
 import { LINE_FRAG, LINE_VERT } from './shaders/line.ts';
 import { buildSegmentQuads, expandLineSegments } from './segmentQuads.ts';
 import type { LineSegments } from './linePoints.ts';
+import { blendCovering, blendKeeping } from './sceneCoverage.ts';
 
 /**
  * One draw call for a polyline with a real width — an audio waveform, a trail, a plotted
@@ -102,7 +103,8 @@ export class LineBatch {
   drawTo(gl: WebGL2RenderingContext, segmentCount: number, additive = false): void {
     if (segmentCount === 0) return;
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, additive ? gl.ONE : gl.ONE_MINUS_SRC_ALPHA);
+    if (additive) blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
+    else blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     // The quad billboards toward the view direction the same way a bolt's does — see
     // `line.ts`'s own `cross(dir, view)` — so its winding can flip with the camera exactly

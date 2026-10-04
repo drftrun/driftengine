@@ -7,6 +7,7 @@ import type { Atmosphere } from './atmosphere.ts';
 import { buildSheets } from './surfaceSheet.ts';
 import type { SheetSpan } from './surfaceSheet.ts';
 import { seaStateForWind } from './seaState.ts';
+import { blendKeeping } from './sceneCoverage.ts';
 
 /**
  * A surface lit by nearby water: the floor of a pool, the bottom of a flooded
@@ -149,7 +150,7 @@ export class CausticsRenderer {
     bindAtmosphere(gl, u, atmosphere, camera.position[1] ?? 0, underwaterEnabled);
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
+    blendKeeping(gl, gl.ONE, gl.ONE);
     /*
      * No depth write, but depth *testing* stays on: the sheet sits a couple of
      * centimetres under the surface it lights, so geometry in front of it — the

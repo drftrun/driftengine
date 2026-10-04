@@ -11,6 +11,7 @@ import type { SdfFont } from '../../sdfFont.ts';
 import { SdfTextLayout, type SdfTextStyle } from '../../sdfTextLayout.ts';
 import type { GpuSurfaceTexture } from './surfaceTexturePass.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The SDF text pass: a string as flat, textured quads, drawn into the scene.
@@ -213,7 +214,7 @@ export function sdfTextPipeline(
           format: cache.format,
           blend: {
             color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_COVERS,
           },
         },
       ],

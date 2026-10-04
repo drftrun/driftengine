@@ -9,6 +9,7 @@ import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The wind-streak pass: a lattice of debris that follows the camera and wraps.
@@ -184,7 +185,7 @@ export function windStreakPipeline(
               dstFactor: 'one-minus-src-alpha',
               operation: 'add',
             },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_COVERS,
           },
         },
       ],

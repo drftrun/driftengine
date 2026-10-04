@@ -7,6 +7,7 @@ import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The panel pass: two triangles in screen space, one colour, one alpha.
@@ -121,7 +122,7 @@ export function panelPipeline(
           format: cache.format,
           blend: {
             color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_COVERS,
           },
         },
       ],

@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "4d396806:202402",
-  "directionalShadows+environmentProbe": "c4d58691:228415",
-  "directionalShadows+environmentProbe+nightEmissive": "4d32d0d3:230901",
-  "directionalShadows+nightEmissive": "8fd437c6:204888",
-  "environmentProbe": "4e095980:208452",
-  "environmentProbe+nightEmissive": "d4c0134a:210938",
-  "nightEmissive": "fd538741:184925",
-  "none": "52e2580d:182439",
-  "pointShadows": "1dd5547d:221647",
-  "pointShadows+directionalShadows": "675dba06:241610",
-  "pointShadows+directionalShadows+environmentProbe": "39c43ea9:267623",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "4e10de53:270109",
-  "pointShadows+directionalShadows+nightEmissive": "e945f896:244096",
-  "pointShadows+environmentProbe": "6f25dbd0:247660",
-  "pointShadows+environmentProbe+nightEmissive": "c494bcd2:250146",
-  "pointShadows+nightEmissive": "c72770b1:224133",
+  "directionalShadows": "5cfc5f8a:202680",
+  "directionalShadows+environmentProbe": "a622e699:228693",
+  "directionalShadows+environmentProbe+nightEmissive": "fdab25bf:231179",
+  "directionalShadows+nightEmissive": "86dbdbae:205166",
+  "environmentProbe": "b129c078:208730",
+  "environmentProbe+nightEmissive": "60916c76:211216",
+  "nightEmissive": "964af919:185203",
+  "none": "ece25891:182717",
+  "pointShadows": "85b57351:221925",
+  "pointShadows+directionalShadows": "7f57be3a:241888",
+  "pointShadows+directionalShadows+environmentProbe": "b558c2d1:267901",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "a415224f:270387",
+  "pointShadows+directionalShadows+nightEmissive": "f0b18cbe:244374",
+  "pointShadows+environmentProbe": "9b063d08:247938",
+  "pointShadows+environmentProbe+nightEmissive": "d6e8c23e:250424",
+  "pointShadows+nightEmissive": "f7b8bb89:224411",
 }
 `;
 
@@ -2037,7 +2037,7 @@ vec3 areaGlassTint(
 out vec4 outColor;
 
 
-/** 0 none, 1 sRGB, 2 ACES then sRGB. See renderQuality.ts. */
+/** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
 uniform int uOutputTransform;
 /** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
 uniform float uOutputExposure;
@@ -2100,9 +2100,18 @@ vec3 linearToSrgb(vec3 c) {
   return mix(high, low, step(c, vec3(0.0031308)));
 }
 
+
+vec3 highlightShoulder(vec3 c) {
+  float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.8) return c;
+  float e = m - 0.8;
+  return c * ((0.8 + 0.2 * e / (e + 0.2)) / m);
+}
+
 vec3 applyOutputTransform(vec3 c) {
   if (uOutputTransform == 0) return c;
   if (uOutputTransform == 2) c = acesFilmic(c);
+  if (uOutputTransform == 3) c = highlightShoulder(c * uOutputExposure);
   return linearToSrgb(c);
 }
 
@@ -4999,6 +5008,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -5120,7 +5134,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5173,6 +5187,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -5329,7 +5348,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5424,6 +5443,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -5591,7 +5615,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5643,6 +5667,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -5834,7 +5863,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -5929,6 +5958,11 @@ uniform mat4 uLightViewProj;
  * when no texture is bound.
  */
 uniform vec2 uUvScale;
+/**
+ * Where the texture starts, per axis, added after the scale: \`uv * uUvScale + uUvOffset\`. What
+ * picks a cell of a flipbook or an atlas through the material. See \`SurfaceMaterial.uOffset\`.
+ */
+uniform vec2 uUvOffset;
 
 /*
  * **Placement and tint are declared last of the shared uniforms, and the position is the
@@ -6131,7 +6165,7 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale, aUv.z);
+  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;

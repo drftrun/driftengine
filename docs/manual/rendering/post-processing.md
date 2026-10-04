@@ -84,6 +84,12 @@ lands while tuning.
 from across the room as from close up. Match it to the gaps that matter: half a metre, the default,
 for a room or a vehicle, more for a landscape.
 
+Occlusion is measured from the depth the opaque world leaves, and glass, smoke, water, text and
+lines write none, so it darkens only the part of a pixel they let through: smoke in front of a
+corner stays the colour of the smoke, and a pane at 0.85 opacity takes 0.15 of the darkening behind
+it. Light added on top, such as sparks or a glow, is darkened with the surface it lands on. A pass of
+your own says which of these its blending is; see [Custom passes](custom-passes.md).
+
 ## Antialiasing
 
 With `screenEffects` on, the canvas's own antialiasing is turned off, because only one full-screen

@@ -298,7 +298,10 @@ on the clock `advance(ms)` gives it, which the example moves by one fixed step a
 plays the same match every time it is played the same way. Tests and examples run on it.
 
 Between machines a session takes a real transport. Both send binary frames and neither queues
-inputs while connecting, since an input addressed to a tick that has passed is no use to anyone:
+inputs while connecting, since an input addressed to a tick that has passed is no use to anyone. A
+**text** frame from a server that speaks text arrives as its UTF-8 bytes, which is exactly what the
+server wrote, and a frame that cannot be read at all is counted in `dropped` rather than lost in
+silence:
 
 ```ts sample=snippets/network.ts#transports
 /** A relay over a WebSocket, which every browser and server has. Messages are binary frames. */

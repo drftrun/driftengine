@@ -25,6 +25,7 @@ import { DEPTH_OF_FIELD_GLSL } from './depthOfField.ts';
 import { AUTO_EXPOSURE_GLSL } from './exposure.ts';
 import { LOCAL_EXPOSURE_GLSL } from './localExposure.ts';
 import { FILM_LOOK_GLSL } from './filmLook.ts';
+import { HIGHLIGHT_SHOULDER_GLSL } from './outputTransform.ts';
 
 export const RUSH_FRAG = `#version 300 es
 precision highp float;
@@ -242,9 +243,11 @@ vec3 acesFilmic(vec3 x) {
   return clamp(ACES_OUTPUT * (a / b), 0.0, 1.0);
 }
 
+${HIGHLIGHT_SHOULDER_GLSL}
 vec3 grade(vec3 c) {
   if (uOutputTransform == 0) return c;
   if (uOutputTransform == 2) c = acesFilmic(c);
+  if (uOutputTransform == 3) c = highlightShoulder(c * uOutputExposure);
   return linearToSrgb(c);
 }
 
@@ -335,7 +338,8 @@ vec3 finish(vec3 light) {
 }
 
 void main() {
-  vec3 scene = textureLod(uScene, vUv, 0.0).rgb;
+  vec4 sampled = textureLod(uScene, vUv, 0.0);
+  vec3 scene = sampled.rgb;
   if (uMotionStrength > 0.0) scene = cameraBlur(scene);
   /*
    * Defocus after the camera smear and before everything else, because a lens is the last thing
@@ -350,8 +354,15 @@ void main() {
    * not then darkened again along its own trail. mix from 1 rather than a multiply by the
    * strength, so the parameter reads as "how much of this occlusion", and 0 is exactly the
    * frame that existed before the effect did.
+   *
+   * **Scaled by the surface's share of the pixel**, which the scene carries in its alpha
+   * (sceneCoverage.ts): the occlusion was measured from the depth the opaque world left, and a
+   * pane, a puff of smoke or a caption in front of a corner wrote no depth, so darkening all of the
+   * pixel darkened them by a corner they hide. Where nothing blended landed the share is 1 and
+   * this is the frame it was.
    */
-  float ao = mix(1.0, textureLod(uAo, vUv + uAoOffset, 0.0).r, uAoStrength);
+  float share = clamp(sampled.a, 0.0, 1.0);
+  float ao = mix(1.0, textureLod(uAo, vUv + uAoOffset, 0.0).r, uAoStrength * share);
 
   /*
    * Distance from the centre, corrected so the falloff is a circle on screen rather than

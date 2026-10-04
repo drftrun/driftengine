@@ -3,6 +3,7 @@
  *
  * A snippet, typechecked with the examples and quoted by the manual's custom passes chapter.
  */
+import { SCENE_ALPHA_COVERS } from '@driftengine/core';
 import type { ComputeDefinition, PassDefinition, RendererApi } from '@driftengine/core';
 
 // #region pass
@@ -33,7 +34,7 @@ export function washPass(): PassDefinition {
               format: device.format,
               blend: {
                 color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-                alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+                alpha: SCENE_ALPHA_COVERS,
               },
             },
           ],

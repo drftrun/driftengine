@@ -7,6 +7,7 @@ import { DEPTH_01_TO_CLIP } from './lightVolumeDraw.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { DECAL_PROJECT_FRAG } from './shaders/decalProject.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
+import { blendKeeping } from './sceneCoverage.ts';
 
 /**
  * Drawn decals on WebGL2: one scissored triangle per mark, multiplied into the finished scene.
@@ -66,7 +67,7 @@ export class DecalPass {
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
+    blendKeeping(gl, gl.ZERO, gl.SRC_COLOR);
     gl.enable(gl.SCISSOR_TEST);
 
     /* Unit 0, chosen rather than inherited: `bindTexture` binds to whichever unit is active, and

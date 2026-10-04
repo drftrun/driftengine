@@ -1,6 +1,7 @@
 import { FrameBudget } from '../budget.ts';
 import { MaterialChanges, ownsMaterial } from '../materialChanges.ts';
-import { FOG_RECEDE, fogModeOf } from '../drawFog.ts';
+import { FOG_OFF, FOG_RECEDE, fogModeOf } from '../drawFog.ts';
+import { blendCovering, blendKeeping } from '../../sceneCoverage.ts';
 import { mat4 } from 'gl-matrix';
 import {
   GL_DEPTH_REMAP,
@@ -1249,6 +1250,11 @@ export class WebGL2Renderer implements RendererApi {
   private readonly surfaceScene = new Float32Array(4);
   /** The two halves of `uWriteMode`, kept here because a `vec2` is written whole. */
   private oitWeight = 0;
+  /**
+   * How the surfaces drawn next meet the medium: what `setSurfaceFog` set, and `FOG_RECEDE` from
+   * each `bindMeshPass`. A translucent draw's own fog is measured against this and puts it back.
+   */
+  private surfaceFog = FOG_RECEDE;
   private ditherFade = 0;
   /** Said once, not per frame, where the context cannot give the float target the sum needs. */
   private oitRefused = false;
@@ -1882,6 +1888,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
     if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
     gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
+    gl.uniform2f(u['uUvOffset'] ?? null, cutout.uOffset, cutout.vOffset);
     gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
     /* Narrowed for the reason the sink's own `mesh` gives: this renderer only hands out its own. */
     (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
@@ -3453,6 +3460,7 @@ export class WebGL2Renderer implements RendererApi {
      * how big a dome was — WebGPU writes it before its own early return and WebGL2 did not.
      */
     gl.uniform2f(u['uUvScale'] ?? null, material?.uScale ?? 1, material?.vScale ?? 1);
+    gl.uniform2f(u['uUvOffset'] ?? null, material?.uOffset ?? 0, material?.vOffset ?? 0);
     gl.uniform1i(u['uDoubleSided'] ?? null, material?.doubleSided === true ? 1 : 0);
 
     /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
@@ -3586,6 +3594,28 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Whether the surfaces drawn next meet the medium: distance fog and the global medium's haze.
+   * True is the default, and what `bindMeshPass` restores.
+   *
+   * **The opaque counterpart of `TranslucentMeshOptions.fog`**, which a translucent draw has had
+   * all along; the shader's per-draw switch was there, and nothing reached it for an ordinary mesh.
+   * What it is for is a medium that darkens one thing and not another — a floor receding into the
+   * distance under figures that must keep their full value however far from the camera they stand.
+   * Material state like `setSurfaceGrain`: instanced and skinned draws read it too, and a
+   * translucent draw's own `fog` is measured against it and puts it back.
+   *
+   * **What it gives up** is the medium's honesty: a surface out of the fog is drawn as though the
+   * air between it and the eye were empty, so it should be a surface the scene means to stand
+   * apart, not one whose distance is the point.
+   */
+  setSurfaceFog(enabled: boolean): void {
+    if (this.contextLost) return;
+    this.materials.dirty();
+    this.surfaceFog = enabled ? FOG_RECEDE : FOG_OFF;
+    this.writeFlatInt('uFogEnabled', this.surfaceFog);
+  }
+
+  /**
    * One float of material state, into every flat program.
    *
    * **Every one, for `setMaterial`'s reason**: an instanced or skinned draw runs a program of its
@@ -3598,6 +3628,15 @@ export class WebGL2Renderer implements RendererApi {
     for (const target of this.flatTargets) {
       this.gl.useProgram(target.program);
       this.gl.uniform1f(target.uniforms[name] ?? null, value);
+    }
+    this.useFlatProgram();
+  }
+
+  /** One int of material state, into every flat program, for `writeFlatFloat`'s reason. */
+  private writeFlatInt(name: string, value: number): void {
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.gl.uniform1i(target.uniforms[name] ?? null, value);
     }
     this.useFlatProgram();
   }
@@ -3852,7 +3891,7 @@ export class WebGL2Renderer implements RendererApi {
     /* A blended batch shows what is behind it — refraction or glass — as a single draw does, and
        counts a material of its own for it by the rule both backends share (`materialChanges.ts`). */
     const refracting = blend && this.bindSeeThrough(u, options);
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
     if (own) this.materials.dirty();
     this.takeMaterial();
     const depthWrite = options.depthWrite ?? true;
@@ -3876,14 +3915,13 @@ export class WebGL2Renderer implements RendererApi {
      * part of what the count asks.
      */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
-    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
+    if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.gradeCode(), 1));
 
     if (blend) {
       gl.enable(gl.BLEND);
-      if (options.additive === true) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
-      else
-        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      if (options.additive === true) blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
+      else blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       if (!depthWrite) gl.depthMask(false);
     }
     /* The sign follows the compare, which `depthOffsetForLayer` owns — see `drawMesh`, where the
@@ -3916,7 +3954,7 @@ export class WebGL2Renderer implements RendererApi {
        outlives its frame, so a snapshot left on unit 14 is held against the next frame's copy. */
     if (refracting) this.unbindSeeThrough(u);
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
-    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, FOG_RECEDE);
+    if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, this.surfaceFog);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
     if (own) this.materials.dirty();
     this.useFlatProgram();
@@ -5256,6 +5294,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform4fv(u['uGlassLight'] ?? null, this.glassLight);
     if (cutout !== null) {
       gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
+      gl.uniform2f(u['uUvOffset'] ?? null, cutout.uOffset, cutout.vOffset);
       gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
       (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
       gl.uniform1i(u['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
@@ -6072,7 +6111,7 @@ export class WebGL2Renderer implements RendererApi {
      */
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     gl.uniform4f(this.panelUniforms['uRect'] ?? null, rect.left, rect.top, rect.width, rect.height);
     gl.uniform2f(
@@ -7509,7 +7548,8 @@ export class WebGL2Renderer implements RendererApi {
      * shape `uOpacity` and `uTint` already use.
      */
     gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
-    gl.uniform1i(u['uFogEnabled'] ?? null, 1);
+    gl.uniform1i(u['uFogEnabled'] ?? null, FOG_RECEDE);
+    this.surfaceFog = FOG_RECEDE;
     /* Grain on by default, so every scene written before it was a choice looks unchanged. */
     gl.uniform1f(u['uGrain'] ?? null, 1);
     /* No dither and no weighting: every draw whole, until a crossfade asks. See `setDitherFade`. */
@@ -7709,6 +7749,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
     gl.uniform1i(u['uSurfaceEffects'] ?? null, SURFACE_EFFECTS_TEXTURE_UNIT);
     gl.uniform2f(u['uUvScale'] ?? null, 1, 1);
+    gl.uniform2f(u['uUvOffset'] ?? null, 0, 0);
     gl.uniform1f(u['uAlbedoCutout'] ?? null, 0);
     gl.uniform1i(u['uDoubleSided'] ?? null, 0);
     this.materialDoubleSided = false;
@@ -8061,7 +8102,7 @@ export class WebGL2Renderer implements RendererApi {
     const fog = fogModeOf(options.fog ?? true, options.additive === true);
     const toneMapped = options.toneMapped ?? true;
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
-    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
+    if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
     /* `1` is sRGB alone: the conversion without the curve, which is what dropping the tone map
        means rather than dropping the whole transform. `Math.min` rather than a literal, so a
        renderer asked for `none` stays at none and one asked for `srgb` is already there. */
@@ -8093,15 +8134,15 @@ export class WebGL2Renderer implements RendererApi {
      */
     /* Taken for itself when any option differs from the pass, and put back below: the rule both
        backends count material changes by. See `materialChanges.ts`. */
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting });
+    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
     if (own) this.materials.dirty();
     this.takeMaterial();
     const ownsState = !this.oitReplaying;
     if (ownsState) {
       gl.enable(gl.BLEND);
       /* Added, where asked: colour times alpha onto what is there, and the target's alpha kept. */
-      if (options.additive === true) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
-      else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      if (options.additive === true) blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
+      else blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
     /*
      * The two depth options, both scoped to this draw and handed straight back — the same
@@ -8133,7 +8174,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Put back for whatever is drawn next, exactly as `uOpacity` and `uTint` are — a pass
        cannot inherit a material from the draw before it. */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
-    if (fog !== FOG_RECEDE) gl.uniform1i(u['uFogEnabled'] ?? null, FOG_RECEDE);
+    if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, this.surfaceFog);
     if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
     if (own) this.materials.dirty();
   }
@@ -8561,7 +8602,7 @@ export class WebGL2Renderer implements RendererApi {
     }
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
     gl.depthMask(false);
     gl.cullFace(inside ? gl.FRONT : gl.BACK);
     mesh.draw(gl);
@@ -8656,7 +8697,7 @@ export class WebGL2Renderer implements RendererApi {
     );
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendKeeping(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     mesh.draw(gl);
     gl.depthMask(true);

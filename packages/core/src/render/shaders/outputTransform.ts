@@ -28,6 +28,27 @@
  */
 
 /**
+ * A highlight shoulder that keeps a colour's hue: past 0.8 the brightest channel eases toward 1 —
+ * `0.8 + 0.2·e / (e + 0.2)` of an excess `e` — and the other two are scaled by the same factor, so
+ * an overbright red stays red rather than clipping channel by channel toward white.
+ *
+ * **Per channel is what sRGB alone does, and it is a hue shift**: `(1.6, 0.4, 0.2)` clips to
+ * `(1, 0.4, 0.2)`, a pinker colour and a wider core, where this gives `(0.96, 0.24, 0.12)`. The
+ * curve is the one a ported game's own resolve applies, read out of its build, so a port matching
+ * it reads the same. **What it gives up** is ACES's filmic toe and saturation roll-off: it touches
+ * nothing below 0.8 and never desaturates, so a scene that wants a film's look still wants ACES.
+ * Shared by the forward passes and the resolve, so the two cannot disagree about it.
+ */
+export const HIGHLIGHT_SHOULDER_GLSL = `
+vec3 highlightShoulder(vec3 c) {
+  float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.8) return c;
+  float e = m - 0.8;
+  return c * ((0.8 + 0.2 * e / (e + 0.2)) / m);
+}
+`;
+
+/**
  * `uOutputTransform` and `uOutputExposure`, the fit, and `applyOutputTransform`.
  *
  * Declares its own two uniforms, so including it is the whole of what a fragment stage has to
@@ -36,7 +57,7 @@
  * a branch that costs one compare.
  */
 export const OUTPUT_TRANSFORM_GLSL = `
-/** 0 none, 1 sRGB, 2 ACES then sRGB. See renderQuality.ts. */
+/** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
 uniform int uOutputTransform;
 /** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
 uniform float uOutputExposure;
@@ -99,9 +120,11 @@ vec3 linearToSrgb(vec3 c) {
   return mix(high, low, step(c, vec3(0.0031308)));
 }
 
+${HIGHLIGHT_SHOULDER_GLSL}
 vec3 applyOutputTransform(vec3 c) {
   if (uOutputTransform == 0) return c;
   if (uOutputTransform == 2) c = acesFilmic(c);
+  if (uOutputTransform == 3) c = highlightShoulder(c * uOutputExposure);
   return linearToSrgb(c);
 }
 `;

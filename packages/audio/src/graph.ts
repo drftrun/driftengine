@@ -357,7 +357,7 @@ export class AudioGraph {
   }
 
   /**
-   * Stop the stems and start them again from the top.
+   * Stop the stems and start them again: from the top, or from `fromSec` into the track.
    *
    * A `BufferSource` cannot be rewound — the spec makes it one-shot — so starting
    * over means discarding the sources and creating new ones. That is cheap: a
@@ -368,16 +368,22 @@ export class AudioGraph {
    * in its own world. Left running instead, a loop's downbeats land somewhere
    * different on every attempt.
    *
-   * **Returns how long until beat zero is actually heard**, in seconds, because
+   * **`fromSec` is a seek**, for music held to a clock of its own: a demo's frame counter or a
+   * replay's tick has to resume the score where that clock is after every skip, and every stem
+   * starts there at one instant, wrapped by its own length because the stems loop. A caller that
+   * ran its own source into the music bus instead had a track outside every stem's lock. Anything
+   * not a positive number is the top.
+   *
+   * **Returns how long until that place is actually heard**, in seconds, because
    * `launch` schedules a little ahead of now and a caller lining a picture up
    * against the music needs that number rather than an assumption. Zero when
    * nothing started.
    */
-  restart(): number {
+  restart(fromSec = 0): number {
     this.stopSources();
-    this.started = false;
     this.paused = false;
-    this.start();
+    this.started = true;
+    this.launch(Number.isFinite(fromSec) && fromSec > 0 ? fromSec : 0);
     return this.startsInSec;
   }
 

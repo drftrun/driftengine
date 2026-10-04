@@ -26,18 +26,33 @@ function blendOf(additive: boolean) {
   const { gl, calls } = recordingGl();
   const batch = new LineBatch(gl, 4, 'lineBatch.test');
   batch.drawTo(gl, 1, additive);
-  const args = calls.find((call) => call.name === 'blendFunc')?.args ?? [];
-  return { gl, source: args[0], destination: args[1] };
+  const args = calls.find((call) => call.name === 'blendFuncSeparate')?.args ?? [];
+  return {
+    gl,
+    source: args[0],
+    destination: args[1],
+    alphaSource: args[2],
+    alphaDestination: args[3],
+  };
 }
 
+/*
+ * The alpha half is the scene's surface share (`sceneCoverage.ts`): a stroke that covers what is
+ * behind it covers the surface's share too, so a corner behind it does not darken it; one that is
+ * light leaves the share alone.
+ */
 test('a line covers what is behind it, which is every stroke drawn before this', () => {
-  const { gl, source, destination } = blendOf(false);
+  const { gl, source, destination, alphaSource, alphaDestination } = blendOf(false);
   expect(source).toBe(gl.SRC_ALPHA);
   expect(destination).toBe(gl.ONE_MINUS_SRC_ALPHA);
+  expect(alphaSource).toBe(gl.ZERO);
+  expect(alphaDestination).toBe(gl.ONE_MINUS_SRC_ALPHA);
 });
 
 test('and adds to it when the caller says the stroke is light', () => {
-  const { gl, source, destination } = blendOf(true);
+  const { gl, source, destination, alphaSource, alphaDestination } = blendOf(true);
   expect(source).toBe(gl.SRC_ALPHA);
   expect(destination).toBe(gl.ONE);
+  expect(alphaSource).toBe(gl.ZERO);
+  expect(alphaDestination).toBe(gl.ONE);
 });

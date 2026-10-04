@@ -331,6 +331,7 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
   /* `?cull=1`. Skips a mesh draw whose bounds are outside the frame; see RenderQuality. */
   const cullDraws = asked.get('cull') === '1';
   const glassShadows = asked.get('glassshadows');
+  const transform = asked.get('transform');
   const discard = asked.get('discard');
   const defer = asked.get('defer');
   /*
@@ -445,6 +446,14 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
     ...(exposure === undefined
       ? {}
       : { outputTransform: 'aces' as const, outputExposure: exposure }),
+    /* `?transform=none|srgb|aces|shoulder`, after the exposure so the two compose: an exposure
+       alone means ACES, and with this it scales into whichever curve is named. */
+    ...(transform === 'none' ||
+    transform === 'srgb' ||
+    transform === 'aces' ||
+    transform === 'shoulder'
+      ? { outputTransform: transform }
+      : {}),
     ...(samples === undefined ? {} : { sceneSamples: Math.round(samples) }),
     ...(occlusion === undefined ? {} : { ambientOcclusion: Math.min(1, occlusion) }),
     ...(mediumSteps === undefined ? {} : { globalMediumSteps: Math.round(mediumSteps) }),

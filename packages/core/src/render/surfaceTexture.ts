@@ -70,6 +70,17 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
   /** Repeats across the mesh's own UV range, per axis. Applies to every map the material holds. */
   uScale?: number;
   vScale?: number;
+  /**
+   * Where the texture starts, per axis, added after the scale: a surface samples
+   * `uv · scale + offset`. Applies to every map, and to a cutout's shadow and depth as well.
+   *
+   * **What picks a cell of a flipbook or an atlas through the material**, so one quad draws any
+   * cell: a strip of four frames is `uScale: 0.25` and `uOffset: frame * 0.25`. Without it a
+   * consumer built one quad mesh per cell — 106 meshes for four strips — because the only way to
+   * move a texture was to move the geometry's own coordinates.
+   */
+  uOffset?: number;
+  vOffset?: number;
   /** Alpha below which a fragment is discarded. See `uAlbedoCutout`. */
   cutout?: number;
   /**

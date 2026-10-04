@@ -148,6 +148,11 @@ example sets them in TypeScript.
 - `'srgb'` applies the display's transfer curve without a tone curve.
 - `'aces'` rolls highlights off smoothly before that, so bright light keeps its colour. It is the
   usual choice, and it is what exposure, grading and the eye below need.
+- `'shoulder'` keeps sRGB's midtones exactly and eases only the highlights. Past 0.8, the brightest
+  channel rolls toward 1 and the other two are scaled with it, so an overbright red spark stays red
+  where `'srgb'` would clip each channel and turn its core pink. It has none of ACES's toe or
+  desaturation. Use it to match a renderer that grades this way, or when the midtones must stay as
+  authored.
 
 **If a scene looks dark and flat, try `'aces'` with an `outputExposure` before touching a light.**
 The default stays `'none'` only so no existing game changes. With `screenEffects` on, the curve is

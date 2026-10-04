@@ -1,5 +1,7 @@
 /** The WebGL2 half of the splat pass: two integer textures, one program, no vertex state at all. */
 
+import { blendCovering } from '@driftengine/core';
+
 import {
   SPLAT_STRIDE,
   checkSplatCapacity,
@@ -242,8 +244,9 @@ export function drawWebgl2Splats(
   const depthMaskWas = gl.getParameter(gl.DEPTH_WRITEMASK) as boolean;
   gl.enable(gl.BLEND);
   /* Premultiplied `over`, per the plan's decision 1: the fragment stage folds alpha in, so this
-     composes correctly onto a target that already holds opaque geometry. */
-  gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+     composes correctly onto a target that already holds opaque geometry. A capture covers the
+     scene's surface by its alpha, so occlusion behind it does not darken it. */
+  blendCovering(gl, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
 
   gl.drawArrays(gl.TRIANGLES, 0, count * 6);

@@ -10,6 +10,7 @@ import { bindPointLights } from './lightBudget.ts';
 import type { PointLightSet } from './lightBudget.ts';
 import { DEFAULT_RENDER_QUALITY } from './renderQuality.ts';
 import { createResolvedWater, resolveWater, waterAppearance } from './waterDraw.ts';
+import { blendCovering } from './sceneCoverage.ts';
 
 /**
  * An endless wave surface. Game-agnostic: it takes a height, colours and a
@@ -325,7 +326,7 @@ export class WaterRenderer {
     gl.uniform1i(u['uReflectionFilterTaps'] ?? null, this.reflectionFilterTaps);
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     // Waves are displaced far enough that back faces show at grazing angles.
     gl.disable(gl.CULL_FACE);
 

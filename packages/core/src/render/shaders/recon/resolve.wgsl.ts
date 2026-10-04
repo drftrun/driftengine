@@ -951,6 +951,19 @@ fn reconSceneBilinear(p: vec2<f32>) -> vec3<f32> {
   return textureSampleLevel(sceneTexture, linearSampler, uv, 0.0).xyz;
 }
 
+/*
+ * The surface's share of an output pixel, read from the jittered scene it was rebuilt from
+ * (sceneCoverage.ts): what the blended draws that landed before the reconstruction left of it.
+ * The late ones then cover the picture this is stored in, so the composite's occlusion reads both.
+ * Bilinear and at the unjittered position, which is where the colour beside it stands.
+ */
+fn reconSceneShare(ox: i32, oy: i32) -> f32 {
+  let output = vec2<f32>(f32(recon.outputSize.x), f32(recon.outputSize.y));
+  let render = vec2<f32>(f32(recon.renderSize.x), f32(recon.renderSize.y));
+  let at = (vec2<f32>(f32(ox), f32(oy)) + 0.5) / output + recon.jitter / render;
+  return textureSampleLevel(sceneTexture, linearSampler, vec2<f32>(at.x, 1.0 - at.y), 0.0).w;
+}
+
 fn reconHistoryBilinear(p: vec2<f32>) -> vec4<f32> {
   let size = vec2<f32>(f32(recon.outputSize.x), f32(recon.outputSize.y));
   let uv = vec2<f32>(p.x + 0.5, size.y - 0.5 - p.y) / size;
@@ -973,7 +986,8 @@ fn sharpenMain(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= recon.outputSize.x || id.y >= recon.outputSize.y) { return; }
   let y = i32(recon.outputSize.y) - 1 - i32(id.y);
   let value = reconSharpenAt(i32(id.x), y);
-  textureStore(resolved, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(value, 1.0));
+  let share = reconSceneShare(i32(id.x), y);
+  textureStore(resolved, vec2<i32>(i32(id.x), i32(id.y)), vec4<f32>(value, share));
 }
 `;
 }

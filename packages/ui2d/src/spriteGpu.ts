@@ -16,7 +16,12 @@ import type { SpriteBatch } from './spriteBatch.ts';
  * and nothing else. The alternative was a second copy of the mip blit living here, and the second
  * copy is the one that ends up disagreeing about the colour space.
  */
-import { generateMipChain, mipLevelCount, type MipPipelines } from '@driftengine/core';
+import {
+  SCENE_ALPHA_COVERS,
+  generateMipChain,
+  mipLevelCount,
+  type MipPipelines,
+} from '@driftengine/core';
 import type { SpriteImage, SpriteTextureOptions } from './spriteTexture.ts';
 
 const VERT = SPRITE_BINDINGS.SPRITE_VERT;
@@ -225,10 +230,11 @@ export function spritePipelineFor(
       targets: [
         {
           format,
-          /* Premultiplied `over`, matching the WebGL2 half exactly. */
+          /* Premultiplied `over`, matching the WebGL2 half exactly; a sprite covers the scene's
+             surface by its alpha, so occlusion behind it does not darken it. */
           blend: {
             color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_COVERS,
           },
         },
       ],

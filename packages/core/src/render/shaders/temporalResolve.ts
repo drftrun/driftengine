@@ -211,11 +211,18 @@ vec3 historyCatmullRom(vec2 uv) {
 }
 
 void main() {
-  vec3 current = textureLod(uScene, vUv, 0.0).rgb;
+  /*
+   * **The alpha is this frame's and takes no history.** It is how much of the pixel is still the
+   * opaque surface (sceneCoverage.ts), which the composite's occlusion reads after this has
+   * replaced the scene, so it passes through untouched. The history is read for its colour alone.
+   */
+  vec4 sampled = textureLod(uScene, vUv, 0.0);
+  vec3 current = sampled.rgb;
+  float share = sampled.a;
 
   /* Nothing to blend towards: the first frame, a resize, a cut, or the effect switched off. */
   if (uHistoryBlend <= 0.0) {
-    fragColor = vec4(current, 1.0);
+    fragColor = vec4(current, share);
     flickerOut = freshRecord(current);
     flickerMotionOut = vec4(0.0);
     return;
@@ -248,7 +255,7 @@ void main() {
   vec4 previous = uReprojection * clip;
   /* Behind the previous eye: there is no last-frame position to sample. */
   if (previous.w <= 0.0) {
-    fragColor = vec4(current, 1.0);
+    fragColor = vec4(current, share);
     flickerOut = freshRecord(current);
     flickerMotionOut = vec4(metres, 0.0, 0.0, 0.0);
     return;
@@ -261,7 +268,7 @@ void main() {
    * as a smear for as long as the camera kept turning.
    */
   if (wasUv.x < 0.0 || wasUv.x > 1.0 || wasUv.y < 0.0 || wasUv.y > 1.0) {
-    fragColor = vec4(current, 1.0);
+    fragColor = vec4(current, share);
     flickerOut = freshRecord(current);
     flickerMotionOut = vec4(metres, 0.0, 0.0, 0.0);
     return;
@@ -320,6 +327,6 @@ void main() {
     repeated * still
   );
   flickerMotionOut = vec4(metres, swingOut, 0.0, 0.0);
-  fragColor = vec4(mix(current, bounded, blend), 1.0);
+  fragColor = vec4(mix(current, bounded, blend), share);
 }
 `;

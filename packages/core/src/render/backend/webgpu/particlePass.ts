@@ -8,6 +8,7 @@ import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import type { UniformFields } from './scatterPass.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
 /**
  * The particle pass: a crossed pair of quads per live particle, rebuilt every frame.
@@ -367,7 +368,7 @@ export function particlePipeline(
                     dstFactor: 'one-minus-src-alpha',
                     operation: 'add',
                   },
-                  alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  alpha: SCENE_ALPHA_COVERS,
                 },
         },
       ],

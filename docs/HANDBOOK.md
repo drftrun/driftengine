@@ -151,9 +151,10 @@ and turn the face the way you meant: up, or away from a point you name.
 Set once per material group, not per mesh.
 
 ```ts
-renderer.setMaterial({ albedo, normal, uScale, vScale, cutout, normalStrength } | null);
+renderer.setMaterial({ albedo, normal, uScale, vScale, uOffset, vOffset, cutout, normalStrength } | null);
 renderer.setSurfaceGrain(0..1);          // scales what the geometry declared. default 1
 renderer.setSurfaceReflectivity(0..1);   // default 0
+renderer.setSurfaceFog(false);           // the next draws out of the fog. default true
 renderer.drawMesh(mesh, model, depthLayer);
 renderer.drawTranslucentMesh(mesh, model, opacity, { lit, fog, toneMapped, depthWrite, depthLayer });
 ```

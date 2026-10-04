@@ -31,12 +31,17 @@ export interface DrawMaterialOptions {
   readonly refracting: boolean;
 }
 
-/** Whether a draw's options differ from the pass's, so it takes a material and leaves one to restore. */
-export function ownsMaterial(options: DrawMaterialOptions): boolean {
+/**
+ * Whether a draw's options differ from the pass's, so it takes a material and leaves one to restore.
+ *
+ * `passFog` is how the surfaces around it meet the medium — `FOG_RECEDE` unless `setSurfaceFog`
+ * turned it off — so a translucent draw asking for what the pass already has takes nothing.
+ */
+export function ownsMaterial(options: DrawMaterialOptions, passFog = FOG_RECEDE): boolean {
   return (
     options.opacity < 1 ||
     !options.lit ||
-    options.fog !== FOG_RECEDE ||
+    options.fog !== passFog ||
     !options.toneMapped ||
     options.refracting
   );

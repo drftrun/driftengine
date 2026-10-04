@@ -743,6 +743,19 @@ export {
   REVERSED_DEPTH,
   conventionalDepth,
 } from './render/depthConvention.ts';
+/*
+ * **What a contributed pass's blended draw does to the scene's alpha**, which carries how much of
+ * each pixel is still the opaque surface: the share the composite's ambient occlusion may darken.
+ * A pass blending into the scene states one of these for its alpha. See `sceneCoverage.ts`.
+ */
+export {
+  SCENE_ALPHA_COVERS,
+  SCENE_ALPHA_KEEPS,
+  SCENE_ALPHA_TRANSMITS,
+  blendCovering,
+  blendKeeping,
+  blendTransmitting,
+} from './render/sceneCoverage.ts';
 /* How much of the depth range `beginViewModel` takes when it is given no share. See `viewModel.ts`. */
 export { VIEW_MODEL_DEPTH_SHARE } from './render/viewModel.ts';
 export type { ColliderSurfaceOptions } from './physics/colliderSurface.ts';

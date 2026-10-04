@@ -42,7 +42,7 @@ export function washPass(): PassDefinition {
               format: device.format,
               blend: {
                 color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-                alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+                alpha: SCENE_ALPHA_COVERS,
               },
             },
           ],
@@ -115,6 +115,13 @@ never draws whatever took its slot.
 - **It jitters with a reconstructed frame.** With DriftTR on, a pass drawing the world applies the
   frame's jitter, `ctx.jitter`, with `jitterClip`, and writes its depth into the frame's attachment;
   see [DriftTR](drifttr.md).
+- **It says what its blending does to the scene's alpha.** The scene's alpha holds how much of each
+  pixel is still the opaque surface, and the composite darkens only that share with ambient
+  occlusion, so a translucent draw is not darkened by a corner it hides. A pass drawing something
+  blended over the world gives its alpha `SCENE_ALPHA_COVERS` (it hides what is behind by its
+  alpha), `SCENE_ALPHA_TRANSMITS` (its alpha is what gets through) or `SCENE_ALPHA_KEEPS` (it adds
+  light to the surface); on WebGL2, `blendCovering`, `blendTransmitting` or `blendKeeping` set the
+  same thing beside the colour factors. An opaque draw writes 1.
 - **It sizes its targets from the scene.** `renderer.sceneWidth` and `sceneHeight` are what the
   frame is drawn at, which is smaller than the canvas under reconstruction.
 

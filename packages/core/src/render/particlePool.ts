@@ -21,7 +21,11 @@ import type { Vec3 } from '../math/color.ts';
 export interface ParticleInstances {
   /** World position, three floats each. */
   positions: Float32Array;
-  /** Metres across, and radians of roll about the particle's own axis. */
+  /**
+   * Metres from the centre to an edge, a half-width: the quad spans twice this. Then radians of
+   * roll about the particle's own axis. This said metres across until 4.8.3, and a caller who took
+   * it at its word drew every particle twice as wide as meant.
+   */
   sizes: Float32Array;
   spins: Float32Array;
   /** Linear colour, three floats each. */
@@ -72,7 +76,7 @@ export interface ParticlePoolOptions {
   capacity: number;
   /** Seconds a particle lives. */
   lifeSec: number;
-  /** Size at birth and at death, metres. */
+  /** Size at birth and at death: metres from the centre to an edge, so the quad is twice as wide. */
   sizeStart: number;
   sizeEnd: number;
   /** Colour at birth and at death. */

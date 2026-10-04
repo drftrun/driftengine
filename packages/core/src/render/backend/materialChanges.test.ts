@@ -27,3 +27,15 @@ test('A RUN OF DRAWS SHARES ONE MATERIAL until something dirties it', () => {
   materials.dirty();
   expect([materials.open, materials.slot]).toEqual([false, -1]);
 });
+
+/*
+ * **A TRANSLUCENT DRAW IS MEASURED AGAINST THE PASS'S OWN FOG.** `setSurfaceFog(false)` turns the
+ * pass out of the medium, so a draw asking for no fog under it asks for what the pass already has
+ * and owns nothing, and one asking for fog is now the one that differs.
+ */
+test("A TRANSLUCENT DRAW IS MEASURED AGAINST THE PASS'S OWN FOG, which setSurfaceFog can turn off", () => {
+  const plain = { opacity: 1, lit: true, fog: 1, toneMapped: true, refracting: false };
+  expect(ownsMaterial({ ...plain, fog: 0 }, 0), 'unfogged under an unfogged pass').toBe(false);
+  expect(ownsMaterial(plain, 0), 'fogged under an unfogged pass').toBe(true);
+  expect(ownsMaterial(plain), 'and the pass is fogged when nothing said otherwise').toBe(false);
+});

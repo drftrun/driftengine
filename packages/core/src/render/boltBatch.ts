@@ -2,6 +2,7 @@ import { compileProgram, uniformLocations } from './shader.ts';
 import { BOLT_FRAG, BOLT_VERT } from './shaders/bolt.ts';
 import { buildSegmentQuads, expandBoltSegments } from './segmentQuads.ts';
 import type { BoltSegments } from './boltPool.ts';
+import { blendKeeping } from './sceneCoverage.ts';
 
 /**
  * One draw call for a pool of electrical arcs.
@@ -86,7 +87,7 @@ export class BoltBatch {
   drawTo(gl: WebGL2RenderingContext, segmentCount: number): void {
     if (segmentCount === 0) return;
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
 

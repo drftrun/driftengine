@@ -29,6 +29,7 @@ import {
   type PeerId,
   type Transport,
   type TransportState,
+  receivedBytes,
   sendable,
 } from './transport.ts';
 
@@ -85,8 +86,11 @@ export class WebSocketTransport implements Transport {
 
     this.socket.addEventListener('message', (event) => {
       const data = (event as { data?: unknown }).data;
-      const bytes = toBytes(data);
-      if (bytes === null) return;
+      const bytes = receivedBytes(data);
+      if (bytes === null) {
+        this.droppedCount += 1;
+        return;
+      }
       if (this.arrived.length >= this.maxQueued) {
         this.arrived.shift();
         this.droppedCount += 1;
@@ -100,7 +104,10 @@ export class WebSocketTransport implements Transport {
     return this.socket.readyState === OPEN ? 'open' : 'connecting';
   }
 
-  /** Messages dropped because nothing drained. A consumer watching for a stalled tab reads this. */
+  /**
+   * Messages dropped: because nothing drained, which a consumer watching for a stalled tab reads,
+   * or because nothing could be read out of them.
+   */
   get dropped(): number {
     return this.droppedCount;
   }
@@ -127,20 +134,4 @@ export class WebSocketTransport implements Transport {
     this.arrived.length = 0;
     this.socket.close();
   }
-}
-
-/**
- * A message's bytes, whatever the socket handed over, or null.
- *
- * Browsers deliver an `ArrayBuffer` when `binaryType` is set, `ws` under Node delivers a `Buffer`,
- * and a socket left on its default delivers a string. The first two are usable and the third is
- * not: a payload that has been through UTF-8 has had every byte above 0x7f replaced.
- */
-function toBytes(data: unknown): Uint8Array | null {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  return null;
 }

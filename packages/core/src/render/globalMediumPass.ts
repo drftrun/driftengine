@@ -7,6 +7,7 @@ import { DEPTH_01_TO_CLIP } from './lightVolumeDraw.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
 import { MEDIUM_FRAG, MEDIUM_UPSAMPLE_FRAG } from './shaders/globalMedium.ts';
+import { blendCovering, blendTransmitting } from './sceneCoverage.ts';
 
 /** What the march needs about the light, which is the sun and the sky and nothing else. */
 export interface MediumLight {
@@ -270,7 +271,7 @@ export class GlobalMediumPass {
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
-    gl.blendFuncSeparate(gl.ONE, gl.SRC_ALPHA, gl.ZERO, gl.ONE);
+    blendTransmitting(gl, gl.ONE, gl.SRC_ALPHA);
 
     gl.useProgram(this.upsample);
     gl.bindVertexArray(this.vao);
@@ -293,7 +294,7 @@ export class GlobalMediumPass {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, null);
     /* Back to the blend every other pass in this renderer assumes it inherits. */
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.BLEND);
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);

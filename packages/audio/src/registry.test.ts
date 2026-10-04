@@ -177,3 +177,37 @@ describe('a stand-in that throws', () => {
     expect(registry.unbuilt.get('broken')).toContain('bad partials');
   });
 });
+
+/*
+ * **A SLOT WITH NO STAND-IN IS REQUIRED, AND ITS ABSENCE IS LOUD.**
+ *
+ * Every slot had to carry a synthesised stand-in, which is right for a footstep and wrong for a
+ * piece of music: a game whose score must be the file, or nothing it would ship, could not register
+ * it — so it decoded the score outside the registry, and outside everything the registry does. With
+ * no `synth`, a slot is required: when no candidate loads, `load` still settles every other slot
+ * and then rejects, naming each required slot and what it tried.
+ */
+describe('a required slot', () => {
+  it('loads like any other when its file is there', async () => {
+    const registry = new SoundRegistry(serving({ '/audio/score.opus': true }));
+    registry.register('score', { urls: ['/audio/score.opus'] });
+    await registry.load(goodCtx);
+    expect(registry.get('score')).toBe(FILE_BUFFER);
+    expect(registry.resolved.get('score')).toBe('file');
+  });
+
+  it('A SLOT WITH NO STAND-IN IS REQUIRED: missing, load rejects naming it, after the rest load', async () => {
+    const registry = new SoundRegistry(serving({ '/audio/land.opus': true }));
+    registry.register('score', { urls: ['/audio/score.opus', '/audio/score.ogg'] });
+    registry.register('land', { urls: ['/audio/land.opus'] });
+    registry.register('jump', { urls: ['/audio/jump.opus'], synth });
+
+    await expect(registry.load(goodCtx)).rejects.toThrow(
+      /score.*\/audio\/score\.opus.*\/audio\/score\.ogg/,
+    );
+    expect(registry.get('land'), 'the other required slot still loaded').toBe(FILE_BUFFER);
+    expect(registry.get('jump'), 'and the stand-in was still built').toBe(SYNTH_BUFFER);
+    expect(registry.get('score'), 'and the missing one has nothing').toBeUndefined();
+    expect(registry.unbuilt.get('score')).toContain('/audio/score.ogg');
+  });
+});

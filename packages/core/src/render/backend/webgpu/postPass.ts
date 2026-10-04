@@ -39,6 +39,7 @@ import {
 import type { UniformFields } from './scatterPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_KEEPS, SCENE_ALPHA_TRANSMITS } from '../../sceneCoverage.ts';
 
 /**
  * The composite: everything that happens to the frame after the world is drawn.
@@ -271,7 +272,7 @@ export function createPostStageLayout(
  */
 export const OIT_COMPOSITE_BLEND: GPUBlendState = {
   color: { srcFactor: 'one-minus-src-alpha', dstFactor: 'src-alpha', operation: 'add' },
-  alpha: { srcFactor: 'one-minus-src-alpha', dstFactor: 'src-alpha', operation: 'add' },
+  alpha: SCENE_ALPHA_TRANSMITS,
 };
 
 /**
@@ -290,17 +291,19 @@ export const OIT_COMPOSITE_BLEND: GPUBlendState = {
  * exactly the integral — and the composite therefore never samples the colour it is modifying,
  * which is the read both backends are entitled to call undefined.
  *
- * Alpha is `(zero, one)`: the frame's own alpha is not the medium's to spend. The scene target
- * carries it to the canvas, and a medium that wrote there would make a foggy frame translucent.
+ * Alpha is the transmittance again, `share * a`: the scene's alpha is how much of the pixel is
+ * still the opaque surface, which is what the composite lets ambient occlusion darken, and a
+ * medium thick enough to hide a corner hides its occlusion too (`sceneCoverage.ts`). It reaches
+ * no canvas: both are opaque, and the composite writes 1.
  */
 export const MEDIUM_TRANSMIT_BLEND: GPUBlendState = {
   color: { srcFactor: 'one', dstFactor: 'src-alpha', operation: 'add' },
-  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+  alpha: SCENE_ALPHA_TRANSMITS,
 };
 
 export const DECAL_MULTIPLY_BLEND: GPUBlendState = {
   color: { srcFactor: 'zero', dstFactor: 'src', operation: 'add' },
-  alpha: { srcFactor: 'zero', dstFactor: 'src', operation: 'add' },
+  alpha: SCENE_ALPHA_KEEPS,
 };
 
 /**
@@ -314,6 +317,18 @@ export const DECAL_MULTIPLY_BLEND: GPUBlendState = {
 export const PREMULTIPLIED_OVER_BLEND: GPUBlendState = {
   color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+};
+
+/**
+ * The same `over` for the resolve that lands a reflection on the scene, keeping the scene's alpha.
+ *
+ * A reflection is a layer of the surface it is seen in, so the surface's share of the pixel is
+ * unchanged (`sceneCoverage.ts`). The trace keeps `PREMULTIPLIED_OVER_BLEND`, because its target is
+ * the reflection's own and its alpha is the coverage this resolve reads.
+ */
+export const REFLECTION_OVER_BLEND: GPUBlendState = {
+  color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  alpha: SCENE_ALPHA_KEEPS,
 };
 
 export const ADDITIVE_BLEND: GPUBlendState = {

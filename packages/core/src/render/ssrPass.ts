@@ -8,6 +8,7 @@ import { compileProgram, uniformLocations } from './shader.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
 import { SSR_RESOLVE_FRAG } from './shaders/ssrResolve.ts';
 import { SSR_TRACE_FRAG } from './shaders/ssrTrace.ts';
+import { blendKeeping } from './sceneCoverage.ts';
 
 /**
  * Screen-space reflection on WebGL2: a scissored trace per surface, then one composite.
@@ -202,7 +203,7 @@ export class SsrPass {
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     /* Premultiplied `over`: the trace already multiplied its colour by the coverage it found. */
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    blendKeeping(gl, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
     gl.useProgram(this.resolve);
     gl.activeTexture(gl.TEXTURE0);

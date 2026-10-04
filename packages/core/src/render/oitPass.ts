@@ -1,6 +1,7 @@
 import { compileProgram, uniformLocations } from './shader.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
 import { OIT_RESOLVE_FRAG } from './shaders/oitResolve.ts';
+import { blendTransmitting } from './sceneCoverage.ts';
 
 /**
  * Order-independent transparency on WebGL2: two targets, two passes over the same geometry, and a
@@ -179,7 +180,7 @@ export class OitPass {
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE_MINUS_SRC_ALPHA, gl.SRC_ALPHA);
+    blendTransmitting(gl, gl.ONE_MINUS_SRC_ALPHA, gl.SRC_ALPHA);
 
     gl.useProgram(this.program);
     gl.activeTexture(gl.TEXTURE0);

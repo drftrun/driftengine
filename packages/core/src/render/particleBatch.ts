@@ -2,6 +2,7 @@ import { compileProgram, uniformLocations } from './shader.ts';
 import { particleShaders, type ParticleMaterial } from './particleMaterial.ts';
 import { PARTICLE_BLADES, PARTICLE_INDICES, PARTICLE_VERTS } from './shaders/particle.ts';
 import type { ParticleInstances } from './particlePool.ts';
+import { blendCovering, blendKeeping } from './sceneCoverage.ts';
 
 /**
  * One draw call for a live particle pool: one camera-facing quad per particle, or a
@@ -239,8 +240,8 @@ export class ParticleBatch {
   drawTo(gl: WebGL2RenderingContext, count: number): void {
     if (count === 0) return;
     gl.enable(gl.BLEND);
-    if (this.blend === 'additive') gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-    else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    if (this.blend === 'additive') blendKeeping(gl, gl.SRC_ALPHA, gl.ONE);
+    else blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
 

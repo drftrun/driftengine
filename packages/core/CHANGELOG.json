@@ -1,5 +1,61 @@
 [
   {
+    "version": "4.8.3",
+    "date": "2026-10-04",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "Ambient occlusion no longer darkens smoke, glass, water or text by the corner behind them: it darkens only the part of a pixel they let through, on both backends.",
+        "text": "Occlusion is applied in the composite from the depth the opaque world leaves, after every translucent draw has landed, and a particle or a pane writes no depth, so a puff of smoke in front of a wall was darkened by the corner behind it: reported as walls and figures behind a cloud showing through it as dark outlines, and nothing at all with occlusion off. The scene's alpha now carries how much of each pixel is still the opaque surface. The frame clears it to 1, an opaque draw writes 1, and every blended draw states what it does to it: what covers (glass, smoke, water, lines, text, panels, sprites, splats) multiplies it by what it lets through, what transmits (the global medium, the order-independent composite) by its own transmittance, and what adds light or is a layer of the surface (caustics, light volumes, bolts, a wet film, decals, reflections) leaves it alone. The composite darkens that share and no more, and the temporal resolve and the reconstruction carry it through. Measured on both backends, plain, with temporal antialiasing and with DriftTR, against a darkened join: a pane at 0.85 opacity keeps 0.15 of the darkening behind it and a cluster of smoke none, while the open join and every frame with occlusion off are unchanged to the pixel. What it gives up is light added in front of an occluded corner, which is darkened with the surface it lands on as before, and the GPU-driven pipeline's own blended surfaces, which still take the occlusion behind them because its blit's alpha is the mask that says where it drew. A pass of your own states its blending with `SCENE_ALPHA_COVERS`, `SCENE_ALPHA_TRANSMITS` or `SCENE_ALPHA_KEEPS` on WebGPU, and `blendCovering`, `blendTransmitting` or `blendKeeping` on WebGL2."
+      },
+      {
+        "kind": "fixed",
+        "short": "A particle's size is documented as what it always was, a half-width from the centre to an edge: a particle of size 0.5 is a metre across.",
+        "text": "`ParticleInstances.sizes` and a pool's `sizeStart` and `sizeEnd` were documented as metres across, and the quad spans twice the size, a corner at minus and plus one on each axis, so a caller who sized by the documentation drew every particle twice as wide as meant. The drawing is unchanged, because every effect already tuned against it would have halved; the type, the pool's options and the manual now say half-width."
+      },
+      {
+        "kind": "fixed",
+        "short": "A bone too short for a body no longer cuts a ragdoll in two: what hangs below it is jointed to the bone above, and stops colliding with the bones it meets there.",
+        "text": "A rig often puts one joint exactly on another, a collar on the chest joint or a helper on the hips, and a bone shorter than `minLength` gets no body. What hung below such a bone was jointed to nothing, because a bone was jointed to the bone ending at its parent joint and that joint had none: in a limp fall the spine above a collar flew 3.9 m off the hips. And it collided with every bone it met at that point, because the shared-end rule compared parent joints by index, so capsules out of one point separated whichever way rounding said and a reaction depended on which way the character faced. A short bone is now transparent: each joint resolves to the nearest one above it that a body ends at, for jointing and for collision alike, and where a short bone lies between, the joint is anchored where the two bones meet at rest, so a still doll does not move on its first tick."
+      },
+      {
+        "kind": "fixed",
+        "short": "A ragdoll draws every bone under a joint on its own body, so after a fall a second thigh or a clavicle no longer hangs off the body beside it.",
+        "text": "`writePose` turned a joint by its first bone below and placed every child by the rig's offset from that turn, so at a joint with several bones below it, hips over a spine and two thighs, a chest over a neck and two clavicles, every branch but the first was swung by the first one's rotation and drawn off its own body. Reported from a game as a foot 0.24 m and an arm 0.17 m from their bodies after a fall; a test fall measured a thigh 97.5 cm out. Each joint is now placed along its own bone as that bone's body holds it, at the rig's length and in the parent's frame, which for the first branch is the rig's offset exactly. Lengths never stretch. A joint with no bone of its own keeps the rig's offset."
+      },
+      {
+        "kind": "added",
+        "short": "`setSurfaceFog(false)` takes the next opaque draws out of the fog, so a floor can recede into the medium while figures standing on it keep their colour.",
+        "text": "Opaque draws could not opt out of the medium: `drawTranslucentMesh` had `fog: false` and the shader a per-draw switch, and nothing reached it for `drawMesh`. A ported game darkening its floor with distance had to darken its figures with it, or leave the far floor 18% too bright. `setSurfaceFog(enabled)` is a surface dial like `setSurfaceGrain`: material state for the draws that follow, read by instanced and skinned draws too, and restored by `bindMeshPass`. A translucent draw's own `fog` is measured against it and puts it back. Verified on both backends with two identical far pillars, one fogged and one not, and a pane between them asking for fog under the dial."
+      },
+      {
+        "kind": "added",
+        "short": "`outputTransform: 'shoulder'` keeps sRGB's midtones and eases only the highlights, by their brightest channel, so an overbright red stays red instead of turning pink.",
+        "text": "A fourth output transform. `'srgb'` clips each channel at 1, so an overbright colour shifts hue on its way to white: `(1.6, 0.4, 0.2)` clips to `(1, 0.4, 0.2)`, pinker and wider. `'shoulder'` leaves everything below 0.8 alone and eases the brightest channel toward 1, as `0.8 + 0.2e / (e + 0.2)` of an excess `e`, scaling the other two with it, so the same colour becomes `(0.96, 0.24, 0.12)`. It is the curve a ported game's own resolve applies, and it has none of ACES's toe or desaturation. One definition shared by the forward passes and the resolve, measured on both backends with the composite on and off: `(250, 134, 97)` against sRGB's `(255, 170, 124)`."
+      },
+      {
+        "kind": "added",
+        "short": "Materials take `uOffset` and `vOffset`, so one quad draws any cell of a flipbook or an atlas, and a cutout's shadow is cut from the same cell.",
+        "text": "`SurfaceMaterial` had a UV scale and no offset, so a flipbook could not choose its cell through the material and a game built one quad mesh per cell, 106 meshes for four strips. `uOffset` and `vOffset` are added after the scale, `uv * scale + offset`, for every map of the material, and they reach the cutout depth and shadow passes, so a card's shadow has the holes of the cell its colour shows. Both backends, mesh and instanced draws."
+      },
+      {
+        "kind": "added",
+        "short": "`AudioGraph.restart(fromSec)` starts every stem from a point in the track, locked together, for music held to a game's own clock.",
+        "text": "The transport could only go back to the top, so music held to a frame counter, which has to resume where that counter is after a skip, ran its own source into the music bus outside every stem's lock. `restart(fromSec)` stops the stems and starts them all from that point at one instant, wrapped by each stem's length, and returns how long until it is heard. `restart()` is unchanged."
+      },
+      {
+        "kind": "changed",
+        "short": "A sound slot registered without a synth is required: if none of its files loads, `load` rejects naming it, after every other slot has loaded.",
+        "text": "Every slot had to carry a synthesised stand-in, which is right for a footstep and wrong for a score that has to be the file or nothing, so such a score was decoded outside the registry. `SoundSource.synth` is optional now. A slot without one is required: when none of its candidates loads it is listed in `unbuilt`, and `load` still settles every other slot before rejecting with an error naming each missing required slot and the files it tried. A slot with a synth behaves as before."
+      },
+      {
+        "kind": "fixed",
+        "short": "A WebSocket or WebRTC transport reads a text frame as its UTF-8 bytes, and counts a frame it cannot read as dropped, where both vanished in silence.",
+        "text": "`WebSocketTransport` and `WebRtcTransport` discarded any message that arrived as a string, without counting it in `dropped`, on the ground that a payload through UTF-8 loses its high bytes. That is true of binary data sent as text and not of a peer that speaks text: a text frame is lossless UTF-8 by the protocol, and a client against a server sending text received nothing at all. Text now arrives as exactly the bytes the sender wrote, anything else unreadable is counted, and both transports share the one rule."
+      }
+    ]
+  },
+  {
     "version": "4.8.2",
     "date": "2026-10-03",
     "entries": [

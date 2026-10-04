@@ -83,6 +83,10 @@ dropped into the folder replaces the stand-in with no change to the code. `audio
 lists a name in every format in `AUDIO_FORMATS`, Opus first, so a sound can arrive in whatever it
 was saved as.
 
+A slot registered **without** a `synth` is required: a score that has to be the file or nothing.
+When none of its files loads, `load` still settles every other slot, then rejects with an error
+naming each missing required slot and the files it tried, and `unbuilt` lists it.
+
 The stand-ins are ordinary functions of a context: `noiseBuffer` and `toneBuffer`, `metalBuffer`
 for a struck bar, `fireLoopBuffer`, `waterLoopBuffer` and `windLoopBuffer`, `ambienceBuffer`,
 `driftScrapeBuffer` and `silentBuffer`. A folder whose contents are not known in advance announces
@@ -141,7 +145,9 @@ made afterwards: the crypt's snapshot turns the yard down and leaves the weather
 
 Music is a set of stems played in lockstep: `loadStem(index, buffer)`, `setStemGain` to bring layers
 in and out, `start`, `hold` and `release`, and `setPlaybackRate`, with the transport kept where the
-tape actually is. `createLoop(buffer)` starts a looping bed through the effects, and
+tape actually is. `restart(fromSec)` starts every stem again from a point in the track, locked
+together, for music held to a clock of the game's own, such as a frame counter that resumes after a
+skip; it returns how long until that point is heard. `createLoop(buffer)` starts a looping bed through the effects, and
 `play(buffer, gain, pan)` plays a one-shot. `cutoffForSpeed` gives the master filter's cutoff for a
 speed, so the sound opens up as something goes faster.
 

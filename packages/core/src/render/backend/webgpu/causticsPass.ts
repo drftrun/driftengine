@@ -8,6 +8,7 @@ import type { UniformFields } from './scatterPass.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import { SCENE_ALPHA_KEEPS } from '../../sceneCoverage.ts';
 
 /**
  * The caustics pass: a surface lit by nearby water.
@@ -162,7 +163,7 @@ export function causticsPipeline(
           format: cache.format,
           blend: {
             color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            alpha: SCENE_ALPHA_KEEPS,
           },
         },
       ],

@@ -7,6 +7,7 @@ import { compileProgram, uniformLocations } from './shader.ts';
 import { SDF_TEXT_FRAG, SDF_TEXT_VERT } from './shaders/sdfText.ts';
 import type { SurfaceTexture } from './surfaceTexture.ts';
 import { SDF_TEXT_TEXTURE_UNIT } from './lightBudget.ts';
+import { blendCovering } from './sceneCoverage.ts';
 
 /**
  * Text from a signed distance field, on WebGL2.
@@ -144,7 +145,7 @@ export class SdfTextRenderer {
      */
     gl.depthMask(false);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     this.atlas.bind(gl, SDF_TEXT_TEXTURE_UNIT);
 

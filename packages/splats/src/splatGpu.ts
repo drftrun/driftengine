@@ -1,6 +1,6 @@
 /** The WebGPU half of the splat pass: the same two integer textures, one pipeline, no vertex state. */
 
-import { DEPTH_COMPARE } from '@driftengine/core';
+import { DEPTH_COMPARE, SCENE_ALPHA_COVERS } from '@driftengine/core';
 
 import {
   SPLAT_BINDINGS,
@@ -172,10 +172,11 @@ export function createGpuSplats(
       targets: [
         {
           format,
-          /* Premultiplied `over`, matching the WebGL2 half exactly. */
+          /* Premultiplied `over`, matching the WebGL2 half exactly, and covering the scene's
+             surface by its alpha. */
           blend: {
             color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: SCENE_ALPHA_COVERS,
           },
         },
       ],

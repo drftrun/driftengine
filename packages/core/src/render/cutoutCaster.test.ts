@@ -32,3 +32,11 @@ test('the answer is written into one object and returned again, so a draw alloca
   /* An absent scale is one, which is what an unscaled material means everywhere else. */
   expect([b?.u, b?.v]).toEqual([1, 1]);
 });
+
+test('A CUTOUT CARRIES ITS UV OFFSET, so its shadow is cut from the cell its colour shows', () => {
+  const cut = cutoutOf({ albedo: leafMap, cutout: 0.5, uScale: 0.25, uOffset: 0.75, vOffset: 0.5 });
+  expect([cut?.u, cut?.uOffset, cut?.vOffset]).toEqual([0.25, 0.75, 0.5]);
+  /* And an absent offset is zero, which is the texture where it always started. */
+  const plain = cutoutOf({ albedo: leafMap, cutout: 0.5 });
+  expect([plain?.uOffset, plain?.vOffset]).toEqual([0, 0]);
+});

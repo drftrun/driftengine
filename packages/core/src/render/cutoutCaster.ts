@@ -13,19 +13,30 @@
  */
 import type { SurfaceMaterial } from './surfaceTexture.ts';
 
-/** A cutout caster's texture, its cutoff and its UV scale. */
+/** A cutout caster's texture, its cutoff and its UV scale and offset. */
 export interface CutoutCaster<Texture> {
   readonly albedo: Texture;
   readonly cutoff: number;
   readonly u: number;
   readonly v: number;
+  readonly uOffset: number;
+  readonly vOffset: number;
 }
 
-const answer: { albedo: unknown; cutoff: number; u: number; v: number } = {
+const answer: {
+  albedo: unknown;
+  cutoff: number;
+  u: number;
+  v: number;
+  uOffset: number;
+  vOffset: number;
+} = {
   albedo: null,
   cutoff: 0,
   u: 1,
   v: 1,
+  uOffset: 0,
+  vOffset: 0,
 };
 
 /** The cutout `material` casts, or null for an ordinary caster. */
@@ -40,5 +51,7 @@ export function cutoutOf<Texture>(
   answer.cutoff = cutoff;
   answer.u = material.uScale ?? 1;
   answer.v = material.vScale ?? 1;
+  answer.uOffset = material.uOffset ?? 0;
+  answer.vOffset = material.vOffset ?? 0;
   return answer as CutoutCaster<Texture>;
 }

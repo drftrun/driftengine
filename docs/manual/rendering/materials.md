@@ -155,6 +155,10 @@ scales the effect.
 The rest of the fields:
 
 - `uScale` and `vScale` repeat every map of the material across the mesh's coordinates.
+- `uOffset` and `vOffset` move where the maps start, after the scale: a surface samples
+  `uv * scale + offset`. That picks one cell of a flipbook or an atlas through the material, so one
+  quad draws any cell. A strip of four frames is `uScale: 0.25` with `uOffset: frame * 0.25`. A
+  cutout's shadow is cut from the same cell.
 - `cutout` discards fragments whose albedo alpha is below it: leaves, grilles, fences. A cutout also
   shapes the shadow the surface casts.
 - `doubleSided` draws both faces, for a curtain or a leaf card.
@@ -215,6 +219,10 @@ A few properties apply to the draws that follow, without a map:
 - `setSurfaceTextureRelief(scale)`: bumps from the bound albedo's own brightness, for a texture with
   no normal map.
 - `setEmissiveGain(gain)`: scale emissive for the next draws, for anything that pulses.
+- `setSurfaceFog(enabled)`: take the next draws out of the fog and the global medium's haze, or put
+  them back. For a medium that should darken one thing and not another: a floor receding into the
+  distance under figures that keep their full value however far away they stand. A translucent
+  draw's own `fog` option still decides for that draw.
 
 Each resets with `bindMeshPass`, so a pass starts from the defaults.
 
