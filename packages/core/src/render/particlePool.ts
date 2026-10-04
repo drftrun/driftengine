@@ -117,6 +117,15 @@ export class ParticlePool {
    * together.
    */
   private readonly seedOf: Float32Array;
+  /**
+   * Where each slot's particle sits in the drawn streams, or -1 where it sits nowhere.
+   *
+   * **What lets `emit` draw a particle the frame it is born.** The streams are compacted, so a
+   * slot's entry is wherever `update` last put it; an emit into a slot that has one overwrites
+   * that entry, and an emit into one that has none appends. Without it a new particle waited for
+   * the next `update` to be drawn at all.
+   */
+  private readonly drawnAt: Int32Array;
   private next = 0;
 
   constructor(private readonly options: ParticlePoolOptions) {
@@ -138,6 +147,7 @@ export class ParticlePool {
     this.spin = new Float32Array(capacity);
     this.scale = new Float32Array(capacity).fill(1);
     this.seedOf = new Float32Array(capacity);
+    this.drawnAt = new Int32Array(capacity).fill(-1);
   }
 
   /** How many particles are alive. */
@@ -184,6 +194,18 @@ export class ParticlePool {
     this.spin[i] = (hash - Math.floor(hash)) * Math.PI * 2;
     this.scale[i] = sizeScale;
     this.seedOf[i] = seed;
+    /*
+     * Drawn now, at birth, rather than at the next `update`: into the entry this slot already
+     * has when it is taking over a particle that was drawn, and onto the end otherwise.
+     */
+    const held = this.drawnAt[i] as number;
+    const at = held >= 0 ? held : this.particles.count;
+    this.writeDrawn(i, at, 0, x, y, z, vx, vy, vz);
+    if (held < 0) {
+      this.drawnAt[i] = at;
+      this.instances.count = at + 1;
+      this.particles.count = at + 1;
+    }
   }
 
   /**
@@ -198,11 +220,15 @@ export class ParticlePool {
     let count = 0;
     for (let i = 0; i < this.age.length; i++) {
       const age = this.age[i] as number;
-      if (age === Infinity) continue;
+      if (age === Infinity) {
+        this.drawnAt[i] = -1;
+        continue;
+      }
       const life = this.life[i] as number;
       const next = age + dt;
       if (next >= life) {
         this.age[i] = Infinity;
+        this.drawnAt[i] = -1;
         continue;
       }
       this.age[i] = next;
@@ -222,68 +248,89 @@ export class ParticlePool {
       this.y[i] = py;
       this.z[i] = pz;
 
-      const t = next / life;
-      const size = (o.sizeStart + (o.sizeEnd - o.sizeStart) * t) * (this.scale[i] as number);
-      const r =
-        (o.colorStart[0] as number) + ((o.colorEnd[0] as number) - (o.colorStart[0] as number)) * t;
-      const g =
-        (o.colorStart[1] as number) + ((o.colorEnd[1] as number) - (o.colorStart[1] as number)) * t;
-      const b =
-        (o.colorStart[2] as number) + ((o.colorEnd[2] as number) - (o.colorStart[2] as number)) * t;
-      /*
-       * Colour carries the fade rather than an alpha channel: the instanced
-       * path multiplies a tint into the base mesh and has no per-instance
-       * opacity, and for an additive puff darkening to nothing *is* fading out.
-       * It also means the effect needs no blend-state change.
-       */
-      const fade = 1 - t * t;
-      writeInstance(
-        this.instances,
-        count,
-        px,
-        py,
-        pz,
-        size,
-        this.spin[i] as number,
-        r * fade,
-        g * fade,
-        b * fade,
-        0,
-        0,
-        0,
-      );
-      /*
-       * The same particle for a material that has a real opacity channel. Colour
-       * is written *unfaded* here, because dimming it is the scatter path's
-       * workaround and doing both would fade twice — a puff that vanished at half
-       * its life while still occluding what was behind it.
-       */
-      const p = this.particles;
-      const alphaStart = o.alphaStart ?? 1;
-      const alphaEnd = o.alphaEnd ?? 0;
-      p.positions[count * 3] = px;
-      p.positions[count * 3 + 1] = py;
-      p.positions[count * 3 + 2] = pz;
-      p.sizes[count] = size;
-      p.spins[count] = this.spin[i] as number;
-      p.colors[count * 3] = r;
-      p.colors[count * 3 + 1] = g;
-      p.colors[count * 3 + 2] = b;
-      p.alphas[count] = alphaStart + (alphaEnd - alphaStart) * t;
-      p.ages[count] = t;
-      p.seeds[count] = this.seedOf[i] as number;
-      p.velocities[count * 3] = vx;
-      p.velocities[count * 3 + 1] = vy;
-      p.velocities[count * 3 + 2] = vz;
+      this.drawnAt[i] = count;
+      this.writeDrawn(i, count, next / life, px, py, pz, vx, vy, vz);
       count++;
     }
     this.instances.count = count;
     this.particles.count = count;
   }
 
+  /**
+   * One particle's entry in both drawn streams, at `t` of its life: what `update` writes for every
+   * live particle and `emit` for a new one, so the two cannot disagree about what a particle looks
+   * like.
+   */
+  private writeDrawn(
+    i: number,
+    count: number,
+    t: number,
+    px: number,
+    py: number,
+    pz: number,
+    vx: number,
+    vy: number,
+    vz: number,
+  ): void {
+    const o = this.options;
+    const size = (o.sizeStart + (o.sizeEnd - o.sizeStart) * t) * (this.scale[i] as number);
+    const r =
+      (o.colorStart[0] as number) + ((o.colorEnd[0] as number) - (o.colorStart[0] as number)) * t;
+    const g =
+      (o.colorStart[1] as number) + ((o.colorEnd[1] as number) - (o.colorStart[1] as number)) * t;
+    const b =
+      (o.colorStart[2] as number) + ((o.colorEnd[2] as number) - (o.colorStart[2] as number)) * t;
+    /*
+     * Colour carries the fade rather than an alpha channel: the instanced
+     * path multiplies a tint into the base mesh and has no per-instance
+     * opacity, and for an additive puff darkening to nothing *is* fading out.
+     * It also means the effect needs no blend-state change.
+     */
+    const fade = 1 - t * t;
+    writeInstance(
+      this.instances,
+      count,
+      px,
+      py,
+      pz,
+      size,
+      this.spin[i] as number,
+      r * fade,
+      g * fade,
+      b * fade,
+      0,
+      0,
+      0,
+    );
+    /*
+     * The same particle for a material that has a real opacity channel. Colour
+     * is written *unfaded* here, because dimming it is the scatter path's
+     * workaround and doing both would fade twice — a puff that vanished at half
+     * its life while still occluding what was behind it.
+     */
+    const p = this.particles;
+    const alphaStart = o.alphaStart ?? 1;
+    const alphaEnd = o.alphaEnd ?? 0;
+    p.positions[count * 3] = px;
+    p.positions[count * 3 + 1] = py;
+    p.positions[count * 3 + 2] = pz;
+    p.sizes[count] = size;
+    p.spins[count] = this.spin[i] as number;
+    p.colors[count * 3] = r;
+    p.colors[count * 3 + 1] = g;
+    p.colors[count * 3 + 2] = b;
+    p.alphas[count] = alphaStart + (alphaEnd - alphaStart) * t;
+    p.ages[count] = t;
+    p.seeds[count] = this.seedOf[i] as number;
+    p.velocities[count * 3] = vx;
+    p.velocities[count * 3 + 1] = vy;
+    p.velocities[count * 3 + 2] = vz;
+  }
+
   /** Drop everything, for a respawn or a scene change. */
   clear(): void {
     this.age.fill(Infinity);
+    this.drawnAt.fill(-1);
     this.instances.count = 0;
     this.particles.count = 0;
     this.next = 0;

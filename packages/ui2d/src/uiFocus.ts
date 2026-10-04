@@ -2,6 +2,7 @@
 
 import { uiRectHolds } from './uiNode.ts';
 import type { UiNode } from './uiNode.ts';
+import { layersPresent } from './uiLayer.ts';
 
 /**
  * The interactive node under a point, or `null`.
@@ -17,15 +18,30 @@ import type { UiNode } from './uiNode.ts';
  * Allocates nothing.
  */
 export function uiHitTest(root: UiNode, x: number, y: number): UiNode | null {
-  if (root.hidden) return null;
-  /* A clipping node bounds its descendants here as it does in the picture: a row scrolled out of a
-     list is not under the pointer, whatever is drawn where it would have been. */
-  if (root.clip && !uiRectHolds(root, x, y)) return null;
-  for (let i = root.children.length - 1; i >= 0; i -= 1) {
-    const hit = uiHitTest(root.children[i] as UiNode, x, y);
+  /* The highest layer first, as it is drawn last: a raised popup takes the pointer over a later
+     sibling it covers. See `drawUiTree`. */
+  const count = layersPresent(root, HIT_LAYERS);
+  for (let at = count - 1; at >= 0; at -= 1) {
+    const hit = hitOn(root, x, y, 0, HIT_LAYERS[at] ?? 0);
     if (hit !== null) return hit;
   }
-  return root.interactive && uiRectHolds(root, x, y) ? root : null;
+  return null;
+}
+
+/** The layers of the tree being pointed at, reused: a hit test runs per pointer event. */
+const HIT_LAYERS: number[] = [];
+
+function hitOn(node: UiNode, x: number, y: number, inherited: number, only: number): UiNode | null {
+  if (node.hidden) return null;
+  /* A clipping node bounds its descendants here as it does in the picture: a row scrolled out of a
+     list is not under the pointer, whatever is drawn where it would have been. */
+  if (node.clip && !uiRectHolds(node, x, y)) return null;
+  const layer = node.layer === 0 ? inherited : node.layer;
+  for (let i = node.children.length - 1; i >= 0; i -= 1) {
+    const hit = hitOn(node.children[i] as UiNode, x, y, layer, only);
+    if (hit !== null) return hit;
+  }
+  return layer === only && node.interactive && uiRectHolds(node, x, y) ? node : null;
 }
 
 /**

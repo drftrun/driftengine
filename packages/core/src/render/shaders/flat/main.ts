@@ -14,8 +14,13 @@ export const MAIN_GLSL = `void main() {
    * the material moves together. The gradients are taken here, outside every branch, for the room
    * a window samples through textureGrad further down.
    */
-  fxLoad(int(surfaceAt.z));
-  surfaceAt = fxAnimate(surfaceAt);
+  /* Zero rows unless a material has carried a table: \`SURFACE_EFFECTS\` is off until one does, and
+     every effect below reads exactly nothing from zero rows, which the device folds away. */
+  fxClear();
+  if (SURFACE_EFFECTS) {
+    fxLoad(int(surfaceAt.z));
+    surfaceAt = fxAnimate(surfaceAt);
+  }
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
@@ -908,7 +913,12 @@ export const MAIN_GLSL = `void main() {
      */
     vec3 lampOpen = vec3(0.0);
     vec3 lampShadowed = vec3(0.0);
-    float driftShare = driftLightShare(vWorldPos);
+    /* \`DRIFT_LIGHT\` is off until a consumer gives the renderer a DriftLight volume, and the device
+       compiles the volume's reads away with it. */
+    float driftShare = 0.0;
+    if (DRIFT_LIGHT) {
+      driftShare = driftLightShare(vWorldPos);
+    }
 
     /*
      * Which froxel this fragment is in.
@@ -921,28 +931,53 @@ export const MAIN_GLSL = `void main() {
      * same order and with the same clamps, because a fragment reading a froxel the binner filled
      * differently is a fragment lit by somebody else's lights.
      */
-    vec3 clusterView = (uView * vec4(vWorldPos, 1.0)).xyz;
-    float clusterDepth = -clusterView.z;
-    float clusterHalfH = max(clusterDepth, 1e-4) * uClusterFrustum.z;
-    float clusterHalfW = clusterHalfH * uClusterFrustum.w;
-    int clusterTileX = clamp(
-      int(floor((clusterView.x / clusterHalfW + 1.0) * 0.5 * float(CLUSTER_X))), 0, CLUSTER_X - 1);
-    int clusterTileY = clamp(
-      int(floor((clusterView.y / clusterHalfH + 1.0) * 0.5 * float(CLUSTER_Y))), 0, CLUSTER_Y - 1);
-    int clusterSlice = 0;
-    if (clusterDepth > uClusterFrustum.x) {
-      clusterSlice = clamp(
-        int(floor(log(clusterDepth / uClusterFrustum.x)
-          / log(uClusterFrustum.y / uClusterFrustum.x) * float(CLUSTER_Z))),
-        0, CLUSTER_Z - 1);
+    /*
+     * **Only in a build that clusters, and there only in a frame that does.** \`CLUSTERED_LIGHTS\` is
+     * the profile's \`clusteredLights\`, a pipeline constant the device compiles this whole arm away
+     * on: the view transform, two logarithms and the froxel fetch below ran on every lit pixel of
+     * every scene, clustered or not, and the arm's records held their registers through the loop.
+     */
+    int clusterBaseTexel = 0;
+    int clusterLights = 0;
+    bool clusteredArm = false;
+    if (CLUSTERED_LIGHTS) {
+      if (uClustered != 0) {
+        vec3 clusterView = (uView * vec4(vWorldPos, 1.0)).xyz;
+        float clusterDepth = -clusterView.z;
+        float clusterHalfH = max(clusterDepth, 1e-4) * uClusterFrustum.z;
+        float clusterHalfW = clusterHalfH * uClusterFrustum.w;
+        int clusterTileX = clamp(
+          int(floor((clusterView.x / clusterHalfW + 1.0) * 0.5 * float(CLUSTER_X))), 0, CLUSTER_X - 1);
+        int clusterTileY = clamp(
+          int(floor((clusterView.y / clusterHalfH + 1.0) * 0.5 * float(CLUSTER_Y))), 0, CLUSTER_Y - 1);
+        int clusterSlice = 0;
+        if (clusterDepth > uClusterFrustum.x) {
+          clusterSlice = clamp(
+            int(floor(log(clusterDepth / uClusterFrustum.x)
+              / log(uClusterFrustum.y / uClusterFrustum.x) * float(CLUSTER_Z))),
+            0, CLUSTER_Z - 1);
+        }
+        clusterBaseTexel = LIGHT_REGION_TEXELS
+          + (clusterTileX + clusterTileY * CLUSTER_X + clusterSlice * CLUSTER_X * CLUSTER_Y)
+            * CLUSTER_TEXELS;
+        clusterLights = int(clusterTexel(clusterBaseTexel).x);
+        clusteredArm = true;
+      }
     }
-    int clusterBaseTexel = LIGHT_REGION_TEXELS
-      + (clusterTileX + clusterTileY * CLUSTER_X + clusterSlice * CLUSTER_X * CLUSTER_Y)
-        * CLUSTER_TEXELS;
-    int clusterLights = uClustered != 0 ? int(clusterTexel(clusterBaseTexel).x) : 0;
 
     /* The fixture atlas's size, asked once: its cookie band and its profile rows are found from it. */
     vec2 fixtureSize = vec2(textureSize(uFixtureAtlas, 0));
+    /*
+     * Whether any light can carry a measured profile or a cookie, decided once rather than per
+     * light. \`LIGHT_FIXTURES\` is off until a consumer loads one, and the device compiles the
+     * fixture lookups away with it, which they hold their registers for in every scene otherwise.
+     */
+    bool fixtureProfiles = false;
+    bool fixtureShapes = false;
+    if (LIGHT_FIXTURES) {
+      fixtureProfiles = uIesAtlasRows > 1.0;
+      fixtureShapes = uIesPlaneCount > 1.0 || uCookieTiles > 0.0;
+    }
 
     // Point lights. Inverse-square-ish falloff clipped to a finite radius, so a
     // light can be culled without a visible seam.
@@ -968,7 +1003,7 @@ export const MAIN_GLSL = `void main() {
       float iesProfile;
       vec3 iesAxis;
       float cookie;
-      if (uClustered != 0) {
+      if (clusteredArm) {
       if (slot >= clusterLights) break;
       /*
        * Four indices to a texel. Selected with compares rather than by indexing the vector,
@@ -1273,7 +1308,7 @@ export const MAIN_GLSL = `void main() {
       vec3 iesRay = -toLight / max(dist, 1e-4);
       /* The angle from the fixture's axis, as a fraction of the 0-to-180 arc every row spans. */
       float iesU = 0.0;
-      if (uIesAtlasRows > 1.0) {
+      if (fixtureProfiles) {
         float iesAngle = acos(clamp(dot(iesRay, lightDir), -1.0, 1.0));
         /* Clamped to the row's first and last texel centres, which is what the edge clamp of a
            texture exactly one row wide gave; the atlas can be wider now, with cookies beside it. */
@@ -1297,7 +1332,7 @@ export const MAIN_GLSL = `void main() {
        * \`uLightIesAxis\` to answer it. Behind a branch on two uniforms, so a scene using neither
        * builds no frame at all.
        */
-      if (uIesPlaneCount > 1.0 || uCookieTiles > 0.0) {
+      if (fixtureShapes) {
         vec3 iesRef = iesAxis - lightDir * dot(iesAxis, lightDir);
         float iesRefLen = length(iesRef);
         if (iesRefLen > 1e-5) {
@@ -1354,7 +1389,7 @@ export const MAIN_GLSL = `void main() {
        * bytes on \`core-only\`** across the sixteen fragment permutations.
        */
       float photometric = 1.0;
-      if (uIesAtlasRows > 1.0) {
+      if (fixtureProfiles) {
         float iesBase = iesRow * (uIesPlaneCount + 1.0);
         /* The profiles are the atlas's bottom rows, below any cookies. */
         float iesTop = fixtureSize.y - uIesAtlasRows;

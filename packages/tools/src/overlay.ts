@@ -111,6 +111,20 @@ export interface ToolsOverlay {
 }
 
 const DEFAULT_WIDTH = 320;
+
+/**
+ * How tall the title row above every panel is, in the overlay's pixels. A panel's own space starts
+ * below it, so a host hit-testing a site by hand reads the content from `site.y` plus this.
+ */
+export const PANEL_TITLE_HEIGHT = 18;
+
+/**
+ * What every panel is drawn on, and its title on: dark and nearly opaque, so the rows read over a
+ * bright scene. The overlay carried no background until 4.8.2 and a host laid one under each site.
+ */
+const PANEL_BACKGROUND = new Float32Array([0.063, 0.071, 0.094, 0.9]);
+const TITLE_BACKGROUND = new Float32Array([0.122, 0.133, 0.176, 0.95]);
+const TITLE_TINT = new Float32Array([0.62, 0.66, 0.75, 1]);
 const DEFAULT_KEY = 'F3';
 
 export function createToolsOverlay(options: ToolsOverlayOptions): ToolsOverlay {
@@ -122,6 +136,7 @@ export function createToolsOverlay(options: ToolsOverlayOptions): ToolsOverlay {
 
   const panels = options.panels;
   const roots = new Map<string, UiNode>();
+  const titles = new Map<string, UiNode>();
   /* Pooled and refilled: this is read every frame the overlay is open and must not allocate. */
   const sites: OverlaySite[] = [];
 
@@ -154,17 +169,33 @@ export function createToolsOverlay(options: ToolsOverlayOptions): ToolsOverlay {
       const tall = at === panels.length - 1 ? height - top : each;
 
       let panelRoot = roots.get(panel.id);
-      if (panelRoot === undefined) {
+      let title = titles.get(panel.id);
+      if (panelRoot === undefined || title === undefined) {
         panelRoot = createPanelRoot(panel);
+        panelRoot.background = PANEL_BACKGROUND;
         roots.set(panel.id, panelRoot);
+        title = createUiNode({
+          text: panel.title,
+          background: TITLE_BACKGROUND,
+          tint: TITLE_TINT,
+          name: `title:${panel.id}`,
+        });
+        titles.set(panel.id, title);
       }
+      /* The title above the panel's own space, which starts below it: a panel never learns it has
+         one, and its rows hit-test exactly as they did. */
+      title.absolute = true;
+      title.x = 0;
+      title.y = top;
+      title.width = w;
+      title.height = Math.min(PANEL_TITLE_HEIGHT, tall);
       panelRoot.absolute = true;
       panelRoot.x = 0;
-      panelRoot.y = top;
+      panelRoot.y = top + PANEL_TITLE_HEIGHT;
       panelRoot.width = w;
-      panelRoot.height = tall;
+      panelRoot.height = Math.max(0, tall - PANEL_TITLE_HEIGHT);
       panel.build(panelRoot);
-      root.children.push(panelRoot);
+      root.children.push(title, panelRoot);
       sites.push({ id: panel.id, x: 0, y: top, w, h: tall });
     }
 
@@ -226,12 +257,13 @@ export function createToolsOverlay(options: ToolsOverlayOptions): ToolsOverlay {
       if (!visible) return false;
 
       if (event.kind === 'key') {
-        if (event.ctrl && event.key === 'z') {
+        /* Either case: a browser reports Ctrl+Shift+Z with the key `'Z'`, shift having raised it. */
+        if (event.ctrl && (event.key === 'z' || event.key === 'Z')) {
           const moved = event.shift ? undo.redo() : undo.undo();
           if (moved) dirty = true;
           return moved;
         }
-        if (event.ctrl && event.key === 'y') {
+        if (event.ctrl && (event.key === 'y' || event.key === 'Y')) {
           const moved = undo.redo();
           if (moved) dirty = true;
           return moved;
@@ -246,8 +278,16 @@ export function createToolsOverlay(options: ToolsOverlayOptions): ToolsOverlay {
       if (event.kind === 'pointer' && event.phase === 'down') focused = site.id;
       const panel = panelWith(site.id);
       if (panel === null) return false;
+      const contentTop = site.y + PANEL_TITLE_HEIGHT;
+      /* The title row is the overlay's, not the panel's: it scrolls nothing and routes nothing. */
+      if (event.y < contentTop) return event.kind === 'wheel';
       /* In the panel's own space: a panel never learns where on screen it is. */
-      return take(panel.route(shift(event, -(root.rect.x + site.x), -site.y)));
+      const handled = take(panel.route(shift(event, -(root.rect.x + site.x), -contentTop)));
+      if (event.kind !== 'wheel') return handled;
+      /* A wheel over a panel scrolls the panel and is the overlay's whether or not it made a
+         command, or the page scrolls under the panel as well. Laid out again, for the new scroll. */
+      dirty = true;
+      return true;
     },
 
     invalidate(): void {
@@ -331,10 +371,12 @@ function paintNode(painter: OverlayPainter, node: UiNode): void {
   if (node.clip) painter.unclip();
 }
 
+/** `#rrggbb`, or `#rrggbbaa` where the colour is not opaque, which the painter's contract allows. */
 function cssColour(rgba: Float32Array | null): string {
   if (rgba === null) return '#ffffff';
   let out = '#';
-  for (let at = 0; at < 3; at += 1) {
+  const channels = (rgba[3] ?? 1) < 1 ? 4 : 3;
+  for (let at = 0; at < channels; at += 1) {
     const channel = Math.round(Math.min(1, Math.max(0, rgba[at] ?? 0)) * 255);
     out += channel.toString(16).padStart(2, '0');
   }

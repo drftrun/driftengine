@@ -32,6 +32,8 @@ export type { ComponentRegistry, RegisteredModule } from './entityHost.ts';
 export { assertHostShapes, registerEntityModule } from './entityHost.ts';
 
 export type { BindResult, HostServices } from './host.ts';
+/* What `HostServices.xr` takes, by name, so a host does not spell it `NonNullable<HostServices['xr']>`. */
+export type { XrRuntime } from './bindings/xr.ts';
 export {
   ENGINE_MODULES,
   bindModule,

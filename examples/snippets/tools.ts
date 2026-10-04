@@ -19,38 +19,30 @@ import {
   pushRollback,
   sessionReadout,
 } from '@driftengine/tools';
-import type { LogRing, PanelBinding, SessionLike } from '@driftengine/tools';
+import type { LogRing, PanelBinding } from '@driftengine/tools';
 
 // #region network
 /**
- * A lockstep session as the network panel reads it. The session keeps its rewind loop private, so
- * the game hands over the loop it made, and the panel reads the size of the window from that.
+ * A lockstep session as the network panel reads it: handed over as it is. The loop the game made is
+ * read beside it for how far each tick rewound, which the session does not count.
  */
 export function networkTools(
   session: LockstepSession<WorldSnapshot>,
   loop: RewindLoop<WorldSnapshot>,
   snapshotBytes: number,
 ): { panel: PanelBinding; afterTick(): void } {
-  const watched: SessionLike = {
-    participants: session.participants,
-    inputDelay: session.inputDelay,
-    get desync() {
-      return session.desync;
-    },
-    loop,
-  };
   const recorder = createSessionRecorder();
   const view = createNetworkView({});
   let replayed = loop.stats.replayedTicks;
   return {
     panel: bindPanel(
       networkPanel,
-      () => ({ session: sessionReadout(watched, recorder, snapshotBytes) }),
+      () => ({ session: sessionReadout(session, recorder, snapshotBytes) }),
       view,
     ),
     /** Once a tick, after the session has advanced: any new disagreement, and how far it rewound. */
     afterTick() {
-      observeSession(recorder, watched);
+      observeSession(recorder, session);
       const now = loop.stats.replayedTicks;
       pushRollback(view.rollback, now - replayed);
       replayed = now;

@@ -142,4 +142,4 @@ export type {
   ToolsOverlay,
   ToolsOverlayOptions,
 } from './overlay.ts';
-export { bindPanel, createToolsOverlay, paintOverlay } from './overlay.ts';
+export { PANEL_TITLE_HEIGHT, bindPanel, createToolsOverlay, paintOverlay } from './overlay.ts';

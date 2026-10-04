@@ -36,14 +36,19 @@ import {
   type World,
   instantiate,
 } from '@driftengine/entities';
-import { type CapabilityDefinition, type OpaqueType, defineCapability } from 'driftscript';
+import {
+  type CapabilityDefinition,
+  type CapabilityParam,
+  type OpaqueType,
+  defineCapability,
+} from 'driftscript';
 
 export const ECS_MODULE = 'drift/ecs';
 
 const define = (
   module: string,
   name: string,
-  params: readonly { name: string; type: string }[],
+  params: readonly CapabilityParam[],
   returns: string,
   effects: CapabilityDefinition['effects'],
   deterministic: boolean,
@@ -97,6 +102,15 @@ export const ENTITY_TYPES: readonly OpaqueType[] = [
  * **`read` still answers `f64`**, and that is not an oversight: it reads a component *field*, which
  * is a number, and typing it as a handle would be the same mistake in the other direction.
  */
+/*
+ * **A parameter that names a component says so, and how** (`component: 'read' | 'write'`), so the
+ * compiler counts `ecs.count(world, "Hunger")` as a read of Hunger exactly as the schedule does when
+ * the system runs: without it the declaration the host demands was called unused (DS0291), and
+ * leaving it out compiled clean and was refused per tick. `without` names one and is not marked —
+ * an exclusion never looks inside the component, which is the host's rule and the compiler's. `view`
+ * is marked a read: whether it asks to write is a runtime flag, and the write it would need is a
+ * declaration the host still checks.
+ */
 export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
   define(
     ECS_MODULE,
@@ -137,7 +151,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     [
       { name: 'world', type: 'World' },
       { name: 'entity', type: 'Entity' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
     ],
     'bool',
     ['ecs.read'],
@@ -150,7 +164,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     [
       { name: 'world', type: 'World' },
       { name: 'entity', type: 'Entity' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'write' },
     ],
     'void',
     ['ecs.write'],
@@ -163,7 +177,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     [
       { name: 'world', type: 'World' },
       { name: 'entity', type: 'Entity' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'write' },
     ],
     'bool',
     ['ecs.write'],
@@ -176,7 +190,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     [
       { name: 'world', type: 'World' },
       { name: 'entity', type: 'Entity' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
       { name: 'field', type: 'String' },
     ],
     'f64',
@@ -190,7 +204,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     [
       { name: 'world', type: 'World' },
       { name: 'entity', type: 'Entity' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'write' },
       { name: 'field', type: 'String' },
       { name: 'value', type: 'f64' },
     ],
@@ -204,7 +218,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     'count',
     [
       { name: 'world', type: 'World' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
     ],
     'u32',
     ['ecs.read'],
@@ -216,7 +230,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     'at',
     [
       { name: 'world', type: 'World' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
       { name: 'index', type: 'u32' },
     ],
     'Entity',
@@ -243,7 +257,7 @@ export const ECS_CAPABILITIES: readonly CapabilityDefinition[] = [
     'findNearest',
     [
       { name: 'world', type: 'World' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
       { name: 'fieldX', type: 'String' },
       { name: 'fieldY', type: 'String' },
       { name: 'fieldZ', type: 'String' },
@@ -300,10 +314,10 @@ export const QUERY_CAPABILITIES: readonly CapabilityDefinition[] = [
     'query',
     [
       { name: 'world', type: 'World' },
-      { name: 'a', type: 'String' },
-      { name: 'b', type: 'String' },
-      { name: 'c', type: 'String' },
-      { name: 'd', type: 'String' },
+      { name: 'a', type: 'String', component: 'read' },
+      { name: 'b', type: 'String', component: 'read' },
+      { name: 'c', type: 'String', component: 'read' },
+      { name: 'd', type: 'String', component: 'read' },
     ],
     'Cursor',
     ['ecs.read'],
@@ -336,7 +350,7 @@ export const QUERY_CAPABILITIES: readonly CapabilityDefinition[] = [
     'view',
     [
       { name: 'world', type: 'World' },
-      { name: 'component', type: 'String' },
+      { name: 'component', type: 'String', component: 'read' },
       { name: 'forWriting', type: 'bool' },
     ],
     'View',

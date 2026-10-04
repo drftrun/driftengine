@@ -159,30 +159,84 @@ test('every variant that can bend declares the wind, and the instanced one decla
 });
 
 /*
- * **Glass shadows off specialises the glass lookup out of every lit pipeline.** The generated WGSL
- * is one string for both values: the lookups branch on `GLASS_SHADOWS`, an override, and a
- * pipeline sets it from the renderer's option, carried by the cache as the format is. Every
- * variant declares it, because a pipeline naming an override its module lacks fails validation
- * and drops the frame — the permutations without shadows included, which read it nowhere.
+ * **Every switch is in every variant.** The generated WGSL is one string for both values of each:
+ * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — and a pipeline
+ * sets each from its cache. Every variant declares all five, because a pipeline naming an override
+ * its module lacks fails validation and drops the frame, the permutations without shadows included,
+ * which read the glass switch nowhere.
  */
-test('EVERY LIT VARIANT DECLARES THE GLASS SWITCH ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE FIVE SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
+  const switches = [
+    'GLASS_SHADOWS',
+    'CLUSTERED_LIGHTS',
+    'LIGHT_FIXTURES',
+    'SURFACE_EFFECTS',
+    'DRIFT_LIGHT',
+  ] as const;
   for (const [variant, wgsl] of variants) {
-    expect(wgsl, variant).toMatch(/@id\(0\) override GLASS_SHADOWS: bool = true;/);
+    switches.forEach((name, id) => {
+      expect(wgsl, `${variant}: ${name}`).toMatch(
+        new RegExp(`@id\\(${id}\\) override ${name}: bool = true;`),
+      );
+    });
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
-    expect(bindings?.overrides, variant).toEqual({ GLASS_SHADOWS: 0 });
+    expect(bindings?.overrides, variant).toEqual({
+      GLASS_SHADOWS: 0,
+      CLUSTERED_LIGHTS: 1,
+      LIGHT_FIXTURES: 2,
+      SURFACE_EFFECTS: 3,
+      DRIFT_LIGHT: 4,
+    });
   }
 });
 
-test('A LIT PIPELINE SETS THE GLASS SWITCH FROM ITS CACHE, off where glass shadows are off', () => {
+/*
+ * **A lit pipeline reads glass once there is glass to read, and only then.** The switch was set from
+ * the profile, so every scene built every lit pipeline with the glass lookups in it — three thousand
+ * instructions and their registers on every surface, finding nothing in a world with no pane. On a
+ * phone that was the lit pass. Now it is off until the renderer reports a glass caster, and that
+ * report rebuilds every lit pipeline with it on, in one swap; a profile with glass shadows off
+ * never turns it on at all.
+ */
+test('A LIT PIPELINE READS GLASS ONLY ONCE ITS CACHE IS TOLD THERE IS GLASS, and never where glass shadows are off', async () => {
   for (const glassShadows of [true, false]) {
     const { device, descriptors } = fakeDevice();
     const cache = new PipelineCache(device, 'bgra8unorm', 1, glassShadows);
-    flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
+    const before = flatPipeline(
+      cache,
+      device,
+      {} as unknown as GPUBindGroupLayout,
+      'none',
+      'flat:s0:u0',
+      {},
+    );
     /* By its id, 0, not its name: Chrome refuses the name of an override declared with an id. */
-    expect(descriptors[0]?.fragment?.constants, String(glassShadows)).toEqual({
-      '0': glassShadows ? 1 : 0,
-    });
+    expect(descriptors[0]?.fragment?.constants?.['0'], `${glassShadows}, before`).toBe(0);
+
+    await cache.enable('GLASS_SHADOWS');
+    if (!glassShadows) {
+      expect(descriptors, 'nothing rebuilt where glass shadows are off').toHaveLength(1);
+      continue;
+    }
+    expect(descriptors[1]?.fragment?.constants?.['0'], 'rebuilt with the switch on').toBe(1);
+    expect(cache.peek('flat:s0:u0'), 'and that is the pipeline a draw finds').not.toBe(before);
   }
+});
+
+/*
+ * **Every switch the lit stage declares is set, from the cache.** Clustering is the profile's and
+ * fixed when the cache is made; DriftLight, like fixtures and effects, is off until it is used and
+ * then rebuilt on, beside whatever else is already on. The ids are the generator's declaration
+ * order, which `litSwitchesGlsl` keeps after glass.
+ */
+test('A LIT PIPELINE SETS ALL FIVE SWITCHES, clustering from the profile and the rest as they are used', async () => {
+  const { device, descriptors } = fakeDevice();
+  const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
+  flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
+  expect(descriptors[0]?.fragment?.constants).toEqual({ '0': 0, '1': 1, '2': 0, '3': 0, '4': 0 });
+
+  await cache.enable('DRIFT_LIGHT');
+  expect(descriptors[1]?.fragment?.constants).toEqual({ '0': 0, '1': 1, '2': 0, '3': 0, '4': 1 });
 });

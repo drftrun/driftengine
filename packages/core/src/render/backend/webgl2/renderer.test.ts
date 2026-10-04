@@ -1090,22 +1090,47 @@ test('A GLASS CASTER IS KEPT ASIDE FOR ITS OWN PASSES, and dropped when glass sh
 });
 
 /*
- * **Glass shadows off compiles none of the glass lookup into the lit program.** Returning at its
- * first line was not enough: the code still cost the lit pass its registers, 0.42 ms at 720p on
- * the courtyard at night. So the program is built with the lookups' one switch set from the option.
+ * **The lit program reads glass once a pane is offered, and not before.** The lookups cost the lit
+ * pass its registers on every surface whether or not anything is glass — 0.42 ms at 720p on the
+ * courtyard at night — and every scene paid for them from 4.5.0. So the program is built without
+ * them, and the frame after a shadow pass is first offered a pane rebuilds it with them. With glass
+ * shadows off no pane is kept, and nothing is rebuilt.
  */
-test('GLASS SHADOWS OFF BUILDS THE LIT PROGRAM WITH NO GLASS LOOKUP, and on builds it with one', () => {
+test('THE LIT PROGRAM READS GLASS ONCE A PANE IS OFFERED, and never with glass shadows off', () => {
   for (const glassShadows of ['full', 'half', 'off'] as const) {
     const { canvas, calls } = recordingGl();
-    new Renderer(canvas, resolveRenderQuality({ glassShadows }));
-    const lit = calls
-      .filter((call) => call.name === 'shaderSource')
-      .map((call) => String(call.args[1]))
-      .filter((source) => source.includes('vec3 sunGlassTint('));
-    expect(lit.length, `${glassShadows}: the lit program was compiled`).toBeGreaterThan(0);
-    const on = glassShadows !== 'off';
-    for (const source of lit) {
-      expect(source, glassShadows).toContain(`const bool GLASS_SHADOWS = ${String(on)};`);
+    const renderer = new Renderer(canvas, resolveRenderQuality({ glassShadows }));
+    const litSources = (from: number): string[] =>
+      calls
+        .slice(from)
+        .filter((call) => call.name === 'shaderSource')
+        .map((call) => String(call.args[1]))
+        .filter((source) => source.includes('vec3 sunGlassTint('));
+    const built = litSources(0);
+    expect(built.length, `${glassShadows}: the lit program was compiled`).toBeGreaterThan(0);
+    for (const source of built) {
+      expect(source, `${glassShadows}: before any pane`).toContain(
+        'const bool GLASS_SHADOWS = false;',
+      );
+    }
+
+    const gl = (renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+    const mesh = new Mesh(gl, GEOMETRY);
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(mesh, mat4.create(), { glass: { transmission: 0.9, frost: 0.5 } });
+    });
+    renderer.endShadowPass();
+    const before = calls.length;
+    renderer.beginFrame([0, 0, 0]);
+    const rebuilt = litSources(before);
+    if (glassShadows === 'off') {
+      expect(rebuilt, 'nothing rebuilt with glass shadows off').toEqual([]);
+      continue;
+    }
+    expect(rebuilt.length, `${glassShadows}: rebuilt at the next frame`).toBe(built.length);
+    for (const source of rebuilt) {
+      expect(source, glassShadows).toContain('const bool GLASS_SHADOWS = true;');
     }
   }
 });
@@ -1492,4 +1517,34 @@ test('AN EMPTY MESH DRAWS NOTHING, as a mesh, a translucent mesh or a batch', ()
     .slice(before)
     .filter((call) => call.name === 'drawElements' || call.name === 'drawElementsInstanced');
   expect(drawn.length, 'nothing is drawn').toBe(0);
+});
+
+/*
+ * **A view model is drawn into the nearest sliver of depth, and the range is handed back.** A first
+ * person's arms and weapon must not go into the wall they are pushed against, and clearing depth to
+ * draw them over it costs every pass that reads depth afterwards. Reported from a game that squeezed
+ * the depth itself through a camera of its own, for want of a pass. Here the context has no
+ * `EXT_clip_control`, so it draws conventional depth and the near end is 0.
+ */
+test('a view model squeezes its depth into the near end of the range, and hands it back', () => {
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const ranges = (): unknown[][] =>
+    calls.filter((call) => call.name === 'depthRange').map((call) => call.args);
+
+  renderer.beginViewModel();
+  expect(ranges().at(-1)).toEqual([0, 0.01]);
+  renderer.endViewModel();
+  expect(ranges().at(-1)).toEqual([0, 1]);
+});
+
+test('reversed depth puts the view model at the top of the range', () => {
+  const { canvas, calls } = recordingGl({ extensions: ['EXT_clip_control'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  expect(renderer.reversedDepth, 'this context must really be reversed').toBe(true);
+
+  renderer.beginViewModel(0.05);
+  const last = calls.filter((call) => call.name === 'depthRange').at(-1)?.args ?? [];
+  expect(last[0]).toBeCloseTo(0.95, 6);
+  expect(last[1]).toBe(1);
 });

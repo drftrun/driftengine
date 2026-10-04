@@ -257,6 +257,9 @@ import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
 import type { CutoutCaster } from '../../cutoutCaster.ts';
 import type { SurfaceTextureHandle } from '../api.ts';
+import { materialHasMaps, noteMapsWithoutUvs } from '../../mapsWithoutUvs.ts';
+import { VIEW_MODEL_DEPTH_SHARE, viewModelDepthRange } from '../../viewModel.ts';
+import { noLitSwitches, type LitSwitch } from '../../shaders/flat/glassTint.ts';
 
 /**
  * How many frames `firstFrameSettled` will ask before it stops asking.
@@ -1087,8 +1090,8 @@ export class WebGL2Renderer implements RendererApi {
 
   private presentedFrameCount = 0;
 
-  private readonly flatProgram: WebGLProgram;
-  private readonly flatUniforms: Record<string, WebGLUniformLocation>;
+  private flatProgram: WebGLProgram;
+  private flatUniforms: Record<string, WebGLUniformLocation>;
   /**
    * The lit fragment source every flat program is built from, and the budget it was built at.
    *
@@ -1099,7 +1102,7 @@ export class WebGL2Renderer implements RendererApi {
    * for a lazily compiled variant to end up at a different light budget from the one the renderer
    * uploads for, which is a picture nobody could explain.
    */
-  private readonly flatFragSource: string;
+  private flatFragSource: string;
   /**
    * How many lights this renderer's shader has room for, after the device had its say.
    *
@@ -1683,6 +1686,33 @@ export class WebGL2Renderer implements RendererApi {
    * each such draw and handed back, where the other backend bakes it into a pipeline.
    */
   private materialDoubleSided = false;
+  /** Whether the bound material has a map, for the warning a mesh with no coordinates earns. */
+  private materialHasMaps = false;
+  /** The material last set, so a lit program rebuilt for glass can be given it. */
+  private currentMaterial: SurfaceMaterial | null = null;
+  /**
+   * The lit stage's switches: what the lit programs were compiled with (`litOn`), and what the
+   * profile and the content have asked for since (`litWanted`).
+   *
+   * **Each is off until it is used** — glass until a pane is offered, a fixture until one is loaded,
+   * the effects until a material carries a table, DriftLight until a volume is set — and then on for
+   * good, rebuilt at the next `beginFrame`. Clustering is the profile's. The code costs the lit pass
+   * registers on every surface whether it finds anything or not, and a world without the feature
+   * draws the same picture without it. `PipelineCache.litSwitches` makes the same decision on the
+   * other backend. The frame a feature is first used in draws without it; the rebuild is a
+   * synchronous compile, and the next frame waits for it.
+   */
+  private readonly litOn = noLitSwitches();
+  private readonly litWanted = noLitSwitches();
+  private litAsked = false;
+
+  /** Ask for a switch, which the next `beginFrame` compiles in. Never glass with it turned off. */
+  private askLit(feature: LitSwitch): void {
+    if (this.litWanted[feature]) return;
+    if (feature === 'GLASS_SHADOWS' && this.quality.glassShadows === 'off') return;
+    this.litWanted[feature] = true;
+    this.litAsked = true;
+  }
 
   /**
    * The one sink handed to every caster enumeration.
@@ -1715,6 +1745,7 @@ export class WebGL2Renderer implements RendererApi {
         /* Glass: kept aside for its own two passes rather than dropped. See `glassCasters.ts`. */
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordMesh(mesh, model, material, this.glassCasterScratch);
+          this.askLit('GLASS_SHADOWS');
         }
         return;
       }
@@ -1756,6 +1787,7 @@ export class WebGL2Renderer implements RendererApi {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordInstanced(batch, data, material, this.glassCasterScratch);
+          this.askLit('GLASS_SHADOWS');
         }
         return;
       }
@@ -1789,6 +1821,7 @@ export class WebGL2Renderer implements RendererApi {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordSkinned(mesh, model, palette, material, this.glassCasterScratch);
+          this.askLit('GLASS_SHADOWS');
         }
         return;
       }
@@ -2297,6 +2330,8 @@ export class WebGL2Renderer implements RendererApi {
     this.iesRows = this.iesAtlas.height;
     this.iesPlanes = this.iesAtlas.planes;
     this.cookieTiles = this.cookieImages.length;
+    /* The first profile or cookie is when the lit programs start reading them. See `litOn`. */
+    if (this.iesRows > 1 || this.cookieTiles > 0) this.askLit('LIGHT_FIXTURES');
     gl.bindTexture(gl.TEXTURE_2D, null);
     gl.activeTexture(gl.TEXTURE0);
   }
@@ -2714,6 +2749,9 @@ export class WebGL2Renderer implements RendererApi {
      * Built for the profile this renderer resolved, not for every profile at once — so a
      * world with shadows off compiles none of the shadow path. See `shaders/flat.ts`.
      */
+    /* The one switch the profile decides; the rest wait for their content. See `litOn`. */
+    this.litOn.CLUSTERED_LIGHTS = this.quality.clusteredLights;
+    this.litWanted.CLUSTERED_LIGHTS = this.quality.clusteredLights;
     const fitted = this.fitFlatProgram(gl);
     this.flatProgram = fitted.program;
     this.flatFragSource = fitted.source;
@@ -3306,6 +3344,8 @@ export class WebGL2Renderer implements RendererApi {
     this.materials.dirty();
     this.currentSurfaceTexture = material?.albedo ?? null;
     this.materialDoubleSided = material?.doubleSided === true;
+    this.materialHasMaps = materialHasMaps(material);
+    this.currentMaterial = material;
     /*
      * Written to every flat program, because material state persists across draws and a skinned
      * draw is entitled to the material the caller set before it. A second program holding none of
@@ -3422,6 +3462,8 @@ export class WebGL2Renderer implements RendererApi {
       gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
     } else {
       albedo.bindEffects(gl, SURFACE_EFFECTS_TEXTURE_UNIT, this.emptyTexture2D);
+      /* The first table bound is when the lit programs start reading one. See `litOn`. */
+      if (albedo.hasEffects) this.askLit('SURFACE_EFFECTS');
     }
     gl.uniform1i(u['uSurfaceEffects'] ?? null, SURFACE_EFFECTS_TEXTURE_UNIT);
     if (albedo === null) {
@@ -5317,21 +5359,91 @@ export class WebGL2Renderer implements RendererApi {
    * rather than propagating. Only a shader that will not link at *any* budget throws, and it
    * throws a sentence with the device's numbers in it rather than a bare driver string.
    */
+  /** The lit fragment source this renderer's profile compiles, at a light budget. */
+  private flatFragAt(budget: LightBudget): string {
+    return flatFrag({
+      pointShadows: this.quality.pointShadows,
+      directionalShadows: this.quality.directionalShadows,
+      environmentProbe: this.probeCapture !== null,
+      nightEmissive: this.quality.nightEmissive,
+      /* Each off until it is used: see `litOn`. */
+      glassShadows: this.litOn.GLASS_SHADOWS,
+      clusteredLights: this.litOn.CLUSTERED_LIGHTS,
+      lightFixtures: this.litOn.LIGHT_FIXTURES,
+      surfaceEffects: this.litOn.SURFACE_EFFECTS,
+      driftLight: this.litOn.DRIFT_LIGHT,
+      maxLights: budget.maxLights,
+      maxAreaLights: budget.maxAreaLights,
+    });
+  }
+
+  /**
+   * Every lit program that exists, compiled again with the switches asked for since, at the budget
+   * the renderer already uploads for, and given the pass and the material the old one held.
+   *
+   * At `beginFrame`, not where a feature was first used: a pane is offered inside a shadow pass
+   * with the depth program bound, and a program swapped under it would draw the next caster with
+   * the lit one.
+   */
+  private rebuildLit(): void {
+    const { gl } = this;
+    Object.assign(this.litOn, this.litWanted);
+    this.flatFragSource = this.flatFragAt(this.lightBudget);
+    const recompile = (
+      old: WebGLProgram | null,
+      skinned: boolean,
+      morphed: boolean,
+      instanced: boolean,
+      label: string,
+    ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } | null => {
+      if (old === null) return null;
+      const program = compileProgram(
+        gl,
+        flatVert({ skinned, morphed, instanced }),
+        this.flatFragSource,
+        label,
+      );
+      gl.deleteProgram(old);
+      return { program, uniforms: uniformLocations(gl, program, label) };
+    };
+    const plain = recompile(this.flatProgram, false, false, false, 'flat');
+    if (plain !== null) {
+      this.flatProgram = plain.program;
+      this.flatUniforms = plain.uniforms;
+    }
+    const skinned = recompile(this.flatSkinnedProgram, true, false, false, 'flat.skinned');
+    this.flatSkinnedProgram = skinned?.program ?? null;
+    this.flatSkinnedUniforms = skinned?.uniforms ?? null;
+    const morphed = recompile(this.flatMorphedProgram, false, true, false, 'flat.morphed');
+    this.flatMorphedProgram = morphed?.program ?? null;
+    this.flatMorphedUniforms = morphed?.uniforms ?? null;
+    const both = recompile(this.flatBothProgram, true, true, false, 'flat.morphedskinned');
+    this.flatBothProgram = both?.program ?? null;
+    this.flatBothUniforms = both?.uniforms ?? null;
+    const instanced = recompile(this.flatInstancedProgram, false, false, true, 'flat.instanced');
+    this.flatInstancedProgram = instanced?.program ?? null;
+    this.flatInstancedUniforms = instanced?.uniforms ?? null;
+
+    this.flatTargets.length = 0;
+    for (const target of [plain, skinned, morphed, both, instanced]) {
+      if (target !== null) this.flatTargets.push(target);
+    }
+    const camera = this.lastPassCamera;
+    const env = this.lastPassEnv;
+    for (const target of this.flatTargets) {
+      gl.useProgram(target.program);
+      if (camera !== null && env !== null) this.writeMeshPassState(target.uniforms, camera, env);
+      this.writeMaterialState(target.uniforms, this.currentMaterial);
+    }
+    this.useFlatProgram();
+  }
+
   private fitFlatProgram(gl: WebGL2RenderingContext): {
     program: WebGLProgram;
     source: string;
     budget: LightBudget;
   } {
-    const variant = {
-      pointShadows: this.quality.pointShadows,
-      directionalShadows: this.quality.directionalShadows,
-      environmentProbe: this.probeCapture !== null,
-      nightEmissive: this.quality.nightEmissive,
-      /* Off compiles none of the glass lookup: see `FlatShaderOptions.glassShadows`. */
-      glassShadows: this.quality.glassShadows !== 'off',
-    };
-    const build = (budget: LightBudget): string =>
-      flatFrag({ ...variant, maxLights: budget.maxLights, maxAreaLights: budget.maxAreaLights });
+    const build = (budget: LightBudget): string => this.flatFragAt(budget);
     const vert = flatVert({ skinned: false, morphed: false, instanced: false });
     const limit = gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
     const ceiling: LightBudget = {
@@ -5990,6 +6102,35 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Draw what follows as a **view model**, in the nearest sliver of depth, until `endViewModel`.
+   *
+   * A first-person view model — arms and a held weapon — drawn with the frame's camera, or with one
+   * of its own through `bindMeshPass`, lands in front of anything past the near plane without the
+   * world's depth being cleared, so every pass that reads depth afterwards still sees the world.
+   * `share` is how much of the range it takes, 1% by default. See `viewModel.ts` for what it gives
+   * up, which includes temporal reconstruction: draw a view model with multisampling.
+   *
+   * Not inside an inset: an inset has its own depth, cleared for it, and needs no squeeze.
+   */
+  beginViewModel(share = VIEW_MODEL_DEPTH_SHARE): void {
+    if (this.contextLost) return;
+    viewModelDepthRange(this.reversedDepth, share, this.viewModelRange);
+    this.gl.depthRange(this.viewModelRange[0], this.viewModelRange[1]);
+    this.viewModelActive = true;
+  }
+
+  /** Give the whole depth range back. Safe to call without a matching `beginViewModel`. */
+  endViewModel(): void {
+    this.viewModelActive = false;
+    if (this.contextLost) return;
+    this.gl.depthRange(0, 1);
+  }
+
+  /** Whether a view model is being drawn, so `endFrame` can close one the caller left open. */
+  private viewModelActive = false;
+  private readonly viewModelRange: [number, number] = [0, 1];
+
+  /**
    * How much speed blur the frame about to be drawn should resolve with, 0 to 1.
    *
    * Set before `beginFrame`, held until changed, and ignored entirely when screen effects
@@ -6508,6 +6649,10 @@ export class WebGL2Renderer implements RendererApi {
 
   beginFrame(clearColor: Vec3): void {
     if (this.contextLost) return;
+    if (this.litAsked) {
+      this.litAsked = false;
+      this.rebuildLit();
+    }
     this.budget.reset();
     this.materials.dirty();
     /*
@@ -6584,6 +6729,8 @@ export class WebGL2Renderer implements RendererApi {
    */
   endFrame(): void {
     if (this.contextLost) return;
+    /* A view model left open would squeeze every pass after the world, the composite included. */
+    if (this.viewModelActive) this.endViewModel();
 
     /*
      * Camera motion blur, built from the camera the frame was *rendered* with.
@@ -7240,6 +7387,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_3D, null);
     this.driftIndex = index;
     this.driftAtlas = atlas;
+    /* The first volume is when the lit programs start reading one. See `litOn`. */
+    this.askLit('DRIFT_LIGHT');
   }
 
   /** The field's uniforms and volumes for this pass, or the stand-ins that switch it off. */
@@ -7563,6 +7712,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uAlbedoCutout'] ?? null, 0);
     gl.uniform1i(u['uDoubleSided'] ?? null, 0);
     this.materialDoubleSided = false;
+    this.materialHasMaps = false;
+    this.currentMaterial = null;
     this.currentSurfaceTexture = null;
 
     /*
@@ -7689,6 +7840,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
        and `Mesh.indexCount`. */
     if (!mesh.complete || mesh.indexCount === 0) return;
+    noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
 
     /*
      * Skipped where the flag asks and the bounds say so.
@@ -7877,6 +8029,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
        and `Mesh.indexCount`. */
     if (!mesh.complete || mesh.indexCount === 0) return;
+    noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
 
     if (opacity <= 0) return;
 

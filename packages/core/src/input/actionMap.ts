@@ -1,5 +1,5 @@
 import type { KeyValueStore } from '../core/storage.ts';
-import type { InputSource } from './input.ts';
+import type { InputSource, MouseButton } from './input.ts';
 import type { GamepadButton } from './gamepadMapping.ts';
 
 /**
@@ -18,12 +18,15 @@ import type { GamepadButton } from './gamepadMapping.ts';
 /** One thing that can satisfy an action. */
 export type Binding =
   | { readonly device: 'keyboard'; readonly code: string }
-  | { readonly device: 'gamepad'; readonly button: GamepadButton };
+  | { readonly device: 'gamepad'; readonly button: GamepadButton }
+  | { readonly device: 'mouse'; readonly button: MouseButton };
 
 /** Jump, fire, pause: a state, bound to keys and buttons. */
 export interface DigitalAction {
   readonly keys?: readonly string[];
   readonly buttons?: readonly GamepadButton[];
+  /** Mouse buttons, pressed over the input source's target: fire on the left, aim on the right. */
+  readonly mouseButtons?: readonly MouseButton[];
 }
 
 /**
@@ -92,7 +95,9 @@ export class ActionMap {
     return this.any(action, (binding) =>
       binding.device === 'keyboard'
         ? this.input.isDown(binding.code)
-        : (this.input.pad(0)?.down(binding.button) ?? false),
+        : binding.device === 'mouse'
+          ? this.input.mouseDown(binding.button)
+          : (this.input.pad(0)?.down(binding.button) ?? false),
     );
   }
 
@@ -101,7 +106,9 @@ export class ActionMap {
     return this.any(action, (binding) =>
       binding.device === 'keyboard'
         ? this.input.keyPressed(binding.code)
-        : (this.input.pad(0)?.pressed(binding.button) ?? false),
+        : binding.device === 'mouse'
+          ? this.input.mousePressed(binding.button)
+          : (this.input.pad(0)?.pressed(binding.button) ?? false),
     );
   }
 
@@ -118,6 +125,8 @@ export class ActionMap {
     for (const binding of bindings) {
       if (binding.device === 'keyboard') {
         if (this.input.consumeKeyPress(binding.code)) return true;
+      } else if (binding.device === 'mouse') {
+        if (this.input.consumeMousePress(binding.button)) return true;
       } else if (this.input.pad(0)?.consumePress(binding.button) === true) {
         return true;
       }
@@ -354,15 +363,18 @@ function bindingsOf(definition: DigitalAction): Binding[] {
   const list: Binding[] = [];
   for (const code of definition.keys ?? []) list.push({ device: 'keyboard', code });
   for (const button of definition.buttons ?? []) list.push({ device: 'gamepad', button });
+  for (const button of definition.mouseButtons ?? []) list.push({ device: 'mouse', button });
   return list;
 }
 
 function sameBinding(a: Binding, b: Binding): boolean {
-  if (a.device !== b.device) return false;
-  return a.device === 'keyboard' && b.device === 'keyboard'
-    ? a.code === b.code
-    : a.device === 'gamepad' && b.device === 'gamepad' && a.button === b.button;
+  if (a.device === 'keyboard' || b.device === 'keyboard') {
+    return a.device === 'keyboard' && b.device === 'keyboard' && a.code === b.code;
+  }
+  return a.device === b.device && a.button === b.button;
 }
+
+const MOUSE_BUTTONS: ReadonlySet<string> = new Set(['left', 'middle', 'right', 'back', 'forward']);
 
 function sameList(a: readonly Binding[], b: readonly Binding[]): boolean {
   return a.length === b.length && a.every((entry, at) => sameBinding(entry, b[at] as Binding));
@@ -373,5 +385,8 @@ function isBinding(value: unknown): value is Binding {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as { device?: unknown; code?: unknown; button?: unknown };
   if (candidate.device === 'keyboard') return typeof candidate.code === 'string';
+  if (candidate.device === 'mouse') {
+    return typeof candidate.button === 'string' && MOUSE_BUTTONS.has(candidate.button);
+  }
   return candidate.device === 'gamepad' && typeof candidate.button === 'string';
 }

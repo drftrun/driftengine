@@ -96,9 +96,19 @@ export function fakeBrowser(id = 'Xbox 360 Controller (XInput STANDARD GAMEPAD)'
   const frameCallbacks: ((time: number) => void)[] = [];
   let nextFrameHandle = 1;
 
+  const targetListeners = new Map<string, ((event: unknown) => void)[]>();
   const target = {
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type: string, fn: (event: unknown) => void) => {
+      const existing = targetListeners.get(type);
+      if (existing === undefined) targetListeners.set(type, [fn]);
+      else existing.push(fn);
+    },
+    removeEventListener: (type: string, fn: (event: unknown) => void) => {
+      const existing = targetListeners.get(type);
+      if (existing === undefined) return;
+      const at = existing.indexOf(fn);
+      if (at >= 0) existing.splice(at, 1);
+    },
     requestPointerLock: () => undefined,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 640, height: 480 }),
   } as unknown as HTMLElement;
@@ -203,6 +213,21 @@ export function fakeBrowser(id = 'Xbox 360 Controller (XInput STANDARD GAMEPAD)'
     },
     keyUp(code: string): void {
       for (const fn of windowListeners.get('keyup') ?? []) fn({ code });
+    },
+    /**
+     * Press a mouse button over the target, by `MouseEvent.button`: 0 left, 1 middle, 2 right.
+     * Pressed on the target and released on the window, as a browser delivers a drag that ends
+     * off the canvas.
+     */
+    mouseDown(button: number): void {
+      for (const fn of targetListeners.get('mousedown') ?? []) fn({ button, movementX: 0 });
+    },
+    mouseUp(button: number): void {
+      for (const fn of windowListeners.get('mouseup') ?? []) fn({ button });
+    },
+    /** The window losing focus, which eats every release that would have followed. */
+    blur(): void {
+      for (const fn of windowListeners.get('blur') ?? []) fn({});
     },
     /** Run exactly one animation frame, which is what a poll rides on. */
     frame(): void {

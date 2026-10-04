@@ -172,6 +172,16 @@ export class LockstepSession<S> {
   }
 
   /**
+   * How many ticks back the session can rewind: its loop's snapshot ring.
+   *
+   * The loop stays private, because a caller stepping it beside the session would desynchronise
+   * the two; this is the one number a readout wants from it.
+   */
+  get rewindDepth(): number {
+    return this.loop.depth;
+  }
+
+  /**
    * Publish this peer's input for `tick + inputDelay`, and record it locally at the same tick.
    *
    * **Recorded locally as well as sent, and that is not redundancy.** A peer's own input is not

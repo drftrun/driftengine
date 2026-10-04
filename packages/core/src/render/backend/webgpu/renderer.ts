@@ -337,6 +337,8 @@ import {
 import type { GlobalMediumOptions } from '../../globalMedium.ts';
 import type { MeshData } from '../../mesh.ts';
 import { castsDepth, glassOf } from '../../shadowCasters.ts';
+import { materialHasMaps, noteMapsWithoutUvs } from '../../mapsWithoutUvs.ts';
+import { VIEW_MODEL_DEPTH_SHARE, viewModelDepthRange } from '../../viewModel.ts';
 import { GlassCasterList, type GlassReplaySink } from '../../glassCasters.ts';
 import { GpuGlassTint } from './glassTintPass.ts';
 import {
@@ -379,7 +381,7 @@ import {
   createDepthBindGroupLayout,
   depthPipeline,
 } from './depthPass.ts';
-import { PipelineCache } from './pipelineCache.ts';
+import { PipelineCache, type LitSwitch } from './pipelineCache.ts';
 import {
   SKY_FIELDS,
   SKY_UNIFORM_SIZE,
@@ -2805,6 +2807,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly uvScale = new Float32Array([1, 1]);
   /** Whether the bound material is seen from both faces. See `SurfaceMaterial.doubleSided`. */
   private materialDoubleSided = false;
+  /** Whether the bound material has a map, for the warning a mesh with no coordinates earns. */
+  private materialHasMaps = false;
 
   createSurfaceTexture(
     source: TexImageSource,
@@ -2937,6 +2941,7 @@ export class WebGPURenderer implements RendererApi {
     this.uvScale[0] = material?.uScale ?? 1;
     this.uvScale[1] = material?.vScale ?? 1;
     this.materialDoubleSided = material?.doubleSided === true;
+    this.materialHasMaps = materialHasMaps(material);
     const normal = (material?.normal ?? null) as GpuSurfaceTexture | null;
     const orm = (material?.orm ?? null) as GpuSurfaceTexture | null;
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
@@ -5450,6 +5455,27 @@ export class WebGPURenderer implements RendererApi {
    */
   /** The glass the open shadow pass was offered, kept for its own passes: `glassCasters.ts`. */
   private readonly glassCasters = new GlassCasterList();
+  /** Whether a glass caster has ever been offered, which is when lit pipelines start reading it. */
+  private glassSeen = false;
+
+  /**
+   * The first glass caster switches every lit pipeline to reading glass. See
+   * `PipelineCache.litSwitches`: until a pane exists the lookups would find nothing, and they cost
+   * the lit pass on every surface whether they find anything or not.
+   */
+  private noteGlassCaster(): void {
+    if (this.glassSeen) return;
+    this.glassSeen = true;
+    this.enableLit('GLASS_SHADOWS');
+  }
+
+  /** One of the lit stage's switches on, in every cache a lit pipeline can come from. */
+  private enableLit(feature: LitSwitch): void {
+    if (this.pipelines.litSwitches[feature]) return;
+    void this.pipelines.enable(feature);
+    if (this.overlayPipelines !== this.pipelines) void this.overlayPipelines.enable(feature);
+    if (this.latePipelines !== this.pipelines) void this.latePipelines.enable(feature);
+  }
   /** One resolution every glass caster is read through, so recording one allocates nothing. */
   private readonly glassCasterScratch: ResolvedGlass = {
     transmission: 0,
@@ -5462,6 +5488,7 @@ export class WebGPURenderer implements RendererApi {
         /* Glass: kept aside for its own two passes rather than dropped. See `glassCasters.ts`. */
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordMesh(mesh, model, material, this.glassCasterScratch);
+          this.noteGlassCaster();
         }
         return;
       }
@@ -5517,6 +5544,7 @@ export class WebGPURenderer implements RendererApi {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordInstanced(batch, data, material, this.glassCasterScratch);
+          this.noteGlassCaster();
         }
         return;
       }
@@ -5572,6 +5600,7 @@ export class WebGPURenderer implements RendererApi {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordSkinned(mesh, model, palette, material, this.glassCasterScratch);
+          this.noteGlassCaster();
         }
         return;
       }
@@ -5968,6 +5997,7 @@ export class WebGPURenderer implements RendererApi {
       quality.screenEffects ? sceneColorFormat(quality.hdrScene) : surface.format,
       this.samples,
       glassShadows,
+      quality.clusteredLights,
     );
     /*
      * The canvas' own state, for the pass `ensurePass` reopens after `endFrame`.
@@ -5980,11 +6010,11 @@ export class WebGPURenderer implements RendererApi {
     this.overlayPipelines =
       this.pipelines.format === surface.format && this.samples === 1
         ? this.pipelines
-        : new PipelineCache(device, surface.format, 1, glassShadows);
+        : new PipelineCache(device, surface.format, 1, glassShadows, quality.clusteredLights);
     this.latePipelines =
       this.pipelines.format === RECON_HISTORY_FORMAT && this.samples === 1
         ? this.pipelines
-        : new PipelineCache(device, RECON_HISTORY_FORMAT, 1, glassShadows);
+        : new PipelineCache(device, RECON_HISTORY_FORMAT, 1, glassShadows, quality.clusteredLights);
     this.issueBound = this.issueCommand.bind(this);
     this.pipelineTargets =
       this.overlayPipelines === this.pipelines
@@ -6288,7 +6318,10 @@ export class WebGPURenderer implements RendererApi {
       /* The albedo's effects table, or a one-texel stand-in the shader's size test reads as none.
          The albedo is the group's key, so its table needs no key of its own. */
       if (name === 'uSurfaceEffects') {
-        return { view: this.albedo?.effectsView ?? blankView, sampler: blankSampler };
+        const effects = this.albedo?.effectsView ?? null;
+        /* The first table bound is when the lit pipelines start reading one. See `litSwitches`. */
+        if (effects !== null) this.enableLit('SURFACE_EFFECTS');
+        return { view: effects ?? blankView, sampler: blankSampler };
       }
       /*
        * The room, once a bake has filled it. Unbaked reads as the blank cube: nothing to mirror.
@@ -7752,6 +7785,7 @@ export class WebGPURenderer implements RendererApi {
     i[at('uLightingEnabled')] = 1;
     i[at('uFogEnabled')] = 1;
     i[at('uAlbedoEnabled')] = 0;
+    this.materialHasMaps = false;
 
     /*
      * **The camera medium, which this pass did not upload until 2026-08-29.**
@@ -8284,6 +8318,7 @@ export class WebGPURenderer implements RendererApi {
      * where it happened to pass, write motion for a surface no pixel of the frame belongs to.
      */
     if (this.tracksMotionNow()) this.recordDrawMotion(mesh, model, previousModel);
+    noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
     this.submitMesh(mesh, model, tint, 1, false, { depthLayer });
   }
 
@@ -8389,6 +8424,7 @@ export class WebGPURenderer implements RendererApi {
       return;
     }
 
+    noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
     /* The tint travels in the options here, where `drawMesh` takes it positionally — see
        `TranslucentMeshOptions.tint` for why, and for the fade it was added for. */
     this.submitMesh(
@@ -12598,6 +12634,7 @@ export class WebGPURenderer implements RendererApi {
     command.instances = 1;
     command.indirect = null;
     recordNode(this.arena, VERB_DRAW, reads, writes, at, 0);
+    if (this.framePresented) this.queueOverlayFlush();
     return command;
   }
 
@@ -12613,11 +12650,7 @@ export class WebGPURenderer implements RendererApi {
     if (verb === VERB_PASS) {
       const definition = passAt(this.passes, nodeState(this.arena, at));
       if (definition === undefined) return;
-      this.passContext.pass = pass;
-      /* The frame's grade, so a contributed pass can obey the 2026-08-17 rule. See `PassContext`. */
-      this.passContext.outputTransform = this.gradeCode();
-      this.passContext.outputExposure = this.gradeExposure();
-      definition.draw(this.passContext as PassContext);
+      definition.draw(this.fillPassContext(pass));
       return;
     }
     if (verb !== VERB_DRAW) return;
@@ -12704,6 +12737,16 @@ export class WebGPURenderer implements RendererApi {
   }
 
   private openPass(): GPURenderPassEncoder | null {
+    const was = this.pass;
+    const pass = this.openAnyPass();
+    /* A pass opened while a view model is drawn starts with the whole depth range: squeeze it. */
+    if (this.viewModelActive && pass !== null && pass !== was && !this.reflectionPassActive) {
+      this.squeezeViewport(pass);
+    }
+    return pass;
+  }
+
+  private openAnyPass(): GPURenderPassEncoder | null {
     /* While the replay is running this is the only pass there is. See `oitEncoder`. */
     if (this.oitEncoder !== null) return this.oitEncoder;
     /*
@@ -12797,18 +12840,30 @@ export class WebGPURenderer implements RendererApi {
     });
     this.overlayActive = true;
 
-    /*
-     * **Submitted on a microtask, which runs before the browser presents.** There is no second
-     * `endFrame` to hang this on — a consumer thinks the frame is over — and presentation happens
-     * when the task ends, after the microtask checkpoint. Anything that needs the pixels sooner
-     * flushes synchronously; `copyRegionTo` is the one that does.
-     */
-    if (!this.overlayFlushQueued) {
-      this.overlayFlushQueued = true;
-      queueMicrotask(() => this.flushOverlay());
-    }
+    this.queueOverlayFlush();
     return this.pass;
   }
+
+  /**
+   * Submit what is drawn after the present on a microtask, which runs before the browser presents.
+   *
+   * There is no second `endFrame` to hang this on — a consumer thinks the frame is over — and
+   * presentation happens when the task ends, after the microtask checkpoint. Anything that needs
+   * the pixels sooner flushes synchronously; `copyRegionTo` is the one that does.
+   *
+   * **Queued wherever such work begins: where the overlay pass opens, and where a verb records.**
+   * With the graph on a verb records rather than opening a pass, and until 4.8.2 only an opening
+   * queued this, so `fillPanel` and a contributed pass drawn after `endFrame` waited for the next
+   * `beginFrame` — whose replay drew onto a canvas texture already presented and destroyed.
+   */
+  private queueOverlayFlush(): void {
+    if (this.overlayFlushQueued) return;
+    this.overlayFlushQueued = true;
+    queueMicrotask(this.flushOverlayBound);
+  }
+
+  /** `flushOverlay` bound once, so queueing it each frame allocates nothing. */
+  private readonly flushOverlayBound = (): void => this.flushOverlay();
 
   /**
    * The cache whose pipelines match the pass this draw will land in.
@@ -12873,6 +12928,8 @@ export class WebGPURenderer implements RendererApi {
   }
 
   endFrame(): void {
+    /* A view model left open would squeeze every pass after the world, the composite included. */
+    if (this.viewModelActive) this.endViewModel();
     this.inFrame = false;
     if (this.surface.lost || this.encoder === null) return;
     /*
@@ -13341,13 +13398,39 @@ export class WebGPURenderer implements RendererApi {
     outputTransform: number;
     outputExposure: number;
     jitter: Float32Array;
+    format: GPUTextureFormat;
+    depthFormat: GPUTextureFormat;
+    samples: number;
   } = {
     backend: 'webgpu',
     pass: null,
     outputTransform: 0,
     outputExposure: 1,
     jitter: this.passJitter,
+    format: 'rgba8unorm',
+    depthFormat: DEPTH_FORMAT,
+    samples: 1,
   };
+
+  /**
+   * Fill the context a contributed pass draws with, for the pass it is about to draw into.
+   *
+   * **The attachments as well as the encoder**: a pass drawn after `endFrame` lands on the canvas
+   * at one sample where the frame's own is the scene target at the scene's samples, and a pipeline
+   * built for the one is refused by the other. The cache a mesh drawn here would use is the answer,
+   * so the two cannot disagree.
+   */
+  private fillPassContext(pass: GPURenderPassEncoder): PassContext {
+    const target = this.targetPipelines();
+    const context = this.passContext;
+    context.pass = pass;
+    /* The frame's grade, so a contributed pass can obey the 2026-08-17 rule. See `PassContext`. */
+    context.outputTransform = this.gradeCode();
+    context.outputExposure = this.gradeExposure();
+    context.format = target.format;
+    context.samples = target.sampleCount;
+    return context as PassContext;
+  }
 
   /**
    * Let something outside this file draw into the frame. See `Renderer.registerPass`.
@@ -13502,11 +13585,7 @@ export class WebGPURenderer implements RendererApi {
     if (!this.quality.frameGraph) {
       const pass = this.openPass();
       if (pass === null) return;
-      this.passContext.pass = pass;
-      /* The frame's grade, so a contributed pass can obey the 2026-08-17 rule. See `PassContext`. */
-      this.passContext.outputTransform = this.gradeCode();
-      this.passContext.outputExposure = this.gradeExposure();
-      definition.draw(this.passContext as PassContext);
+      definition.draw(this.fillPassContext(pass));
       return;
     }
     recordNode(
@@ -13517,6 +13596,7 @@ export class WebGPURenderer implements RendererApi {
       handle,
       0,
     );
+    if (this.framePresented) this.queueOverlayFlush();
   }
 
   /** Let go of a pass. A handle kept past this draws nothing; see `PassHandle`. */
@@ -13728,7 +13808,10 @@ export class WebGPURenderer implements RendererApi {
    * **The clear is a drawn quad rather than a clear**, because WebGPU clears whole attachments
    * and cannot confine one to a scissor. See `insetPass.ts`.
    *
-   * Returns the drawing-buffer height of the inset, as the other backend does.
+   * Returns the **aspect** of the inset, width over height in the pixels its viewport got, as the
+   * other backend does — for `camera.updateMatrices`. With no pass to draw into, a lost device,
+   * it is the aspect of the box asked for: there are no pixels to measure, and a zero would be a
+   * projection of infinities in the caller's camera.
    */
   beginInset(rect: InsetRect, clearColor: Vec3 | null): number {
     /*
@@ -13738,7 +13821,8 @@ export class WebGPURenderer implements RendererApi {
      */
     if (this.quality.frameGraph) this.flushGraph();
     const pass = this.openPass();
-    if (this.surface.lost || pass === null) return 0;
+    if (this.surface.lost || pass === null)
+      return Math.max(rect.width, 1) / Math.max(rect.height, 1);
     const canvas = this.surface.context.canvas as HTMLCanvasElement;
     const cssWidth = Math.max(canvas.clientWidth, 1);
     const cssHeight = Math.max(canvas.clientHeight, 1);
@@ -13842,6 +13926,43 @@ export class WebGPURenderer implements RendererApi {
      */
     return w / h;
   }
+
+  /**
+   * Draw what follows as a **view model**, in the nearest sliver of depth, until `endViewModel`.
+   *
+   * The twin of the WebGL2 method, which carries the reasons. Here the squeeze is the viewport's
+   * depth bounds, which are pass state applied when a draw is issued, so both ends flush the graph
+   * as an inset's do, and a pass opened in between is given the bounds again in `openPass`.
+   */
+  beginViewModel(share = VIEW_MODEL_DEPTH_SHARE): void {
+    if (this.quality.frameGraph) this.flushGraph();
+    viewModelDepthRange(this.reversedDepth, share, this.viewModelRange);
+    this.viewModelActive = true;
+    const pass = this.openPass();
+    if (this.surface.lost || pass === null) return;
+    this.squeezeViewport(pass);
+  }
+
+  /** Give the whole depth range back. Safe to call without a matching `beginViewModel`. */
+  endViewModel(): void {
+    if (!this.viewModelActive) return;
+    if (this.quality.frameGraph) this.flushGraph();
+    this.viewModelActive = false;
+    const pass = this.pass;
+    if (this.surface.lost || pass === null) return;
+    const [width, height] = this.passSize();
+    pass.setViewport(0, 0, width, height, 0, 1);
+  }
+
+  /** The view model's depth bounds on the whole of the pass. */
+  private squeezeViewport(pass: GPURenderPassEncoder): void {
+    const [width, height] = this.passSize();
+    pass.setViewport(0, 0, width, height, this.viewModelRange[0], this.viewModelRange[1]);
+  }
+
+  /** Whether a view model is being drawn: `openPass` re-applies it, `endFrame` closes it. */
+  private viewModelActive = false;
+  private readonly viewModelRange: [number, number] = [0, 1];
 
   /** Give the whole canvas back. Safe to call without a matching `beginInset`. */
   endInset(): void {
@@ -15030,6 +15151,8 @@ export class WebGPURenderer implements RendererApi {
     this.iesRows = this.iesAtlas.height;
     this.iesPlanes = this.iesAtlas.planes;
     this.cookieTiles = this.cookieImages.length;
+    /* The first profile or cookie is when the lit pipelines start reading them. See `litSwitches`. */
+    if (this.iesRows > 1 || this.cookieTiles > 0) this.enableLit('LIGHT_FIXTURES');
     return this.fixtureView;
   }
 
@@ -15125,6 +15248,8 @@ export class WebGPURenderer implements RendererApi {
     );
     this.driftIndex = index;
     this.driftAtlas = atlas;
+    /* The first volume is when the lit pipelines start reading one. See `litSwitches`. */
+    this.enableLit('DRIFT_LIGHT');
     this.driftIndexView = index.createView({ dimension: '3d' });
     this.driftAtlasView = atlas.createView({ dimension: '3d' });
     this.bakeLightField = {

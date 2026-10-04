@@ -1015,8 +1015,15 @@ export const FLOORS = {
    * typed structurally, so the package still depends on nothing new. Named in the fixture in the
    * same commit, which is the whole point of the paragraph above it.
    */
-  /* Re-measured 2026-10-01, 3 bytes over: drift through its imports, not this package. */
-  'tools-only': 5393,
+  /*
+   * Re-measured 2026-10-01, 3 bytes over: drift through its imports, not this package.
+   *
+   * **5,780 from 4.8.2, 387 over**, and all of it is the overlay and its panels growing what they
+   * lacked: a title row and a background under every panel, and colours with alpha for them; the
+   * console's scroll reaching the node that is drawn; an `f32` shown as the decimal it stores; and
+   * a lockstep session read through `rewindDepth` as well as a hand-built loop.
+   */
+  'tools-only': 5780,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional

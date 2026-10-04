@@ -18,10 +18,26 @@ export interface Prefab {
   readonly components: readonly (readonly [ComponentType, Readonly<Record<string, unknown>>])[];
 }
 
+/**
+ * A prefab, refused here if it names a field one of its components does not have.
+ *
+ * **At definition rather than at the first spawn**, which is the same refusal `World.add` makes,
+ * moved to where a game builds its content: a misspelt field found the first time a rare enemy
+ * spawns is found by a player.
+ */
 export function definePrefab(
   name: string,
   components: readonly (readonly [ComponentType, Readonly<Record<string, unknown>>])[],
 ): Prefab {
+  for (const [type, values] of components) {
+    for (const field of Object.keys(values)) {
+      if (type.schema.fields.some((declared) => declared.name === field)) continue;
+      throw new Error(
+        `\`${name}\` gives \`${type.name}\` a field \`${field}\` it does not have. It has ` +
+          `${type.schema.fields.map((declared) => `\`${declared.name}\``).join(', ')}.`,
+      );
+    }
+  }
   return { name, components };
 }
 

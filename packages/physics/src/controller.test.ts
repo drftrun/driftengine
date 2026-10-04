@@ -64,6 +64,34 @@ describe('standing and walking', () => {
     expect(c.velX).toBeLessThan(5.1);
   });
 
+  /*
+   * **A diagonal is no faster than a straight line, on the way up or on the way down.** The
+   * wanted velocity was clamped as a vector and then approached one world axis at a time, each by
+   * the whole step — so a diagonal gained speed, and lost it, √2 times as fast as a straight run:
+   * 2.83 m/s three ticks from rest where a straight run had 2.0. Reported from a game whose
+   * movement suite asserts the diagonal is no faster.
+   */
+  it('accelerates and brakes along a diagonal exactly as along an axis', () => {
+    const world = ground();
+    const straight = stand(world);
+    const diagonal = stand(ground());
+    drive(world, straight, 3, { moveX: 5 });
+    drive(world, diagonal, 3, { moveX: 5, moveZ: 5 });
+    /* Three ticks of the default 40 m/s² from rest: 3 × 40 / 60. */
+    expect(Math.hypot(straight.velX, straight.velZ)).toBeCloseTo(2, 5);
+    expect(Math.hypot(diagonal.velX, diagonal.velZ)).toBeCloseTo(2, 5);
+    expect(diagonal.velX).toBeCloseTo(diagonal.velZ, 6);
+
+    drive(world, straight, 60, { moveX: 5 });
+    drive(world, diagonal, 60, { moveX: 5, moveZ: 5 });
+    drive(world, straight, 2, {});
+    drive(world, diagonal, 2, {});
+    expect(Math.hypot(diagonal.velX, diagonal.velZ)).toBeCloseTo(
+      Math.hypot(straight.velX, straight.velZ),
+      5,
+    );
+  });
+
   it('stops when the input stops', () => {
     const world = ground();
     const c = stand(world);

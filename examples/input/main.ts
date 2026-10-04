@@ -141,7 +141,9 @@ function bindingNames(action: string): string {
     .map((binding) =>
       binding.device === 'keyboard'
         ? keyName(binding.code)
-        : (pad?.identity.label(binding.button) ?? `pad ${POSITION[binding.button]}`),
+        : binding.device === 'mouse'
+          ? `${binding.button} mouse button`
+          : (pad?.identity.label(binding.button) ?? `pad ${POSITION[binding.button]}`),
     )
     .join(', ');
 }

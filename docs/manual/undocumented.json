@@ -614,7 +614,6 @@
   "entities/createAllocatorSnapshot",
   "entities/createStoreSnapshot",
   "entities/defineComponent",
-  "entities/definePrefab",
   "entities/EntityAllocatorOptions",
   "entities/entityGeneration",
   "entities/entityIndex",

@@ -60,6 +60,44 @@ describe('ParticlePool', () => {
     expect(survivors.sort((a, b) => a - b)).toEqual([6, 7, 8, 9]);
   });
 
+  /*
+   * **A particle is drawn the frame it is emitted.** A burst emitted after this frame's `update`
+   * — a muzzle flash, a hit's sparks, emitted when the shot resolves and drawn the same frame — was
+   * absent from both drawn streams until the next `update`, so it appeared a frame late, and a
+   * pool updated only while it had something live never showed its first particle at all.
+   * Reported from a game that called `update(0)` before every draw to see its own effects.
+   */
+  test('an emitted particle is in both drawn streams before any update', () => {
+    const pool = new ParticlePool(options({ alphaStart: 0.8, alphaEnd: 0 }));
+    pool.emit(3, 4, 5, 0, 1, 0, 7, 2);
+
+    expect(pool.instances.count).toBe(1);
+    expect(pool.particles.count).toBe(1);
+    expect([...pool.particles.positions.subarray(0, 3)]).toEqual([3, 4, 5]);
+    /* At birth: the start size times its own scale, the start colour, the start alpha, age 0. */
+    expect(pool.particles.sizes[0]).toBe(2);
+    expect([...pool.particles.colors.subarray(0, 3)]).toEqual([1, 1, 1]);
+    expect(pool.particles.alphas[0]).toBeCloseTo(0.8, 6);
+    expect(pool.particles.ages[0]).toBe(0);
+    expect(pool.particles.seeds[0]).toBe(7);
+    expect([...pool.particles.velocities.subarray(0, 3)]).toEqual([0, 1, 0]);
+    expect([...pool.instances.positions.subarray(0, 3)]).toEqual([3, 4, 5]);
+  });
+
+  test('an emit that takes a live slot replaces its drawn entry rather than adding one', () => {
+    const pool = new ParticlePool(options({ capacity: 2 }));
+    pool.emit(1, 0, 0, 0, 0, 0, 1);
+    pool.emit(2, 0, 0, 0, 0, 0, 2);
+    pool.update(DT);
+    /* The ring is full, so this takes the slot the particle at x = 1 lives in. */
+    pool.emit(9, 0, 0, 0, 0, 0, 3);
+
+    expect(pool.particles.count).toBe(2);
+    const xs = [0, 1].map((i) => pool.particles.positions[i * 3] ?? -1);
+    expect(xs.map((x) => Math.round(x)).sort((a, b) => a - b)).toEqual([2, 9]);
+    expect(pool.instances.count).toBe(2);
+  });
+
   test('gravity and drag act, and rise opposes gravity', () => {
     const falling = new ParticlePool(options({ gravity: 10 }));
     falling.emit(0, 0, 0, 0, 0, 0, 1);

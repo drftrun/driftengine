@@ -2704,7 +2704,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         }
       ],
       "returns": "bool",
@@ -2730,7 +2731,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "write"
         }
       ],
       "returns": "void",
@@ -2756,7 +2758,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "write"
         }
       ],
       "returns": "bool",
@@ -2782,7 +2785,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "field",
@@ -2812,7 +2816,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "write"
         },
         {
           "name": "field",
@@ -2842,7 +2847,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         }
       ],
       "returns": "u32",
@@ -2864,7 +2870,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "index",
@@ -2890,7 +2897,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "fieldX",
@@ -4104,19 +4112,23 @@
         },
         {
           "name": "a",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "b",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "c",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "d",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         }
       ],
       "returns": "Cursor",
@@ -4178,7 +4190,8 @@
         },
         {
           "name": "component",
-          "type": "String"
+          "type": "String",
+          "component": "read"
         },
         {
           "name": "forWriting",

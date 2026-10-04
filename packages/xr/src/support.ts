@@ -47,7 +47,14 @@ const NOTHING: XrSupport = {
   reason: 'this browser has no WebXR: navigator.xr is not defined.',
 };
 
-/** A context that can be asked to become XR compatible. Both backends' contexts satisfy it. */
+/**
+ * A context that can be asked to become XR compatible: what `probeXrSupport` looks for on the
+ * object it is handed.
+ *
+ * **Not the parameter's type**, which is any object. One optional member makes this a weak type,
+ * and the DOM types do not declare `makeXRCompatible` on `WebGL2RenderingContext`, so typed as this
+ * the context every game draws with failed to compile until it was cast.
+ */
 export interface XrCompatibleContext {
   makeXRCompatible?(): Promise<void>;
 }
@@ -78,7 +85,7 @@ async function supports(system: XrSystem, mode: XrMode): Promise<boolean> {
  * different thing from asked and refused.
  */
 export async function probeXrSupport(
-  context?: XrCompatibleContext | null,
+  context?: object | null,
   /*
    * The system, overridable for the same reason `enterXr` takes one: a test cannot assign
    * `globalThis.navigator`, which is getter-only, and stubbing a global to ask a question about a
@@ -97,12 +104,15 @@ export async function probeXrSupport(
 
   let compatible = false;
   let compatibleReason = '';
-  if (context?.makeXRCompatible === undefined) {
+  const offered = (context ?? null) as XrCompatibleContext | null;
+  const makeCompatible =
+    typeof offered?.makeXRCompatible === 'function' ? offered.makeXRCompatible.bind(offered) : null;
+  if (makeCompatible === null) {
     compatibleReason =
       'no rendering context was offered, so whether one can be made XR compatible is unasked.';
   } else {
     try {
-      await context.makeXRCompatible();
+      await makeCompatible();
       compatible = true;
     } catch (error) {
       const name = (error as Error)?.name ?? 'Error';
@@ -124,7 +134,7 @@ export async function probeXrSupport(
    */
   const anyMode = immersiveVr || immersiveAr || inline;
   let reason = '';
-  if (context?.makeXRCompatible !== undefined && !compatible) {
+  if (makeCompatible !== null && !compatible) {
     reason = compatibleReason;
   } else if (!anyMode) {
     reason =

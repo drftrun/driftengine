@@ -34,8 +34,24 @@ export interface GpuSpriteSlot {
   readonly bindGroup: GPUBindGroup;
 }
 
+/** Pipelines by colour format, then depth format, then sample count: a lookup that allocates nothing. */
+type PipelinesByTarget = Map<
+  GPUTextureFormat,
+  Map<GPUTextureFormat, Map<number, GPURenderPipeline>>
+>;
+
 export interface GpuSprites {
-  readonly pipeline: GPURenderPipeline;
+  /**
+   * One pipeline per pass the sprites have been drawn into, chosen at the draw by
+   * `spritePipelineFor`. A pipeline must match its pass's attachments exactly, and a 2D layer is
+   * drawn in the frame and over it, which are two different passes: the scene's target at the
+   * scene's samples, and the canvas at one.
+   */
+  readonly pipelines: PipelinesByTarget;
+  readonly pipelineLayout: GPUPipelineLayout;
+  readonly vertexModule: GPUShaderModule;
+  readonly fragmentModule: GPUShaderModule;
+  readonly label: string;
   readonly layout: GPUBindGroupLayout;
   readonly vertexUniforms: GPUBuffer;
   readonly fragmentUniforms: GPUBuffer;
@@ -83,52 +99,14 @@ export function createGpuSprites(
     ],
   });
 
-  const pipeline = device.createRenderPipeline({
-    label,
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-    vertex: {
-      module: device.createShaderModule({ label: `${label}.vert`, code: SPRITE_VERT_WGSL }),
-      entryPoint: 'main',
-      buffers: [
-        {
-          arrayStride: STRIDE,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x4' },
-            { shaderLocation: 1, offset: 16, format: 'float32x4' },
-            { shaderLocation: 2, offset: 32, format: 'float32x4' },
-            { shaderLocation: 3, offset: 48, format: 'float32x2' },
-          ],
-        },
-      ],
-    },
-    fragment: {
-      module: device.createShaderModule({ label: `${label}.frag`, code: SPRITE_FRAG_WGSL }),
-      entryPoint: 'main',
-      targets: [
-        {
-          format,
-          /* Premultiplied `over`, matching the WebGL2 half exactly. */
-          blend: {
-            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        },
-      ],
-    },
-    /*
-     * Nothing is culled: a sprite is mirrored by giving it a negative width, which reverses its
-     * winding, and a character facing left is exactly that.
-     */
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: samples },
-    /*
-     * Neither tested nor written. The 2D layer's order *is* its layering — there is no z to sort
-     * by — and a pass that depth-tested would let whatever 3D geometry is in the frame punch holes
-     * in an overlay drawn over it. Declared all the same, because a pipeline in a render pass that
-     * has a depth attachment must name its format.
-     */
-    depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'always' },
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const vertexModule = device.createShaderModule({
+    label: `${label}.vert`,
+    code: SPRITE_VERT_WGSL,
+  });
+  const fragmentModule = device.createShaderModule({
+    label: `${label}.frag`,
+    code: SPRITE_FRAG_WGSL,
   });
 
   const vertexUniforms = device.createBuffer({
@@ -150,8 +128,12 @@ export function createGpuSprites(
   const vertexScratch = new ArrayBuffer(VERT.uniformSize);
   const fragmentScratch = new ArrayBuffer(FRAG.uniformSize);
 
-  return {
-    pipeline,
+  const sprites: GpuSprites = {
+    pipelines: new Map(),
+    pipelineLayout,
+    vertexModule,
+    fragmentModule,
+    label,
     layout,
     vertexUniforms,
     fragmentUniforms,
@@ -187,6 +169,86 @@ export function createGpuSprites(
     fragmentFloats: new Float32Array(fragmentScratch),
     fragmentInts: new Int32Array(fragmentScratch),
   };
+  /* The frame's own target, built now, so the common case compiles before its first draw. */
+  spritePipelineFor(device, sprites, format, depthFormat, samples);
+  return sprites;
+}
+
+/**
+ * The pipeline for a pass with these attachments, built the first time it is asked for.
+ *
+ * Chosen at the draw from what the pass is (`PassContext.format`, `depthFormat`, `samples`), so a
+ * 2D layer drawn over the finished frame, on the canvas at one sample, is not refused for having
+ * been built for the scene target. A lookup through three maps on every later draw, no allocation.
+ */
+export function spritePipelineFor(
+  device: GPUDevice,
+  sprites: GpuSprites,
+  format: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  samples: number,
+): GPURenderPipeline {
+  let byDepth = sprites.pipelines.get(format);
+  if (byDepth === undefined) {
+    byDepth = new Map();
+    sprites.pipelines.set(format, byDepth);
+  }
+  let bySamples = byDepth.get(depthFormat);
+  if (bySamples === undefined) {
+    bySamples = new Map();
+    byDepth.set(depthFormat, bySamples);
+  }
+  const found = bySamples.get(samples);
+  if (found !== undefined) return found;
+  const pipeline = device.createRenderPipeline({
+    label: `${sprites.label}:${format}x${samples}`,
+    layout: sprites.pipelineLayout,
+    vertex: {
+      module: sprites.vertexModule,
+      entryPoint: 'main',
+      buffers: [
+        {
+          arrayStride: STRIDE,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x4' },
+            { shaderLocation: 1, offset: 16, format: 'float32x4' },
+            { shaderLocation: 2, offset: 32, format: 'float32x4' },
+            { shaderLocation: 3, offset: 48, format: 'float32x2' },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: sprites.fragmentModule,
+      entryPoint: 'main',
+      targets: [
+        {
+          format,
+          /* Premultiplied `over`, matching the WebGL2 half exactly. */
+          blend: {
+            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
+        },
+      ],
+    },
+    /*
+     * Nothing is culled: a sprite is mirrored by giving it a negative width, which reverses its
+     * winding, and a character facing left is exactly that.
+     */
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    multisample: { count: samples },
+    /*
+     * Neither tested nor written. The 2D layer's order *is* its layering — there is no z to sort
+     * by — and a pass that depth-tested would let whatever 3D geometry is in the frame punch holes
+     * in an overlay drawn over it. Declared all the same, because a pipeline in a render pass that
+     * has a depth attachment must name its format.
+     */
+    depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: 'always' },
+  });
+  bySamples.set(samples, pipeline);
+  return pipeline;
 }
 
 /**
@@ -313,9 +375,11 @@ export function drawGpuSprites(
   pass: GPURenderPassEncoder,
   sprites: GpuSprites,
   batch: SpriteBatch,
+  /** The pipeline for this pass's attachments: `spritePipelineFor`. */
+  pipeline: GPURenderPipeline,
 ): void {
   if (batch.count === 0) return;
-  pass.setPipeline(sprites.pipeline);
+  pass.setPipeline(pipeline);
   for (let run = 0; run < batch.runCount; run += 1) {
     const at = run * 3;
     const slot = sprites.slots[batch.runs[at] as number];

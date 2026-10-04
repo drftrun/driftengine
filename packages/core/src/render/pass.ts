@@ -125,6 +125,18 @@ export type PassContext = {
       readonly pass: GPURenderPassEncoder;
       /** The frame's jitter, the same array `PrepareContext.jitter` held. */
       readonly jitter: Float32Array;
+      /**
+       * The colour format, depth format and sample count of the pass this draw lands in, which a
+       * pipeline set on it must match exactly.
+       *
+       * **Not always the device's.** `PassDevice` says what the frame is; a pass drawn after
+       * `endFrame` lands on the canvas, at the canvas's format and one sample, where the frame is
+       * the scene target at the scene's samples. A pass that is drawn in both places keeps a
+       * pipeline for each and chooses here; one built only from the device is refused by the other.
+       */
+      readonly format: GPUTextureFormat;
+      readonly depthFormat: GPUTextureFormat;
+      readonly samples: number;
     }
 );
 

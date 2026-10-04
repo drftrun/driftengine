@@ -95,7 +95,15 @@ export interface Ragdoll {
   readonly bodyOf: Int32Array;
   /** How many bones were built. */
   readonly boneCount: number;
-  /** Write the ragdoll's current shape into a pose. */
+  /**
+   * Write the ragdoll's current shape into a pose.
+   *
+   * Each joint is turned by the bone that **starts** at it, which is the joint a skinned limb
+   * follows — the forearm's body turns the elbow — and a joint with no bone below it rides the one
+   * it hangs off. Translations are the rig's own, in each parent's frame. A root's rotation is
+   * written in the frame the character's node is placed in, at `rootX`, `rootY` and `rootZ`, with
+   * no rotation of its own; a joint no bone reaches is left as the pose had it.
+   */
   writePose(out: PoseTarget): void;
   /** Steer the bodies toward a pose. Weight 1 tracks it, weight 0 goes limp. */
   drive(world: PhysicsWorld, pose: PoseTarget, weight: number): void;
@@ -185,8 +193,32 @@ export function ragdollFromBones(
   };
 
   const bodyOf = new Int32Array(jointCount).fill(-1);
-  /** `conj(bodyRotation) · jointWorldRotation`, so a pose can be recovered from a body. */
+  /**
+   * `conj(bodyRotation) · jointWorldRotation` for the joint a bone **ends** at, so a joint with no
+   * bone of its own below it — a fingertip, a head's tip — can ride the bone it hangs off.
+   */
   const bodyToJoint = new Float32Array(jointCount * 4);
+  /**
+   * `conj(bodyRotation) · jointWorldRotation` for the joint a bone **starts** at, indexed like
+   * `bodyOf` — by the bone's own joint — and naming its parent's rotation.
+   *
+   * **This is the joint a skinned limb follows.** A forearm's vertices are weighted to the elbow,
+   * so the elbow's rotation is what points the forearm, and the body standing along the forearm is
+   * what carries it. Reading each joint off the bone that *ends* at it — the upper arm for the
+   * elbow — drew every limb one bone late: a hand 0.47 m from its body in a doll synced and never
+   * stepped, reported from a game. A bone is rigid in its start joint's frame, so the relation
+   * captured at rest holds for as long as the doll does.
+   */
+  const bodyToStart = new Float32Array(jointCount * 4);
+  /** The first bone starting at each joint, by that bone's own index, or −1 where none does. */
+  const startBone = new Int32Array(jointCount).fill(-1);
+  /**
+   * Each joint's translation in its parent's frame at rest, which is what a pose holds.
+   *
+   * **In the parent's frame, not the world's.** It was the world offset between the two, which is
+   * the same number only where the parent is unrotated at rest — true of every chain this module's
+   * tests were built from, and of no rig a game loads.
+   */
   const localRest = new Float32Array(jointCount * 3);
   const restRotation = new Float32Array(jointCount * 4);
   /**
@@ -214,9 +246,7 @@ export function ragdollFromBones(
     const tx = worldMatrices[j * 16 + 12] ?? 0;
     const ty = worldMatrices[j * 16 + 13] ?? 0;
     const tz = worldMatrices[j * 16 + 14] ?? 0;
-    localRest[j * 3] = tx - hx;
-    localRest[j * 3 + 1] = ty - hy;
-    localRest[j * 3 + 2] = tz - hz;
+    intoParentFrame(worldMatrices, p, tx - hx, ty - hy, tz - hz, localRest, j * 3);
 
     const dx = tx - hx;
     const dy = ty - hy;
@@ -243,8 +273,12 @@ export function ragdollFromBones(
     });
     bodyOf[j] = body;
     halfOf[j] = length / 2;
-    // What takes the body's rotation back to the joint's, captured while both are at rest.
+    // What takes the body's rotation back to each of its two joints', captured at rest. Parents
+    // come before children in a rig, so the start joint's rotation is already read.
     multiplyConjugate(TMP, restRotation, j * 4, bodyToJoint, j * 4);
+    if (p >= j) matrixRotation(worldMatrices, p, restRotation, p * 4);
+    multiplyConjugate(TMP, restRotation, p * 4, bodyToStart, j * 4);
+    if ((startBone[p] ?? -1) < 0) startBone[p] = j;
     boneCount++;
     if (firstBone < 0) {
       firstBone = j;
@@ -349,27 +383,50 @@ export function ragdollFromBones(
     }
   }
 
+  /**
+   * One joint's world rotation, from the body that speaks for it: the first bone starting at the
+   * joint, or — for a joint with none below it, a fingertip — the bone it hangs off, which it then
+   * rides rigidly. False where neither exists and nothing can be said.
+   */
+  const recoverJoint = (w: PhysicsWorld, j: number, out: Float32Array, at: number): boolean => {
+    const start = startBone[j] ?? -1;
+    if (start >= 0) {
+      readBodyRotation(w, bodyOf[start] ?? 0, TMP);
+      multiplyInto(TMP, bodyToStart, start * 4, out, at);
+      return true;
+    }
+    const own = bodyOf[j] ?? -1;
+    if (own < 0) return false;
+    readBodyRotation(w, own, TMP);
+    multiplyInto(TMP, bodyToJoint, j * 4, out, at);
+    return true;
+  };
+
   const root = firstBone;
   return {
     bodyOf,
     boneCount,
     writePose(out: PoseTarget): void {
+      /*
+       * Two passes, because a joint's local rotation needs its parent's world rotation and a rig
+       * is not obliged to list parents first. The first recovers every joint a body speaks for.
+       */
+      for (let j = 0; j < jointCount; j++)
+        KNOWN[j] = recoverJoint(world, j, WORLD_ROT, j * 4) ? 1 : 0;
       for (let j = 0; j < jointCount; j++) {
-        const body = bodyOf[j] ?? -1;
-        const p = parents[j] ?? -1;
-        if (body < 0) {
-          // No bone: leave the joint as the pose already had it.
+        if (KNOWN[j] !== 1) {
+          // No bone at either end: leave the joint as the pose already had it.
           continue;
         }
-        // The joint's world rotation, recovered from the body's.
-        readBodyRotation(world, body, TMP);
-        multiplyInto(TMP, bodyToJoint, j * 4, WORLD_ROT, j * 4);
-        const parentBody = p >= 0 ? (bodyOf[p] ?? -1) : -1;
-        if (parentBody >= 0) {
+        const p = parents[j] ?? -1;
+        if (p >= 0 && KNOWN[p] === 1) {
           conjugateMultiply(WORLD_ROT, p * 4, WORLD_ROT, j * 4, out.rotation, j * 4);
         } else {
+          /* A root, or a joint whose parent no bone speaks for: its rotation in the frame the
+             caller places the character's node in, which `rootX` and its two siblings answer. */
           copy4(WORLD_ROT, j * 4, out.rotation, j * 4);
         }
+        if (p < 0) continue;
         // Bones are rigid, so translation stays what the rig was built with.
         out.translation[j * 3] = localRest[j * 3] ?? 0;
         out.translation[j * 3 + 1] = localRest[j * 3 + 1] ?? 0;
@@ -382,25 +439,29 @@ export function ragdollFromBones(
     drive(w: PhysicsWorld, pose: PoseTarget, weight: number): void {
       if (weight <= 0) return;
       const k = weight > 1 ? 1 : weight;
-      for (let j = 0; j < jointCount; j++) {
-        const body = bodyOf[j] ?? -1;
+      for (let c = 0; c < jointCount; c++) {
+        const body = bodyOf[c] ?? -1;
         if (body < 0) continue;
-        const p = parents[j] ?? -1;
-        const parentBody = p >= 0 ? (bodyOf[p] ?? -1) : -1;
+        /*
+         * **A bone is steered by the joint it starts at**, the one whose rotation points it — the
+         * forearm by the elbow — which is the same joint `writePose` reads it back as. Steered by
+         * the joint it ends at, a pose's elbow bend went into the upper arm.
+         */
+        const j = parents[c] ?? -1;
+        if (j < 0) continue;
         /*
          * The target is the pose's local rotation composed onto the parent's *current* world
          * rotation, so a driven limb follows the animation relative to a body that may itself have
          * been knocked aside — which is what a partial ragdoll is.
          */
-        if (parentBody >= 0) {
-          readBodyRotation(w, parentBody, TMP);
-          multiplyInto(TMP, bodyToJoint, p * 4, PARENT_ROT, 0);
+        const p = parents[j] ?? -1;
+        if (p >= 0 && recoverJoint(w, p, PARENT_ROT, 0)) {
           multiplyRaw(PARENT_ROT, 0, pose.rotation, j * 4, TARGET_ROT, 0);
         } else {
           copy4(pose.rotation, j * 4, TARGET_ROT, 0);
         }
         readBodyRotation(w, body, TMP);
-        multiplyInto(TMP, bodyToJoint, j * 4, CURRENT_ROT, 0);
+        multiplyInto(TMP, bodyToStart, c * 4, CURRENT_ROT, 0);
         // Twice the vector part of target · conj(current) is the rotation that closes the gap.
         conjugateMultiply(CURRENT_ROT, 0, TARGET_ROT, 0, ERROR_ROT, 0);
         let ex = ERROR_ROT[0] ?? 0;
@@ -437,22 +498,23 @@ export function ragdollFromBones(
         w.bodies.posZ[body] = (hz + tz) / 2;
 
         /*
-         * The rotation is taken from the *bone*, the same way the build took it: the capsule
-         * stands along y, so the body is turned to put its y along the bone. Taking it from the
-         * joint's world matrix instead would be wrong wherever a rig's bind orientation is not
-         * the bone direction, which is most rigs.
+         * **The rotation is the start joint's, carried through the relation captured at rest**,
+         * which is the inverse of what `writePose` reads: `jointRotation · conj(bodyToStart)`.
+         *
+         * It was the shortest arc from +y onto the bone, which points the capsule correctly and
+         * throws away the bone's twist about its own length — so a joint with two bones below it, a
+         * wrist with a thumb beside the fingers, came back turned about the first and put the
+         * second somewhere else. The joint's world matrix alone would be wrong too, wherever a
+         * rig's bind orientation is not the bone direction, which is most rigs; the captured
+         * relation is what absorbs that. **What would make it wrong** is a pose that stretches a
+         * bone, which a ragdoll's rigid bones cannot follow either way.
          */
-        const dx = tx - hx;
-        const dy = ty - hy;
-        const dz = tz - hz;
-        const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (length > 0) {
-          alignYTo(dx / length, dy / length, dz / length, TMP);
-          w.bodies.rotX[body] = TMP[0] ?? 0;
-          w.bodies.rotY[body] = TMP[1] ?? 0;
-          w.bodies.rotZ[body] = TMP[2] ?? 0;
-          w.bodies.rotW[body] = TMP[3] ?? 1;
-        }
+        matrixRotation(worldMatrices, p, START_ROT, 0);
+        multiplyByConjugate(START_ROT, bodyToStart, j * 4, TMP);
+        w.bodies.rotX[body] = TMP[0] ?? 0;
+        w.bodies.rotY[body] = TMP[1] ?? 0;
+        w.bodies.rotZ[body] = TMP[2] ?? 0;
+        w.bodies.rotW[body] = TMP[3] ?? 1;
 
         /* At rest, which is the half that makes it a reaction rather than a continuation: a body
            carrying the speed of a two-second fall is thrown across the character the instant it
@@ -479,6 +541,9 @@ export function ragdollFromBones(
 }
 
 const WORLD_ROT = new Float32Array(256 * 4);
+/** Whether `writePose` recovered each joint's rotation this call: 1 if a body speaks for it. */
+const KNOWN = new Uint8Array(256);
+const START_ROT = new Float32Array(4);
 const PARENT_ROT = new Float32Array(4);
 const TARGET_ROT = new Float32Array(4);
 const CURRENT_ROT = new Float32Array(4);
@@ -594,6 +659,66 @@ function alignYTo(dx: number, dy: number, dz: number, out: Float64Array): void {
   out[1] = 0;
   out[2] = az / len;
   out[3] = w / len;
+}
+
+/**
+ * A world-space offset from joint `p`, expressed in `p`'s own frame: the inverse of the matrix's
+ * upper 3x3 applied to it, so a scaled joint is undone as well as a rotated one.
+ */
+function intoParentFrame(
+  m: Float32Array,
+  p: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  out: Float32Array,
+  at: number,
+): void {
+  const o = p * 16;
+  const a = m[o] ?? 1;
+  const b = m[o + 4] ?? 0;
+  const c = m[o + 8] ?? 0;
+  const d = m[o + 1] ?? 0;
+  const e = m[o + 5] ?? 1;
+  const f = m[o + 9] ?? 0;
+  const g = m[o + 2] ?? 0;
+  const h = m[o + 6] ?? 0;
+  const i = m[o + 10] ?? 1;
+  const ei = e * i - f * h;
+  const fg = f * g - d * i;
+  const dh = d * h - e * g;
+  const det = a * ei + b * fg + c * dh;
+  if (Math.abs(det) < 1e-12) {
+    out[at] = dx;
+    out[at + 1] = dy;
+    out[at + 2] = dz;
+    return;
+  }
+  const inv = 1 / det;
+  out[at] = (ei * dx + (c * h - b * i) * dy + (b * f - c * e) * dz) * inv;
+  out[at + 1] = (fg * dx + (a * i - c * g) * dy + (c * d - a * f) * dz) * inv;
+  out[at + 2] = (dh * dx + (b * g - a * h) * dy + (a * e - b * d) * dz) * inv;
+}
+
+/** `a · conj(b)` into a Float64 quaternion, for turning a joint's rotation back into a body's. */
+function multiplyByConjugate(
+  a: Float32Array,
+  b: Float32Array,
+  bAt: number,
+  out: Float64Array,
+): void {
+  const ax = a[0] ?? 0;
+  const ay = a[1] ?? 0;
+  const az = a[2] ?? 0;
+  const aw = a[3] ?? 1;
+  const bx = -(b[bAt] ?? 0);
+  const by = -(b[bAt + 1] ?? 0);
+  const bz = -(b[bAt + 2] ?? 0);
+  const bw = b[bAt + 3] ?? 1;
+  out[0] = aw * bx + ax * bw + ay * bz - az * by;
+  out[1] = aw * by - ax * bz + ay * bw + az * bx;
+  out[2] = aw * bz + ax * by - ay * bx + az * bw;
+  out[3] = aw * bw - ax * bx - ay * by - az * bz;
 }
 
 /** `conj(a) · b` into `out`. */

@@ -4,7 +4,7 @@ The editor's panels, as something a shipped game can carry: an inspector, a cons
 a network panel, with the command stack that makes their edits undoable, and the overlay that puts
 them on screen on a key.
 
-**5,393 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**5,780 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/tools-only.ts`. Optional — nothing in `@driftengine/core` imports it, so a
 game that never asks for these pays nothing.
 
@@ -30,13 +30,31 @@ undo stack" has no worst offender. A game carrying these panels carries that rul
 nothing extra.
 
 ```ts
-import { createUndoStack, inspectorPanel, createInspectorView } from '@driftengine/tools';
+import {
+  createSelection,
+  createUndoStack,
+  entitiesInspectable,
+  selectOnly,
+  selectedEntities,
+  setFieldCommand,
+} from '@driftengine/tools';
 
 const undo = createUndoStack(200);
-const view = createInspectorView({});
-const command = inspectorPanel.route(world, view, event);
+const selection = createSelection();
+selectOnly(selection, ball);
+/* One edit to every selected entity, as one entry: `undo.undo()` takes it back. */
+const command = setFieldCommand(
+  entitiesInspectable(world, [Bounce]),
+  selectedEntities(selection),
+  'Bounce',
+  ['amount'],
+  [0.6],
+);
 if (command !== null) undo.push(command);
 ```
+
+The inspector panel shows a selection's fields and edits none of them yet — its `route` answers
+nothing — so a game edits through `setFieldCommand` as above, from whatever key or control it likes.
 
 ## The overlay, because a panel that nothing mounts is a tree nobody sees
 

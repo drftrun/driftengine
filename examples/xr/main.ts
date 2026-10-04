@@ -20,7 +20,7 @@ import {
   selectPointLights,
 } from '@driftengine/core';
 import type { PointLightSource } from '@driftengine/core';
-import type { HostServices } from '@driftengine/script';
+import type { XrRuntime } from '@driftengine/script';
 import { patchModule } from 'driftscript';
 import {
   HandSkeleton,
@@ -31,13 +31,7 @@ import {
   readControllers,
   readHand,
 } from '@driftengine/xr';
-import type {
-  ControllerState,
-  XrCompatibleContext,
-  XrFrame,
-  XrSession,
-  XrSupport,
-} from '@driftengine/xr';
+import type { ControllerState, XrFrame, XrSession, XrSupport } from '@driftengine/xr';
 import { syntheticXr } from '@driftengine/xr/src/testing/synthetic.ts';
 import type { SyntheticSession } from '@driftengine/xr/src/testing/synthetic.ts';
 import { createReadout } from '../common/readout';
@@ -53,9 +47,7 @@ const answer = document.querySelector<HTMLElement>('#answer');
 // #region probe
 /* Asked by doing: a context of its own is offered to be made XR compatible, which is the step
    that fails on a machine with no headset attached even where every mode reports supported. */
-const here = await probeXrSupport(
-  document.createElement('canvas').getContext('webgl2') as XrCompatibleContext | null,
-);
+const here = await probeXrSupport(document.createElement('canvas').getContext('webgl2'));
 
 function said(support: XrSupport): string {
   if (!support.present) return 'this browser has no WebXR';
@@ -127,7 +119,7 @@ function onFrame(_time: number, frame: XrFrame): void {
 // #region host
 /* What `drift/xr` reads, from the state the frame left. Nothing here is deterministic, so the
    script reads it in the frame and never in the fixed step. */
-const xr: NonNullable<HostServices['xr']> = {
+const xr: XrRuntime = {
   get support() {
     return simulated;
   },

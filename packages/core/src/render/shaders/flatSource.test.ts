@@ -115,14 +115,17 @@ test('the clustered arm reads a plain light in two texels, and out of reach in o
 
 test('a scene with no photometric profile reads no profile', () => {
   const source = flatFrag(optionsFor(ALL_ON));
+  /* Decided once, under the fixtures switch, and every profile read is behind the decision. */
+  const decided = source.indexOf('fixtureProfiles = uIesAtlasRows > 1.0;');
+  expect(decided).toBeGreaterThan(source.indexOf('if (LIGHT_FIXTURES) {'));
   const guard = source.indexOf(
-    'if (uIesAtlasRows > 1.0) {',
+    'if (fixtureProfiles) {',
     source.indexOf('float photometric = 1.0;'),
   );
-  expect(guard).toBeGreaterThan(0);
+  expect(guard).toBeGreaterThan(decided);
   expect(source.indexOf('float iesGain = textureLod(uFixtureAtlas', guard)).toBeGreaterThan(guard);
   expect(source.indexOf('float iesAngle = acos(')).toBeGreaterThan(
-    source.indexOf('if (uIesAtlasRows > 1.0) {'),
+    source.indexOf('if (fixtureProfiles) {'),
   );
 });
 

@@ -122,7 +122,10 @@ function listenToPads(): void {
 ```
 
 `bindingsFor(action)` is what currently satisfies an action, and `rebind(action, binding)` adds one:
-a key by its code or a pad button by its position. It returns the actions that lost that binding,
+a key by its code, a pad button by its position, or a mouse button, `{ device: 'mouse', button:
+'left' }`, which a digital action also takes from its definition as `mouseButtons`. A mouse button
+is pressed over the source's target; a game binding the right one cancels `contextmenu` on its
+canvas, so the browser's menu does not open on the release. It returns the actions that lost that binding,
 because what to do when a key already serves another action is a decision for your game, to take
 it, to warn, or to refuse; the example takes it and says so. `resetToDefaults()` restores every
 action, or one when named.

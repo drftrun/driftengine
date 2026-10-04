@@ -190,12 +190,21 @@ export const networkPanel: Panel<NetworkWorld, NetworkView> = {
  * Structural rather than imported, so nothing here loads `@driftengine/network` at run time and a
  * consumer whose session is its own shape can still be read.
  */
-export interface SessionLike {
+/**
+ * A session as the network panel reads it, which a `LockstepSession` is as it stands.
+ *
+ * **The depth by either name**: `rewindDepth` is what a session answers, and `loop.depth` is the
+ * shape a game built by hand before it did — from the session's fields and the `RewindLoop` it
+ * made — which still reads as it did.
+ */
+export type SessionLike = SessionFields &
+  ({ readonly rewindDepth: number } | { readonly loop: { readonly depth: number } });
+
+interface SessionFields {
   readonly participants: number;
   readonly inputDelay: number;
   /** The disagreement the session is currently holding, or null. Latched, not an event. */
   readonly desync: Desync | null;
-  readonly loop: { readonly depth: number };
 }
 
 /** What a recorder keeps: the disagreements it has seen, oldest first. */
@@ -246,7 +255,7 @@ export function sessionReadout(
     inputDelay: session.inputDelay,
     participants: session.participants,
     snapshotBytes,
-    snapshotCount: session.loop.depth,
+    snapshotCount: 'rewindDepth' in session ? session.rewindDepth : session.loop.depth,
     desyncs: recorder.desyncs,
     componentHashes,
   };

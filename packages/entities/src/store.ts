@@ -312,12 +312,16 @@ export class ComponentStore {
    */
   private viewObject: ComponentView | null = null;
 
+  /** The schema's own field names, which a value handed to `add` must be among. */
+  private readonly fieldNames = new Set<string>();
+
   constructor(type: ComponentType, options: ComponentStoreOptions = {}) {
     this.type = type;
     const capacity = Math.max(1, options.capacity ?? 16);
     this.denseArray = new Float64Array(capacity);
     this.sparse = new Int32Array(64).fill(-1);
     for (const field of type.schema.fields) {
+      this.fieldNames.add(field.name);
       const inner = optionInner(field.type);
       const declared = inner ?? field.type;
       /* A discriminant is an integer, so it takes an integer column rather than being boxed. */
@@ -380,6 +384,15 @@ export class ComponentStore {
     if (this.has(entity)) {
       for (const [field, value] of Object.entries(values)) this.write(entity, field, value);
       return;
+    }
+    /*
+     * **A key the schema does not declare is refused before anything is stored**, as `write` and
+     * `defineComponent`'s defaults refuse one. The loop below walks the schema and never looked at
+     * the other keys, so a misspelt field was dropped without a word and the field it meant took
+     * its default; one consumer's had been dropped since the component was written.
+     */
+    for (const field in values) {
+      if (!this.fieldNames.has(field)) throw new Error(this.noField(field));
     }
 
     const at = this.count;

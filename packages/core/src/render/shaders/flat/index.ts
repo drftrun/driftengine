@@ -7,7 +7,7 @@ import { preambleGlsl } from './preamble.ts';
 import { LOBES_GLSL } from './lobes.ts';
 import { POINTSHADOW_GLSL } from './pointShadow.ts';
 import { DIRECTIONALSHADOW_GLSL } from './directionalShadow.ts';
-import { glassTintGlsl } from './glassTint.ts';
+import { glassTintGlsl, litSwitchesGlsl } from './glassTint.ts';
 import { MORPH_GLSL } from '../morph.ts';
 import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
@@ -380,6 +380,18 @@ export interface FlatShaderOptions {
    */
   readonly glassShadows?: boolean;
   /**
+   * Whether this build has the clustered arm of the light loop: `clusteredLights`, fixed per
+   * renderer. True when absent, which is what the generated WGSL is built with. See
+   * `litSwitchesGlsl`.
+   */
+  readonly clusteredLights?: boolean;
+  /** Whether it reads measured profiles and cookies. True when absent. See `litSwitchesGlsl`. */
+  readonly lightFixtures?: boolean;
+  /** Whether it reads a material's effects table. True when absent. See `litSwitchesGlsl`. */
+  readonly surfaceEffects?: boolean;
+  /** Whether it reads a DriftLight volume. True when absent. See `litSwitchesGlsl`. */
+  readonly driftLight?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -484,6 +496,12 @@ export function flatFrag(options: FlatShaderOptions): string {
       /* Depth zero as well: both glass lookups, sun and lamps, call it, and every permutation
          declares its switch, which the pipelines set whether the permutation reads it or not. */
       glassTintGlsl(options.glassShadows ?? true),
+      litSwitchesGlsl({
+        clusteredLights: options.clusteredLights ?? true,
+        lightFixtures: options.lightFixtures ?? true,
+        surfaceEffects: options.surfaceEffects ?? true,
+        driftLight: options.driftLight ?? true,
+      }),
       LOBES_GLSL,
       POINTSHADOW_GLSL,
       DIRECTIONALSHADOW_GLSL,

@@ -194,6 +194,29 @@ describe('the console panel', () => {
     expect(view.pinned, 'back at the bottom is following again').toBe(true);
   });
 
+  /*
+   * **The scroll the view keeps is the one the overlay draws, in the window the panel was given.**
+   * `build` computed a follow position and never put it on the root, which is what ui2d offsets a
+   * node's content by — so the overlay drew the oldest lines and clipped the newest away, a wheel
+   * moved nothing on screen, and a click picked the entry `scrollY / rowHeight` rows further down.
+   * And the follow was computed against the 200 pixels `viewHeight` defaults to, whatever the panel
+   * was actually given. Measured on the tools example with a 200-entry ring.
+   */
+  it('scrolls its root to where it follows, in the height the panel was given', () => {
+    const view = createConsoleView({ rowHeight: 10 });
+    const log = ring(64);
+    for (let at = 0; at < 10; at += 1) appendLog(log, 'info', `line ${at}`);
+    /* What the overlay does before it builds: the panel's site, as an exact height. */
+    view.root.height = 30;
+    consolePanel.build({ log }, view, view.root);
+
+    expect(view.scrollY, 'ten rows of ten in the thirty pixels given').toBe(70);
+    expect(view.root.scrollY, 'and that is what is drawn').toBe(70);
+
+    consolePanel.route({ log }, view, { kind: 'wheel', x: 0, y: 0, dx: 0, dy: -40 });
+    expect(view.root.scrollY, 'a wheel moves what is drawn, now').toBe(30);
+  });
+
   it('a log shorter than the view is at the bottom already', () => {
     const view = createConsoleView({ rowHeight: 10, viewHeight: 100 });
     const log = ring(8);

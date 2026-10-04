@@ -743,6 +743,8 @@ export {
   REVERSED_DEPTH,
   conventionalDepth,
 } from './render/depthConvention.ts';
+/* How much of the depth range `beginViewModel` takes when it is given no share. See `viewModel.ts`. */
+export { VIEW_MODEL_DEPTH_SHARE } from './render/viewModel.ts';
 export type { ColliderSurfaceOptions } from './physics/colliderSurface.ts';
 export { BoxSurface } from './physics/boxSurface.ts';
 export { heightSurface } from './physics/heightSurface.ts';
@@ -864,7 +866,13 @@ export {
 export { InputSource } from './input/input.ts';
 export { isTypingTarget } from './input/typingTarget.ts';
 export type { TouchPoint, InputCallbacks } from './input/input.ts';
-export type { GamepadIdentity, GamepadView, InputOptions, InputSourceName } from './input/input.ts';
+export type {
+  GamepadIdentity,
+  GamepadView,
+  InputOptions,
+  InputSourceName,
+  MouseButton,
+} from './input/input.ts';
 export type { InputDevice } from './input/activeDevice.ts';
 export type { GamepadFamily } from './input/gamepadIdentity.ts';
 /* Positions rather than lettering, and the constant a consumer overrides to taste. */

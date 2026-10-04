@@ -8,6 +8,7 @@ import {
   paintOverlay,
   type OverlayPainter,
   type PanelBinding,
+  PANEL_TITLE_HEIGHT,
 } from './overlay.ts';
 
 interface RowWorld {
@@ -150,7 +151,8 @@ describe('the overlay a shipped game carries', () => {
     overlay.frame(0);
     overlay.route(pointerEvent('down', 650, 340));
     expect(view.pressedX).toBe(50);
-    expect(view.pressed).toBe(40);
+    /* The second panel's site starts at 300 and its own space below its title row. */
+    expect(view.pressed).toBe(40 - PANEL_TITLE_HEIGHT);
   });
 
   it('pushes what a panel returns onto the undo stack, and ctrl+z takes it back', () => {
@@ -164,6 +166,42 @@ describe('the overlay a shipped game carries', () => {
     expect(world.rows).toEqual(['a', 'added']);
     expect(overlay.route(keyEvent('z', false, true))).toBe(true);
     expect(world.rows).toEqual(['a']);
+  });
+
+  /*
+   * **Shift turns the key into a capital, and the redo compared it against a small one.** A browser
+   * reports Ctrl+Shift+Z with the key `'Z'`, and `keyEvent` passes the key through as it is, so the
+   * redo never matched and the only redo that worked was Ctrl+Y. Measured on the tools example.
+   */
+  it('redoes on ctrl+shift+z with the key a browser reports for it', () => {
+    const world: RowWorld = { rows: ['a'] };
+    const overlay = createToolsOverlay({ panels: [binding('p', world)], width: 200 });
+    overlay.setVisible(true);
+    overlay.resize(800, 600);
+    overlay.frame(0);
+
+    overlay.route(pointerEvent('down', 650, 20));
+    overlay.route(keyEvent('z', false, true));
+    expect(world.rows).toEqual(['a']);
+    expect(overlay.route(keyEvent('Z', true, true))).toBe(true);
+    expect(world.rows).toEqual(['a', 'added']);
+  });
+
+  /*
+   * A wheel over a panel scrolls the panel and nothing else. It answers no command, so the overlay
+   * said it had not handled it and the page scrolled under the panel as well.
+   */
+  it('takes a wheel over a panel, whether or not the panel made a command of it', () => {
+    const world: RowWorld = { rows: ['a'] };
+    const overlay = createToolsOverlay({ panels: [binding('p', world)], width: 200 });
+    overlay.setVisible(true);
+    overlay.resize(800, 600);
+    overlay.frame(0);
+
+    expect(overlay.route({ kind: 'wheel', x: 650, y: 20, dx: 0, dy: 40 })).toBe(true);
+    expect(overlay.route({ kind: 'wheel', x: 100, y: 20, dx: 0, dy: 40 }), 'not over a panel').toBe(
+      false,
+    );
   });
 
   it('does not lay out again for a resize to the size it already is', () => {
@@ -208,6 +246,34 @@ describe('the overlay a shipped game carries', () => {
     expect(odd[0]?.h).toBe(300);
     expect(odd[1]?.h).toBe(301);
     expect((odd[1]?.y ?? 0) + (odd[1]?.h ?? 0)).toBe(601);
+  });
+
+  /*
+   * **A panel says what it is and has something behind it.** The overlay painted a node's
+   * background and text and the panel roots carried no background, so over a bright scene the
+   * panels were white text on whatever was behind them; and every panel has a title nobody drew, so
+   * a reader told the inspector from the profiler by what their rows said. The tools example laid a
+   * backdrop under each panel from `sites()` to make up for both.
+   */
+  it('paints each panel on a background under its own title', () => {
+    const world: RowWorld = { rows: ['a'] };
+    const overlay = createToolsOverlay({
+      panels: [binding('one', world), binding('two', world)],
+      width: 200,
+    });
+    overlay.setVisible(true);
+    overlay.resize(800, 600);
+    overlay.frame(0);
+    const painter = recorder();
+    paintOverlay(painter, overlay);
+
+    expect(painter.calls).toContain('rect 600,0 200x' + PANEL_TITLE_HEIGHT);
+    expect(painter.calls).toContain(
+      `rect 600,${PANEL_TITLE_HEIGHT} 200x${300 - PANEL_TITLE_HEIGHT}`,
+    );
+    expect(painter.calls).toContain(`rect 600,300 200x${PANEL_TITLE_HEIGHT}`);
+    expect(painter.calls.some((c) => c.startsWith('text one @600,'))).toBe(true);
+    expect(painter.calls.some((c) => c.startsWith('text two @600,'))).toBe(true);
   });
 
   it('paints a clip for a panel and closes it again, so one panel cannot draw over the next', () => {

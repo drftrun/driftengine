@@ -136,6 +136,8 @@ export class Mesh {
   readonly bounds: Bounds = createBounds();
   /** Whether this mesh carries a rig, which decides which flat program draws it. */
   readonly isSkinned: boolean;
+  /** Whether it has texture coordinates, without which a material's maps read one texel. */
+  readonly hasUvs: boolean;
 
   /**
    * This mesh's morph deltas, or null for geometry that does not deform.
@@ -190,6 +192,7 @@ export class Mesh {
   constructor(gl: WebGL2RenderingContext, data: MeshData, dynamic = false, spread = false) {
     validateMeshData(data);
     this.spread = spread;
+    this.hasUvs = data.uvs !== undefined;
     boundsOfPositions(data.positions, this.bounds);
     this.positionFloats = data.positions.length;
     const vao = gl.createVertexArray();

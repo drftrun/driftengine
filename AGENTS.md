@@ -860,11 +860,14 @@ thing hot reload exists to prevent. The same rule governs `import.meta.glob`.
 are MIT packages on npm now, with their own repository, and this engine pins `driftscript` like any
 other dependency — **exactly, at a version this repository does not own**.
 
-**Three manifests carry that pin**: the workspace root, because `scripts/capabilities.ts` imports
+**Four manifests carry that pin**: the workspace root, because `scripts/capabilities.ts` imports
 `serializeRegistry` and a package that imports something declares it; `@driftengine/script`, which
-describes this engine to the language; and `@driftengine/entities`, which takes `Schema` and
-`migrate` — 406 bytes gzipped — because one description of a component is the spine of the entity
-model and a second one can drift from it.
+describes this engine to the language; `@driftengine/entities`, which takes `Schema` and `migrate` —
+406 bytes gzipped — because one description of a component is the spine of the entity model and a
+second one can drift from it; and the `editor` application, which compiles a project's scripts. It
+said three until 2026-10-04, when moving the three named left the editor on the old pin and npm
+installed a second copy under `editor/node_modules` — the failure the next paragraph describes,
+caught by `scripts/version.test.mjs`, which reads every workspace rather than this list.
 
 **They have to agree with each other, and the reason is sharper than tidiness.** npm resolves two
 copies of `driftscript` into one tree when two manifests disagree, and `entities` and `script` are
@@ -881,11 +884,11 @@ matches — because a pin nothing installed is a pin npm quietly resolved to som
 `driftscript-language` ship as one release in a fixed order so that the compiler and the language
 server are the same code, and a caret gives that up on a consumer's machine without telling them.
 
-To take a new language version: change the three pins, `npm install`, run the suite. A language
+To take a new language version: change the four pins, `npm install`, run the suite. A language
 change that alters a diagnostic's wording will break a test here — `packages/script/src/host.test.ts`
 asserts one — and that is the seam working rather than a problem.
 
-**A consumer that compiles `.drs` carries a fourth pin, and moving these three obliges it to move
+**A consumer that compiles `.drs` carries a pin of its own, and moving these four obliges it to move
 in the same step** (2026-08-28). The engine describes itself to the language, so a consumer's
 compiler reads a registry this engine filled; if the two are different versions, the older compiler
 is handed capabilities it has no types for. A consumer pinned 1.4.0 while the symlinked engine

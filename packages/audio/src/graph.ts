@@ -673,14 +673,20 @@ export class AudioGraph {
    *
    * The same tap every time. Building one per recording left the last one
    * connected and running.
+   *
+   * **Null while the context is not running**, `audible` false. A suspended context's
+   * stream is a live track that never carries a sample, and a recorder given one stalls
+   * on it: a recording started before the page's first gesture kept 19 frames of 120 and
+   * no sound. Asked again once the context runs, it answers the tap.
    */
   captureStream(): MediaStream | null {
+    // Only a live context can hand out a stream; an offline render has no listener
+    // to stream to and produces its buffer instead.
+    const live = this.live();
+    if (live === null || live.state !== 'running') return null;
     if (this.tap !== null) return this.tap.stream;
     try {
-      // Only a live context can hand out a stream; an offline render has no listener
-      // to stream to and produces its buffer instead.
-      const live = this.live();
-      if (live === null || typeof live.createMediaStreamDestination !== 'function') return null;
+      if (typeof live.createMediaStreamDestination !== 'function') return null;
       const tap = live.createMediaStreamDestination();
       this.mix.out.connect(tap);
       this.tap = tap;

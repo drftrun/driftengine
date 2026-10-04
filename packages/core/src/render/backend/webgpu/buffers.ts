@@ -200,6 +200,8 @@ export interface GpuMesh {
    * the key is built before the present map is consulted.
    */
   readonly isSkinned: boolean;
+  /** Whether it has texture coordinates, without which a material's maps read one texel. */
+  readonly hasUvs: boolean;
   /**
    * Whether this mesh carries the per-vertex channel, which an instanced draw cannot.
    *
@@ -425,6 +427,7 @@ export function createGpuMeshIncremental(
     progress,
     hasTangents: data.tangents !== undefined,
     isSkinned: data.joints !== undefined,
+    hasUvs: data.uvs !== undefined,
     skinOffsets: skinOffsetsOf(supplied),
     hasChannel: data.channel !== undefined,
     morph:
@@ -595,6 +598,7 @@ function gpuMeshOf(parts: {
   readonly progress: { readonly uploaded: boolean };
   readonly hasTangents: boolean;
   readonly isSkinned: boolean;
+  readonly hasUvs: boolean;
   readonly skinOffsets: GpuMesh['skinOffsets'];
   readonly hasChannel: boolean;
   readonly morph: MorphTexture | null;
@@ -614,6 +618,7 @@ function gpuMeshOf(parts: {
     },
     hasTangents: parts.hasTangents,
     isSkinned: parts.isSkinned,
+    hasUvs: parts.hasUvs,
     hasChannel: parts.hasChannel,
     morph: parts.morph,
     update: parts.update,

@@ -115,3 +115,35 @@ test('a second press after a claim is a second press', () => {
     browser.restore();
   }
 });
+
+/*
+ * Mouse buttons take the keyboard's two verbs too, one button at a time. Each is its own state: a
+ * right button released while the left is held leaves the left held, which one flag for "a button"
+ * could not say. And losing focus releases them all, as it releases the keys.
+ */
+test('mouse buttons are held, pressed and claimed one by one, and focus loss releases them', () => {
+  const browser = fakeBrowser();
+  try {
+    const input = new InputSource(browser.target, [], { autoPoll: false });
+    browser.mouseDown(0);
+    browser.mouseDown(2);
+    input.poll();
+    expect(input.mouseDown('left')).toBe(true);
+    expect(input.mouseDown('right')).toBe(true);
+    expect(input.mouseDown('middle')).toBe(false);
+    expect(input.mousePressed('right')).toBe(true);
+    expect(input.consumeMousePress('right'), 'claimed').toBe(true);
+    expect(input.consumeMousePress('right'), 'once').toBe(false);
+    expect(input.mousePressed('right'), 'for everybody').toBe(false);
+    expect(input.mousePressed('left'), 'and the other button keeps its own').toBe(true);
+
+    browser.mouseUp(2);
+    expect(input.mouseDown('right')).toBe(false);
+    expect(input.mouseDown('left'), 'one release is one button').toBe(true);
+
+    browser.blur();
+    expect(input.mouseDown('left'), 'a lost focus eats the release, so it releases').toBe(false);
+  } finally {
+    browser.restore();
+  }
+});

@@ -394,15 +394,6 @@ stage.run({
     if (ink !== null) ink.clearRect(0, -top, innerWidth, innerHeight);
     overlay.invalidate();
     overlay.frame(now);
-    /* The overlay paints only what its nodes carry, and its panels carry no background, so the
-       page lays one under each panel from where the overlay put it. */
-    if (overlay.visible) {
-      for (const site of overlay.sites()) {
-        const x = overlay.root.rect.x + site.x;
-        painter.rect(x, site.y, site.w, site.h, '#101218e6');
-        painter.rect(x, site.y + site.h - 1, site.w, 1, '#343845');
-      }
-    }
     paintOverlay(painter, overlay);
     // #endregion
   },

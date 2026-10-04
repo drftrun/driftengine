@@ -453,9 +453,10 @@ export class CharacterController {
      * the same clamp and air control — only the plane is given up, not the feel.
      */
     if (input.projectMove === false) {
-      this.velX = approach(this.velX, wantX, step);
-      this.velY = approach(this.velY, wantY, step);
-      this.velZ = approach(this.velZ, wantZ, step);
+      const t = approachFraction(wantX - this.velX, wantY - this.velY, wantZ - this.velZ, step);
+      this.velX = t === 1 ? wantX : this.velX + (wantX - this.velX) * t;
+      this.velY = t === 1 ? wantY : this.velY + (wantY - this.velY) * t;
+      this.velZ = t === 1 ? wantZ : this.velZ + (wantZ - this.velZ) * t;
     } else {
       const alongUp = this.speedAlongUp;
       let tangentX = this.velX - this.upX * alongUp;
@@ -465,9 +466,15 @@ export class CharacterController {
       const wantTangentX = wantX - this.upX * wantIntoUp;
       const wantTangentY = wantY - this.upY * wantIntoUp;
       const wantTangentZ = wantZ - this.upZ * wantIntoUp;
-      tangentX = approach(tangentX, wantTangentX, step);
-      tangentY = approach(tangentY, wantTangentY, step);
-      tangentZ = approach(tangentZ, wantTangentZ, step);
+      const t = approachFraction(
+        wantTangentX - tangentX,
+        wantTangentY - tangentY,
+        wantTangentZ - tangentZ,
+        step,
+      );
+      tangentX = t === 1 ? wantTangentX : tangentX + (wantTangentX - tangentX) * t;
+      tangentY = t === 1 ? wantTangentY : tangentY + (wantTangentY - tangentY) * t;
+      tangentZ = t === 1 ? wantTangentZ : tangentZ + (wantTangentZ - tangentZ) * t;
       this.velX = tangentX + this.upX * alongUp;
       this.velY = tangentY + this.upY * alongUp;
       this.velZ = tangentZ + this.upZ * alongUp;
@@ -858,10 +865,18 @@ export class CharacterController {
   }
 }
 
-/** Move `from` toward `to` by at most `step`. */
-function approach(from: number, to: number, step: number): number {
-  const d = to - from;
-  if (d > step) return from + step;
-  if (d < -step) return from - step;
-  return to;
+/**
+ * How much of the way to close a gap of `(dx, dy, dz)` this tick: exactly 1 when the gap is no
+ * longer than `step`, which the caller reads as "land on the target", and `step` of its length
+ * otherwise.
+ *
+ * **Toward the wanted velocity as a vector, by at most `step` in length.** It was one world axis at
+ * a time, each by the whole step, so a diagonal gained and lost speed √2 times as fast as a straight
+ * run while the clamp on the wanted vector kept its top speed honest — the faster diagonal lived in
+ * the acceleration. What it gives up is that an axis no longer reaches its target on its own
+ * schedule: turning from one direction to another now curves rather than squaring the corner.
+ */
+function approachFraction(dx: number, dy: number, dz: number, step: number): number {
+  const gap = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return gap <= step ? 1 : step / gap;
 }

@@ -1,5 +1,91 @@
 [
   {
+    "version": "4.8.2",
+    "date": "2026-10-03",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A component a script names to `drift/ecs` by a string counts as the access the schedule checks, so `reads Hunger` for a count is no longer called unused.",
+        "text": "`ecs.count(world, \"Hunger\")` reaches a schedule that refuses a component the system did not declare, and the compiler never counted the name: the declaration the host demanded was called unused (DS0291), and leaving it out compiled clean and was refused once per tick. DriftScript 1.17.0 lets a capability say which parameter names a component and how, and `drift/ecs` marks `has`, `read`, `count`, `at`, `findNearest`, `query` and `view` as reads and `attach`, `detach` and `write` as writes, so a string literal there counts exactly as `e.Hunger` does. `without` is not marked, as an exclusion never looks inside the component. driftscript 1.17.0, pinned in four manifests: the editor carries the pin too, which is now said where the others are. Reported from a game."
+      },
+      {
+        "kind": "fixed",
+        "short": "The lit shader carries glass, profiles and cookies, effects tables, DriftLight and clustering only once a scene uses them, so a phone no longer pays for all of it on every pixel.",
+        "text": "From 4.5.0 every lit pipeline compiled in the coloured-glass shadow lookups, and since then the measured-profile and cookie reads, the effects-table load, DriftLight's volume reads and the clustered arm of the light loop, whether a scene used any of them or not. Each sat behind a uniform branch, which keeps its code and its registers; the clustered arm also ran a view transform, two logarithms and a texel fetch on every lit pixel. On a desktop GPU none of this showed; on a phone the point-lit scenes fell to 10 to 20 fps while the sea and the voxel sandbox held, which is what pointed at the lit pass. On the phone that reported it, 4.8.2 runs them smoothly where 4.8.1 crawled. Each is now a pipeline constant the device compiles away, off until it is used and then rebuilt on, once: glass when a shadow pass is first offered a pane, fixtures when a profile or cookie is loaded, effects when a material carries a table, DriftLight when a volume is set; clustering follows `clusteredLights`. On WebGPU the rebuilt set swaps in together when it has compiled, so no frame mixes the two; on WebGL2 it is a synchronous recompile at the next `beginFrame`. Measured with RADV's own statistics, the lit shader went from 10,134 instructions and 144 registers to 4,641 and 96 on WebGL2, and from 10,544 and 120 to 5,276 and 96 on WebGPU, below 4.4.2's 5,335 and 5,859. Every published scene is pixel-identical to 4.8.1 on both backends, and so are the pages that turn each feature on: glass under the sun, a lamp and a rectangle, a profile, an effects table, a DriftLight volume and clustered lighting. What it costs is the frames between a feature's first use and its rebuild, which draw without it."
+      },
+      {
+        "kind": "fixed",
+        "short": "On WebGPU a panel or a contributed pass drawn after `endFrame` with the frame graph on is drawn, where it was lost to a destroyed canvas texture.",
+        "text": "With the graph on, a verb drawn after `endFrame` records rather than opening the overlay pass, and only an opening queued the microtask that submits it before the browser presents. `fillPanel` and `drawPass` recorded and queued nothing, so their work waited for the next `beginFrame`, whose replay drew onto a canvas texture already presented: \"Destroyed texture used in a submit\", and no interface. Recording after the present now queues the submission as opening it does. Reported from a game drawing its HUD over the finished frame, which had turned the graph off to get it back."
+      },
+      {
+        "kind": "fixed",
+        "short": "A contributed pass is told the format and samples of the pass it lands in, and ui2d's sprite pass draws after `endFrame` on WebGPU, where it was refused.",
+        "text": "`PassDevice` says what the frame is, the scene target at the scene's samples, and a pass drawn after `endFrame` lands on the canvas at one sample, so a pipeline built from the device was refused there. The WebGPU `PassContext` now carries `format`, `depthFormat` and `samples` for the pass the draw lands in, read from the same cache a mesh drawn there uses, and `@driftengine/ui2d`'s sprite pass keeps a pipeline per target and chooses at the draw. A game had registered its HUD's sprite pass for the canvas by hand to get round it. Code that builds a `PassContext` itself, which is test code, now supplies the three."
+      },
+      {
+        "kind": "fixed",
+        "short": "A ragdoll turns each joint by the bone that starts at it, so a skinned limb follows its body, where it trailed by a bone.",
+        "text": "`writePose` turned joint j by the body standing on the bone that ends at j, and a skinned limb follows the joint it starts from: the forearm is weighted to the elbow. So a limb was drawn in line with the bone before it, 0.47 m from its body at the hands in a doll synced and never stepped, as reported from a game. Each joint is now turned by its first bone below, and a joint with none below it rides the bone it hangs off; `drive` steers the same bone the write reads, and `sync` carries a bone's twist about its own length, which a wrist with a thumb beside the fingers needs. Translations are each parent's own frame, where they were world offsets that only agreed with a rig unrotated at rest. A root's rotation is written in the frame of the node placed at `rootX`, `rootY` and `rootZ`. The chains the tests were built from were straight and unrotated, which is why none of this showed; an arm with real rotations now stands beside them."
+      },
+      {
+        "kind": "fixed",
+        "short": "A character controller accelerates and brakes along a diagonal as fast as along an axis, where it gained speed √2 times as fast.",
+        "text": "The wanted velocity was clamped as a vector and then approached one world axis at a time, each by the whole step, so a diagonal from rest had 2.83 m/s three ticks in where a straight run had 2.0, and stopped √2 times as fast. It now moves toward the wanted velocity by at most the step in length, and lands on it exactly. What it gives up is that each axis no longer reaches its target on its own schedule: turning from one direction to another now curves rather than squaring the corner."
+      },
+      {
+        "kind": "added",
+        "short": "An action can be bound to mouse buttons, `{ device: 'mouse', button: 'left' }`, held, pressed and claimed like a key.",
+        "text": "`DigitalAction.mouseButtons` and the `mouse` binding device, saved and loaded with the rest, and `InputSource.mouseDown`, `mousePressed` and `consumeMousePress` per button, with the keyboard's edge rules: a press is pressed over the source's target, released anywhere, and a lost focus or a cancelled pointer releases every button. `MouseButton` is `left`, `middle`, `right`, `back` or `forward`. A binding narrowed as keyboard-or-else-gamepad no longer compiles, since there is a third device; the input example and the gamepad page are corrected. A game read `mousedown` itself beside the actions it bound everything else through."
+      },
+      {
+        "kind": "added",
+        "short": "`beginViewModel` and `endViewModel` draw a first person's arms and weapon in the nearest sliver of depth, so they never go into a wall and the world's depth is kept.",
+        "text": "What is drawn between the two lands in the nearest share of the depth range, 1% by default (`VIEW_MODEL_DEPTH_SHARE`): the viewport's depth bounds on WebGPU and `gl.depthRange` on WebGL2, at whichever end the context's convention puts near. The world's depth is not cleared, so ambient occlusion, depth of field and fog still see the world behind the weapon, which clearing it inside an inset did not. `endFrame` closes a view model left open. Its pixels take no motion of their own under temporal reconstruction, so a view model is drawn with multisampling. A game had squeezed the depth through a camera of its own for want of this."
+      },
+      {
+        "kind": "fixed",
+        "short": "`ParticlePool.emit` draws a particle the frame it is born, where it waited for the next `update`.",
+        "text": "The drawn streams are compacted live particles and only `update` rebuilt them, so a burst emitted after the frame's update, a muzzle flash or a hit's sparks, appeared a frame late, and a pool updated only while it had something live never showed its first particle. `emit` now writes the particle into both streams at once, into the entry of the particle it replaces where the ring is full, and onto the end otherwise. A game called `update(0)` before every draw to see its own effects."
+      },
+      {
+        "kind": "fixed",
+        "short": "The tools overlay draws its panels on a background under their titles, the console draws where it has scrolled, and Ctrl+Shift+Z redoes.",
+        "text": "The overlay gives each panel a dark background and a title row `PANEL_TITLE_HEIGHT` pixels tall, so the tools example no longer lays a backdrop under each site; colours with alpha reach the painter as `#rrggbbaa`, which its contract always allowed. The console copies its scroll to the node the overlay draws and takes the window from the height its panel is given, so it shows the newest lines, a wheel moves them and a click picks the row under the pointer; the overlay takes a wheel over a panel whether or not the panel made a command of it, so the page no longer scrolls underneath. Ctrl+Shift+Z redoes with the capital a browser reports for it. An `f32` field reads as the shortest decimal that stores as the same float, `0.55` rather than `0.550000011920929`. A `LockstepSession` is handed to `observeSession` and `sessionReadout` as it is, through a public `rewindDepth`, and the package README edits through `setFieldCommand` where its example did not compile."
+      },
+      {
+        "kind": "changed",
+        "short": "`World.add` and `definePrefab` refuse a field the component does not have, where the value was dropped without a word.",
+        "text": "A store fills every field its schema declares and never looked at the other keys, so a misspelt field was dropped and the field it meant took its default; one consumer's had been dropped since the component was written. An add now refuses one by name and lists the fields there are, before anything is stored, as `write` and a component's declared defaults already did, and `definePrefab` refuses one when the prefab is defined rather than at its first spawn. A scene read back is migrated onto the current schema first, so a renamed field in a save still loads."
+      },
+      {
+        "kind": "fixed",
+        "short": "An interface tree draws and hit-tests by layer, so a raised popup covers a later sibling and takes the pointer there.",
+        "text": "`UiNode.layer` was sorted by `layerOrder` and read by nothing that draws or points: a dropdown raised over the panel its control sits in was drawn under a later sibling and the pointer reached the sibling through it. `drawUiTree` now draws layer by layer, lowest first and tree order within one, each with the clips it would have had, and `uiHitTest` searches from the highest layer down. A tree with no raised node is drawn and searched in one walk, as before."
+      },
+      {
+        "kind": "fixed",
+        "short": "An audio mix that is not running hands a recording no stream, so a clip started before a gesture keeps its picture instead of half a second of it.",
+        "text": "`AudioGraph.captureStream` answered a live track from a suspended context, which never carries a sample, and a recorder given one stalled on it: a recording started from a script click kept 19 frames of 120 and no sound. It answers `null` until the context runs, and the tap after."
+      },
+      {
+        "kind": "fixed",
+        "short": "`beginInset` is documented as returning the aspect it returns, and answers the asked-for box's aspect on a lost WebGPU device instead of 0.",
+        "text": "The WebGPU renderer's comment said it returned the inset's height in device pixels, which both backends stopped doing; and with no pass to draw into it returned 0, a projection of infinities in the caller's camera. It answers the aspect of the box asked for there."
+      },
+      {
+        "kind": "added",
+        "short": "A mesh with no texture coordinates drawn with an albedo, normal or emissive map is said once, where the maps were ignored in silence.",
+        "text": "Every map on such a mesh reads one texel, so an emissive map made nothing glow and the frame was identical with and without it. The first such draw of each mesh says so, on both backends. A one-colour ORM map is not counted: read at one texel it is the constant roughness and metalness it was bound for."
+      },
+      {
+        "kind": "fixed",
+        "short": "`probeXrSupport` takes the WebGL2 context a game draws with, without a cast, and `XrRuntime` is exported.",
+        "text": "Its parameter was a type whose one member is optional, which TypeScript treats as weak, and the DOM types do not declare `makeXRCompatible` on `WebGL2RenderingContext`, so the context every game holds did not compile until it was cast. It takes any object and asks for the method. `XrRuntime`, what `HostServices.xr` takes, is exported from `@driftengine/script`."
+      }
+    ]
+  },
+  {
     "version": "4.8.1",
     "date": "2026-10-03",
     "entries": [

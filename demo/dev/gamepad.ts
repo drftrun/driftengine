@@ -77,6 +77,7 @@ for (const name of DIGITAL) {
 /** How a binding reads on screen: a key by its code, a button by what this pad calls it. */
 function describe(binding: Binding): string {
   if (binding.device === 'keyboard') return binding.code;
+  if (binding.device === 'mouse') return `mouse ${binding.button}`;
   const pad = input.pad(0);
   return pad === null ? binding.button : pad.identity.label(binding.button);
 }

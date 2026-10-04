@@ -104,6 +104,23 @@ export interface TouchPoint {
 /** The devices this source watches, and the granularity a consumer may switch off. */
 export type InputSourceName = 'keyboard' | 'mouse' | 'touch' | 'gamepad';
 
+/** A mouse button by what it is, in `MouseEvent.button` order. */
+export type MouseButton = 'left' | 'middle' | 'right' | 'back' | 'forward';
+
+/** One bit a button, so the held, pressed and claimed states are integers and a read allocates nothing. */
+const MOUSE_BIT: Readonly<Record<MouseButton, number>> = {
+  left: 1,
+  middle: 2,
+  right: 4,
+  back: 8,
+  forward: 16,
+};
+
+/** `MouseEvent.button` as a bit, or 0 for a button past the five this names. */
+function mouseBit(button: number): number {
+  return button >= 0 && button < 5 ? 1 << button : 0;
+}
+
 export interface InputOptions {
   /**
    * Turn a device off. Absent means on.
@@ -420,6 +437,19 @@ export class InputSource {
   private mouseDx = 0;
   private mouseDy = 0;
   private mouseButtonDown = false;
+  /**
+   * Each mouse button's own state, as the keyboard's sets are for keys: held, pressed since the
+   * last poll, claimed this frame, and waiting for somebody to act on it. Bits, by `MOUSE_BIT`.
+   *
+   * **Beside `mouseButtonDown`, not instead of it.** That flag is "a button is held", which is what
+   * an unlocked drag-to-look reads; a game binding fire to the left button and aim to the right
+   * needs to know which, and to see a release of one while the other stays down.
+   */
+  private mouseHeld = 0;
+  private mousePressedNow = 0;
+  private mousePressedNext = 0;
+  private mouseClaimed = 0;
+  private mouseUnclaimed = 0;
   private readonly disposers: Array<() => void> = [];
 
   /** Which device the player last actually used, and who wants telling when that changes. */
@@ -531,13 +561,21 @@ export class InputSource {
       this.keysUnclaimed.clear();
     });
 
-    this.listen(target, 'mousedown', () => {
+    this.listen(target, 'mousedown', (e: MouseEvent) => {
       if (!this.enabled.mouse) return;
       this.mouseButtonDown = true;
+      const bit = mouseBit(e.button);
+      this.mouseHeld |= bit;
+      this.mousePressedNext |= bit;
+      this.mouseUnclaimed |= bit;
       this.active.use('mouse');
     });
-    this.listen(window, 'mouseup', () => {
+    /* On the window, so a press that becomes a drag off the canvas still comes back up. */
+    this.listen(window, 'mouseup', (e: MouseEvent) => {
       this.mouseButtonDown = false;
+      const bit = mouseBit(e.button);
+      this.mouseHeld &= ~bit;
+      this.mouseUnclaimed &= ~bit;
     });
     /*
      * **Released by anything that can eat the mouseup, exactly as the keys are.**
@@ -559,15 +597,11 @@ export class InputSource {
      * `visibilitychange` as well as `blur`, because a tab switched away with a button held
      * comes back to a document that never saw the release either.
      */
-    this.listen(window, 'blur', () => {
-      this.mouseButtonDown = false;
-    });
-    this.listen(window, 'pointercancel', () => {
-      this.mouseButtonDown = false;
-    });
+    this.listen(window, 'blur', () => this.releaseMouse());
+    this.listen(window, 'pointercancel', () => this.releaseMouse());
     /* Not in `GlobalEventHandlersEventMap`, so it is bound directly and disposed by hand. */
     const onHidden = (): void => {
-      if (document.visibilityState !== 'visible') this.mouseButtonDown = false;
+      if (document.visibilityState !== 'visible') this.releaseMouse();
     };
     document.addEventListener('visibilitychange', onHidden);
     this.disposers.push(() => document.removeEventListener('visibilitychange', onHidden));
@@ -676,6 +710,10 @@ export class InputSource {
     spent.clear();
     this.keysPressedNext = spent;
     this.keysClaimed.clear();
+    /* The mouse buttons' frame boundary, on the same poll and by the same rule. */
+    this.mousePressedNow = this.mousePressedNext;
+    this.mousePressedNext = 0;
+    this.mouseClaimed = 0;
 
     if (!this.enabled.gamepad) return;
     const source = (globalThis as { navigator?: { getGamepads?: () => (RawPad | null)[] } })
@@ -766,6 +804,38 @@ export class InputSource {
        freshly pressed must stop the moment somebody acts on it. */
     this.keysClaimed.add(code);
     return true;
+  }
+
+  /**
+   * Whether a mouse button is held: pressed over the target and not yet released anywhere.
+   *
+   * A browser opens its context menu on the right button's release; a game binding that button
+   * cancels `contextmenu` on its canvas, which is a decision about the page and not this source's.
+   */
+  mouseDown(button: MouseButton): boolean {
+    return (this.mouseHeld & MOUSE_BIT[button]) !== 0;
+  }
+
+  /** Whether a mouse button went down since the last poll, as `keyPressed` is for a key. */
+  mousePressed(button: MouseButton): boolean {
+    const bit = MOUSE_BIT[button];
+    return (this.mousePressedNow & bit) !== 0 && (this.mouseClaimed & bit) === 0;
+  }
+
+  /** The same edge, claimed, as `consumeKeyPress` is for a key: true for exactly one caller. */
+  consumeMousePress(button: MouseButton): boolean {
+    const bit = MOUSE_BIT[button];
+    if ((this.mouseUnclaimed & bit) === 0) return false;
+    this.mouseUnclaimed &= ~bit;
+    this.mouseClaimed |= bit;
+    return true;
+  }
+
+  /** Every button up and every waiting press gone: what a lost focus or a cancelled pointer means. */
+  private releaseMouse(): void {
+    this.mouseButtonDown = false;
+    this.mouseHeld = 0;
+    this.mouseUnclaimed = 0;
   }
 
   /**

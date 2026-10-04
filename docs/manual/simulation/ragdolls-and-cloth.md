@@ -116,7 +116,9 @@ The `Ragdoll` it returns has `bodyOf`, the body each joint's bone is or −1, an
   anything with `translation`, `rotation` and `scale` per joint, relative to its parent, which an
   animation `Pose` is.
 - `writePose(out)` writes the ragdoll's shape back into a pose, so the skinned character is drawn
-  where the bodies are.
+  where the bodies are. Each joint is turned by the bone that starts at it, the one a skinned limb
+  follows: the forearm's body turns the elbow. A root's rotation is written in the frame of the
+  node placed at `rootX`, `rootY` and `rootZ`, so that node carries no rotation of its own.
 
 ## Cloth
 

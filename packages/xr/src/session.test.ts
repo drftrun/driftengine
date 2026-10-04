@@ -367,6 +367,20 @@ describe('support, asked by doing', () => {
     expect(support.reason).toContain('no XR device');
   });
 
+  /*
+   * **The context a game draws with is passed as it is.** The DOM types do not declare
+   * `makeXRCompatible` on `WebGL2RenderingContext`, and a parameter whose one member is optional is
+   * a weak type, so the context every game holds failed to compile until it was cast. A context is
+   * any object now, asked for the method; this one is typed exactly as `getContext` types it.
+   */
+  it('takes a WebGL2 context as getContext types it, and finds the method on it', async () => {
+    const system = syntheticXr({ modes: ['immersive-vr'] });
+    const context = { makeXRCompatible: async () => {} } as unknown as WebGL2RenderingContext;
+    const support = await probeXrSupport(context, system);
+
+    expect(support.compatible).toBe(true);
+  });
+
   it('answers with nothing when the browser has no WebXR', async () => {
     const support = await probeXrSupport(null, null);
 

@@ -280,6 +280,9 @@ function recordedPresent(shadow: GpuDrivenShadowOptions = {}) {
     outputTransform: 0,
     outputExposure: 1,
     jitter: NO_JITTER,
+    format: 'rgba8unorm',
+    depthFormat: 'depth32float',
+    samples: 1,
   });
   const blit = pipelines.find((one) => String(one['label']).startsWith('gpu-driven blit'));
   return {

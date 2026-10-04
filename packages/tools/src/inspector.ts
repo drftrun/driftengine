@@ -48,7 +48,10 @@ export interface InspectorRow {
   readonly component: string;
   /** What the row is called: a field's name, or the prefix the vector's three share. */
   readonly label: string;
-  /** The declared type, verbatim. Empty for a vector, which is three of them. */
+  /**
+   * The declared type, verbatim. For a vector, the type its three parts share, or empty where they
+   * do not share one.
+   */
   readonly type: string;
   readonly kind: RowKind;
   readonly enumName: string;
@@ -153,10 +156,13 @@ export function inspectorRows(
         if (emitted.has(part.prefix)) continue;
         emitted.add(part.prefix);
         const slots = vectors.get(part.prefix) as string[];
+        const types = new Set(
+          fields.filter((one) => slots.includes(one.name)).map((one) => one.type),
+        );
         rows.push({
           component,
           label: part.prefix,
-          type: '',
+          type: types.size === 1 ? field.type : '',
           kind: 'vector',
           enumName: '',
           fields: slots,
@@ -307,11 +313,32 @@ export function createInspectorView(options: {
 export function rowText(row: InspectorRow): string {
   if (row.value === MIXED) return `${row.label}  —`;
   if (row.kind === 'vector') {
-    const parts = (row.value as unknown[]).map((part) => (part === MIXED ? '—' : String(part)));
+    const parts = (row.value as unknown[]).map((part) =>
+      part === MIXED ? '—' : valueText(part, row.type),
+    );
     return `${row.label}  ${parts.join(', ')}`;
   }
   if (row.kind === 'boolean') return `${row.label}  ${row.value ? 'true' : 'false'}`;
-  return `${row.label}  ${String(row.value)}`;
+  return `${row.label}  ${valueText(row.value, row.type)}`;
+}
+
+/**
+ * One value as text: an `f32` as the shortest decimal that stores as the same `f32`.
+ *
+ * **What was written rather than what is stored.** A `Float32Array` hands back the nearest double,
+ * so a bounce of 0.55 reads `0.550000011920929`; the digits past the seventh are the storage, and
+ * the shortest decimal that rounds back to the same `f32` is what anybody wrote. Nine significant
+ * digits always round-trip a single, so the search ends there. An `f64` and anything else keep
+ * `String`, whose own answer is already the shortest for a double.
+ */
+function valueText(value: unknown, type: string): string {
+  if (type !== 'f32' || typeof value !== 'number' || !Number.isFinite(value)) return String(value);
+  const stored = Math.fround(value);
+  for (let digits = 1; digits < 9; digits += 1) {
+    const shorter = Number(stored.toPrecision(digits));
+    if (Math.fround(shorter) === stored) return String(shorter);
+  }
+  return String(Number(stored.toPrecision(9)));
 }
 
 export const inspectorPanel: Panel<InspectorWorld, InspectorView> = {

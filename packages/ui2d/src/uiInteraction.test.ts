@@ -310,3 +310,63 @@ describe('key routing', () => {
     expect(routeUiKey(input, root, 'Enter')).toBeNull();
   });
 });
+
+/*
+ * **A layer is honoured where a tree is drawn and where it is pointed at.** `UiNode.layer` is
+ * inherited and `layerOrder` sorts by it, for a dropdown that must cover the panel its control sits
+ * in — and `drawUiTree` and `uiHitTest` walked tree order and read no layer, so a raised popup was
+ * drawn under a later sibling and the pointer reached the sibling through it.
+ */
+describe('a raised layer', () => {
+  /** A dropdown raised inside the first panel, overlapping a second panel that comes later. */
+  function overlapped(): { root: UiNode; popup: UiNode; later: UiNode } {
+    const root = createUiNode({ width: 100, height: 100 });
+    const panel = addUiChild(
+      root,
+      createUiNode({ absolute: true, x: 0, y: 0, width: 50, height: 50 }),
+    );
+    const popup = addUiChild(
+      panel,
+      createUiNode({
+        absolute: true,
+        x: 10,
+        y: 30,
+        width: 40,
+        height: 40,
+        layer: 1,
+        texture: 7,
+        interactive: true,
+        name: 'popup',
+      }),
+    );
+    const later = addUiChild(
+      root,
+      createUiNode({
+        absolute: true,
+        x: 0,
+        y: 50,
+        width: 100,
+        height: 50,
+        texture: 3,
+        interactive: true,
+        name: 'later',
+      }),
+    );
+    layoutUiTree(root, 0, 0, 100, 100);
+    return { root, popup, later };
+  }
+
+  it('draws over a later sibling', () => {
+    const { root } = overlapped();
+    const batch = createSpriteBatch(16);
+    expect(drawUiTree(batch, root, 5, null)).toBe(2);
+    /* Each sprite opens a run of three: the later panel's image first, the raised popup's last. */
+    expect([batch.runs[0], batch.runs[3]]).toEqual([3, 7]);
+  });
+
+  it('takes the pointer where it covers a later sibling', () => {
+    const { root } = overlapped();
+    expect(uiHitTest(root, 20, 60)?.name).toBe('popup');
+    expect(uiHitTest(root, 80, 80)?.name, 'and the sibling where it does not').toBe('later');
+  });
+});

@@ -23,3 +23,51 @@ vec4 glassUnmix(vec4 mip, float centreClarity) {
 }
 `;
 }
+
+/**
+ * The lit stage's switches, by the name of the constant each is: the decision both backends make
+ * about which optional code a lit program carries. See `litSwitchesGlsl`.
+ */
+export type LitSwitch =
+  'GLASS_SHADOWS' | 'CLUSTERED_LIGHTS' | 'LIGHT_FIXTURES' | 'SURFACE_EFFECTS' | 'DRIFT_LIGHT';
+
+/** Every switch off: what a renderer starts from before its profile and its content say otherwise. */
+export function noLitSwitches(): Record<LitSwitch, boolean> {
+  return {
+    GLASS_SHADOWS: false,
+    CLUSTERED_LIGHTS: false,
+    LIGHT_FIXTURES: false,
+    SURFACE_EFFECTS: false,
+    DRIFT_LIGHT: false,
+  };
+}
+
+/** Which of the lit stage's optional features a build reads. See `litSwitchesGlsl`. */
+export interface LitSwitches {
+  readonly clusteredLights: boolean;
+  readonly lightFixtures: boolean;
+  readonly surfaceEffects: boolean;
+  readonly driftLight: boolean;
+}
+
+/**
+ * The lit stage's other switches, declared after `GLASS_SHADOWS` so that one keeps the id 0 the
+ * pipelines and their tests already name, each a pipeline-overridable constant on the generated
+ * WGSL and a written-in value on WebGL2 — the arrangement `GLASS_SHADOWS` has, for its reason:
+ * code a branch never runs still costs a shader its registers, and the device compiles it away
+ * only where the switch is a constant.
+ *
+ * **Clustering is the profile's and fixed.** The other three are content, off until a consumer
+ * first uses them — a measured profile or a cookie, a material with an effects table, a DriftLight
+ * volume — and then on for good; see `PipelineCache.enable` and the WebGL2 renderer's rebuild.
+ * Measured on RADV against the lit shader with glass already out: 6,852 instructions and 120
+ * registers, 4,641 and 96 with all four out.
+ */
+export function litSwitchesGlsl(switches: LitSwitches): string {
+  return /* glsl */ `
+const bool CLUSTERED_LIGHTS = ${switches.clusteredLights ? 'true' : 'false'};  // wgsl:override
+const bool LIGHT_FIXTURES = ${switches.lightFixtures ? 'true' : 'false'};  // wgsl:override
+const bool SURFACE_EFFECTS = ${switches.surfaceEffects ? 'true' : 'false'};  // wgsl:override
+const bool DRIFT_LIGHT = ${switches.driftLight ? 'true' : 'false'};  // wgsl:override
+`;
+}

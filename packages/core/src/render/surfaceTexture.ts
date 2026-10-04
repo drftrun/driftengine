@@ -335,6 +335,11 @@ export class SurfaceTexture {
   }
 
   /** Bind the effects table to `unit`, or `fallback` for a texture given none. */
+  /** Whether this texture carries an effects table, which the lit program reads only once one exists. */
+  get hasEffects(): boolean {
+    return this.effectsTable !== null;
+  }
+
   bindEffects(gl: WebGL2RenderingContext, unit: number, fallback: WebGLTexture): void {
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, this.effectsTable ?? fallback);

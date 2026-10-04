@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { Fingerprint } from '@driftengine/network';
+import {
+  Fingerprint,
+  InputLog,
+  LockstepSession,
+  LoopbackNetwork,
+  RewindLoop,
+} from '@driftengine/network';
 import { pointerEvent } from './panel.ts';
 import {
   componentDivergence,
@@ -256,5 +262,42 @@ describe('a lockstep session, as something the network panel can read', () => {
     const hashes = { ours: new Map([['Health', 'aa']]), theirs: new Map([['Health', 'bb']]) };
     const readout = sessionReadout(session(), createSessionRecorder(), 0, hashes);
     expect(readout.componentHashes?.ours.get('Health')).toBe('aa');
+  });
+});
+
+/*
+ * **A session is passed as it is.** `SessionLike` asked for `loop: { depth }` and `LockstepSession`
+ * keeps its loop private, so handing the helpers the session the README says they read failed to
+ * compile — "Property 'loop' is private in type 'LockstepSession'" — and every game built the shape
+ * by hand from the session's public fields and the loop it had made. The session answers its rewind
+ * depth now, and a hand-built shape with a loop still reads as it did.
+ */
+describe('a lockstep session handed over as it is', () => {
+  it('reads its depth, its delay and its participants with nothing built around it', () => {
+    const inputs = new InputLog({ participants: 2, depth: 64, inputBytes: 1 });
+    const loop = new RewindLoop({
+      step: () => {},
+      snapshotter: { create: () => ({}), save: () => {}, restore: () => {} },
+      inputs,
+      fixedDt: 1 / 60,
+      depth: 9,
+    });
+    const session = new LockstepSession({
+      transport: new LoopbackNetwork().open({ self: 0 }),
+      loop,
+      inputs,
+      self: 0,
+      participants: 2,
+      inputDelay: 3,
+      compareStates: false,
+    });
+
+    expect(session.rewindDepth).toBe(9);
+    const recorder = createSessionRecorder();
+    observeSession(recorder, session);
+    const readout = sessionReadout(session, recorder, 0);
+    expect(readout.snapshotCount).toBe(9);
+    expect(readout.inputDelay).toBe(3);
+    expect(readout.participants).toBe(2);
   });
 });

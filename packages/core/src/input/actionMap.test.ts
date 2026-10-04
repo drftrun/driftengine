@@ -7,7 +7,7 @@ import { fakeBrowser } from './inputHarness.ts';
 
 const DEFAULTS = {
   jump: { keys: ['Space'], buttons: ['faceDown'] as const },
-  fire: { keys: ['KeyF'], buttons: ['r2'] as const },
+  fire: { keys: ['KeyF'], buttons: ['r2'] as const, mouseButtons: ['left'] as const },
   move: { stick: 'left' as const, up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' },
 };
 
@@ -275,6 +275,50 @@ test('an axis of something that is not a direction is zero rather than an error'
        have to answer rather than throw inside a frame. */
     expect(actions.axis('jump', 'x')).toBe(0);
     expect(actions.axis('sprint', 'y')).toBe(0);
+  } finally {
+    browser.restore();
+  }
+});
+
+/*
+ * **A mouse button is a binding like a key.** A shooter fires on the left button and aims on the
+ * right, and with only keys and pad buttons to bind an action map could not say so: a game read
+ * `mousedown` and `mouseup` itself, beside the actions it bound everything else through, and the
+ * player could not rebind fire to a key or a key's action to a button. Reported from a game.
+ */
+test('a mouse button holds, presses and is claimed through an action', () => {
+  const { browser, input, actions } = harness();
+  try {
+    browser.mouseDown(0);
+    input.poll();
+    expect(actions.down('fire'), 'held').toBe(true);
+    expect(actions.pressed('fire'), 'pressed').toBe(true);
+    expect(actions.consumePress('fire'), 'claimed once').toBe(true);
+    expect(actions.consumePress('fire'), 'and not twice').toBe(false);
+    expect(actions.down('jump'), 'and nothing else').toBe(false);
+
+    browser.mouseUp(0);
+    input.poll();
+    expect(actions.down('fire'), 'released').toBe(false);
+  } finally {
+    browser.restore();
+  }
+});
+
+test('a rebind to a mouse button is saved and comes back', () => {
+  const { browser, input, actions } = harness();
+  const store = new MemoryStore();
+  try {
+    actions.rebind('jump', { device: 'mouse', button: 'right' });
+    actions.save(store, 'bindings');
+    const next = new ActionMap(input, DEFAULTS);
+    next.load(store, 'bindings');
+    expect(next.bindingsFor('jump')).toContainEqual({ device: 'mouse', button: 'right' });
+
+    browser.mouseDown(2);
+    input.poll();
+    expect(next.down('jump'), 'the right button jumps now').toBe(true);
+    expect(next.down('fire'), 'and is not the left').toBe(false);
   } finally {
     browser.restore();
   }

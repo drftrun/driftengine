@@ -80,7 +80,7 @@ const RANGE_FIELDS = [
  * an ordinary external dependency and the check changes character with it. Two things still have to
  * hold, and neither is about the engine's number:
  *
- * **The pins agree with each other.** Three manifests name `driftscript`, and a partial bump
+ * **The pins agree with each other.** Four manifests name `driftscript`, and a partial bump
  * resolves two copies of the language into one tree — at which point `@driftengine/entities` and
  * `@driftengine/script` disagree about what a `Schema` is, silently, because both compile.
  *
@@ -293,11 +293,11 @@ test('every engine range pins the workspace version, and the language pin agrees
   /*
    * The language pins, which are now pins on a published package.
    *
-   * Three of them: the workspace root, because `scripts/capabilities.ts` imports `serializeRegistry`
+   * Four of them: the workspace root, because `scripts/capabilities.ts` imports `serializeRegistry`
    * and a package that imports something declares it; `@driftengine/script`, which describes this
-   * engine to the language; and `@driftengine/entities`, which takes `Schema` and `migrate` — 406
-   * bytes gzipped — because one description of a component is the spine of the entity model and a
-   * second one can drift from it.
+   * engine to the language; `@driftengine/entities`, which takes `Schema` and `migrate` — 406 bytes
+   * gzipped — because one description of a component is the spine of the entity model and a second
+   * one can drift from it; and the `editor` application, which compiles a project's scripts.
    *
    * **They have to agree with each other**, and the reason is sharper than tidiness. npm will
    * happily resolve two versions of `driftscript` into one tree if two manifests disagree, and then

@@ -5,6 +5,7 @@ import type { SpriteBatch, SpritePlacement } from './spriteBatch.ts';
 import { createSpriteFrame } from './spriteSheet.ts';
 import type { SpriteFrame } from './spriteSheet.ts';
 import type { UiNode, UiRect } from './uiNode.ts';
+import { layersPresent } from './uiLayer.ts';
 
 /**
  * Where a caller draws what a quad cannot be.
@@ -61,8 +62,34 @@ export function drawUiTree(
   white: number,
   sink: UiContentSink | null,
 ): number {
-  return drawWithin(batch, root, white, sink, -Infinity, -Infinity, Infinity, Infinity);
+  /*
+   * **Layer by layer, lowest first, and tree order within one.** A raised node — a dropdown that
+   * must cover the panel its control sits in — was drawn in tree order with everything else, so a
+   * later sibling covered it. Each layer is a walk of the whole tree with the clips it would have
+   * had anyway, so a raised node is still cut by a clipping ancestor; a tree with no raised node is
+   * one walk, as before.
+   */
+  const count = layersPresent(root, LAYERS);
+  let drawn = 0;
+  for (let at = 0; at < count; at += 1) {
+    drawn += drawWithin(
+      batch,
+      root,
+      white,
+      sink,
+      -Infinity,
+      -Infinity,
+      Infinity,
+      Infinity,
+      0,
+      LAYERS[at] ?? 0,
+    );
+  }
+  return drawn;
 }
+
+/** The layers of the tree being drawn, reused: this runs per frame. */
+const LAYERS: number[] = [];
 
 function drawWithin(
   batch: SpriteBatch,
@@ -73,8 +100,11 @@ function drawWithin(
   top: number,
   right: number,
   bottom: number,
+  inherited: number,
+  only: number,
 ): number {
   if (node.hidden) return 0;
+  const layer = node.layer === 0 ? inherited : node.layer;
   const rect = node.rect;
   const clipped = left !== -Infinity;
   const x0 = Math.max(rect.x, left);
@@ -87,7 +117,7 @@ function drawWithin(
    * a node is drawn as it always was, whatever its size. Its children are cut one by one either way,
    * since a child can lie outside its parent's box and still inside the clip.
    */
-  if (!clipped || (x1 > x0 && y1 > y0)) {
+  if (layer === only && (!clipped || (x1 > x0 && y1 > y0))) {
     PLACEMENT.x = clipped ? x0 : rect.x;
     PLACEMENT.y = clipped ? y0 : rect.y;
     PLACEMENT.w = clipped ? x1 - x0 : rect.w;
@@ -115,7 +145,9 @@ function drawWithin(
   const ct = keep ? Math.max(top, rect.y) : top;
   const cr = keep ? Math.min(right, rect.x + rect.w) : right;
   const cb = keep ? Math.min(bottom, rect.y + rect.h) : bottom;
-  for (const child of node.children) drawn += drawWithin(batch, child, white, sink, cl, ct, cr, cb);
+  for (const child of node.children) {
+    drawn += drawWithin(batch, child, white, sink, cl, ct, cr, cb, layer, only);
+  }
   return drawn;
 }
 

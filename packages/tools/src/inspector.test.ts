@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createUndoStack } from './command.ts';
 import { createSelection, selectOnly, addToSelection } from './selection.ts';
-import { MIXED, inspectorRows, fieldEditable } from './inspector.ts';
+import { MIXED, inspectorRows, fieldEditable, rowText } from './inspector.ts';
 import {
   addComponentCommand,
   createInspectorView,
@@ -409,5 +409,50 @@ describe('an entity world, as something the inspector can read', () => {
     expect(view.hasComponent(5, 'Health')).toBe(true);
     view.removeComponent(5, 'Health');
     expect(view.hasComponent(5, 'Health')).toBe(false);
+  });
+});
+
+/*
+ * **What a person wrote, not what a float stores.** An `f32` field comes back from its
+ * `Float32Array` as the nearest double, so a bounce of 0.55 read `0.550000011920929` and a resting
+ * height `0.3499999940395355`: the digits past the seventh are the storage. The shortest decimal
+ * that rounds back to the same `f32` is the honest text. An `f64` is shown as it is.
+ */
+describe('a row as text', () => {
+  it('shows an f32 as the shortest decimal that stores as the same f32', () => {
+    const world = fakeWorld();
+    world.addComponent(1, 'Health');
+    world.write(1, 'Health', 'current', Math.fround(0.55));
+    world.write(1, 'Health', 'max', Math.fround(0.35));
+    world.write(1, 'Health', 'invulnerable', 0);
+    const rows = inspectorRows(world, [1]);
+    const text = (label: string): string =>
+      rowText(rows.find((row) => row.label === label) as (typeof rows)[number]);
+    expect(text('current')).toBe('current  0.55');
+    expect(text('max')).toBe('max  0.35');
+  });
+
+  it('shows an f64 with every digit it has', () => {
+    const row = {
+      component: 'C',
+      label: 'mass',
+      type: 'f64',
+      kind: 'number' as const,
+      enumName: '',
+      fields: ['mass'],
+      value: 0.550000011920929,
+      editable: true,
+    };
+    expect(rowText(row)).toBe('mass  0.550000011920929');
+  });
+
+  it('shows a vector of f32 the same way, part by part', () => {
+    const world = fakeWorld();
+    world.addComponent(1, 'Transform');
+    world.write(1, 'Transform', 'position.x', Math.fround(0.1));
+    world.write(1, 'Transform', 'position.y', Math.fround(-2.7));
+    world.write(1, 'Transform', 'position.z', 3);
+    const [row] = inspectorRows(world, [1]);
+    expect(rowText(row as NonNullable<typeof row>)).toBe('position  0.1, -2.7, 3');
   });
 });

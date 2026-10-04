@@ -215,10 +215,14 @@ export const consolePanel: Panel<ConsoleWorld, ConsoleView> = {
   title: 'Console',
 
   build(world, view, root): void {
+    /* The window is the height the panel was given, where it was given one: the overlay sets it on
+       the root before it builds. `viewHeight` is what a root with no exact height falls back to. */
+    if (typeof root.height === 'number' && root.height > 0) view.viewHeight = root.height;
     view.shown = filteredEntries(world.log, view.filter);
     if (view.shown.length === 0) {
       emptyPanel(root, 'Nothing logged');
       view.scrollY = 0;
+      root.scrollY = 0;
       return;
     }
 
@@ -238,6 +242,8 @@ export const consolePanel: Panel<ConsoleWorld, ConsoleView> = {
     }
     /* The follow happens here and not on append, because only a build knows how tall the list is. */
     if (view.pinned) view.scrollY = maxScroll(view, view.shown.length);
+    /* And onto the root, which is what ui2d offsets the rows by: the scroll that is drawn. */
+    root.scrollY = view.scrollY;
   },
 
   route(_world, view, event): Command | null {
@@ -248,6 +254,7 @@ export const consolePanel: Panel<ConsoleWorld, ConsoleView> = {
       const limit = maxScroll(view, view.shown.length);
       view.scrollY = Math.min(limit, Math.max(0, view.scrollY + event.dy));
       view.pinned = view.scrollY >= limit;
+      view.root.scrollY = view.scrollY;
       return null;
     }
     if (event.kind !== 'pointer' || event.phase !== 'up' || event.button !== 0) return null;

@@ -318,15 +318,6 @@ zero shows `0.00`, so a pass that was never timed cannot pass for a free one.
 if (ink !== null) ink.clearRect(0, -top, innerWidth, innerHeight);
 overlay.invalidate();
 overlay.frame(now);
-/* The overlay paints only what its nodes carry, and its panels carry no background, so the
-   page lays one under each panel from where the overlay put it. */
-if (overlay.visible) {
-  for (const site of overlay.sites()) {
-    const x = overlay.root.rect.x + site.x;
-    painter.rect(x, site.y, site.w, site.h, '#101218e6');
-    painter.rect(x, site.y + site.h - 1, site.w, 1, '#343845');
-  }
-}
 paintOverlay(painter, overlay);
 ```
 
@@ -334,42 +325,33 @@ paintOverlay(painter, overlay);
 The profiler changes every frame, so the example invalidates every frame. While the overlay is
 closed, `frame` returns before it builds anything and `paintOverlay` paints nothing.
 
-`overlay.sites()` answers where each panel sits. The overlay paints only what its nodes carry, and
-its panels carry no background and no title, so the example lays a dark backdrop under each panel
-from its site before painting.
+`overlay.sites()` answers where each panel sits. Each panel is drawn on a dark background under a
+title row `PANEL_TITLE_HEIGHT` pixels tall, and the panel's own space starts below that row.
 
 ## The network panel
 
 ```ts sample=snippets/tools.ts#network
 /**
- * A lockstep session as the network panel reads it. The session keeps its rewind loop private, so
- * the game hands over the loop it made, and the panel reads the size of the window from that.
+ * A lockstep session as the network panel reads it: handed over as it is. The loop the game made is
+ * read beside it for how far each tick rewound, which the session does not count.
  */
 export function networkTools(
   session: LockstepSession<WorldSnapshot>,
   loop: RewindLoop<WorldSnapshot>,
   snapshotBytes: number,
 ): { panel: PanelBinding; afterTick(): void } {
-  const watched: SessionLike = {
-    participants: session.participants,
-    inputDelay: session.inputDelay,
-    get desync() {
-      return session.desync;
-    },
-    loop,
-  };
   const recorder = createSessionRecorder();
   const view = createNetworkView({});
   let replayed = loop.stats.replayedTicks;
   return {
     panel: bindPanel(
       networkPanel,
-      () => ({ session: sessionReadout(watched, recorder, snapshotBytes) }),
+      () => ({ session: sessionReadout(session, recorder, snapshotBytes) }),
       view,
     ),
     /** Once a tick, after the session has advanced: any new disagreement, and how far it rewound. */
     afterTick() {
-      observeSession(recorder, watched);
+      observeSession(recorder, session);
       const now = loop.stats.replayedTicks;
       pushRollback(view.rollback, now - replayed);
       replayed = now;
@@ -390,9 +372,9 @@ game hashes each component as well, `sessionReadout` takes both sides' hashes as
 and the panel names the components that differ. [Networking and rollback](../systems/networking.md)
 covers sessions and fingerprints.
 
-A `LockstepSession` keeps its rewind loop private, so it cannot be passed to `observeSession` as it
-is. The snippet builds the shape the panel needs from the session's public fields and the loop the
-game made.
+A `LockstepSession` is passed as it is: `rewindDepth` answers how many snapshots its loop holds. A
+game that keeps its own record of a session can still hand over a shape with `participants`,
+`inputDelay`, `desync` and `loop: { depth }`, which is `SessionLike`.
 
 ## The frame meter
 

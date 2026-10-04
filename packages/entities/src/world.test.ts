@@ -230,3 +230,29 @@ describe('a query', () => {
     expect(world.cursorsInUse).toBe(before);
   });
 });
+
+/*
+ * **A key the component does not have is refused, as a write of one already was.** A store fills
+ * every field its schema declares and never looked at the other keys, so `add(e, Resident,
+ * { house: 4 })` against a component whose field is `home` stored nothing for `home` and dropped
+ * `house` without a word. Found in a consumer, where one such key had been dropped since the
+ * component was written; it went unread, so nothing broke and nobody noticed.
+ */
+describe('a value for a field the component does not have', () => {
+  const Resident = defineComponent('WResident', { home: 'u32' });
+
+  it('is refused by name, and nothing is added', () => {
+    const world = new World();
+    const entity = world.create();
+    expect(() => world.add(entity, Resident, { house: 4 })).toThrow(/no field `house`.*`home`/);
+    expect(world.has(entity, Resident)).toBe(false);
+  });
+
+  it('is refused on an entity that already has the component, as before', () => {
+    const world = new World();
+    const entity = world.create();
+    world.add(entity, Resident, { home: 2 });
+    expect(() => world.add(entity, Resident, { house: 4 })).toThrow(/no field `house`/);
+    expect(world.read(entity, Resident, 'home')).toBe(2);
+  });
+});

@@ -367,3 +367,12 @@ describe("a component's declared values", () => {
     expect(world.read(entity, Plain, 'label')).toBe(null);
   });
 });
+
+/* The refusal `World.add` makes, at the moment a game defines its content rather than at the first
+   spawn of it. */
+it('a prefab naming a field its component does not have is refused when it is defined', () => {
+  const Post = defineComponent('PPost', { height: 'f32' });
+  expect(() => definePrefab('lamp', [[Post, { hieght: 3 }]])).toThrow(
+    /`lamp` gives `PPost` a field `hieght` it does not have\. It has `height`/,
+  );
+});

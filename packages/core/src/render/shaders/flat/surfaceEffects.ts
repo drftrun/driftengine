@@ -41,14 +41,18 @@ vec4 fx5;
 vec3 fxNormal;
 float fxDistance;
 
-/** Fill the rows for this layer, or leave them zero where the array carries no table. */
-void fxLoad(int layer) {
+/** Every row zero: the layer carries no effect. */
+void fxClear() {
   fx0 = vec4(0.0);
   fx1 = vec4(0.0);
   fx2 = vec4(0.0);
   fx3 = vec4(0.0);
   fx4 = vec4(0.0);
   fx5 = vec4(0.0);
+}
+
+/** Fill the rows for this layer, or leave them zero where the array carries no table. */
+void fxLoad(int layer) {
   ivec2 size = textureSize(uSurfaceEffects, 0);
   if (size.x < 6 || layer < 0 || layer >= size.y) return;
   fx0 = texelFetch(uSurfaceEffects, ivec2(0, layer), 0);

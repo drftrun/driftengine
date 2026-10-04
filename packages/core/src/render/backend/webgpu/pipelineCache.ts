@@ -1,3 +1,7 @@
+import { noLitSwitches, type LitSwitch } from '../../shaders/flat/glassTint.ts';
+
+export type { LitSwitch };
+
 /**
  * Render pipelines, built once and looked up by name.
  *
@@ -35,14 +39,29 @@ export class PipelineCache {
   readonly sampleCount: number;
 
   /**
-   * Whether the lit pipelines here read glass in their shadows: `glassShadows` other than `'off'`.
+   * Which of the lit stage's switches the pipelines built now have on: the pipeline-overridable
+   * constants the generated lit shader branches on (`GLASS_SHADOWS` and `litSwitchesGlsl`), which
+   * the device compiles away where they are off. Read by `flatPass` when it describes a pipeline.
    *
-   * **Carried by the cache for the reason the format is**: one value every lit pipeline is built
-   * with, chosen once by the renderer. It is the `GLASS_SHADOWS` override the generated lit shader
-   * branches on (see `FlatShaderOptions.glassShadows`), so off specialises the lookups away rather
-   * than leaving code that returns at its first line and still costs the pass its registers.
+   * **Each is code a scene pays for in every lit pixel's registers whether it uses it or not**, so
+   * each is off until it is used: glass until the renderer is offered a pane, a fixture until one is
+   * loaded, the effects until a material carries a table, DriftLight until a volume is set — and
+   * then on for good, through `enable`. Clustering is the profile's, fixed at construction. Every
+   * scene paid for all of it from 4.5.0 to 4.8.1, and on a phone that was the lit pass: about 30%
+   * of the lit shader's instructions for glass alone, measured on RADV. **What it costs** is the
+   * frames between a feature's first use and its recompiled pipelines, which draw without it.
    */
+  readonly litSwitches: Record<LitSwitch, boolean> = noLitSwitches();
+
+  /** Whether glass may ever be switched on here: `glassShadows` other than `'off'`. */
   readonly glassShadows: boolean;
+
+  /** How to describe each lit pipeline again, so `enable` can rebuild every one. */
+  private readonly litDescribers = new Map<string, () => GPURenderPipelineDescriptor>();
+  /** Bumped by every switch, so a lit build started before one is not kept after it. */
+  private litGeneration = 0;
+  /** The last rebuild, which the next one waits for so they land in the order they were asked. */
+  private litRebuild: Promise<void> = Promise.resolve();
 
   private readonly device: GPUDevice;
   private readonly pipelines = new Map<string, GPURenderPipeline>();
@@ -62,11 +81,19 @@ export class PipelineCache {
    */
   private readonly compiling = new Map<string, Promise<GPURenderPipeline>>();
 
-  constructor(device: GPUDevice, format: GPUTextureFormat, sampleCount = 1, glassShadows = true) {
+  constructor(
+    device: GPUDevice,
+    format: GPUTextureFormat,
+    sampleCount = 1,
+    glassShadows = true,
+    /** The profile's `clusteredLights`, which compiles the clustered arm in or leaves it out. */
+    clusteredLights = false,
+  ) {
     this.device = device;
     this.format = format;
     this.sampleCount = sampleCount;
     this.glassShadows = glassShadows;
+    this.litSwitches.CLUSTERED_LIGHTS = clusteredLights;
   }
 
   /** How many distinct pipelines have been built. Read by tests and diagnostics. */
@@ -85,11 +112,15 @@ export class PipelineCache {
   async getAsync(
     key: string,
     describe: () => GPURenderPipelineDescriptor,
+    /** Whether this is a lit pipeline, which `enable` rebuilds. See `litSwitches`. */
+    lit = false,
   ): Promise<GPURenderPipeline> {
+    if (lit) this.litDescribers.set(key, describe);
     const existing = this.pipelines.get(key);
     if (existing !== undefined) return existing;
     const inFlight = this.compiling.get(key);
     if (inFlight !== undefined) return inFlight;
+    const generation = this.litGeneration;
 
     /*
      * **Falls back where the async form is missing.** It is part of the standard, but a device
@@ -103,7 +134,8 @@ export class PipelineCache {
         ? this.device.createRenderPipelineAsync(describe())
         : Promise.resolve(this.device.createRenderPipeline(describe()));
     const promise = build.then((built) => {
-      this.pipelines.set(key, built);
+      /* A lit pipeline started before a switch is not kept: the switch rebuilds it. */
+      if (!lit || generation === this.litGeneration) this.pipelines.set(key, built);
       this.compiling.delete(key);
       return built;
     });
@@ -142,12 +174,54 @@ export class PipelineCache {
    * too**: a nested object with vertex buffer layouts and blend state, constructed to be
    * thrown away on every hit. Passing a function means a hit costs one `Map` lookup.
    */
-  get(key: string, describe: () => GPURenderPipelineDescriptor): GPURenderPipeline {
+  get(
+    key: string,
+    describe: () => GPURenderPipelineDescriptor,
+    /** Whether this is a lit pipeline, which `enable` rebuilds. See `litSwitches`. */
+    lit = false,
+  ): GPURenderPipeline {
+    if (lit) this.litDescribers.set(key, describe);
     const existing = this.pipelines.get(key);
     if (existing !== undefined) return existing;
     const built = this.device.createRenderPipeline(describe());
     this.pipelines.set(key, built);
     return built;
+  }
+
+  /**
+   * Turn one of the lit stage's switches on, for every lit pipeline built from now on and every one
+   * already built. See `litSwitches`.
+   *
+   * **The rebuilt set lands at once**, when every one of them has compiled, so no frame draws some
+   * surfaces with a feature and others without. Until then the pipelines already built go on drawing
+   * as they were. Once only: a switch is not turned off again when the last user of it leaves,
+   * because a second switch would cost a second compile for a saving the first use showed was not
+   * needed. Glass is never turned on where the profile asked for no glass shadows.
+   */
+  enable(feature: LitSwitch): Promise<void> {
+    if (this.litSwitches[feature]) return this.litRebuild;
+    if (feature === 'GLASS_SHADOWS' && !this.glassShadows) return this.litRebuild;
+    this.litSwitches[feature] = true;
+    this.litGeneration += 1;
+    const generation = this.litGeneration;
+    this.litRebuild = this.litRebuild.then(async () => {
+      /* A later switch has its own rebuild, which describes every pipeline with this one on too. */
+      if (generation !== this.litGeneration) return;
+      const rebuilt = [...this.litDescribers].map(([key, describe]) => {
+        const descriptor = describe();
+        const build =
+          typeof this.device.createRenderPipelineAsync === 'function'
+            ? this.device.createRenderPipelineAsync(descriptor)
+            : Promise.resolve(this.device.createRenderPipeline(descriptor));
+        return build.then((pipeline) => [key, pipeline] as const);
+      });
+      const results = await Promise.allSettled(rebuilt);
+      if (generation !== this.litGeneration) return;
+      for (const result of results) {
+        if (result.status === 'fulfilled') this.pipelines.set(result.value[0], result.value[1]);
+      }
+    });
+    return this.litRebuild;
   }
 
   /**

@@ -225,3 +225,21 @@ test('an offline graph launches its stems with no lead', async () => {
   graph?.start();
   expect(context.sources[0]?.starts[0], 'beat zero is the clip zero').toBe(0);
 });
+
+/*
+ * **A suspended context hands out a stream that never carries a sample**, and a recorder given one
+ * stalls: its track is live, so the muxer waits on it. Recorded through the recording example from
+ * a script click, which is not a gesture: 120 frames kept by the pacer, 19 in the file, 0.63 s and
+ * no audio stream. So the graph answers no stream until the context runs, and a recorder records
+ * the picture alone rather than half a second of it.
+ */
+test('a mix that is not running hands a recording no stream, and does once it runs', async () => {
+  const { graph, context } = await buildGraph();
+  context.state = 'suspended';
+  expect(graph.captureStream(), 'nothing a recorder could wait on').toBeNull();
+
+  context.state = 'running';
+  expect(graph.captureStream(), 'the tap, once there is sound to tap').not.toBeNull();
+  context.state = 'suspended';
+  expect(graph.captureStream(), 'and not again while it is suspended').toBeNull();
+});

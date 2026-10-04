@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createGpuSprites, setGpuSpriteTexture } from './spriteGpu.ts';
+import { createGpuSprites, setGpuSpriteTexture, spritePipelineFor } from './spriteGpu.ts';
 import type { SpriteImage } from './spriteTexture.ts';
 
 /**
@@ -123,5 +123,36 @@ describe('a mipmapped sprite sheet on WebGPU', () => {
     };
     setGpuSpriteTexture(device, sprites(device), 0, IMAGE, { filter: 'linear', mipmap: true });
     expect(queue.copyExternalImageToTexture.mock.calls).toHaveLength(1);
+  });
+});
+
+/*
+ * **A pipeline for the pass the sprites land in, not for the pass the device described.** The
+ * pipeline was built once, at `init`, for the frame's own target — the scene's format at the scene's
+ * samples — so sprites drawn after `endFrame`, where the renderer draws on the canvas at one
+ * sample, were refused by that pass. Reported from a game whose HUD is drawn over the finished
+ * frame and which registered the pass for the canvas by hand to get round it.
+ */
+describe('a pipeline per target', () => {
+  it('builds one for each format and sample count it is drawn into, and reuses it', () => {
+    const { device } = fakeDevice();
+    const sprites = createGpuSprites(device, 'rgba16float', 'depth32float', 4, 8, 2, 'test');
+    const built = (): GPURenderPipelineDescriptor[] =>
+      (
+        device.createRenderPipeline as unknown as {
+          mock: { calls: [GPURenderPipelineDescriptor][] };
+        }
+      ).mock.calls.map(([descriptor]) => descriptor);
+    const scene = spritePipelineFor(device, sprites, 'rgba16float', 'depth32float', 4);
+    const canvas = spritePipelineFor(device, sprites, 'bgra8unorm', 'depth32float', 1);
+    expect(canvas).not.toBe(scene);
+    expect(
+      spritePipelineFor(device, sprites, 'bgra8unorm', 'depth32float', 1),
+      'the same target again',
+    ).toBe(canvas);
+    const last = built().at(-1);
+    expect([...(last?.fragment?.targets ?? [])][0]?.format).toBe('bgra8unorm');
+    expect(last?.multisample?.count).toBe(1);
+    expect(built().length, 'two targets, two pipelines').toBe(2);
   });
 });

@@ -20,6 +20,7 @@ import {
   createGpuSprites,
   disposeGpuSprites,
   drawGpuSprites,
+  spritePipelineFor,
   setGpuSpriteTexture,
   setGpuWhiteTexture,
   uploadGpuInstances,
@@ -216,7 +217,13 @@ export function createSpritePass(options: SpritePassOptions = {}): SpritePass {
       device.queue.writeBuffer(gpu.vertexUniforms, 0, gpu.vertexScratch);
       device.queue.writeBuffer(gpu.fragmentUniforms, 0, gpu.fragmentScratch);
       uploadGpuInstances(device, gpu, batch);
-      drawGpuSprites(ctx.pass, gpu, batch);
+      /* For the pass this lands in, which after `endFrame` is the canvas: see `spritePipelineFor`. */
+      drawGpuSprites(
+        ctx.pass,
+        gpu,
+        batch,
+        spritePipelineFor(device, gpu, ctx.format, ctx.depthFormat, ctx.samples),
+      );
     },
 
     dispose(): void {

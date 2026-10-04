@@ -113,6 +113,34 @@ aspect ratio for the camera that fills it, and clears only inside it, so the fra
 Bind a pass, draw, and `endInset()`. A `clear` of `null` clears only depth, for an object drawn into
 the live frame instead of onto a backdrop.
 
+## A view model
+
+```ts sample=snippets/viewModel.ts#view-model
+/** The world first, then the view model over it, through the same camera. */
+export function drawWithViewModel(
+  renderer: RendererApi,
+  camera: Camera,
+  env: Environment,
+  world: () => void,
+  weapon: MeshHandle,
+  weaponModel: Float32Array,
+): void {
+  renderer.bindMeshPass(camera, env);
+  world();
+  renderer.beginViewModel();
+  renderer.drawMesh(weapon, weaponModel);
+  renderer.endViewModel();
+}
+```
+
+`beginViewModel(share)` draws what follows in the nearest `share` of the depth range, 1% by default,
+until `endViewModel()`: a first person's arms and weapon land in front of anything past the near
+plane, so they never go into the wall they are pushed against. The world's depth is kept, so ambient
+occlusion, depth of field and fog still see the world behind the weapon. Draw the view model with
+the frame's camera, or bind one with its own field of view first. Its pixels take no motion of their
+own under temporal reconstruction, so draw a view model with multisampling, and not inside an inset,
+which has a depth of its own. `endFrame` closes one left open.
+
 ## Text in the world
 
 ```ts sample=snippets/text.ts#sdf

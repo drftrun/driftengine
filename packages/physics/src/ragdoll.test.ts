@@ -287,8 +287,10 @@ describe('writing a pose back', () => {
     run(world, 400);
     const out = pose(parents.length);
     doll.writePose(out);
+    /* From the root, which is the joint a fall turns now that a joint is read off the bone that
+       starts at it: the root's is the first bone's, written in the frame of the character's node. */
     let moved = false;
-    for (let j = 1; j < parents.length; j++) {
+    for (let j = 0; j < parents.length; j++) {
       if (Math.abs(out.rotation[j * 4 + 3] ?? 1) < 0.999) moved = true;
     }
     expect(moved).toBe(true);
@@ -686,5 +688,203 @@ describe('what a ragdoll collides with inside itself', () => {
     const { parents, world: matrices } = chain(4);
     const doll = ragdollFromBones(world, parents, matrices, { selfCollision: false });
     expect(world.pairIgnored(doll.bodyOf[1] ?? 0, doll.bodyOf[4] ?? 0)).toBe(true);
+  });
+});
+
+/*
+ * **An arm whose joints carry rotations, which is every real rig and none of the chains above.**
+ *
+ * A straight chain built from identity matrices cannot tell a joint turned by the bone that ends at
+ * it from one turned by the bone that starts at it, because every bone in it points the same way
+ * and every joint is unrotated — so the tests above agreed with a doll that drew each limb one
+ * bone late. Reported from a game as hands 0.47 m from their bodies in a doll that had just been
+ * synced and never stepped. A skinned limb follows the joint it starts from: a forearm's vertices
+ * are weighted to the elbow, so the elbow's rotation is what points the forearm.
+ *
+ * Joints: 0 a root with the arm pointing along +x, 1 a shoulder, 2 an elbow, 3 a wrist, 4 a
+ * fingertip and 5 a thumb set off the hand's axis — the one child whose place depends on the
+ * wrist's twist about its own bone. Each joint's +y runs along its bone, as a rig's does.
+ */
+type Quat = [number, number, number, number];
+const qMul = (a: Quat, b: Quat): Quat => [
+  a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+];
+const qRotate = (q: Quat, v: [number, number, number]): [number, number, number] => {
+  const r = qMul(qMul(q, [v[0], v[1], v[2], 0]), [-q[0], -q[1], -q[2], q[3]]);
+  return [r[0], r[1], r[2]];
+};
+/* Half angles written as numbers, so the fixture computes nothing with the code under test. */
+const S45 = Math.SQRT1_2;
+const AXIS_Z_MINUS_90: Quat = [0, 0, -S45, S45];
+const AXIS_Z_PLUS_90: Quat = [0, 0, S45, S45];
+const AXIS_X_40: Quat = [0.3420201433256687, 0, 0, 0.9396926207859084];
+const AXIS_Y_60: Quat = [0, 0.5, 0, 0.8660254037844386];
+const IDENTITY: Quat = [0, 0, 0, 1];
+
+const ARM_PARENTS = new Int32Array([-1, 0, 1, 2, 3, 3]);
+const ARM_OFFSETS: [number, number, number][] = [
+  [0, 0, 0],
+  [0, 0.2, 0],
+  [0, 0.3, 0],
+  [0, 0.3, 0],
+  [0, 0.1, 0],
+  [0.05, 0.05, 0],
+];
+
+/** World positions and rotations of the arm, from local rotations, by hand. */
+function armWorld(local: Quat[]): { positions: [number, number, number][]; rotations: Quat[] } {
+  const positions: [number, number, number][] = [];
+  const rotations: Quat[] = [];
+  for (let j = 0; j < ARM_PARENTS.length; j++) {
+    const p = ARM_PARENTS[j] ?? -1;
+    if (p < 0) {
+      positions.push([0, 4, 0]);
+      rotations.push(local[j] ?? IDENTITY);
+      continue;
+    }
+    const along = qRotate(rotations[p] ?? IDENTITY, ARM_OFFSETS[j] ?? [0, 0, 0]);
+    const at = positions[p] ?? [0, 0, 0];
+    positions.push([at[0] + along[0], at[1] + along[1], at[2] + along[2]]);
+    rotations.push(qMul(rotations[p] ?? IDENTITY, local[j] ?? IDENTITY));
+  }
+  return { positions, rotations };
+}
+
+/** Column-major world matrices, as a skinning pipeline hands them over. */
+function armMatrices(local: Quat[]): Float32Array {
+  const { positions, rotations } = armWorld(local);
+  const out = new Float32Array(ARM_PARENTS.length * 16);
+  for (let j = 0; j < ARM_PARENTS.length; j++) {
+    const [x, y, z, w] = rotations[j] ?? IDENTITY;
+    const o = j * 16;
+    out[o] = 1 - 2 * (y * y + z * z);
+    out[o + 1] = 2 * (x * y + z * w);
+    out[o + 2] = 2 * (x * z - y * w);
+    out[o + 4] = 2 * (x * y - z * w);
+    out[o + 5] = 1 - 2 * (x * x + z * z);
+    out[o + 6] = 2 * (y * z + x * w);
+    out[o + 8] = 2 * (x * z + y * w);
+    out[o + 9] = 2 * (y * z - x * w);
+    out[o + 10] = 1 - 2 * (x * x + y * y);
+    out[o + 12] = positions[j]?.[0] ?? 0;
+    out[o + 13] = positions[j]?.[1] ?? 0;
+    out[o + 14] = positions[j]?.[2] ?? 0;
+    out[o + 15] = 1;
+  }
+  return out;
+}
+
+const ARM_REST: Quat[] = [AXIS_Z_MINUS_90, IDENTITY, IDENTITY, IDENTITY, IDENTITY, IDENTITY];
+/* A shoulder swung 40°, an elbow bent 90° and a wrist twisted 60° about its own bone. */
+const ARM_BENT: Quat[] = [
+  AXIS_Z_MINUS_90,
+  AXIS_X_40,
+  AXIS_Z_PLUS_90,
+  AXIS_Y_60,
+  IDENTITY,
+  IDENTITY,
+];
+
+/** Where a written pose puts every joint, walked from the root the caller placed its node at. */
+function placed(out: PoseTarget): [number, number, number][] {
+  const positions: [number, number, number][] = [];
+  const rotations: Quat[] = [];
+  for (let j = 0; j < ARM_PARENTS.length; j++) {
+    const r = out.rotation;
+    const local: Quat = [r[j * 4] ?? 0, r[j * 4 + 1] ?? 0, r[j * 4 + 2] ?? 0, r[j * 4 + 3] ?? 1];
+    const p = ARM_PARENTS[j] ?? -1;
+    if (p < 0) {
+      positions.push([0, 4, 0]);
+      rotations.push(local);
+      continue;
+    }
+    const t = out.translation;
+    const along = qRotate(rotations[p] ?? IDENTITY, [
+      t[j * 3] ?? 0,
+      t[j * 3 + 1] ?? 0,
+      t[j * 3 + 2] ?? 0,
+    ]);
+    const at = positions[p] ?? [0, 0, 0];
+    positions.push([at[0] + along[0], at[1] + along[1], at[2] + along[2]]);
+    rotations.push(qMul(rotations[p] ?? IDENTITY, local));
+  }
+  return positions;
+}
+
+describe('a written pose puts every joint where its bodies are', () => {
+  it('REPRODUCES A BENT, TWISTED ARM IT WAS SYNCED TO, JOINT BY JOINT', () => {
+    const world = new PhysicsWorld({ gravityY: 0, allowSleep: false });
+    const doll = ragdollFromBones(world, ARM_PARENTS, armMatrices(ARM_REST));
+    doll.sync(world, armMatrices(ARM_BENT));
+    const out = pose(ARM_PARENTS.length);
+    doll.writePose(out);
+
+    const want = armWorld(ARM_BENT).positions;
+    const got = placed(out);
+    for (let j = 1; j < ARM_PARENTS.length; j++) {
+      const miss = Math.hypot(
+        (got[j]?.[0] ?? 0) - (want[j]?.[0] ?? 0),
+        (got[j]?.[1] ?? 0) - (want[j]?.[1] ?? 0),
+        (got[j]?.[2] ?? 0) - (want[j]?.[2] ?? 0),
+      );
+      expect(miss, `joint ${j} is drawn ${(miss * 100).toFixed(1)} cm from its body`).toBeLessThan(
+        1e-4,
+      );
+    }
+  });
+
+  it('reproduces the rest pose of a rig whose joints are rotated at rest', () => {
+    const world = new PhysicsWorld({ gravityY: 0, allowSleep: false });
+    const doll = ragdollFromBones(world, ARM_PARENTS, armMatrices(ARM_REST));
+    const out = pose(ARM_PARENTS.length);
+    doll.writePose(out);
+
+    const want = armWorld(ARM_REST).positions;
+    const got = placed(out);
+    for (let j = 1; j < ARM_PARENTS.length; j++) {
+      for (let axis = 0; axis < 3; axis++) {
+        expect(got[j]?.[axis] ?? 0, `joint ${j}, axis ${axis}`).toBeCloseTo(
+          want[j]?.[axis] ?? 0,
+          4,
+        );
+      }
+    }
+  });
+
+  /*
+   * **The drive steers the same bone the write reads.** A pose's elbow rotation has to turn the
+   * forearm, not the upper arm: steered by the bone that ends at each joint, the bend a pose put at
+   * the elbow was pushed into the upper arm and the forearm was left in line with it. One call from
+   * rest says which body is steered, which a run of steps cannot — an undamped pull on a doll
+   * floating free tumbles it whichever bone it pushes.
+   */
+  it('turns the forearm, and nothing else, toward a bend at the elbow', () => {
+    const world = new PhysicsWorld({ gravityY: 0, allowSleep: false });
+    const doll = ragdollFromBones(world, ARM_PARENTS, armMatrices(ARM_REST));
+    const target = pose(ARM_PARENTS.length);
+    const bend = [...ARM_REST];
+    bend[2] = AXIS_Z_PLUS_90;
+    target.rotation.set(bend.flat());
+
+    doll.drive(world, target, 1);
+
+    const spin = (joint: number): number =>
+      Math.hypot(
+        world.bodies.angX[doll.bodyOf[joint] ?? 0] ?? 0,
+        world.bodies.angY[doll.bodyOf[joint] ?? 0] ?? 0,
+        world.bodies.angZ[doll.bodyOf[joint] ?? 0] ?? 0,
+      );
+    /* The forearm is the bone from the elbow (2) to the wrist (3), so it is `bodyOf[3]`. */
+    expect(
+      world.bodies.angZ[doll.bodyOf[3] ?? 0] ?? 0,
+      'the forearm turns about the elbow',
+    ).toBeGreaterThan(1);
+    expect(spin(2), 'the upper arm').toBe(0);
+    expect(spin(1), 'the collar bone').toBe(0);
+    expect(spin(4), 'the hand').toBe(0);
+    expect(spin(5), 'the thumb').toBe(0);
   });
 });

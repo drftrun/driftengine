@@ -2349,13 +2349,14 @@ describe('the webgpu renderer', () => {
   });
 
   /*
-   * **Off specialises the glass lookup out of every lit pipeline**, not only out of the casters:
-   * the lookup returning at its first line still cost the lit pass its registers. The generated
-   * shader is one string for both values, so this is the pipeline's `GLASS_SHADOWS` constant, and
-   * it has to reach every cache a lit pipeline can come from — the world's, the overlay's after
-   * the present, and the late pass's at output size.
+   * **A lit pipeline reads glass once a glass caster has been offered, and not before.** The
+   * lookups cost the lit pass about three thousand instructions and their registers on every
+   * surface, finding nothing in a world with no pane, and every scene paid for them from 4.5.0 —
+   * on a phone, the difference in the lit pass. The first pane a shadow pass is offered switches
+   * every cache a lit pipeline can come from: the world's, the overlay's after the present, and the
+   * late pass's at output size. Glass shadows off never switches at all.
    */
-  it('GLASS SHADOWS OFF BUILDS EVERY LIT PIPELINE WITH THE GLASS SWITCH OFF, and on with it on', () => {
+  it('A LIT PIPELINE READS GLASS ONCE A GLASS CASTER IS OFFERED, in every cache, and never with glass shadows off', async () => {
     for (const glassShadows of ['full', 'off'] as const) {
       const stub = stubSurface();
       const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ glassShadows }));
@@ -2363,22 +2364,50 @@ describe('the webgpu renderer', () => {
       renderer.beginFrame([0, 0, 0]);
       renderer.drawMesh(mesh, mat4.create());
       renderer.endFrame();
+      const lit = (): GPURenderPipelineDescriptor[] =>
+        stub.device.createRenderPipeline.mock.calls
+          .map(([descriptor]) => descriptor)
+          /* A lit pipeline is one carrying the glass switch; a caster's pipelines carry none. */
+          .filter((descriptor) => descriptor.fragment?.constants !== undefined);
+      const built = lit().length;
+      expect(built, glassShadows).toBeGreaterThan(0);
+      for (const descriptor of lit()) {
+        /* The switch's id, which is what an override declared with one answers to. */
+        expect(descriptor.fragment?.constants?.['0'], `${glassShadows}: before any glass`).toBe(0);
+      }
+
+      const caster = {
+        key: 'flat:s0:u0',
+        vertexBuffers: [{ label: 'vertices' }],
+        indexBuffer: { label: 'indices' },
+        indexCount: 3,
+        complete: true,
+      };
+      const pane = {
+        glass: { transmission: 0.9, frost: 0, tint: [1, 0.5, 0.25] as [number, number, number] },
+      };
+      renderer.beginShadowPass(mat4.create(), 'static');
+      renderer.drawShadowCasters((sink) => sink.mesh(caster as never, mat4.create(), pane));
+      renderer.endShadowPass();
+      await new Promise((settle) => setTimeout(settle, 0));
+
       const caches = renderer as unknown as Record<
         'pipelines' | 'overlayPipelines' | 'latePipelines',
-        { glassShadows: boolean }
+        { litSwitches: { GLASS_SHADOWS: boolean } }
       >;
       for (const name of ['pipelines', 'overlayPipelines', 'latePipelines'] as const) {
-        expect(caches[name].glassShadows, `${glassShadows}: ${name}`).toBe(glassShadows !== 'off');
+        expect(caches[name].litSwitches.GLASS_SHADOWS, `${glassShadows}: ${name}`).toBe(
+          glassShadows !== 'off',
+        );
       }
-      const lit = stub.device.createRenderPipeline.mock.calls
-        .map(([descriptor]) => descriptor)
-        .filter((descriptor) => (descriptor.label ?? '').includes('|flat'));
-      expect(lit.length, glassShadows).toBeGreaterThan(0);
-      for (const descriptor of lit) {
-        /* The switch's id, which is what an override declared with one answers to. */
-        expect(descriptor.fragment?.constants, `${glassShadows}: ${descriptor.label}`).toEqual({
-          '0': glassShadows === 'off' ? 0 : 1,
-        });
+      const rebuilt = lit().slice(built);
+      if (glassShadows === 'off') {
+        expect(rebuilt, 'nothing rebuilt with glass shadows off').toHaveLength(0);
+        continue;
+      }
+      expect(rebuilt.length, 'every lit pipeline rebuilt').toBe(built);
+      for (const descriptor of rebuilt) {
+        expect(descriptor.fragment?.constants?.['0'], `rebuilt: ${descriptor.label}`).toBe(1);
       }
     }
   });
@@ -3495,6 +3524,23 @@ describe('an inset viewport', () => {
     renderer.endInset();
   });
 
+  /*
+   * **An aspect is the one answer, whatever the device is doing.** With the device gone there is
+   * no pass to set a viewport on, and this returned 0 — which a caller hands to
+   * `camera.updateMatrices` as the documentation tells it to, and a zero aspect is a projection
+   * full of infinities. WebGL2 has no such branch and always answers the ratio.
+   */
+  it('answers the aspect of the box it was asked for when the device is gone', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    stub.markLost();
+
+    const aspect = renderer.beginInset({ left: 0, top: 0, width: 160, height: 120 }, null);
+    renderer.endInset();
+
+    expect(aspect).toBeCloseTo(4 / 3, 5);
+  });
+
   it('answers a square inset with a square aspect', () => {
     const stub = stubSurface();
     const renderer = freshRenderer(stub);
@@ -3504,6 +3550,29 @@ describe('an inset viewport', () => {
     renderer.endInset();
 
     expect(aspect).toBeCloseTo(1, 5);
+  });
+});
+
+/*
+ * **A view model's draws land in the nearest sliver of depth, and the range is handed back.** The
+ * viewport's depth bounds are pass state, applied when a draw is issued, so both ends are a
+ * boundary of the frame graph exactly as an inset's are. Reversed depth on this backend always, so
+ * the near end is 1.
+ */
+describe('a view model', () => {
+  it('squeezes the depth of what is drawn between its two calls into the near end', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    renderer.beginFrame([0, 0, 0]);
+
+    renderer.beginViewModel();
+    const squeezed = stub.pass.setViewport.mock.calls.at(-1) ?? [];
+    expect(squeezed[4]).toBeCloseTo(0.99, 6);
+    expect(squeezed[5]).toBe(1);
+
+    renderer.endViewModel();
+    const handed = stub.pass.setViewport.mock.calls.at(-1) ?? [];
+    expect([handed[4], handed[5]]).toEqual([0, 1]);
   });
 });
 
@@ -5123,6 +5192,65 @@ describe.each([
     expect(used, "not the scene's, which is multisampled where the overlay is not").not.toBe(
       scenePipeline,
     );
+  });
+});
+
+/*
+ * **What is recorded after the frame is submitted before the browser presents, whatever the verb.**
+ * The overlay's submission was queued only where a verb *opened* its pass, and with the graph on a
+ * verb records instead: `fillPanel` and a contributed pass's `drawPass` recorded, nothing queued
+ * the submission, and the next `beginFrame` replayed them onto a canvas texture already presented —
+ * "Destroyed texture used in a submit", and no interface. Reported from a game drawing its HUD
+ * after `endFrame`, which turned the graph off to get it back.
+ */
+describe('drawing after endFrame with the graph on', () => {
+  it('submits a panel and a contributed pass on the microtask after them, before the present', async () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ frameGraph: true }));
+    const drawn: string[] = [];
+    const handle = renderer.registerPass({ label: 'hud', draw: () => void drawn.push('hud') });
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.endFrame();
+    const submits = stub.device.queue.submit.mock.calls.length;
+    renderer.fillPanel({ left: 8, top: 8, width: 120, height: 90 }, [1, 1, 1], 0.5);
+    renderer.drawPass(handle);
+    await Promise.resolve();
+
+    expect(drawn, 'the contributed pass drew').toEqual(['hud']);
+    expect(stub.device.queue.submit.mock.calls.length, 'and the overlay went').toBe(submits + 1);
+  });
+
+  /*
+   * **A contributed pass is told what it is drawing into.** Its device says what the *frame* is —
+   * the scene target's format at the scene's samples — and nothing said that a pass drawn after
+   * `endFrame` lands on the canvas at one sample, so a pipeline built from the device was refused
+   * there. Reported from a game whose HUD, a ui2d sprite pass drawn over the finished frame, was
+   * registered for the canvas by hand to get round it.
+   */
+  it('tells a contributed pass the format and samples of the pass it lands in', async () => {
+    for (const frameGraph of [false, true]) {
+      const stub = stubSurface();
+      const quality = resolveRenderQuality({ sceneSamples: 4, hdrScene: true, frameGraph });
+      const renderer = freshRenderer(stub, quality);
+      const seen: string[] = [];
+      const handle = renderer.registerPass({
+        label: 'where',
+        draw: (context) => {
+          if (context.backend !== 'webgpu') return;
+          seen.push(`${context.format}/${context.samples}/${context.depthFormat}`);
+        },
+      });
+      renderer.beginFrame([0, 0, 0]);
+      renderer.drawPass(handle);
+      renderer.endFrame();
+      renderer.drawPass(handle);
+      await Promise.resolve();
+      expect(seen, `graph ${frameGraph}`).toEqual([
+        'rgba16float/4/depth32float',
+        'bgra8unorm/1/depth32float',
+      ]);
+    }
   });
 });
 

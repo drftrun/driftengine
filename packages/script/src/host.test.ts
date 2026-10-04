@@ -581,6 +581,27 @@ describe('a script over the whole surface', () => {
       mode: 'development',
     });
 
+  /*
+   * **A component named to `drift/ecs` by a string is the access the host checks.** The engine's
+   * schedule refuses `ecs.count(world, "Hunger")` from a system that did not declare `reads Hunger`,
+   * and the compiler never counted the name: the declaration the host demanded was called unused
+   * (DS0291), and leaving it out compiled clean and was refused when the system ran. Reported from a
+   * game. The parameters that name a component say so (DriftScript 1.17.0's `component`), so the
+   * compiler counts a literal there as the host does.
+   */
+  it('counts a component named to drift/ecs by a string as the access the host checks', () => {
+    const counting = (declares: string) =>
+      compile(
+        'import { count } from "drift/ecs"\n\n' +
+          'component Hunger {\n    value: f64 = 0\n}\n\n' +
+          `system Tally {\n${declares}    update {\n        let n = ecs.count(world, "Hunger")\n    }\n}\n`,
+      ).diagnostics.map((d) => d.code);
+    expect(counting('    reads Hunger\n\n'), 'declared: not unused').not.toContain('DS0291');
+    expect(counting(''), 'a system that declares nothing is left to inference').not.toContain(
+      'DS0288',
+    );
+  });
+
   it('computes with the standard library against a host that supplies nothing', async () => {
     const result = compile(
       'import { clamp, lerp } from "std/math"\n' +

@@ -31,9 +31,7 @@ off, or asks your browser for a real session.
 ```ts sample=xr/main.ts#probe
 /* Asked by doing: a context of its own is offered to be made XR compatible, which is the step
    that fails on a machine with no headset attached even where every mode reports supported. */
-const here = await probeXrSupport(
-  document.createElement('canvas').getContext('webgl2') as XrCompatibleContext | null,
-);
+const here = await probeXrSupport(document.createElement('canvas').getContext('webgl2'));
 
 function said(support: XrSupport): string {
   if (!support.present) return 'this browser has no WebXR';
@@ -236,7 +234,7 @@ seen one by its height.
 ```ts sample=xr/main.ts#host
 /* What `drift/xr` reads, from the state the frame left. Nothing here is deterministic, so the
    script reads it in the frame and never in the fixed step. */
-const xr: NonNullable<HostServices['xr']> = {
+const xr: XrRuntime = {
   get support() {
     return simulated;
   },

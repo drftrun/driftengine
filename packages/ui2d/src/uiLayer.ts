@@ -45,3 +45,26 @@ export function layerOrder(root: UiNode, out: UiNode[]): number {
   out.length = count;
   return count;
 }
+
+/** Ascending, without allocating a comparator per call. */
+const ASCENDING = (a: number, b: number): number => a - b;
+
+/**
+ * The layers a tree draws on, ascending, into `out`; how many there are.
+ *
+ * What `drawUiTree` and `uiHitTest` walk a tree once per: a tree with no raised node answers one
+ * layer and is walked once, exactly as it was before either read a layer.
+ */
+export function layersPresent(root: UiNode, out: number[]): number {
+  out.length = 0;
+  collect(root, 0, out);
+  if (out.length > 1) out.sort(ASCENDING);
+  return out.length;
+}
+
+function collect(node: UiNode, inherited: number, out: number[]): void {
+  if (node.hidden) return;
+  const layer = node.layer === 0 ? inherited : node.layer;
+  if (!out.includes(layer)) out.push(layer);
+  for (const child of node.children) collect(child, layer, out);
+}

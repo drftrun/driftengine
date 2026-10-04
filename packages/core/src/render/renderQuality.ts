@@ -194,12 +194,13 @@ export interface RenderQuality {
    * existed: a pane casts nothing at all.
    *
    * Nothing is allocated until a glass caster first reaches a shadow, so a scene with no glass pays
-   * no memory and no pass whatever this says. **The lit shader is the exception**: `'full'` and
-   * `'half'` compile the glass lookup into it, and a lookup that finds no glass and returns at its
-   * first line still costs the lit pass its registers — measured on the courtyard at night, 0.27 ms
-   * at 720p on WebGPU, 0.42 ms on WebGL2 and 1.2 ms at 4K. `'off'` compiles none of it, so a world
-   * that never casts through glass is that much faster for saying so. What would make `'full'` wrong
-   * is a phone budget with a lot of glass; that is what `'half'` is for. See `glassShadow.ts`.
+   * no memory and no pass whatever this says. **Nor any shader, since 4.8.2**: the lit shader is
+   * built without the glass lookup and rebuilt with it when the first glass caster reaches a shadow.
+   * A lookup that finds no glass still cost the lit pass its registers — measured on the courtyard at
+   * night, 0.27 ms at 720p on WebGPU, 0.42 ms on WebGL2 and 1.2 ms at 4K — and from 4.5.0 to 4.8.1
+   * every scene paid it, glass or none: about 30% of the lit shader's instructions, which on a phone
+   * was the lit pass. `'off'` never rebuilds. What would make `'full'` wrong is a phone budget with a
+   * lot of glass; that is what `'half'` is for. See `glassShadow.ts`.
    */
   readonly glassShadows: GlassShadows;
   /** Horizontal world-space reach over which a directional shadow dissolves. */

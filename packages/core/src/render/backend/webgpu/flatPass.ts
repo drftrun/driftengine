@@ -5,7 +5,7 @@ import {
   FLAT_VERT_WGSL,
 } from '../../shaders/generated/flat.wgsl.ts';
 import { vertexBufferLayouts } from './buffers.ts';
-import type { PipelineCache } from './pipelineCache.ts';
+import type { LitSwitch, PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
 
 /** The material maps the flat pass reads: `2d-array` colour, filtered, not shadow maps. */
@@ -199,17 +199,27 @@ export function flatFragmentBindings(variant: FlatVariant): StageBindings {
 }
 
 /**
- * The lit fragment stage's constants, set from the cache: the glass switch, keyed by its **id**.
+ * The lit fragment stage's constants, set from the cache's switches, keyed by each one's **id**.
  *
  * Not by its name, because an override declared with `@id` answers to the id alone — WebGPU's
  * "pipeline-overridable constant identifier string" — and naga writes one on every specialisation
  * constant. Keyed by name, Chrome refused every lit pipeline: *Pipeline overridable constant
- * "GLASS_SHADOWS" not found*, and the frame drew nothing.
+ * "GLASS_SHADOWS" not found*, and the frame drew nothing. Every override the variant declares is
+ * set, so a switch added to the shader and not to the cache is refused here rather than defaulted.
  */
 function flatFragmentConstants(variant: FlatVariant, cache: PipelineCache): Record<string, number> {
-  const id = flatFragmentBindings(variant).overrides?.['GLASS_SHADOWS'];
-  if (id === undefined) throw new Error(`flatPass: variant "${variant}" has no glass switch`);
-  return { [String(id)]: cache.glassShadows ? 1 : 0 };
+  const overrides = flatFragmentBindings(variant).overrides;
+  if (overrides?.['GLASS_SHADOWS'] === undefined) {
+    throw new Error(`flatPass: variant "${variant}" has no glass switch`);
+  }
+  const constants: Record<string, number> = {};
+  for (const [name, id] of Object.entries(overrides)) {
+    if (!(name in cache.litSwitches)) {
+      throw new Error(`flatPass: variant "${variant}" declares a switch "${name}" no cache sets`);
+    }
+    constants[String(id)] = cache.litSwitches[name as LitSwitch] ? 1 : 0;
+  }
+  return constants;
 }
 
 /** The depth format both backends compare with. */
@@ -507,23 +517,26 @@ export function flatPipeline(
   /** Culls nothing, for a surface seen from both faces. The key must carry it: `|2s`. */
   doubleSided = false,
 ): GPURenderPipeline {
-  return cache.get(key, () =>
-    flatDescriptor(
-      cache,
-      device,
-      layout,
-      variant,
-      key,
-      present,
-      translucent,
-      skinned,
-      morphed,
-      depthWrite,
-      depthLayer,
-      instanced,
-      oit,
-      doubleSided,
-    ),
+  return cache.get(
+    key,
+    () =>
+      flatDescriptor(
+        cache,
+        device,
+        layout,
+        variant,
+        key,
+        present,
+        translucent,
+        skinned,
+        morphed,
+        depthWrite,
+        depthLayer,
+        instanced,
+        oit,
+        doubleSided,
+      ),
+    true,
   );
 }
 
@@ -549,8 +562,11 @@ export function flatPipelineAsync(
   /** Whether this pipeline reads morph deltas. See `FlatVertexOptions`. */
   morphed = false,
 ): Promise<GPURenderPipeline> {
-  return cache.getAsync(key, () =>
-    flatDescriptor(cache, device, layout, variant, key, present, translucent, skinned, morphed),
+  return cache.getAsync(
+    key,
+    () =>
+      flatDescriptor(cache, device, layout, variant, key, present, translucent, skinned, morphed),
+    true,
   );
 }
 

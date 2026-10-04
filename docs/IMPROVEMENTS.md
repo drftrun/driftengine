@@ -48,99 +48,14 @@ the specification, and verify on a tiler.
 
 ## Open
 
-### The tools console keeps a scroll position that nothing draws
-
-**Filed 2026-10-03, against 4.8.0.** `consolePanel.build` sets `view.scrollY` to follow the newest
-entry, and `route` moves it on a wheel and hit-tests a click with it, but nothing copies it to the
-panel's root node, which is what the overlay lays out. `@driftengine/ui2d` already offsets a node's
-content by its own `scrollY`, so the overlay draws the list from the top: the oldest lines a ring
-holds, with the newest clipped away. In the tools example with a 200-entry ring, the console showed
-the first fifteen lines nine seconds in and none of the later ones. A wheel moves nothing on screen,
-and a click on the row under the pointer picks the entry `scrollY / rowHeight` rows further down.
-`viewHeight` defaults to 200 and nothing sets it from the panel's real height, so the follow is
-computed against the wrong window too. A wheel answers no command, so `overlay.route` returns
-false and the page scrolls as well.
-
-**What it would take**: `build` writing `root.scrollY = view.scrollY` and taking `viewHeight` from
-the root's rect, and the overlay taking a wheel over a panel whether or not the panel returned a
-command. Until then a page keeps a ring no longer than the console shows, as the tools example
-does with five.
-
-### The overlay's Ctrl+Shift+Z never redoes
-
-**Filed 2026-10-03, against 4.8.0.** `overlay.route` redoes on `ctrl` and `shift` with
-`event.key === 'z'`, and `keyEvent` passes the browser's key through as it is. A browser reports
-that chord's key as `'Z'`, so the comparison never matches. Measured on the tools example: one
-`]`, then Ctrl+Z, then Ctrl+Shift+Z sent with the key `'Z'` left the bounce at 0.55, and Ctrl+Y then
-took it to 0.60. Comparing the key without regard to case in `route` closes it; until then Ctrl+Y is
-the redo that works.
-
-### A lockstep session cannot be handed to the network panel's helpers
-
-**Filed 2026-10-03, against 4.8.0.** `observeSession` and `sessionReadout` take a `SessionLike`,
-which asks for `loop: { depth }`, and `LockstepSession` keeps its `loop` private, so passing a
-session fails to compile: "Property 'loop' is private in type 'LockstepSession' but not in type
-'SessionLike'". The package README says the two turn a lockstep session into a readout. A game
-builds the shape itself from the session's public fields and the `RewindLoop` it made, as the tools
-snippet does. A public `rewindDepth` on the session, with `SessionLike` asking for that, would let a
-session be passed as it is.
-
 ### The inspector shows a component's fields and edits none of them
 
 **Filed 2026-10-03, against 4.8.0.** `inspectorPanel.route` returns `null`, with a comment that the
 field widgets come later, so a row can be read and never changed from the overlay. A game edits
 through `setFieldCommand` and pushes the command onto `overlay.undo` itself, which is what the tools
-example's bracket keys do, and that edit is undoable. The package README says "an in-game edit is
-undoable" over an example that routes an event through `inspectorPanel.route`, which always answers
-`null`, and that calls `createInspectorView({})`, which does not compile, since `selection` is
-required. The README wants that example replaced with the `setFieldCommand` route at the next
-release; the widgets are the larger piece.
-
-### The inspector prints an `f32` field's storage noise
-
-**Filed 2026-10-03, against 4.8.0.** `rowText` formats a value with `String`, and a component's
-`f32` field comes back from its `Float32Array` as the nearest double, so a bounce of 0.55 reads
-`0.550000011920929` and a resting height `0.3499999940395355`. The digits past the seventh are the
-storage, not the value anybody wrote. The shortest decimal that rounds back to the same `f32` is
-the honest text: `toPrecision(p)` for the smallest `p` where `Math.fround` of the result equals the
-stored value, which is `0.55` and `0.35` for those two. A row knows its kind, so an `f64` field
-keeps `String`.
-
-### The overlay paints no panel background and no panel title
-
-**Filed 2026-10-03, against 4.8.0.** `paintOverlay` paints a node's background and its text, and
-`createPanelRoot` makes a root with no background, so over a bright scene the panels are white text
-on whatever is behind them. Every panel has a `title` and nothing draws it, so a reader is left to
-tell the inspector from the profiler by what their rows say. The tools example lays a backdrop
-under each panel from `overlay.sites()` before it paints. A background on the panel root and a
-title row the overlay adds above each panel's content would make that unnecessary.
-
-### A recording given a suspended mix keeps half a second of picture, and says nothing
-
-**Filed 2026-10-03, against 4.8.0.** `FrameRecorder` takes `audio` as a `MediaStream`, and
-`AudioGraph.captureStream()` answers one whether or not its context is running. A context made
-before any gesture stays suspended, and its stream's track is live and never carries a sample.
-Recorded through the recording example from a script click, which is not a gesture: the pacer
-reported 120 frames kept at 30.0 a second, and the file held 19 frames covering 0.63 s and no audio
-stream. The same press as a real click, with the context running: 120 frames, 4.0 s, 66 Opus frames.
-A plain canvas recorded the same way with no audio track keeps every frame, so it is the silent
-track that stalls the recorder's muxer.
-
-**What it would take**: `captureStream` answering `null` while the context is not running, or
-`FrameRecorder.start` dropping an audio track that has delivered nothing by the first video frame.
-The first is a one-line change and moves the decision to whoever made the graph; the second covers a
-stream from anywhere. Until then a page passes the mix only when `graph.audible`, as the recording
-example does.
-
-### `World.add` takes a field name the component does not have, and says nothing
-
-**Filed 2026-10-03.** A store fills every field its schema declares and never looks at the other
-keys it is handed, so `world.add(entity, Resident, { house: 4 })` against a component whose field
-is `home` stores nothing for `home` and drops `house` without a word. Found in a consumer moving to
-4.7.4, where one such key has been dropped since the component was written. The field went unread,
-so nothing broke, which is why nobody noticed. `defineComponent` already refuses a default that
-names no field; an add, a write and a prefab's values naming one want the same refusal, at least
-in development, where the cost of checking every key is nothing.
+example's bracket keys do, and that edit is undoable; the package README shows that route since
+4.8.2. The widgets are what is left: a number nudged by the wheel or the arrow keys, a boolean
+toggled by a click, an enum stepped, each one `setFieldCommand` under the overlay's undo.
 
 ### Installing the engine prints seven deprecation warnings, and none of them is the engine's code
 
@@ -180,35 +95,6 @@ targets are made at. It can be proved without a headset by drawing two eyes side
 synthetic runtime and checking that the halves differ by the eyes' parallax. The bottom of each
 renderer is small: WebGL2 binds the canvas's framebuffer in two places and WebGPU takes
 `getCurrentTexture` in one.
-
-### `probeXrSupport` takes a WebGL2 context only through a cast, and `drift/xr`'s host type is not exported
-
-**Filed 2026-10-02.** `XrCompatibleContext` has one optional member, so TypeScript treats it as a
-weak type, and the DOM types do not declare `makeXRCompatible` on `WebGL2RenderingContext`: passing
-the context a game draws with fails to compile until it is cast. The XR example casts. And
-`XrRuntime`, the object `bindModule` reads for `drift/xr`, is not exported from
-`@driftengine/script`, so a host types it as `NonNullable<HostServices['xr']>`. Both are a line
-each: accept `object | null` and test for the method, and add the type to the barrel.
-
-### A material's maps on a mesh with no texture coordinates are ignored, and nothing says so
-
-**Filed 2026-10-02.** `MeshBuilder` writes no texture coordinates unless `build({ planarUvs: true })`
-asks for them, and a mesh without them reads as "no surface texture" in the mesh pass, so
-`setMaterial` with an albedo, emissive or normal map draws it as if nothing were bound. Found when
-the chemistry example's burning logs never glowed: it bound a scale for an emissive map on meshes
-with no coordinates and no emission of their own, and the frame was identical, pixel for pixel, with
-and without it. The materials chapter now says how emission is made. What is open is the silence: a
-draw with maps bound on a mesh that cannot sample them wants saying once per mesh, in development,
-the way a refused draw elsewhere is said.
-
-### An interface tree's draw layers are honoured by nothing that draws or hit tests it
-
-**Filed 2026-10-02.** `UiNode.layer` is inherited and `layerOrder` sorts a tree by it, stably, for a
-dropdown that must cover the panel its control sits in. `drawUiTree` and `uiHitTest` walk tree order
-and read no layer, and no function draws in the order `layerOrder` gives, so a layered popup is drawn
-under a later sibling and the pointer reaches the sibling through it. Either `drawUiTree` and the hit
-test take the order, or a caller is handed a draw over a flat list; the first keeps one way to draw a
-tree.
 
 ### The air of one campfire costs 150 ms of a desktop's time per second of fire
 
