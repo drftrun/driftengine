@@ -341,8 +341,7 @@ export const FLOORS = {
    * export path is the fix when somebody minds.
    */
   /* Raised 2026-10-01 by +120: a mesh's channel and an assembly's sway survive a bake. */
-  /* Raised 2026-10-05 by +362, 4.8.6: `MeshData.lightmapUvs` checked, and refused beside grain or relief. */
-  'drft-only': 14659,
+  'drft-only': 14297,
   /*
    * Raised 2026-08-22 by the normal map, and again the same day by the ORM map. Both splits are
    * measured rather than assumed.
@@ -835,17 +834,7 @@ export const FLOORS = {
    * models live in a module of their own, which would take the hooks out of the standard sixteen; the
    * permutation axes the models would then need are what stopped it here.
    */
-  /*
-   * **Raised 2026-10-05 by +22,142, 2.8%, with every `core-*` entry by about as much: 4.8.6**,
-   * measured on the release commit against 4.8.5's 796,194 and not split by feature, because 4.8.6
-   * is one commit. What it carries: lightmaps (the page upload, the model and the read in the lit
-   * stage), lighting channels, a draw's own ambient and the scalar uniforms packed to make room for
-   * it, the bloom response, per-instance opacity, sprite particles with their sort and depth fade,
-   * rectangles through the froxel table and the cone test in both binners, refraction by the shading
-   * normal, the skin colour half, and the palette ring sized per draw. Most of it is lit-stage code,
-   * which every permutation carries.
-   */
-  'core-only': 818336,
+  'core-only': 796194,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -863,8 +852,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-gizmo': 822945,
+  'core-and-gizmo': 800823,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -875,8 +863,7 @@ export const FLOORS = {
    * is in core either way: that is skinning's own cost and is in `core-only`.
    */
   /* Raised 2026-10-05 with `core-only`, 4.8.4; the cloth's own share is 14,638 over core. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-cloth': 832790,
+  'core-and-cloth': 810832,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -894,8 +881,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-audio': 824592,
+  'core-and-audio': 802691,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -922,8 +908,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-animation': 824465,
+  'core-and-animation': 802263,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -963,8 +948,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-script': 859002,
+  'core-and-script': 836878,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1148,15 +1132,13 @@ export const FLOORS = {
    * container 1.23 readers, reached through `MeshData`, before the floor that should have taken
    * them, and 192 since.
    */
-  /* Raised 2026-10-05 by +345, 4.8.6: the container's lightmap coordinate check, which capture bundles. */
-  'capture-only': 72960,
+  'capture-only': 72615,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-splats': 835347,
+  'core-and-splats': 813378,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1178,8 +1160,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-terrain': 819645,
+  'core-and-terrain': 797576,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1210,8 +1191,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-ui2d': 828408,
+  'core-and-ui2d': 806401,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1220,8 +1200,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-and-assets': 845582,
+  'core-and-assets': 823121,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1237,8 +1216,7 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
-  /* Raised 2026-10-05 with `core-only`: 4.8.6's lightmaps, channels, ambient, bloom and sprites. */
-  'core-audio-spatial': 826665,
+  'core-audio-spatial': 804791,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

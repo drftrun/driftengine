@@ -6,7 +6,7 @@ carries the loop, the renderer, cameras, input, the scene graph, geometry, text
 and the whole of [`@driftengine/physics`](https://driftengine.dev/docs/simulation/rigid-bodies),
 which it re-exports. The rest of the engine is separate packages you add when you need them.
 
-**Cost: 799.2 KB gzipped, importing `createRenderer`.** Measured by `scripts/size-gate.test.mjs`,
+**Cost: 777.5 KB gzipped, importing `createRenderer`.** Measured by `scripts/size-gate.test.mjs`,
 which fails the build if the figure drifts by more than 3%.
 
 The manual is at **[driftengine.dev/docs](https://driftengine.dev/docs)**, with an example running
