@@ -165,6 +165,29 @@ render() {
 of the frame's material ring for the whole batch. `drawTranslucentInstanced` is the blended twin, for
 glass and other see-through instances; see [Translucent and additive meshes](translucency.md).
 
+### Each instance its own opacity
+
+```ts sample=snippets/instancing.ts#opacity
+/** Panes pulsing out of step: an opacity an instance, uploaded with the rest of the batch. */
+export function fadingPanes(
+  renderer: RendererApi,
+  batch: InstancedHandle,
+  panes: MeshInstances,
+  time: number,
+): void {
+  const alphas = panes.alphas;
+  if (alphas !== undefined) {
+    for (let i = 0; i < panes.count; i += 1) alphas[i] = 0.5 + 0.5 * Math.sin(time + i);
+  }
+  renderer.uploadInstanced(batch, panes);
+  renderer.drawTranslucentInstanced(batch, panes, 1);
+}
+```
+
+`MeshInstances.alphas` holds one opacity an instance, 1 by default, which a translucent draw
+multiplies into the batch's own. So particles fading at different rates, or panes at different
+clarity, are one draw rather than a batch for each opacity. An opaque draw ignores it.
+
 An instanced batch can cast shadows: the shadow caster sink accepts instanced batches as well as
 meshes.
 

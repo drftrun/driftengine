@@ -396,6 +396,7 @@ served by `npm run examples`.
 | Image-based materials and the per-draw surface dials     | `examples/materials/`                                             |
 | Instanced batches that cull                              | `examples/instancing/`                                            |
 | Point lights, spots, area lights, profiles and cookies   | `examples/lights/`                                                |
+| Light baked into a lightmap, read at second coordinates  | `examples/lightmaps/`                                             |
 | Hundreds of fixed lights through DriftLight              | `examples/driftlight/`                                            |
 | Bounced light traced by DriftRay (WebGPU)                | `examples/driftray/`                                              |
 | Light shafts, plumes and the global medium               | `examples/air/`                                                   |

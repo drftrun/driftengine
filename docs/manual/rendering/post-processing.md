@@ -72,6 +72,33 @@ not working; the example's dusk environment sets it to 1.
 different on-screen brightness at every exposure, so a scene whose exposure moves through a day
 passes the threshold it wants on screen divided by the exposure.
 
+### How bloom answers
+
+```ts sample=snippets/bloom.ts#response
+/**
+ * A colour comes in over two units past the threshold rather than having the threshold taken off
+ * it, and each of the six levels, finest first, is weighted by a stage's own tint. Both thresholds
+ * are compared before exposure, so a frame exposed by `exposure` divides them by it.
+ */
+export function stageBloom(renderer: RendererApi, exposure: number): void {
+  renderer.setBloom(1, 0.1 / exposure, {
+    ramp: 2 / exposure,
+    tints: [
+      0.35, 0.35, 0.35, 0.14, 0.14, 0.14, 0.12, 0.12, 0.12, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07,
+      0.06, 0.06, 0.06,
+    ],
+  });
+}
+```
+
+The third argument of `setBloom` is a `BloomResponse`, for a scene authored against a different
+bloom. `ramp`, in scene units, brings a colour in gradually from the threshold, none of it at the
+threshold and all of it that far past, where the default subtracts the threshold; a very low
+threshold with the subtraction keeps almost every light at full strength and washes the frame.
+`tints` weights each of the `BLOOM_LEVELS` levels, finest first, three numbers a level; white is
+the identity, and a tint may pass one to carry a strength. Neither costs a pass, and a frame that
+names no response blooms as it did.
+
 ## Ambient occlusion
 
 `ambientOcclusion`, 0 to 1, darkens where surfaces meet: a box on a floor, a wheel in its arch, the

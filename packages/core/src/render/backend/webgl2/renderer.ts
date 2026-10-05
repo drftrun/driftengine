@@ -3964,18 +3964,6 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
-   * A pass-level scale over the grain the geometry itself declared, 0 to 1.
-   *
-   * Which surfaces are mineral is now `MeshData.grain`, stated per vertex through
-   * `MeshBuilder.setGrain` — because it is a property of a material, and absent means none.
-   * This stays as the override for the case that has no answer to state: an imported model
-   * arrives with no grain information at all, and a caller drawing one decides for it.
-   *
-   * Pass state, like `setSurfaceTexture`, because a material covers many draws. The default
-   * is 1 and `bindMeshPass` restores it, so it scales geometry that declared grain and
-   * leaves geometry that did not exactly as it is.
-   */
-  /**
    * The ambient the following draws take, as nine spherical-harmonic coefficients of incoming
    * radiance — red, green and blue of each, twenty-seven numbers — or `null` for the frame's own:
    * the sky's gradient, or the probes'. See `ambientHarmonics.ts` for the basis and the axes.
@@ -3985,16 +3973,6 @@ export class WebGL2Renderer implements RendererApi {
    * character takes the light of its spot rather than the frame's. It replaces the diffuse ambient
    * only — a glossy surface still reflects the probes — and it is pass state like the material,
    * which `bindMeshPass` clears, so a mirror or a probe bake drawn after does not inherit it.
-   */
-  /**
-   * How much of the environment the following draws mirror, 0 to 1.
-   *
-   * Pass state beside the grain, and the counterpart to it: grain is a surface being uneven,
-   * this is a surface being smooth enough to carry an image. Polished paint, glass, chrome
-   * and still water want it; plaster and stone want none.
-   *
-   * Defaults to zero and bindMeshPass restores it, so a scene that never calls this looks
-   * exactly as it did.
    */
   setAmbientSH(coefficients: ArrayLike<number> | null): void {
     if (this.contextLost) return;
@@ -4007,6 +3985,16 @@ export class WebGL2Renderer implements RendererApi {
     this.useFlatProgram();
   }
 
+  /**
+   * How much of the environment the following draws mirror, 0 to 1.
+   *
+   * Pass state beside the grain, and the counterpart to it: grain is a surface being uneven,
+   * this is a surface being smooth enough to carry an image. Polished paint, glass, chrome
+   * and still water want it; plaster and stone want none.
+   *
+   * Defaults to zero and bindMeshPass restores it, so a scene that never calls this looks
+   * exactly as it did.
+   */
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
@@ -4056,6 +4044,18 @@ export class WebGL2Renderer implements RendererApi {
     );
   }
 
+  /**
+   * A pass-level scale over the grain the geometry itself declared, 0 to 1.
+   *
+   * Which surfaces are mineral is now `MeshData.grain`, stated per vertex through
+   * `MeshBuilder.setGrain` — because it is a property of a material, and absent means none.
+   * This stays as the override for the case that has no answer to state: an imported model
+   * arrives with no grain information at all, and a caller drawing one decides for it.
+   *
+   * Pass state, like `setSurfaceTexture`, because a material covers many draws. The default
+   * is 1 and `bindMeshPass` restores it, so it scales geometry that declared grain and
+   * leaves geometry that did not exactly as it is.
+   */
   setSurfaceGrain(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();

@@ -1,6 +1,6 @@
 ---
 title: Particles
-description: Sparks, smoke and floating motes from a pool and a batch, deterministic emission, particles placed by your own plan, and flocks of birds.
+description: Sparks, smoke and motes from a pool and a batch, deterministic emission, textured sprites and flipbooks, particles placed by your own plan, and birds.
 packages: ['@driftengine/core']
 ---
 
@@ -152,8 +152,10 @@ const moteBatch = renderer.createParticles(200, { material: 'mote', blend: 'addi
 - `'mote'`: an unlit point exactly its own colour. It ignores fog unless `fog: true`.
 
 `blend` is `'additive'` for what emits light and `'alpha'` for what covers it. `facing` is
-`'camera'`, the default, for one quad facing the viewer, or `'cross'` for two blades fixed in the
-world. Several batches of one material can share its compiled program with `reuse`, so four kinds of
+`'camera'`, the default, for one quad facing the viewer, `'cross'` for two blades fixed in the
+world, or `'velocity'` for a quad facing the viewer with its length along the particle's travel.
+`cameraOffset` moves every particle that many metres toward the eye, so a spark born inside a body
+is drawn in front of it. Several batches of one material can share its compiled program with `reuse`, so four kinds of
 smoke cost one shader.
 
 ```ts sample=particles/main.ts#draw
@@ -165,6 +167,50 @@ renderer.drawParticles(moteBatch, motes.particles, camera, env, time);
 
 `drawParticles(batch, pool.particles, camera, env, time)` draws a pool after the opaque scene. Draw
 what covers before what adds light. Sparks and smoke are fogged with the rest of the world.
+
+## Sprites
+
+```ts sample=snippets/particles.ts#sprites
+/**
+ * Smoke from a flipbook: an image of four by four cells, blended back to front, softened where it
+ * meets the ground and faded as it reaches the eye.
+ */
+export function smokeSprites(
+  renderer: RendererApi,
+  flipbook: SurfaceTextureHandle,
+): ParticleHandle {
+  return renderer.createParticles(300, {
+    material: 'sprite',
+    blend: 'alpha',
+    texture: flipbook,
+    cells: [4, 4],
+    blendCells: true,
+    softDepth: 0.2,
+    cameraFade: 1.5,
+    sort: true,
+  });
+}
+
+/** After the pool's update: each particle's cell from its age, the sixteen cells over its life. */
+export function stepFlipbook(particles: ParticleInstances): void {
+  const frames = particles.frames;
+  if (frames === undefined) return;
+  for (let i = 0; i < particles.count; i += 1) frames[i] = (particles.ages[i] ?? 0) * 15.999;
+}
+```
+
+The `'sprite'` material draws an image, unlit, multiplied by each particle's colour and opacity.
+`texture` is a surface texture of your own, and `cells` divides it into a flipbook of columns and
+rows, counted across then down from the top-left; each particle's `frames` value names its cell,
+and with `blendCells` its fraction blends toward the next. A pool leaves `frames` at zero, so step
+it yourself after `update`, as above. `heights` gives a card a half-height of its own beside its
+size, for one that is not square.
+
+Three options keep a flat card from looking like one. `softDepth` fades a sprite over that many
+metres where it meets the opaque scene, instead of cutting a hard line through the floor; it reads
+the frame's depth, which needs `screenEffects`. `cameraFade` fades it out over that many metres in
+front of the eye, so a puff the camera walks through does not fill the screen. And `sort` draws a
+blended batch farthest first, the order an alpha blend assumes; additive light needs no order.
 
 ## Particles from your own plan
 

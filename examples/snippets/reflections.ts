@@ -1,11 +1,12 @@
 /**
  * What surfaces reflect: a room captured once, a grid of probes baked a little each frame, light
- * bounced around a space, and a photographed sky.
+ * bounced around a space, a photographed sky, captures made in another tool, and a draw's own
+ * ambient.
  *
  * A snippet, typechecked with the examples and quoted by the manual's reflections chapter.
  */
 import { readRadianceHdr } from '@driftengine/assets';
-import type { Camera, Environment, RendererApi, Vec3 } from '@driftengine/core';
+import type { Camera, Environment, MeshHandle, RendererApi, Vec3 } from '@driftengine/core';
 
 // #region room
 /** One probe in the middle of a finished room, baked once the room exists. */
@@ -74,5 +75,37 @@ export function polishedFloor(renderer: RendererApi, env: Environment, camera: C
   renderer.bindMeshPass(camera, env);
   renderer.setSurfaceReflectivity(1);
   renderer.setEnvironmentGain(1.6);
+}
+// #endregion
+
+// #region capture
+/**
+ * A reflection capture baked in another tool, into one layer of the grid `setProbeGrid` declared:
+ * prefiltered as the environment is, the other layers left as they are.
+ */
+export async function loadCapture(
+  renderer: RendererApi,
+  layer: number,
+  url: string,
+): Promise<boolean> {
+  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  return renderer.setProbeLayerImage(layer, readRadianceHdr(bytes));
+}
+// #endregion
+
+// #region ambient
+/**
+ * A character lit by where it stands: nine coefficients of the light around it, red, green and
+ * blue of each, sampled from a baked volume every frame and set around its draws alone.
+ */
+export function drawLitWhereItStands(
+  renderer: RendererApi,
+  character: MeshHandle,
+  placement: Float32Array,
+  coefficients: Float32Array,
+): void {
+  renderer.setAmbientSH(coefficients);
+  renderer.drawMesh(character, placement);
+  renderer.setAmbientSH(null);
 }
 // #endregion

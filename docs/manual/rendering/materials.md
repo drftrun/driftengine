@@ -1,6 +1,6 @@
 ---
 title: Materials
-description: Surfaces from per-vertex values or image maps, uploading images and BC blocks, shading models for brushed metal, hair, skin and eyes, and surface dials.
+description: Surfaces from vertex values or image maps, images and BC blocks, shading models for brushed metal, hair, skin and eyes, baked lightmaps, and surface dials.
 packages: ['@driftengine/core']
 plain: ['TexImageSource']
 ---
@@ -275,25 +275,99 @@ Anisotropic metal takes its colour and strength from the ORM map as any metal do
 
 A model costs a pipeline of its own, compiled the first time a draw asks for it, so a scene that names
 none pays nothing. The models belong to the forward path; the [GPU-driven](gpu-driven.md)
-pipeline's materials have none.
+pipeline's materials have none. One more kind goes in `model`, `lightmapModel`, which is not a way of
+answering light but a page of light baked earlier; see [Baked lightmaps](#baked-lightmaps).
 
 ### Skin in the picture
 
 The skin model's scattering is a fit evaluated per pixel, and it cannot see past the pixel it is
 shading. `skinScattering: 'screen-space'`, a renderer quality option, adds Burley's blur in the
-picture as well. Each skin draw writes its diffuse light to a target of its own, which is spread
-across the pixels its scatter distance covers and added back before anything blended is drawn, so
-light crosses a shadow's edge and a nostril's rim on screen. Under it the fit steps back to Lambert's
-and the blur does the scattering; light through thin parts stays with the fit, because the picture
-cannot see the far side.
+picture as well. Each skin draw writes the light its diffuse is made of, shaded as if the skin were
+white, to a target of its own, which is spread across the pixels its scatter distance covers; the
+skin's colour goes to a second target and multiplies the light once it has spread, and the sum is
+added back before anything blended is drawn. So light crosses a shadow's edge and a nostril's rim on
+screen, while a brow, a freckle or a lip line painted in the albedo stays where it is drawn rather
+than smearing into the skin around it. Under it the fit steps back to Lambert's and the blur does
+the scattering; light through thin parts stays with the fit, because the picture cannot see the far
+side.
 
-What it costs: every skin draw is drawn twice, there are two half-float targets the size of the
-frame and a third under multisampling, and two full-screen passes run that leave at once wherever no
-skin was drawn. It needs the composite (`screenEffects`) and, on WebGL2, the `EXT_color_buffer_float`
+What it costs: every skin draw is drawn three times, there are three half-float targets the size of
+the frame and two more under multisampling, and two full-screen passes run that leave at once
+wherever no skin was drawn. It needs the composite (`screenEffects`) and, on WebGL2, the `EXT_color_buffer_float`
 extension; without either, skin stays pre-integrated and the renderer says so once. `profile` picks
 which of eight scatter distances the blur uses, and the last material to name a profile sets it. A
 skin drawn after something blended in the same frame, or in an instanced batch, is drawn
 pre-integrated.
+
+## Baked lightmaps
+
+A stage built in another tool often carries its static light baked: the light bounced off its
+walls, the soft shadow in its corners, most of the colour a reference render shows. A lightmap
+brings that bake in. Decode it into pages, each an image of irradiance and an image of the
+direction the light arrives from, and give every lightmapped mesh a second set of texture
+coordinates on its page. `examples/lightmaps/` bakes a room on the CPU, a lamp and the soft
+shadow of a box, and draws it this way.
+
+```ts sample=snippets/lightmaps.ts#page
+/** A floor lit by the left half of a page: the page uploaded, the mesh given its coordinates. */
+export function bakedFloor(
+  renderer: RendererApi,
+  page: LightmapPage,
+  floor: MeshData,
+  lightmapUvs: Float32Array,
+  albedo: SurfaceTextureHandle,
+) {
+  const lightmap = renderer.createLightmap(page);
+  const mesh = renderer.createMesh({ ...floor, lightmapUvs });
+  /* Where the floor is on the page, as [scaleU, scaleV, biasU, biasV]. */
+  const material: SurfaceMaterial<SurfaceTextureHandle> = {
+    albedo,
+    model: lightmapModel({ region: [0.5, 1, 0, 0] }),
+    modelMap: lightmap,
+  };
+  return { mesh, material };
+}
+```
+
+A `LightmapPage` is a `width` and `height`, `irradiance` as three linear floats a texel in the
+units every other light here is in, and `direction` as four bytes a texel: a first-order spherical
+harmonic in the engine's axes, each value stored as `v * 0.5 + 0.5`. `createLightmap` uploads it as
+two half-float layers. A material made with `lightmapModel({ region })` takes it as its `modelMap`,
+and `region` says where the material's surfaces are on the page: `uv2 * scale + bias`, the whole
+page by default. The surface adds `albedo * (1 - metal) * irradiance * max(0, dot(d, n) + w)` to
+its diffuse, with `n` its shading normal, on top of the dynamic lights and the ambient. A bake that
+already holds the sky's light wants the ambient taken out of those draws, which
+`setAmbientSH` with nine zero coefficients does.
+
+```ts sample=snippets/lightmaps.ts#instances
+/** Pillars in one batch, each lit by its own column of one page. */
+export function bakedPillars(count: number): MeshInstances {
+  const instances = {
+    ...createMeshInstances(count),
+    lightmapRegions: new Float32Array(count * 4),
+  };
+  for (let i = 0; i < count; i += 1) {
+    instances.lightmapRegions.set([1 / count, 1, i / count, 0], i * 4);
+  }
+  instances.count = count;
+  return instances;
+}
+```
+
+Copies of one mesh in one batch each sit in their own part of the page, so an instanced batch with a
+lightmapped material carries `lightmapRegions`, four numbers an instance, applied before the
+material's own region. A batch needs them: one drawn without reads its tints as regions, and the
+renderer says so once.
+
+What a lightmap gives up, because everything it would take was already spent:
+
+- The second coordinates ride the grain and relief attributes, so a lightmapped surface has no
+  procedural grain or relief, and a mesh naming both is refused. They are stored below zero, so the
+  same mesh drawn without its page simply has neither.
+- An instance's region rides its tint and opacity, so a lightmapped batch has no per-instance tint.
+- A lightmapped material takes no other shading model, since the page is its model map.
+- No importer reads a second set of coordinates yet and the `.drft` container does not carry them,
+  so the mesh is built by your own code; the GPU-driven pipeline reads no page.
 
 ## Surface dials
 

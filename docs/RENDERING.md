@@ -602,6 +602,56 @@ weight, `uWriteMode`, because a second scalar would have spent the last row of t
 WebGPU counts framebuffer y downward; and a held clock never finishes one, so a capture asks
 `fadeSec: 0`.
 
+## 4h. Skin spread in the picture, and the version that blurred the brows
+
+**4.8.4 spread the coloured diffuse, and every mark painted on a face went with it.** Burley's blur
+is right about light: it crosses a shadow's edge and fills a nostril's rim. It is wrong about
+colour, which lives at the surface and does not travel. Spreading `albedo * light` smeared a brow,
+a freckle and a lip line into the skin around them, and on a face seen from under a metre the whole
+face read as out of focus. **Since 4.8.6 the diffuse half shades a white surface**, so it is light
+alone, and a third half writes the albedo into a target of its own, depth-tested for equality
+against the frame's half; the blur's second axis multiplies what it spread by that albedo. A skin of
+one colour draws exactly as before. **What it costs**: one more draw of each skin and one more
+half-float target the size of the frame (two under multisampling). See `shaders/skinBlur.ts`.
+
+## 4i. Lightmaps, and the lanes they borrow
+
+**Every attribute, inter-stage value and sampler a second texture coordinate would want was spent.**
+WebGPU allows sixteen inter-stage values and the lit stage uses sixteen; WebGL2's sixteen texture
+units are all bound in the widest lit build. So a lightmap borrows: the coordinates ride the grain
+and relief attributes and their varyings, the page binds in a shading model's map slot, and an
+instance's region rides its tint. A lightmapped material is a shading model kind, `MODEL_LIGHTMAP`,
+so the read is a pipeline constant and the standard lit pipeline is unchanged: **0 px** on every
+published scene.
+
+**The first version stored the coordinates as they are, and the same mesh drawn without its page
+was mottled and bumped by them**, because grain applies above zero and relief scales by its lane:
+every lightmap coordinate was a grain amount between 0 and 1. They are stored as `-1 - uv` now,
+grain only applies above zero and relief is read through `max(relief, 0)`, so a lightmapped mesh
+drawn with an ordinary material is a mesh with no grain and no relief. **The control that found
+it** was the one meant to prove the units: a page of one value against the same ambient raised by
+`setAmbientSH`, which came back 7 levels apart until the lane was moved, and 0 after.
+
+## 4j. Bloom that answers, and the subtraction that washed a stage
+
+**Subtracting the threshold is fine at a threshold of 1 and wrong at 0.1.** A stage authored for
+Unreal's bloom sets a low threshold because Unreal brings a colour in over a ramp,
+`saturate((L - t) / 2)`, and weights six bands by tints that sum below one. Subtracting 0.1 keeps
+nearly every light in the frame at full strength, and one band at the scale given washed the stage
+white. `BloomResponse` states both differences as numbers: a `ramp` in place of the subtraction, and
+a tint for each level. **Both are blend constants**, applied as each level is added onto the one
+above it, so neither costs a pass, a texture or a uniform row; with no response named every weight
+is one and the frame is the frame it was.
+
+## 4k. A spot is a cone, and binning it as a sphere was the cost
+
+**The froxel binner tested a light's sphere and never its cone**, so a 10° spot with a reach of
+tens of metres filled every froxel its sphere touched. A rig of a few hundred narrow spots then cost
+the clustered pass about 0.035 ms a light at 1600×900, which is what made a consumer shade 32 of 313. Both binners now test a froxel's bounding sphere against the cone exactly, with the apex as a
+case of its own, because the plain bound keeps froxels behind a spot whose sphere reaches back
+past its apex. The CPU and GPU tables stay byte-identical, and the picture cannot change: a froxel
+the cone misses received nothing from it.
+
 ## 5. What must stay true
 
 - **Defaults do not move.** Every item here lands as a quality option or a pass property whose

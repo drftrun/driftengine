@@ -129,6 +129,56 @@ radiance, and `setEnvironmentImage(image)` makes it the environment: the faces g
 a bake fills and the same convolution runs, so a loaded sky lights and reflects exactly as a baked
 one would. It is a grid of one at the origin, since a sky is the same everywhere.
 
+## Captures from another tool
+
+```ts sample=snippets/reflections.ts#capture
+/**
+ * A reflection capture baked in another tool, into one layer of the grid `setProbeGrid` declared:
+ * prefiltered as the environment is, the other layers left as they are.
+ */
+export async function loadCapture(
+  renderer: RendererApi,
+  layer: number,
+  url: string,
+): Promise<boolean> {
+  const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  return renderer.setProbeLayerImage(layer, readRadianceHdr(bytes));
+}
+```
+
+A stage made in another engine reflects its own captures, each an image taken where it stands.
+Fit them to a grid: declare one with `setProbeGrid`, and for each point hand
+`setProbeLayerImage(layer, image)` the image of the capture whose reach holds it. Each image is
+projected and prefiltered into its layer exactly as `setEnvironmentImage` treats the environment,
+and the other layers keep what they hold.
+
+## A draw's own ambient
+
+```ts sample=snippets/reflections.ts#ambient
+/**
+ * A character lit by where it stands: nine coefficients of the light around it, red, green and
+ * blue of each, sampled from a baked volume every frame and set around its draws alone.
+ */
+export function drawLitWhereItStands(
+  renderer: RendererApi,
+  character: MeshHandle,
+  placement: Float32Array,
+  coefficients: Float32Array,
+): void {
+  renderer.setAmbientSH(coefficients);
+  renderer.drawMesh(character, placement);
+  renderer.setAmbientSH(null);
+}
+```
+
+`setAmbientSH(coefficients)` gives the draws that follow an ambient of their own: nine
+second-order spherical-harmonic coefficients of the light arriving from every side, red, green and
+blue of each, 27 numbers. A character walking through a stage whose indirect light was baked into a
+volume samples the volume where it stands every frame and sets the result around its own draws, so
+it takes the light of its spot rather than the frame's. It replaces the diffuse ambient only; a
+glossy surface still reflects the probes. `null`, or the next `bindMeshPass`, gives the frame's
+ambient back.
+
 ## Prefiltered reflections
 
 By default each level of a probe is a smaller picture of the room. With `environmentPrefilter` on,

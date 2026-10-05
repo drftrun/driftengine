@@ -30,6 +30,7 @@ and the page keeps running with the new code.
 | [`materials/`](materials/)       | Image maps built in code, metalness and roughness, and the per-draw surface dials.               |
 | [`instancing/`](instancing/)     | Ten thousand rocks in culled batches, and a batch rewritten every frame.                         |
 | [`lights/`](lights/)             | Lamps that cast, a spot with a cookie, a photometric profile and a window that is an area light. |
+| [`lightmaps/`](lightmaps/)       | A room lit by a bake: a page read at each surface's second coordinates, and a shadow in it.      |
 | [`driftlight/`](driftlight/)     | Seven hundred candles, the sixteen nearest shaded exactly and the rest summed by DriftLight.     |
 | [`driftray/`](driftray/)         | Bounced light traced on the GPU, following a wall that changes colour. WebGPU.                   |
 | [`air/`](air/)                   | A sunbeam through a window, fire and smoke, and a medium that fills the room.                    |

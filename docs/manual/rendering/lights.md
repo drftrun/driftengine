@@ -140,6 +140,41 @@ second, the last three arguments, is where whatever might cast a shadow is stand
 player, and it orders the shadow maps. A third-person camera sits behind its character, and a fire
 the character stands beside must keep its shadow even when the camera is out of the fire's reach.
 
+## Lighting channels
+
+```ts sample=snippets/lights.ts#channels
+/** The channel a character's own lights are on. The stage's lights stay on 1, the default. */
+export const CHARACTER_LIGHTS = 2;
+
+/**
+ * After the selection, each chosen light's channel from the source it came from: the key light on
+ * the character's channel, everything else on the stage's.
+ */
+export function lightChannels(env: Environment, chosen: PointLightBuffer, keyLight: number): void {
+  const channels = env.lightChannels;
+  if (channels === undefined) return;
+  for (let slot = 0; slot < chosen.count; slot += 1) {
+    channels[slot] = chosen.sourceIndex[slot] === keyLight ? CHARACTER_LIGHTS : 1;
+  }
+}
+
+/** The character takes the stage's light and its own; the floor, naming nothing, the stage's. */
+export const characterMaterial: SurfaceMaterial<SurfaceTextureHandle> = {
+  lightChannels: 1 | CHARACTER_LIGHTS,
+};
+```
+
+A light shades a surface only where their lighting channels share a bit. Each chosen light's mask is
+`env.lightChannels`, one a slot, filled from the source it came from as the cookies and profile axes
+are; each material's is `SurfaceMaterial.lightChannels`. Both are whole masks from 1 to 255, and 1
+by default, so a scene that names none is lit exactly as before. The use is a character's own key
+and rim lights: on a channel of their own, they light the character and leave the floor around it
+as the stage's lights have it.
+
+Channels belong to point and spot lights, in the fixed path and the froxel table alike. The sun,
+the sky, the probes, rectangles, DriftLight and the GPU-driven pipeline light every surface
+whatever its mask.
+
 ## Spots
 
 ```ts sample=lights/main.ts#spot
@@ -285,7 +320,9 @@ An `AreaLightSource` is a rectangle that emits: a window, a softbox, a lit panel
 are its axes, `halfWidth` and `halfHeight` its size, and it emits along `right × up`. It is
 one-sided unless `twoSided` is set, so a window does not light the wall it is set into.
 `selectAreaLights` normalises the axes and makes them perpendicular, and `env.areaLights` takes the
-buffer. A frame shades up to four rectangles.
+buffer. The fixed path shades up to four rectangles (`maxAreaLights`); with `clusteredLights` on,
+the rest go through the froxel table with the point lights, as [Clustered shading](#clustered-shading)
+describes.
 
 A rectangle does not cast a shadow unless `castsShadow` is set, and then it must say how far its
 shadow reaches with `shadowRange`, since a rectangle has no radius to take it from. It casts into
@@ -397,6 +434,50 @@ on screen. At 3840 by 2160, 320 lights of radius 8 crowded around the view hold 
 occupied froxel on average and cost 7.4 ms of shading on a desktop GPU; at radius 12 the same lights
 cost 12.7 ms. A light with a cone, a profile, a cookie or a point shadow is read in five texels and a
 plain one in two, and a frame whose lights are all plain never reads the other three.
+
+A spot is binned by its cone, not only by the sphere its radius draws: a froxel the cone cannot
+reach takes nothing from it, so a narrow spot with a long reach costs the froxels it lights.
+
+### More rectangles than four
+
+```ts sample=snippets/lights.ts#rectangles
+/**
+ * A row of ceiling panels, more than the fixed four. With `clusteredLights` on, the rectangles past
+ * `maxAreaLights` are shaded through the froxel table, each out to its `range`.
+ */
+export function ceilingPanels(env: Environment, count: number): void {
+  const panels: AreaLightSource[] = [];
+  for (let i = 0; i < count; i += 1) {
+    panels.push({
+      x: -10 + i * 2,
+      y: 3.5,
+      z: 0,
+      r: 6,
+      g: 6,
+      b: 5.4,
+      /* It emits along right x up, which is straight down. */
+      rightX: 1,
+      rightY: 0,
+      rightZ: 0,
+      upX: 0,
+      upY: 0,
+      upZ: 1,
+      halfWidth: 0.6,
+      halfHeight: 0.15,
+      range: 6,
+    });
+  }
+  const buffer = createAreaLightBuffer(count);
+  selectAreaLights(panels, buffer);
+  env.areaLights = buffer;
+}
+```
+
+With the table on, rectangles past the fixed `maxAreaLights` are binned beside the point lights
+and shaded exactly as the fixed ones are, highlight and all. They cast no shadow, and each is
+windowed to zero at its `range`, in metres from its centre; a rectangle that names none reaches as
+far as its light on its own axis stays above a thousandth of a scene unit. Without the table, a
+rectangle past the fixed ones is not drawn, and the renderer says so once.
 
 ## Light from surfaces
 

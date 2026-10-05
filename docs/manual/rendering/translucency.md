@@ -44,7 +44,8 @@ export function drawLens(renderer: RendererApi, lens: MeshHandle, model: Float32
 ```
 
 `refraction` bends what is behind the surface, by sampling a copy of the frame's colour offset along
-the surface normal. `refractTint` is what survives one metre of the medium, per channel, and
+the shading normal, so a normal map bends it too: a heat haze or a distortion wearing a noise map
+shimmers rather than acting as a smooth lens. An unlit draw reads its normal map for this alone. `refractTint` is what survives one metre of the medium, per channel, and
 `thicknessM` is how many metres the light crosses face-on; absorption follows the Beer-Lambert law,
 so a thick piece of tinted glass is darker than a thin one. A per-vertex channel can vary thickness
 across a mesh.

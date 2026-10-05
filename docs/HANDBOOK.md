@@ -653,6 +653,16 @@ the wall once it lets the eye through; leave it opaque.
 
 ---
 
+### Baked light, which no bake carries yet
+
+A model built in another tool may carry a lightmap: a second set of texture coordinates and a page
+of baked light. **Neither survives a bake today.** The glTF reader does not read `TEXCOORD_1`, and
+the container has no place for a second set of coordinates, so a mesh baked to `.drft` arrives
+without them and draws with the dynamic lights alone. A lightmapped surface is built by your own
+code: decode the page into a `LightmapPage`, give the `MeshData` its `lightmapUvs`, and draw it with
+a `lightmapModel` material, as the manual's materials chapter shows. `docs/CAPABILITIES.md` keeps
+this as an absent row, so the release that carries it has to say so.
+
 ## 5. Proving two bakes agree
 
 This is the tool to reach for whenever a reader changes.
