@@ -168,11 +168,12 @@ test('every variant that can bend declares the wind, and the instanced one decla
  * **Every switch is in every variant.** The generated WGSL is one string for both values of each:
  * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — which a pipeline
  * sets from its cache, and on the four shading models', skin's three halves and the lightmap's
- * (`models.ts`), which it sets from its own key. Every variant declares all thirteen, because a pipeline naming an override
- * its module lacks fails validation and drops the frame, the permutations without shadows included,
+ * (`models.ts`), which it sets from its own key, and last on the physical highlight's, from the
+ * cache again. Every variant declares all fourteen, because a pipeline naming an override its
+ * module lacks fails validation and drops the frame, the permutations without shadows included,
  * which read the glass switch nowhere. The models and halves are generated off, the lit features on.
  */
-test('EVERY LIT VARIANT DECLARES THE THIRTEEN SWITCHES ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE FOURTEEN SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
   const switches = [
@@ -203,6 +204,9 @@ test('EVERY LIT VARIANT DECLARES THE THIRTEEN SWITCHES ITS PIPELINES SET', () =>
         new RegExp(`@id\\(${5 + k}\\) override ${name}: bool = false;`),
       );
     });
+    expect(wgsl, `${variant}: PHYSICAL_SPECULAR`).toMatch(
+      /@id\(13\) override PHYSICAL_SPECULAR: bool = true;/,
+    );
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
     expect(bindings?.overrides, variant).toEqual({
       GLASS_SHADOWS: 0,
@@ -218,6 +222,7 @@ test('EVERY LIT VARIANT DECLARES THE THIRTEEN SWITCHES ITS PIPELINES SET', () =>
       SKIN_DIFFUSE: 10,
       SKIN_ALBEDO: 11,
       MODEL_LIGHTMAP: 12,
+      PHYSICAL_SPECULAR: 13,
     });
   }
 });
@@ -265,7 +270,7 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
   const { device, descriptors } = fakeDevice();
   const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
   flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
-  const off = { '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0 };
+  const off = { '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0, '13': 0 };
   expect(descriptors[0]?.fragment?.constants).toEqual({
     '0': 0,
     '1': 1,

@@ -43,6 +43,7 @@ import {
 } from '../../packages/core/src/index';
 import type { PointLightSource } from '../../packages/core/src/index';
 import { DrftLoader } from '../../packages/assets/src/index';
+import { spawnBcWorker } from '../../packages/assets/src/bcWorkers';
 import type { RendererApi, Vec3 } from '../../packages/core/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
@@ -227,7 +228,7 @@ async function main(): Promise<void> {
     new MeshBuilder().addSphere([0, 2.25, 0.55], 0.075, [1, 0.95, 0.86], 1, 16, 10).build(),
   );
 
-  const loader = new DrftLoader(renderer, {});
+  const loader = new DrftLoader(renderer, { bcWorker: spawnBcWorker });
   await loader.load(source, { footprint: 1.4, height: 2.0, baseY: 0 });
 
   /*

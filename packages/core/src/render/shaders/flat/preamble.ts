@@ -784,13 +784,15 @@ uniform float uLightWeight[MAX_LIGHTS];
  */
 uniform vec3 uLightDir[MAX_LIGHTS];
 /**
- * The cosine of each light's inner cone angle, then of its outer.
+ * The cosine of each light's inner cone angle, then of its outer, and in z the light's own falloff
+ * exponent, 0 for the frame's falloff (\`PointLightSource.falloffExponent\`): a \`vec2\` array cost
+ * a whole row a light anyway, so the exponent spends no row of its own.
  *
  * A light with no cone carries -1 and -2, which makes \`smoothstep(outer, inner, dot)\` exactly 1
  * for every direction on the sphere. See \`POINT_LIGHT_COS_OUTER\`: the pair is chosen so a point
  * light collapses to the arithmetic it had rather than to something very close to it.
  */
-uniform vec2 uLightCone[MAX_LIGHTS];
+uniform vec4 uLightCone[MAX_LIGHTS];
 /**
  * Which row of the photometric atlas each light uses, or a negative index for none.
  *
@@ -895,7 +897,12 @@ uniform vec3 uAreaLightColor[MAX_AREA_LIGHTS];
 /** The rectangle's in-plane axes, unit length, and its half extents along each. */
 uniform vec3 uAreaLightRight[MAX_AREA_LIGHTS];
 uniform vec3 uAreaLightUp[MAX_AREA_LIGHTS];
-uniform vec2 uAreaLightSize[MAX_AREA_LIGHTS];
+/*
+ * Each rectangle's half extents, and in zw its barn doors: the cosine of their angle from its normal
+ * and their length, 0 for none (\`areaBarnDoors\`). A \`vec2\` array costs a whole row a rectangle
+ * anyway, so the doors spend no row of their own.
+ */
+uniform vec4 uAreaLightSize[MAX_AREA_LIGHTS];
 /**
  * Whether the rectangle emits from both faces, 1 or 0.
  *

@@ -3,6 +3,7 @@ import { mat4 } from 'gl-matrix';
 
 import {
   CLIP_Y_FLIP,
+  ReflectionQueue,
   ReflectiveSurface,
   newScreenSpaceHit,
   projectToUv,
@@ -317,6 +318,36 @@ describe('the surface a consumer declares', () => {
     expect(surface.reachM).toBeGreaterThan(0);
     expect(surface.thicknessM).toBeGreaterThan(0);
     expect(surface.steps).toBeGreaterThan(1);
+  });
+
+  /*
+   * **A surface that asks for its Fresnel carries it into the frame's record**, clamped as the
+   * strength is, and one that does not is the one share it always was: a record pooled from an
+   * earlier frame must not keep a previous surface's choice.
+   */
+  test('A SURFACE’S FRESNEL AND ROUGHNESS REACH ITS RECORD, AND A PLAIN ONE CARRIES NONE', () => {
+    const box = {
+      center: [0, 0, 0],
+      halfExtents: [4, 4, 0.5],
+      forward: [0, -1, 0],
+      up: [0, 0, 1],
+    } as const;
+    const queue = new ReflectionQueue();
+    queue.record(new ReflectiveSurface({ ...box, strength: 0.04, fresnel: true, roughness: 1.5 }));
+    const seen: { fresnel: boolean; roughness: number; strength: number }[] = [];
+    queue.replay((r) => {
+      seen.push({ fresnel: r.fresnel, roughness: r.roughness, strength: r.strength });
+    });
+    expect(seen, 'a roughness past 1 clamped').toEqual([
+      { fresnel: true, roughness: 1, strength: 0.04 },
+    ]);
+    queue.reset();
+    queue.record(new ReflectiveSurface(box));
+    seen.length = 0;
+    queue.replay((r) => {
+      seen.push({ fresnel: r.fresnel, roughness: r.roughness, strength: r.strength });
+    });
+    expect(seen).toEqual([{ fresnel: false, roughness: 0, strength: 0.5 }]);
   });
 
   test('carries the projection axis, which decides which surfaces inside the box reflect', () => {

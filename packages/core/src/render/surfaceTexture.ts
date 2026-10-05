@@ -23,6 +23,8 @@ import type { SurfaceLayerEffect } from './surfaceEffects.ts';
 import type { CutoutMode } from './cutoutDither.ts';
 import { isLightmapTexels } from './lightmap.ts';
 import type { LightmapTexels } from './lightmap.ts';
+import { isSceneCaptureTexels } from './sceneCapture.ts';
+import type { SceneCaptureTexels } from './sceneCapture.ts';
 
 /**
  * How a texture behaves past its edges and between its texels.
@@ -172,6 +174,24 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * that is not a colour.
    */
   modelMap?: Texture | null;
+  /**
+   * Whether a lamp's and the sun's highlight on this surface is GGX's own, `π · D · Vis · F · N·L`,
+   * as Unreal and this engine's skin and eye shade it, rather than the engine's lobe scaled to a
+   * peak of one. **False by default**, every surface as it was.
+   *
+   * The peak-normalised lobe is a look control: the specular attribute says how strong a highlight
+   * is and roughness how wide, apart. Physical, they are entangled as they are in a real surface —
+   * the peak is `1 / (4 α²)` of the light head-on, so a polished surface's highlight is many times
+   * the look's and a rough one's lower and broader — and the specular attribute is read as the
+   * reflectance at normal incidence, F0: Unreal's `0.08 × Specular`, 0.04 at its default. Fresnel
+   * then brightens every surface toward grazing, not only a metal. A rectangle's highlight is the
+   * lobe integrated over it with the attribute as F0 already, so it is unchanged either way.
+   *
+   * On the standard, lightmap and anisotropic models. Skin and the eye are physical already; hair
+   * keeps its own three lobes. **What it gives up**: the look's independence of strength and width,
+   * and an 8-bit frame clips the brighter peak without `hdrScene`.
+   */
+  physicalSpecular?: boolean;
 }
 
 export interface SurfaceTextureOptions {
@@ -281,14 +301,16 @@ export class SurfaceTexture {
    */
   constructor(
     gl: WebGL2RenderingContext,
-    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels,
+    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels | SceneCaptureTexels,
     options: SurfaceTextureOptions = {},
     compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    /* A lightmap's page: half floats, uploaded as they are. See `lightmap.ts`. */
+    /* A scene capture's target: one empty layer the renderer draws into. See `sceneCapture.ts`. */
+    const capture = isSceneCaptureTexels(source) ? source : null;
+    /* A lightmap's page: two layers of bytes, uploaded as they are. See `lightmap.ts`. */
     const baked = isLightmapTexels(source) ? source : null;
     const listed = (
-      baked !== null ? [] : Array.isArray(source) ? source : [source]
+      baked !== null || capture !== null ? [] : Array.isArray(source) ? source : [source]
     ) as readonly SurfaceSource[];
     const blocks = compressedLayers(listed);
     this.srgb = (options.colorSpace ?? 'linear') === 'srgb';
@@ -300,26 +322,56 @@ export class SurfaceTexture {
     const wrap = (options.wrap ?? 'repeat') === 'repeat' ? gl.REPEAT : gl.CLAMP_TO_EDGE;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
 
-    if (baked !== null) {
+    if (capture !== null) {
+      /* Immutable storage, one level: a framebuffer attachment, and radiance read linear. */
+      this.layers = 1;
+      this.blockFormat = null;
+      this.mipmapped = false;
+      gl.texStorage3D(
+        gl.TEXTURE_2D_ARRAY,
+        1,
+        capture.float ? gl.RGBA16F : gl.RGBA8,
+        capture.width,
+        capture.height,
+        1,
+      );
+    } else if (baked !== null) {
       /* No chain: a page is read at its own resolution, and a level of it would blend regions. */
-      this.layers = baked.layers;
+      this.layers = baked.layers.length;
       this.blockFormat = null;
       this.mipmapped = false;
       /* A typed array refuses either flag set, so both are put down here rather than assumed. */
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      /* Bytes, and read by `texelFetch` alone: the shader decodes and filters. See `lightmap.ts`. */
       gl.texImage3D(
         gl.TEXTURE_2D_ARRAY,
         0,
-        gl.RGBA16F,
+        gl.RGBA8,
         baked.width,
         baked.height,
-        baked.layers,
+        this.layers,
         0,
         gl.RGBA,
-        gl.HALF_FLOAT,
-        baked.texels,
+        gl.UNSIGNED_BYTE,
+        null,
       );
+      /* A layer at a time, so a page's arrays are uploaded where they lie rather than joined. */
+      for (let layer = 0; layer < this.layers; layer++) {
+        gl.texSubImage3D(
+          gl.TEXTURE_2D_ARRAY,
+          0,
+          0,
+          0,
+          layer,
+          baked.width,
+          baked.height,
+          1,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          baked.layers[layer] as Uint8Array,
+        );
+      }
     } else if (blocks !== null && plan !== null) {
       /* The stored chain, or level 0 alone where no chain was asked for. Nothing is generated:
          `generateMipmap` cannot write a compressed format. */
@@ -426,6 +478,14 @@ export class SurfaceTexture {
     );
     if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  }
+
+  /**
+   * Attach the only layer as the bound framebuffer's colour: a scene capture's target, drawn into
+   * by `captureScene`. Engine-internal, as `bind` is.
+   */
+  attachColor(gl: WebGL2RenderingContext): void {
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.texture, 0, 0);
   }
 
   /** Bind to a unit for sampling. Engine-internal: the renderer owns unit assignment. */

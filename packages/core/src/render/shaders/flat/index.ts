@@ -14,7 +14,7 @@ import { CLOTH_BINDING_GLSL } from '../clothBinding.ts';
 import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
 import { MAIN_GLSL } from './main.ts';
-import { MODELS_GLSL } from './models.ts';
+import { modelsGlsl } from './models.ts';
 import { AREA_LIGHT_GLSL } from './areaLight.ts';
 import { NORMAL_MAP_GLSL } from './normalMap.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
@@ -245,6 +245,15 @@ void main() {
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
+  /*
+   * **The bottom row is the instance's texture cell** (\`MeshInstances.uvRegions\`), which an
+   * affine placement leaves free: read, and rebuilt as the \`[0, 0, 0, 1]\` it stands for.
+   */
+  vec4 instanceCell = vec4(model[0].w, model[1].w, model[2].w, model[3].w);
+  model[0].w = 0.0;
+  model[1].w = 0.0;
+  model[2].w = 0.0;
+  model[3].w = 1.0;
   vec3 tint = aInstanceTint.rgb;
   if (LIGHTMAP_REGIONS) tint = vec3(1.0);
 #else
@@ -293,7 +302,12 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
+#if INSTANCED
+  /* The instance's cell first, then the material's scale and offset. */
+  vUv = vec3((aUv.xy * instanceCell.xy + instanceCell.zw) * uUvScale + uUvOffset, aUv.z);
+#else
   vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
+#endif
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;
@@ -450,6 +464,11 @@ export interface FlatShaderOptions {
   /** Whether it reads a DriftLight volume. True when absent. See `litSwitchesGlsl`. */
   readonly driftLight?: boolean;
   /**
+   * Whether it carries GGX's own highlight for a material that asks (`physicalSpecular`). True
+   * when absent. See `modelsGlsl`.
+   */
+  readonly physicalSpecular?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -593,7 +612,7 @@ export function flatFrag(options: FlatShaderOptions): string {
       DRIFT_LIGHT_GLSL,
       SURFACE_EFFECTS_GLSL,
       /* Depth zero and after the tangent frame and the lobes it calls; see models.ts. */
-      MODELS_GLSL,
+      modelsGlsl(options.physicalSpecular ?? true),
       /* After the models, whose answer to a rectangle it asks for. See areaLight.ts. */
       AREA_LIGHT_GLSL,
       MAIN_GLSL,

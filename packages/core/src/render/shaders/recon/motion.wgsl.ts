@@ -248,6 +248,17 @@ fn motionDynamicVert(
   return out;
 }
 
+/* An instance's placement with its bottom row, which carries its texture cell, rebuilt as the
+   [0, 0, 0, 1] an affine placement has: \`MeshInstances.uvRegions\`. */
+fn placementOf(c0: vec4<f32>, c1: vec4<f32>, c2: vec4<f32>, c3: vec4<f32>) -> mat4x4<f32> {
+  return mat4x4<f32>(
+    vec4<f32>(c0.xyz, 0.0),
+    vec4<f32>(c1.xyz, 0.0),
+    vec4<f32>(c2.xyz, 0.0),
+    vec4<f32>(c3.xyz, 1.0),
+  );
+}
+
 /*
  * The instanced stage: each instance's matrix this frame and last frame, read from the batch's
  * placement and the copy of last frame's it kept. Slot for slot, so an instance is paired with
@@ -265,8 +276,8 @@ fn motionInstancedVert(
   @location(8) p2: vec4<f32>,
   @location(9) p3: vec4<f32>,
 ) -> Varyings {
-  let world = mat4x4<f32>(m0, m1, m2, m3) * vec4<f32>(position, 1.0);
-  let wasWorld = mat4x4<f32>(p0, p1, p2, p3) * vec4<f32>(position, 1.0);
+  let world = placementOf(m0, m1, m2, m3) * vec4<f32>(position, 1.0);
+  let wasWorld = placementOf(p0, p1, p2, p3) * vec4<f32>(position, 1.0);
   var out: Varyings;
   out.clip = frame.raster * world;
   out.now = frame.viewProj * world;

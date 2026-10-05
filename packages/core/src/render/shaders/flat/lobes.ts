@@ -30,6 +30,55 @@ export const EMISSIVE_SHADOW_SHARE = 0.55;
  */
 export const MIN_LOBE_ALPHA = 0.01;
 
+/**
+ * Karis's fit to the split-sum environment BRDF, as GLSL: the lit stage's, and the screen-space
+ * reflection's when a surface asks for its Fresnel (`ReflectiveSurface.fresnel`). One text, so the
+ * two cannot drift.
+ */
+export const ENV_BRDF_GLSL = `/**
+ * The other half of the split-sum approximation: what fraction of an environment a surface returns.
+ *
+ * The convolution decides *what* a surface reflects at a given roughness; this decides *how much*.
+ * Before it the amount was fresnel times one-minus-roughness, which is a curve somebody chose
+ * standing in for an integral.
+ *
+ * Karis's analytic fit to the environment BRDF, so there is **no lookup texture and no texture
+ * unit**: a few multiply-adds against roughness and the view angle. x scales the surface's own
+ * reflectance at normal incidence and y is the additive grazing term, so a smooth dielectric at
+ * f0 0.04 returns about 0.046 head-on and approaches 1 at the edge, which is what a dielectric
+ * does. At roughness 1 it returns about 0.016 rather than the zero one-minus-roughness gave, which
+ * is the substantive difference: a fully rough dielectric does reflect its surroundings.
+ *
+ * **It replaces the Fresnel factor as well as the thinning**, because the fit already contains the
+ * angular dependence; multiplying by a separate Fresnel term would apply it twice.
+ *
+ * **How much this is worth was measured, and it is worth less than it looks on a dark room.**
+ * On demo/dev/ibl.html?ladder=1 the whole ladder moved by at most 0.2 of 255 when the old term was
+ * replaced. That is not the term failing: at high roughness the surface reads the coarsest levels
+ * of the chain, and in a room of five dark walls and one bright one those levels are dark, so a
+ * weight three times larger against a near-zero radiance is still near zero. It is worth much more
+ * against a bright environment, which is what a loaded sky is and what no captured room here is.
+ *
+ * **A warning about reading that page, paid for once.** The ladder falls about five-fold from
+ * mirror to rough, and that reads as energy being lost. It is not: a mirror concentrates the one
+ * bright wall into a sharp image and a rough surface averages it against five dark ones, so the
+ * falloff is the room's own content. The normalised falloff also happens to track one-minus-
+ * roughness closely, which made the old term look like the cause — and removing that term entirely
+ * changed nothing, which is what settled it. Perturb before believing a match.
+ *
+ * **What it costs** is a fit rather than the integral: the published error is around one per cent
+ * of the tabulated term, far below what an eight-bit frame can show. **What would make it wrong**
+ * is a material model this shader does not have — a clearcoat or a sheen lobe carries its own BRDF
+ * and its own integral, and this fit is Trowbridge-Reitz with Smith masking and nothing else.
+ */
+vec2 envBrdfApprox(float ndv, float roughness) {
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 r = roughness * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+  return vec2(-1.04, 1.04) * a004 + r.zw;
+}`;
+
 export const LOBES_GLSL = `float shadowReach(float distance, float maxDistance) {
   return 1.0 - smoothstep(
     maxDistance * ${POINT_SHADOW_FADE_START.toFixed(2)},
@@ -156,49 +205,7 @@ float sphereLobe(float ndh, float roughness, float sourceRadius, float dist) {
   return energy * (w2 * w2) / max(d * d, 1e-8);
 }
 
-/**
- * The other half of the split-sum approximation: what fraction of an environment a surface returns.
- *
- * The convolution decides *what* a surface reflects at a given roughness; this decides *how much*.
- * Before it the amount was fresnel times one-minus-roughness, which is a curve somebody chose
- * standing in for an integral.
- *
- * Karis's analytic fit to the environment BRDF, so there is **no lookup texture and no texture
- * unit**: a few multiply-adds against roughness and the view angle. x scales the surface's own
- * reflectance at normal incidence and y is the additive grazing term, so a smooth dielectric at
- * f0 0.04 returns about 0.046 head-on and approaches 1 at the edge, which is what a dielectric
- * does. At roughness 1 it returns about 0.016 rather than the zero one-minus-roughness gave, which
- * is the substantive difference: a fully rough dielectric does reflect its surroundings.
- *
- * **It replaces the Fresnel factor as well as the thinning**, because the fit already contains the
- * angular dependence; multiplying by a separate Fresnel term would apply it twice.
- *
- * **How much this is worth was measured, and it is worth less than it looks on a dark room.**
- * On demo/dev/ibl.html?ladder=1 the whole ladder moved by at most 0.2 of 255 when the old term was
- * replaced. That is not the term failing: at high roughness the surface reads the coarsest levels
- * of the chain, and in a room of five dark walls and one bright one those levels are dark, so a
- * weight three times larger against a near-zero radiance is still near zero. It is worth much more
- * against a bright environment, which is what a loaded sky is and what no captured room here is.
- *
- * **A warning about reading that page, paid for once.** The ladder falls about five-fold from
- * mirror to rough, and that reads as energy being lost. It is not: a mirror concentrates the one
- * bright wall into a sharp image and a rough surface averages it against five dark ones, so the
- * falloff is the room's own content. The normalised falloff also happens to track one-minus-
- * roughness closely, which made the old term look like the cause — and removing that term entirely
- * changed nothing, which is what settled it. Perturb before believing a match.
- *
- * **What it costs** is a fit rather than the integral: the published error is around one per cent
- * of the tabulated term, far below what an eight-bit frame can show. **What would make it wrong**
- * is a material model this shader does not have — a clearcoat or a sheen lobe carries its own BRDF
- * and its own integral, and this fit is Trowbridge-Reitz with Smith masking and nothing else.
- */
-vec2 envBrdfApprox(float ndv, float roughness) {
-  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
-  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
-  vec4 r = roughness * c0 + c1;
-  float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
-  return vec2(-1.04, 1.04) * a004 + r.zw;
-}
+${ENV_BRDF_GLSL}
 
 /**
  * How much of a prefiltered environment a surface returns, with the light that bounces more than

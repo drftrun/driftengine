@@ -1,11 +1,12 @@
 /**
  * What surfaces reflect: a room captured once, a grid of probes baked a little each frame, light
- * bounced around a space, a photographed sky, captures made in another tool, and a draw's own
- * ambient.
+ * bounced around a space, a photographed sky, captures made in another tool, a draw's own ambient,
+ * and a floor that reflects what the frame drew.
  *
  * A snippet, typechecked with the examples and quoted by the manual's reflections chapter.
  */
 import { readRadianceHdr } from '@driftengine/assets';
+import { ReflectiveSurface } from '@driftengine/core';
 import type { Camera, Environment, MeshHandle, RendererApi, Vec3 } from '@driftengine/core';
 
 // #region room
@@ -107,5 +108,26 @@ export function drawLitWhereItStands(
   renderer.setAmbientSH(coefficients);
   renderer.drawMesh(character, placement);
   renderer.setAmbientSH(null);
+}
+// #endregion
+
+// #region screen
+/**
+ * A polished stone floor that reflects what the frame drew on it, weighed as the stone itself
+ * would: four per cent head-on, rising toward the horizon, at the stone's roughness.
+ */
+export const stoneFloor = new ReflectiveSurface({
+  center: [0, 0, 0],
+  halfExtents: [12, 12, 0.2],
+  forward: [0, -1, 0],
+  up: [0, 0, 1],
+  strength: 0.04,
+  fresnel: true,
+  roughness: 0.2,
+});
+
+/** Submitted each frame between `beginFrame` and `endFrame`, and traced when the frame ends. */
+export function drawFloorReflection(renderer: RendererApi): void {
+  renderer.drawReflection(stoneFloor);
 }
 // #endregion

@@ -30,17 +30,19 @@
  * regions no tint. **What it does not do**: the GPU-driven pipeline and splats read no page.
  */
 import type { MeshData } from '@driftengine/drft';
-import { toHalfFloats } from './halfFloat.ts';
+import { packRgb9e5 } from './rgb9e5.ts';
 
 /** One page as a consumer decoded it. */
 export interface LightmapPage {
   readonly width: number;
   readonly height: number;
   /**
-   * Linear irradiance, three floats a texel, row-major from the top, in the same units every other
-   * light here is in — a bake from another engine scaled by that engine's exposure, as its lights are.
+   * Linear irradiance, row-major from the top, in the same units every other light here is in — a
+   * bake from another engine scaled by that engine's exposure, as its lights are. Either three
+   * floats a texel, or one word a texel already packed as rgb9e5 (`rgb9e5.ts`), which is how such a
+   * bake usually arrives and which uploads with no conversion at all.
    */
-  readonly irradiance: Float32Array;
+  readonly irradiance: Float32Array | Uint32Array;
   /**
    * The direction the light arrives from, four bytes a texel: a first-order spherical harmonic in
    * this engine's world axes, each value stored as `v * 0.5 + 0.5` — xyz the axis, w the constant.
@@ -60,13 +62,25 @@ export type LightmapRegion = readonly [number, number, number, number];
 /** The whole page. */
 export const WHOLE_PAGE: LightmapRegion = [1, 1, 0, 0];
 
-/** A page as both backends upload it: `layers` images of half-float RGBA, row-major from the top. */
+/**
+ * A page as both backends upload it: two layers of four bytes a texel, row-major from the top. The
+ * first is the irradiance's rgb9e5 word, byte by byte from its lowest; the second is the direction.
+ *
+ * **Eight bytes a texel, and the shader filters it.** Half floats were sixteen: a stage of 49 pages
+ * and 21.8 million texels held 348 MB, where this holds 174. The price is that the irradiance cannot
+ * be filtered as it is stored — a bilinear blend of two words with different exponents is not the
+ * blend of the colours they hold — so the lit stage fetches a texel's four neighbours, decodes each
+ * and blends the colours (`modelBaked` in `shaders/flat/models.ts`): four fetches a layer where one
+ * filtered sample was, on lightmapped surfaces alone. **What would make it wrong** is every device
+ * a page reaches sampling `rgb9e5ufloat`, which WebGL2 does as `RGB9_E5` too; it would then be a
+ * texture of its own, filtered by the device, and a binding the lit stage has no room for.
+ */
 export interface LightmapTexels {
   readonly kind: 'lightmap-texels';
   readonly width: number;
   readonly height: number;
-  readonly layers: number;
-  readonly texels: Uint16Array;
+  /** Each layer's bytes, in layer order: the irradiance, then the direction. */
+  readonly layers: readonly Uint8Array[];
 }
 
 /** Whether a surface texture's source is a page's texels rather than an image or blocks. */
@@ -79,9 +93,9 @@ export function isLightmapTexels(source: unknown): source is LightmapTexels {
 }
 
 /**
- * A page as both backends upload it: two layers of half-float RGBA, the irradiance with an alpha of
- * one and the direction as the fractions its bytes are. Refuses a page whose arrays are not its
- * size, naming the one that is short.
+ * A page as both backends upload it (see `LightmapTexels`). Refuses a page whose arrays are not its
+ * size, naming the one that is short. Packed irradiance is read where it lies, with no copy; float
+ * irradiance is packed once, here.
  */
 export function lightmapTexels(page: LightmapPage): LightmapTexels {
   const { width, height } = page;
@@ -89,10 +103,14 @@ export function lightmapTexels(page: LightmapPage): LightmapTexels {
     throw new Error(`createLightmap: a ${width} by ${height} page has nothing in it`);
   }
   const texels = width * height;
-  if (page.irradiance.length !== texels * 3) {
+  const irradiance = page.irradiance;
+  const packed = irradiance instanceof Uint32Array;
+  const wanted = packed ? texels : texels * 3;
+  if (irradiance.length !== wanted) {
     throw new Error(
-      `createLightmap: ${page.irradiance.length} irradiance floats for a ${width} by ${height} ` +
-        `page, which wants ${texels * 3}: three a texel`,
+      `createLightmap: ${irradiance.length} irradiance ${packed ? 'words' : 'floats'} for a ` +
+        `${width} by ${height} page, which wants ${wanted}: ` +
+        (packed ? 'one rgb9e5 word a texel' : 'three a texel'),
     );
   }
   if (page.direction.length !== texels * 4) {
@@ -101,22 +119,45 @@ export function lightmapTexels(page: LightmapPage): LightmapTexels {
         `page, which wants ${texels * 4}: four a texel`,
     );
   }
-  const floats = new Float32Array(texels * 4 * LIGHTMAP_LAYERS);
-  for (let t = 0; t < texels; t++) {
-    floats[t * 4] = page.irradiance[t * 3] as number;
-    floats[t * 4 + 1] = page.irradiance[t * 3 + 1] as number;
-    floats[t * 4 + 2] = page.irradiance[t * 3 + 2] as number;
-    floats[t * 4 + 3] = 1;
-    const at = (texels + t) * 4;
-    for (let c = 0; c < 4; c++) floats[at + c] = (page.direction[t * 4 + c] as number) / 255;
+  let words: Uint32Array;
+  if (packed) {
+    words = irradiance;
+  } else {
+    words = new Uint32Array(texels);
+    for (let t = 0; t < texels; t++) {
+      words[t] = packRgb9e5(
+        irradiance[t * 3] as number,
+        irradiance[t * 3 + 1] as number,
+        irradiance[t * 3 + 2] as number,
+      );
+    }
   }
   return {
     kind: 'lightmap-texels',
     width,
     height,
-    layers: LIGHTMAP_LAYERS,
-    texels: toHalfFloats(floats),
+    layers: [littleEndianBytes(words), page.direction],
   };
+}
+
+/** Whether this platform lays a word out lowest byte first, which the shader's decode assumes. */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * A page's words as bytes, lowest first: a view of the same memory on every little-endian platform,
+ * which is every one a browser runs on, and a reordered copy anywhere else.
+ */
+function littleEndianBytes(words: Uint32Array): Uint8Array {
+  const bytes = new Uint8Array(words.buffer, words.byteOffset, words.length * 4);
+  if (LITTLE_ENDIAN) return bytes;
+  const swapped = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i += 4) {
+    swapped[i] = bytes[i + 3] as number;
+    swapped[i + 1] = bytes[i + 2] as number;
+    swapped[i + 2] = bytes[i + 1] as number;
+    swapped[i + 3] = bytes[i] as number;
+  }
+  return swapped;
 }
 
 /**

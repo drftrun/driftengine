@@ -76,6 +76,10 @@ export function cullInstances(
     if (regions !== undefined && out.lightmapRegions !== undefined) {
       for (let k = 0; k < 4; k++) out.lightmapRegions[kept * 4 + k] = regions[i * 4 + k] as number;
     }
+    const cells = data.uvRegions;
+    if (cells !== undefined && out.uvRegions !== undefined) {
+      for (let k = 0; k < 4; k++) out.uvRegions[kept * 4 + k] = cells[i * 4 + k] as number;
+    }
     kept++;
   }
   out.count = kept;

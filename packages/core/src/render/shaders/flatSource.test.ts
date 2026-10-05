@@ -93,9 +93,9 @@ function digest(text: string): string {
 
 /*
  * **The order the clustered arm reads a record in is the performance, so it is asserted.** A plain
- * light costs two texels only while the range test comes before the second and the fixture's three
+ * light costs two texels only while the range test comes before the second and the fixture's four
  * stay inside a branch a whole frame of plain lights never enters; moving either line back reads
- * five texels a light again, and the picture would not change to say so. See `LIGHT_TEXELS`.
+ * six texels a light again, and the picture would not change to say so. See `LIGHT_TEXELS`.
  */
 test('the clustered arm reads a plain light in two texels, and out of reach in one', () => {
   const source = flatFrag(optionsFor(ALL_ON));

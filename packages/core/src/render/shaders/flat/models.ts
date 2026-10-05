@@ -48,6 +48,12 @@ const bool SKIN_ALBEDO = false;  // wgsl:override
  * Declared after skin's halves so that every switch before it keeps the id it shipped with.
  */
 const bool MODEL_LIGHTMAP = false;  // wgsl:override
+/*
+ * Not a model either: whether this program carries GGX's own highlight for a material that asks
+ * (\`SurfaceMaterial.physicalSpecular\`). A lit switch, off until a material first asks and then
+ * on for good, as \`litSwitchesGlsl\`'s are; declared last so every switch before it keeps its id.
+ */
+const bool PHYSICAL_SPECULAR = PHYSICAL_SPECULAR_ON;  // wgsl:override
 
 /*
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
@@ -126,15 +132,57 @@ float smithMasking(float ndl, float ndv, float alpha) {
   );
 }
 
+/*
+ * Whether this surface's highlights are GGX's own (\`SurfaceMaterial.physicalSpecular\`), from the
+ * lane the standard, lightmap and anisotropic models leave free (\`packModel\`). Skin, hair and the
+ * eye shade their own highlights, and the eye's axis holds that lane, so they are never asked. The
+ * lit switch first, so a program built before any material asked carries none of it.
+ */
+bool physicalSpecular() {
+  if (PHYSICAL_SPECULAR) {
+    if (MODEL_HAIR) return false;
+    if (MODEL_SKIN) return false;
+    if (MODEL_EYE) return false;
+    return uModelParams[1].z > 0.5;
+  }
+  return false;
+}
+
+/**
+ * GGX as a BRDF in this engine's light units, \`π · D · Vis · N·L\` with Fresnel left to the caller:
+ * the term skin's and the eye's highlights are, for a surface that asks for it. Its peak is
+ * \`1 / (4 α²)\` of the light head-on, against the look's 1. A lamp's size widens α as \`sphereLobe\`
+ * widens it, and a normalised distribution keeps its energy as it widens.
+ */
+float physicalLobe(float ndh, float ndl, float ndv, float roughness, float sourceRadius, float dist) {
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float alpha = min(max(roughness * roughness, MIN_LOBE_ALPHA) + grow, 1.0);
+  return 3.14159265 * ggxLobe(ndh, alpha) * smithMasking(ndl, max(ndv, 1e-4), alpha) * ndl;
+}
+
+/**
+ * A highlight's colour: Schlick's Fresnel from the surface's reflectance toward white at a grazing
+ * \`voh\`. On a metal alone for the look, whose dielectric attribute is a strength rather than a
+ * reflectance; on every surface where the highlight is physical, whose attribute is its F0 — but
+ * one reflecting nothing head-on keeps nothing, as the lamps' gate on that attribute has it.
+ */
+vec3 highlightTint(vec3 specColor, float voh, float metal) {
+  float edge = pow(1.0 - voh, 5.0);
+  bool reflects = max(max(specColor.r, specColor.g), specColor.b) > 0.0;
+  return mix(specColor, vec3(1.0), physicalSpecular() && reflects ? edge : edge * metal);
+}
+
 /** The standard model's answer to one light, which a model falls back to for what it does not change. */
 void standardLight(vec3 l, float sourceRadius, float dist) {
   float ndl = max(dot(mNormal, l), 0.0);
   vec3 h = normalize(l + mToEye);
   float ndh = max(dot(mNormal, h), 0.0);
-  float lobe = sourceRadius > 0.0
-    ? sphereLobe(ndh, mRoughness, sourceRadius, dist)
-    : specularLobe(ndh, mRoughness);
-  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  float lobe = physicalSpecular()
+    ? physicalLobe(ndh, ndl, dot(mNormal, mToEye), mRoughness, sourceRadius, dist)
+    : sourceRadius > 0.0
+      ? sphereLobe(ndh, mRoughness, sourceRadius, dist)
+      : specularLobe(ndh, mRoughness);
+  vec3 tint = highlightTint(mSpecColor, max(dot(mToEye, h), 0.0), mMetal);
   mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
   mSpecular = ndl > 0.0 ? tint * lobe : vec3(0.0);
 }
@@ -254,19 +302,50 @@ vec3 modelEnvironment(vec3 environment) {
 }
 
 /**
+ * One texel of a page's irradiance layer: its four bytes put back into the rgb9e5 word they are,
+ * lowest first, and decoded — three 9-bit mantissas over the exponent in the top five bits.
+ */
+vec3 bakedIrradianceAt(ivec3 texel) {
+  uvec4 bytes = uvec4(texelFetch(uModelMap, texel, 0) * 255.0 + 0.5);
+  uint word = bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (bytes.w << 24u);
+  float scale = exp2(float(word >> 27u) - 24.0);
+  return vec3(float(word & 511u), float((word >> 9u) & 511u), float((word >> 18u) & 511u)) * scale;
+}
+
+/**
  * What a baked page adds to this surface's diffuse: nothing in any pipeline but a lightmapped one,
  * nor in one whose page is missing. The page's two layers at the surface's second coordinates, which
  * ride the grain and relief lanes as \`-1 - uv\` (lightmap.ts) and are placed by the material's
  * region: the irradiance, and the first-order harmonic its direction is, answered by the shading
  * normal.
- * **An explicit level**, because the page has one and nothing here needs a derivative.
+ *
+ * **Filtered here, because the page cannot be filtered as it is stored**: the irradiance is a
+ * shared-exponent word in four bytes, and a blend of two words is not the blend of their colours.
+ * So the four texels around the sample are fetched, decoded and blended, as a bilinear sampler
+ * clamped at the page's edge would. Fetches need no derivative, so the branch costs nothing there.
  */
 vec3 modelBaked(vec3 n, vec3 albedo, float metal) {
   if (MODEL_LIGHTMAP) {
     if (uModelParams[1].w <= 0.0) return vec3(0.0);
     vec2 at = (vec2(-1.0) - vec2(vGrain, vRelief)) * uModelParams[0].xy + uModelParams[0].zw;
-    vec3 irradiance = textureLod(uModelMap, vec3(at, 0.0), 0.0).rgb;
-    vec4 d = textureLod(uModelMap, vec3(at, 1.0), 0.0) * 2.0 - 1.0;
+    ivec2 size = textureSize(uModelMap, 0).xy;
+    vec2 texel = at * vec2(size) - 0.5;
+    vec2 corner = floor(texel);
+    vec2 f = texel - corner;
+    ivec2 last = size - 1;
+    ivec2 lo = clamp(ivec2(corner), ivec2(0), last);
+    ivec2 hi = clamp(ivec2(corner) + 1, ivec2(0), last);
+    vec3 irradiance = mix(
+      mix(bakedIrradianceAt(ivec3(lo.x, lo.y, 0)), bakedIrradianceAt(ivec3(hi.x, lo.y, 0)), f.x),
+      mix(bakedIrradianceAt(ivec3(lo.x, hi.y, 0)), bakedIrradianceAt(ivec3(hi.x, hi.y, 0)), f.x),
+      f.y
+    );
+    vec4 direction = mix(
+      mix(texelFetch(uModelMap, ivec3(lo.x, lo.y, 1), 0), texelFetch(uModelMap, ivec3(hi.x, lo.y, 1), 0), f.x),
+      mix(texelFetch(uModelMap, ivec3(lo.x, hi.y, 1), 0), texelFetch(uModelMap, ivec3(hi.x, hi.y, 1), 0), f.x),
+      f.y
+    );
+    vec4 d = direction * 2.0 - 1.0;
     return albedo * (1.0 - metal) * irradiance * max(dot(d.xyz, n) + d.w, 0.0);
   }
   return vec3(0.0);
@@ -289,15 +368,20 @@ float modelReflectance(float standard) {
 }
 `;
 
-/** The models' whole chunk, at depth zero before `main`: see `flatFrag`. */
-export const MODELS_GLSL = [
-  MODELS_HEAD,
-  ANISOTROPIC_GLSL,
-  HAIR_GLSL,
-  SKIN_GLSL,
-  EYE_GLSL,
-  MODELS_DISPATCH,
-].join('\n');
+/**
+ * The models' whole chunk, at depth zero before `main`: see `flatFrag`. `physicalSpecular` is the
+ * \`PHYSICAL_SPECULAR\` lit switch's value, written in as \`litSwitchesGlsl\` writes the others.
+ */
+export function modelsGlsl(physicalSpecular: boolean): string {
+  return [
+    MODELS_HEAD.replace('PHYSICAL_SPECULAR_ON', physicalSpecular ? 'true' : 'false'),
+    ANISOTROPIC_GLSL,
+    HAIR_GLSL,
+    SKIN_GLSL,
+    EYE_GLSL,
+    MODELS_DISPATCH,
+  ].join('\n');
+}
 
 /**
  * Which half of a skin a lit pipeline draws under `skinScattering: 'screen-space'`: the whole

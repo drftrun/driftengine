@@ -188,6 +188,39 @@ export function fadingPanes(
 multiplies into the batch's own. So particles fading at different rates, or panes at different
 clarity, are one draw rather than a batch for each opacity. An opaque draw ignores it.
 
+### Each instance its own texture cell
+
+```ts sample=snippets/instancing.ts#cells
+/** A batch whose instances each name a cell of a flipbook of `frames` frames in one row. */
+export function createFlipbookBatch(capacity: number) {
+  return { ...createMeshInstances(capacity), uvRegions: new Float32Array(capacity * 4) };
+}
+
+/** Each particle on its own frame: the cell's scale, then its offset, per instance. */
+export function showFrames(
+  renderer: RendererApi,
+  batch: InstancedHandle,
+  particles: ReturnType<typeof createFlipbookBatch>,
+  frameOf: (particle: number) => number,
+  frames: number,
+): void {
+  for (let i = 0; i < particles.count; i += 1) {
+    particles.uvRegions.set([1 / frames, 1, frameOf(i) / frames, 0], i * 4);
+  }
+  renderer.uploadInstanced(batch, particles);
+  renderer.drawTranslucentInstanced(batch, particles, 1);
+}
+```
+
+`MeshInstances.uvRegions` holds four numbers an instance, `[scaleU, scaleV, offsetU, offsetV]`,
+applied to the mesh's texture coordinates before the material's own `uScale` and `uOffset`. Mesh
+particles each on their own frame of a flipbook, or props wearing different tiles of one atlas,
+are one draw rather than a batch for each cell. Absent, every instance wears the whole texture.
+It applies to opaque and translucent draws alike, and a cutout instance's shadow is cut by its own
+cell. The cell rides the bottom row of the instance's matrix, which a placement made of a turn, a
+scale and a move leaves unused, so an instanced placement must be affine; every placement of a solid
+object is.
+
 An instanced batch can cast shadows: the shadow caster sink accepts instanced batches as well as
 meshes.
 

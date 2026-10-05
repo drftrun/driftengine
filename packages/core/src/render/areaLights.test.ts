@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { createAreaLightBuffer, MAX_AREA_LIGHTS, selectAreaLights } from './areaLights.ts';
+import {
+  createAreaLightBuffer,
+  MAX_AREA_LIGHTS,
+  packAreaSizesAndDoors,
+  selectAreaLights,
+} from './areaLights.ts';
 import type { AreaLightSource } from './areaLights.ts';
 
 const PANEL: AreaLightSource = {
@@ -102,5 +107,45 @@ describe('selecting area lights', () => {
     const buffer = createAreaLightBuffer();
     selectAreaLights([], buffer);
     expect(buffer.count).toBe(0);
+  });
+});
+
+/*
+ * **Barn doors cross as a cosine and a length**, because the shader wants where a door's tip stands
+ * and the cosine gives it without a trigonometric call a fragment. A door at 90° hides nothing, so
+ * it is written as no doors at all: the shader's early out, and the frame bit for bit a rectangle's
+ * with none.
+ */
+describe('barn doors', () => {
+  const lights: AreaLightSource[] = [
+    { ...PANEL, barnDoorAngle: 60, barnDoorLength: 0.3 },
+    { ...PANEL, barnDoorAngle: 60 },
+    { ...PANEL, barnDoorAngle: 90 },
+    PANEL,
+    { ...PANEL, barnDoorAngle: 30, barnDoorLength: 0 },
+    { ...PANEL, barnDoorAngle: Number.NaN },
+  ];
+
+  it("A RECTANGLE'S DOORS REACH THE SHADER AS THEIR COSINE AND LENGTH, AND NONE AS ZERO", () => {
+    const buffer = createAreaLightBuffer(lights.length);
+    selectAreaLights(lights, buffer);
+    const doors = Array.from(buffer.barnDoors ?? []);
+    expect(doors[0], 'cos 60°').toBeCloseTo(0.5, 6);
+    expect(doors[1]).toBeCloseTo(0.3, 6);
+    expect(doors[2], 'the default length').toBeCloseTo(0.5, 6);
+    expect(doors[3], "Unreal's 20 cm").toBeCloseTo(0.2, 6);
+    expect(doors.slice(4), 'flat, absent, zero-length and NaN doors').toEqual([
+      0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+  });
+
+  it('packs four a rectangle for the fixed arm: its two half extents, then its doors', () => {
+    const buffer = createAreaLightBuffer(lights.length);
+    selectAreaLights(lights, buffer);
+    const packed = new Float32Array(MAX_AREA_LIGHTS * 4);
+    packAreaSizesAndDoors(buffer, packed);
+    expect(Array.from(packed.subarray(0, 4))).toEqual([1, 0.5, 0.5, Math.fround(0.3)]);
+    expect(Array.from(packed.subarray(4, 8))).toEqual([1, 0.5, 0.5, Math.fround(0.2)]);
+    expect(Array.from(packed.subarray(8, 12))).toEqual([1, 0.5, 0, 0]);
   });
 });

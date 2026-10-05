@@ -92,7 +92,7 @@ export const MAX_CLUSTERED_LIGHTS = 320;
  * it cannot. That is what lets a light index the shadow uniforms by a number read from a texture,
  * and it is the same fact the octahedral array texture was built on.
  */
-export const LIGHT_TEXELS = 5;
+export const LIGHT_TEXELS = 6;
 
 /**
  * Where each field of a light's record sits, as an offset in `uint`s from `lightBase`.
@@ -123,7 +123,11 @@ export const LIGHT_TEXELS = 5;
  * **Reordered 2026-10-02 so a plain light's fields are the first eight**, which is what lets the
  * shader stop after two texels. Nine values are needed by every light and eight fit in two
  * texels, so the emitter size and the weight share slot 7 as two halves; see `packSizeAndWeight`.
- * Slot 19 is spare.
+ *
+ * **A sixth texel arrived in 4.8.7 for a light's own falloff exponent**, the fifth's last slot
+ * having gone to the channels: 6 KB more of a table near 300, read only for a light whose record
+ * carries a fixture, which a light with an exponent does. Slots 21 and 22 are a rectangle's barn
+ * doors and spare on a lamp; slot 23 is spare.
  */
 export const LIGHT_RECORD = {
   positionX: 0,
@@ -154,6 +158,11 @@ export const LIGHT_RECORD = {
    * last texels are fetched; a plain light's are not, and the shader takes the default for it.
    */
   channels: 19,
+  /** The light's own falloff exponent, or 0 for the frame's falloff. `PointLightSource.falloffExponent`. */
+  falloffExponent: 20,
+  /** A rectangle's barn doors: the cosine of their angle from its normal, then their length in metres. */
+  barnDoorCos: 21,
+  barnDoorLength: 22,
 } as const;
 
 /** The lighting channel every light and every surface is on unless it says otherwise. */
@@ -171,11 +180,20 @@ export function lightChannelsOf(value: number | undefined): number {
   return value;
 }
 
+/**
+ * A light's own falloff exponent as the shader reads it: a positive finite number, or 0 for the
+ * frame's falloff where none was named or what was named is not one. The record and the uniform
+ * path both write this, so a light named badly falls off by the frame's rule in both.
+ */
+export function lightFalloffExponentOf(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 /** Texels the lit pass reads for a light whose record carries no fixture. */
 export const PLAIN_LIGHT_TEXELS = 2;
 
 /**
- * The bit of `sizeAndWeight` that says the record's last three texels hold something: the sign of
+ * The bit of `sizeAndWeight` that says the record's last four texels hold something: the sign of
  * the emitter size's half, which a size never needs.
  */
 export const LIGHT_FIXTURE_FLAG = 0x8000;
@@ -426,6 +444,8 @@ export interface ClusterLightSet {
   readonly iesProfiles?: Float32Array;
   /** One per light: its lighting channels. See `PointLightSet.lightChannels`. */
   readonly channels?: Float32Array;
+  /** One per light: its own falloff exponent, or 0. See `PointLightSource.falloffExponent`. */
+  readonly falloffExponents?: Float32Array;
   /**
    * The rectangles shaded through the table, after the `count` point lights: those of `areas` from
    * `areaFrom` on, `areaCount` of them. The ones before `areaFrom` are the fixed arm's, which is
@@ -450,6 +470,7 @@ export interface ClusterLightArrays {
   readonly lightIesAxes?: Float32Array;
   readonly lightCookies?: Float32Array;
   readonly lightChannels?: Float32Array;
+  readonly lightFalloffExponents?: Float32Array;
   readonly areaLights?: AreaLightBuffer | null;
 }
 
@@ -510,6 +531,7 @@ export function fillClusterLightSet(
   out.iesAxes = env.lightIesAxes;
   out.cookies = env.lightCookies;
   out.channels = env.lightChannels;
+  out.falloffExponents = env.lightFalloffExponents;
   return out;
 }
 
@@ -559,8 +581,8 @@ function distanceSqToBounds(x: number, y: number, z: number, b: Float32Array): n
 }
 
 /**
- * Whether a light's record needs its last three texels: it holds a shadow slot, a cone, a profile
- * or a cookie. Everything else is a plain light, read in `PLAIN_LIGHT_TEXELS`.
+ * Whether a light's record needs its last four texels: it holds a shadow slot, a cone, a profile,
+ * a cookie, channels of its own or a falloff exponent of its own. Everything else is a plain light, read in `PLAIN_LIGHT_TEXELS`.
  *
  * **`shadowSlots` is zero where the lit shader has no point shadows**, and both binners are handed
  * it that way: a slot is only read under `POINT_SHADOWS`, so a light holding one in a build without
@@ -580,7 +602,8 @@ export function lightHasFixture(
     (cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER) !== POINT_LIGHT_COS_OUTER ||
     (lights.iesProfiles?.[light] ?? NO_IES_PROFILE) >= 0 ||
     (lights.cookies?.[light] ?? NO_IES_PROFILE) >= 0 ||
-    lightChannelsOf(lights.channels?.[light]) !== DEFAULT_LIGHT_CHANNELS
+    lightChannelsOf(lights.channels?.[light]) !== DEFAULT_LIGHT_CHANNELS ||
+    lightFalloffExponentOf(lights.falloffExponents?.[light]) > 0
   );
 }
 
@@ -665,6 +688,12 @@ export function writeLightRecord(
   out[at + LIGHT_RECORD.iesAxisY] = floatBits(axes?.[light * 3 + 1] ?? 0);
   out[at + LIGHT_RECORD.iesAxisZ] = floatBits(axes?.[light * 3 + 2] ?? 0);
   out[at + LIGHT_RECORD.channels] = floatBits(lightChannelsOf(lights.channels?.[light]));
+  out[at + LIGHT_RECORD.falloffExponent] = floatBits(
+    lightFalloffExponentOf(lights.falloffExponents?.[light]),
+  );
+  out[at + LIGHT_RECORD.barnDoorCos] = 0;
+  out[at + LIGHT_RECORD.barnDoorLength] = 0;
+  out[at + LIGHT_RECORD.barnDoorLength + 1] = 0;
 }
 
 /**
@@ -677,9 +706,9 @@ function areaSlot(lights: ClusterLightSet, light: number): number {
 
 /**
  * A rectangle's record, which the shader tells from a lamp's by its **negative radius** — its
- * reach, negated — and reads to its fifth texel: sidedness where a lamp keeps its shadow slot,
+ * reach, negated — and reads to its sixth texel: sidedness where a lamp keeps its shadow slot,
  * the right axis where a spot keeps its direction, the half extents where its cone is, the up
- * axis where the azimuth is, and the channels last. Never shadowed: a rectangle's occlusion is
+ * axis where the azimuth is, the channels, and the barn doors in the sixth. Never shadowed: a rectangle's occlusion is
  * the fixed arm's, which is why the first `maxAreaLights` stay there.
  */
 function writeAreaRecord(
@@ -715,6 +744,10 @@ function writeAreaRecord(
   out[at + LIGHT_RECORD.iesAxisY] = floatBits(up?.[a * 3 + 1] ?? 1);
   out[at + LIGHT_RECORD.iesAxisZ] = floatBits(up?.[a * 3 + 2] ?? 0);
   out[at + LIGHT_RECORD.channels] = floatBits(DEFAULT_LIGHT_CHANNELS);
+  out[at + LIGHT_RECORD.falloffExponent] = 0;
+  out[at + LIGHT_RECORD.barnDoorCos] = floatBits(areas?.barnDoors?.[a * 2] ?? 0);
+  out[at + LIGHT_RECORD.barnDoorLength] = floatBits(areas?.barnDoors?.[a * 2 + 1] ?? 0);
+  out[at + LIGHT_RECORD.barnDoorLength + 1] = 0;
 }
 
 /** A clustered rectangle's reach, which its record carries negated. See `AreaLightSource.range`. */

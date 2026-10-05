@@ -39,6 +39,7 @@ import {
 } from '../../packages/core/src/index';
 import type { MeshData, RendererApi, Vec3 } from '../../packages/core/src/index';
 import { DrftLoader } from '../../packages/assets/src/index';
+import { spawnBcWorker } from '../../packages/assets/src/bcWorkers';
 import { writeDrft } from '../../packages/drft/src/index';
 import type { DrftMaterial, DrftRegion } from '../../packages/drft/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
@@ -177,7 +178,11 @@ async function main(): Promise<void> {
   const renderer: RendererApi = created.renderer;
 
   const { bytes, triangles } = city();
-  const loader = new DrftLoader(renderer, { revealSec: 0, uploadMsPerFrame: 1000 });
+  const loader = new DrftLoader(renderer, {
+    bcWorker: spawnBcWorker,
+    revealSec: 0,
+    uploadMsPerFrame: 1000,
+  });
   await loader.consume(new Response(bytes), { fit: 'none' });
   const hlod = new HlodSet({
     capacity: GRID * GRID,

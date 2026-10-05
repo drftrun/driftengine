@@ -107,7 +107,13 @@ void main() {
    * the glow. A single falloff gives either a hard line with no atmosphere or a
    * soft smudge with no filament.
    */
-  float across = 1.0 - abs(vSide);
+  /*
+   * Clamped, because a multisampled target shades a pixel on the quad's edge at its centre, which
+   * may lie outside the quad: there 'vSide' runs past one, 'across' goes negative, and 'pow' of a
+   * negative number is NaN. One NaN pixel is a dark speck; bloom then spreads it into a white disc
+   * the size of the blur. Found by a fight drawing short arcs at 4 samples.
+   */
+  float across = clamp(1.0 - abs(vSide), 0.0, 1.0);
   float core = pow(across, 10.0);
   /*
    * A *wide* halo, deliberately. This exponent is the single biggest control over

@@ -16,6 +16,12 @@
  *     /clustered.html?channels=1&floorchannels=3
  *                                        the floor on both channels, so every lamp lights it again
  *                                        and the frame is the one without channels, to the pixel
+ *     /clustered.html?exponent=8         every lamp's own falloff, (1 - (d/R)^2)^8, in place of the
+ *                                        frame's: a tighter pool, and a dim one, since these lamps
+ *                                        hang far enough above the floor that its centre is already
+ *                                        well down that curve
+ *     /clustered.html?lamps=16           the first sixteen alone, which the fixed path shades too, so
+ *                                        `clustered=0` and `clustered=1` are one picture to compare
  *
  * **Why forty and why apart.** The fixed path shades against the first `MAX_POINT_LIGHTS` entries
  * of the array, in order, so lamps 16 to 39 are simply absent from it; clustering bins all of them
@@ -107,6 +113,10 @@ async function main(): Promise<void> {
     for (let n = 0; n < LAMPS; n++) if ((n % COLUMNS) % 2 === 0) channels[n] = 2;
   }
   const floorChannels = Number(asked.get('floorchannels') ?? 1);
+  /* `?exponent=N`: every lamp's own falloff exponent. See the header. */
+  const exponents = new Float32Array(LAMPS).fill(Number(asked.get('exponent') ?? 0));
+  /* `?lamps=N`: how many of the forty are lit, so the two arms can draw the same set. */
+  const lit = Math.min(LAMPS, Math.max(0, Number(asked.get('lamps') ?? LAMPS)));
   for (let n = 0; n < LAMPS; n++) {
     const [x, y, z] = lampAt(n);
     positions[n * 3] = x;
@@ -128,13 +138,14 @@ async function main(): Promise<void> {
     ambientGround: [0, 0, 0],
     fogColor: BACKGROUND,
     fogDensity: 0,
-    lightCount: LAMPS,
+    lightCount: lit,
     lightPositions: positions,
     lightColors: colors,
     lightRadii: radii,
     lightSourceRadii: sourceRadii,
     lightWeights: weights,
     lightChannels: channels,
+    lightFalloffExponents: exponents,
   });
 
   const camera = new Camera();

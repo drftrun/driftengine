@@ -7,7 +7,9 @@
  * neighbours' `N·L` as well as its own: the clamped cosine averaged around a ring of the surface's
  * curvature, weighted by the diffusion profile at each neighbour's distance. The profile is Burley's
  * normalised diffusion, one per channel, at a scatter distance `d` — the model's `radius` times its
- * scatter colour — projected onto the ring's plane, as a cylinder's cross-section sees it. The
+ * scatter colour, over `SKIN_MEAN_EXIT`, since `radius` is how far light travels and the profile
+ * carries it two and a half `d` — projected onto the ring's plane, as a cylinder's cross-section
+ * sees it. The
  * result depends on `N·L` and on one number per channel, `k = d × curvature`, and at `k = 0` it is
  * Lambert's.
  *

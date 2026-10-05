@@ -24,6 +24,52 @@ float areaSignedForm(vec3 n, vec3 centre, vec3 right, vec3 up, vec2 halfSize) {
 }
 
 /**
+ * How far along one of a rectangle's axes a fragment still sees it past the barn door on that axis's
+ * positive edge: \`p\` the fragment's place along the axis, \`height\` its height above the
+ * rectangle's plane, \`halfSize\` the rectangle's half extent, and the door's tip \`tipOut\` beyond
+ * the edge and \`tipUp\` above the plane. Points of the rectangle past the answer are hidden.
+ *
+ * Above the tip, the tip's shadow on the plane as seen from the fragment is the limit. Below it, a
+ * fragment beside the door and outside its line is hidden from all of it, and one inside the door's
+ * reach is hidden from none of it.
+ */
+float barnDoorLimit(float p, float height, float halfSize, float tipOut, float tipUp) {
+  float tipAt = halfSize + tipOut;
+  if (height > tipUp) return (height * tipAt - tipUp * p) / (height - tipUp);
+  if (p > halfSize && height * tipOut < tipUp * (p - halfSize)) return -1e9;
+  return 1e9;
+}
+
+/**
+ * The part of a rectangle a fragment sees past its barn doors, written into \`centre\` and
+ * \`halfSize\` as the smaller rectangle that is left, or false where the doors hide all of it.
+ * \`doors\` is the cosine of their angle from the normal and their length; a length of 0 is no doors.
+ * Each axis is clipped by its own two doors, which is what makes this four projections and a min.
+ */
+bool areaBarnDoors(inout vec3 centre, vec3 right, vec3 up, inout vec2 halfSize, vec2 doors) {
+  if (doors.y <= 0.0) return true;
+  vec3 toFragment = vWorldPos - centre;
+  float height = dot(toFragment, cross(right, up));
+  /* Behind the emitting side: nothing to clip, and the form factor already answers it. */
+  if (height <= 0.0) return true;
+  float tipOut = doors.y * sqrt(max(1.0 - doors.x * doors.x, 0.0));
+  float tipUp = doors.y * doors.x;
+  vec2 p = vec2(dot(toFragment, right), dot(toFragment, up));
+  vec2 hi = vec2(
+    min(halfSize.x, barnDoorLimit(p.x, height, halfSize.x, tipOut, tipUp)),
+    min(halfSize.y, barnDoorLimit(p.y, height, halfSize.y, tipOut, tipUp))
+  );
+  vec2 lo = vec2(
+    max(-halfSize.x, -barnDoorLimit(-p.x, height, halfSize.x, tipOut, tipUp)),
+    max(-halfSize.y, -barnDoorLimit(-p.y, height, halfSize.y, tipOut, tipUp))
+  );
+  if (hi.x <= lo.x || hi.y <= lo.y) return false;
+  centre += right * (0.5 * (lo.x + hi.x)) + up * (0.5 * (lo.y + hi.y));
+  halfSize = 0.5 * (hi - lo);
+  return true;
+}
+
+/**
  * What one rectangle of colour \`color\` and form factor \`form\` adds to the lamps' two sums, open
  * and shadowed by \`occl\` and \`glass\`.
  *

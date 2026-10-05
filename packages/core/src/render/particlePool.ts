@@ -53,6 +53,29 @@ export interface ParticleInstances {
   capacity: number;
 }
 
+/**
+ * Floats one particle takes in a buffer a caller's own compute writes (`DeviceParticles`), in this
+ * order: position 3, half-width 1, roll 1, colour 3, opacity 1, age 1, seed 1, velocity 3, a
+ * sprite's frame 1 and its half-height 1 — `ParticleInstances`' streams, interleaved as the pool's
+ * own upload interleaves them. 64 bytes a particle.
+ */
+export const DEVICE_PARTICLE_FLOATS = 16;
+
+/**
+ * Particles a caller's own compute shader wrote into a buffer of its own (`registerCompute`), drawn
+ * where they lie by `drawDeviceParticles` rather than read back and uploaded again. WebGPU only.
+ *
+ * **Not sorted**, as a pool's are where its batch asks: the device holds them, so an alpha-blended
+ * set that must be drawn far to near sorts itself. A slot with a half-width of 0 draws nothing, which
+ * is how a fixed-size buffer holds fewer live particles than it has room for.
+ */
+export interface DeviceParticles {
+  /** A buffer with `VERTEX` usage, `DEVICE_PARTICLE_FLOATS` floats a particle. */
+  readonly buffer: GPUBuffer;
+  /** How many particles from its start to draw; no more than the buffer holds. */
+  readonly count: number;
+}
+
 function createParticleInstances(capacity: number): ParticleInstances {
   return {
     positions: new Float32Array(capacity * 3),

@@ -32,6 +32,8 @@ export interface FieldLight extends LightReach {
   readonly b: number;
   /** The emitter's physical radius, which widens its penumbra. */
   readonly sourceRadius: number;
+  /** Its own falloff exponent, overriding the frame's above zero. See `pointLightShape`. */
+  readonly falloffExponent?: number;
 }
 
 /**
@@ -115,7 +117,7 @@ export function sampleFieldLight(
     const dz = source.z - pz;
     const dist = Math.hypot(dx, dy, dz);
     if (dist >= source.radius) continue;
-    const shape = pointLightShape(dist, source.radius, falloff);
+    const shape = pointLightShape(dist, source.radius, falloff, source.falloffExponent);
     if (shape <= 0) continue;
     const seen =
       distance === null

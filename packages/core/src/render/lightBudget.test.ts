@@ -83,7 +83,8 @@ test('every light array reaches its uniform at full length, whatever the caller 
    * lamp in the world switched off, from a caller who never heard of spot lights.
    */
   expect(seen.get('uLightDir[0]')).toBe(MAX_POINT_LIGHTS * 3);
-  expect(seen.get('uLightCone[0]')).toBe(MAX_POINT_LIGHTS * 2);
+  /* The cone with the falloff exponent in z, four a light. */
+  expect(seen.get('uLightCone[0]')).toBe(MAX_POINT_LIGHTS * 4);
   /* The azimuth with the channels in w, four a light. */
   expect(seen.get('uLightIesAxis[0]')).toBe(MAX_POINT_LIGHTS * 4);
 });
@@ -93,6 +94,24 @@ test('every light array reaches its uniform at full length, whatever the caller 
  * channel 1 for every light unless one names others, and channel 1 again for a mask that is not one.
  * Read off what reaches `uLightIesAxis`, which is where the fixed arm reads them.
  */
+/*
+ * **The uniform path carries a light's own falloff exponent beside its cone**, in the lane the cone
+ * leaves: 0, the frame's falloff, for every light unless one names its own, and 0 again for an
+ * exponent that is not a positive finite number. A point light's open cone is -1 and -2.
+ */
+test("A LIGHT'S OWN FALLOFF EXPONENT REACHES THE UNIFORM PATH IN THE CONE'S THIRD LANE", () => {
+  const { gl, values } = fakeGl();
+  const exponents = new Float32Array(MAX_POINT_LIGHTS);
+  exponents[0] = 8;
+  exponents[1] = -1;
+  const env = createEnvironment({ lightCount: 3, lightFalloffExponents: exponents });
+  bindPointLights(gl, uniforms(), env, 'smooth');
+  const sent = values.get('uLightCone[0]') ?? new Float32Array(0);
+  expect(Array.from(sent.subarray(0, 4)), 'the open cone, then exponent 8').toEqual([-1, -2, 8, 0]);
+  expect(sent[6], 'a negative exponent is the frame falloff').toBe(0);
+  expect(sent[10], 'and so is an unnamed one').toBe(0);
+});
+
 test("A LIGHT'S CHANNELS REACH THE UNIFORM PATH IN THE AXIS'S FOURTH LANE", () => {
   const { gl, values } = fakeGl();
   const channels = new Float32Array(MAX_POINT_LIGHTS).fill(1);

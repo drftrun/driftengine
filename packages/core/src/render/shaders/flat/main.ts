@@ -543,7 +543,7 @@ export const MAIN_GLSL = `void main() {
      * specularLobe's header argues for at length.
      */
     float sunVoH = max(dot(normalize(uCameraPos - vWorldPos), halfway), 0.0);
-    vec3 sunSpec = mix(specColor, vec3(1.0), pow(1.0 - sunVoH, 5.0) * metal);
+    vec3 sunSpec = highlightTint(specColor, sunVoH, metal);
     /*
      * **Held back until after the environment blend, because that blend is a mix and would
      * otherwise erase this.**
@@ -562,8 +562,12 @@ export const MAIN_GLSL = `void main() {
      * Zero for the whole world that carries no specular attribute and no metalness, exactly as
      * before: \`sunSpec\` is \`vec3(vSpecular)\` at metal 0 and \`vSpecular\` defaults to 0.
      */
-    vec3 sunHighlight =
-      sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
+    /* GGX's own where the surface asks (\`physicalSpecular\`): the sun is a point, so nothing widens it. */
+    float sunNdh = max(dot(n, halfway), 0.0);
+    float sunLobe = physicalSpecular()
+      ? physicalLobe(sunNdh, ndl, dot(n, normalize(uCameraPos - vWorldPos)), surfaceRoughness, 0.0, 1.0)
+      : specularLobe(sunNdh, surfaceRoughness);
+    vec3 sunHighlight = sunColor * sunLobe * sunSpec * sunShade * sunFacing;
     if (modelled) sunHighlight = sunModelSpecular;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
@@ -1067,6 +1071,10 @@ export const MAIN_GLSL = `void main() {
       float cookie;
       /* The light's lighting channels, a mask: 1 unless it names others. See \`uLightIesAxis\`. */
       float lightChannels = 1.0;
+      /* The light's own falloff exponent, or 0 for the frame's falloff. See \`uLightCone\`. */
+      float lightExponent = 0.0;
+      /* A clustered rectangle's barn doors: their cosine and length, none at 0. See \`areaBarnDoors\`. */
+      vec2 areaDoors = vec2(0.0);
       /*
        * **A rectangle in the froxel table** — one past the fixed arm's \`maxAreaLights\` — which
        * its record says with a negative radius, its reach negated. Its fields come out of the
@@ -1117,8 +1125,8 @@ export const MAIN_GLSL = `void main() {
       lightWeight = sizeAndWeight.y;
       /*
        * **The fixture, read only for a light that has one.** What a plain light's record holds in
-       * the last three texels is exactly these values, so a light carrying no shadow slot, cone,
-       * profile or cookie shades the same whether they are read or assumed, and at heavy overlap
+       * the last four texels is exactly these values, so a light carrying no shadow slot, cone,
+       * profile, cookie, channels or falloff of its own shades the same whether they are read or assumed, and at heavy overlap
        * reading them was a third of the pass. A branch on a value from a texture around
        * \`texelFetch\` is not the 2026-08-07 case: an integer fetch takes no derivative.
        *
@@ -1138,6 +1146,7 @@ export const MAIN_GLSL = `void main() {
           uvec4 rec2 = clusterTexel(record + 2);
           uvec4 rec3 = clusterTexel(record + 3);
           uvec4 rec4 = clusterTexel(record + 4);
+          uvec4 rec5 = clusterTexel(record + 5);
           shadowSlot = clusteredArea ? -1 : int(uintBitsToFloat(rec2.x));
           areaTwoSided = uintBitsToFloat(rec2.x);
           lightDir = vec3(
@@ -1150,6 +1159,8 @@ export const MAIN_GLSL = `void main() {
           iesAxis = vec3(
             uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
           lightChannels = uintBitsToFloat(rec4.w);
+          lightExponent = uintBitsToFloat(rec5.x);
+          areaDoors = vec2(uintBitsToFloat(rec5.y), uintBitsToFloat(rec5.z));
         }
       }
       } else {
@@ -1162,7 +1173,8 @@ export const MAIN_GLSL = `void main() {
       lightWeight = uLightWeight[i];
       shadowSlot = i;
       lightDir = uLightDir[i];
-      lightCone = uLightCone[i];
+      lightCone = uLightCone[i].xy;
+      lightExponent = uLightCone[i].z;
       iesProfile = uLightIesProfile[i];
       iesAxis = uLightIesAxis[i].xyz;
       lightChannels = uLightIesAxis[i].w;
@@ -1188,12 +1200,15 @@ export const MAIN_GLSL = `void main() {
        * froxel it is binned into has no edge in the picture.
        */
       if (clusteredArea) {
-        float areaForm = areaSignedForm(n, lightPos, lightDir, iesAxis, lightCone);
+        vec3 seenCentre = lightPos;
+        vec2 seenHalf = lightCone;
+        if (!areaBarnDoors(seenCentre, lightDir, iesAxis, seenHalf, areaDoors)) continue;
+        float areaForm = areaSignedForm(n, seenCentre, lightDir, iesAxis, seenHalf);
         float areaWindow = clamp(1.0 - pow(length(lightPos - vWorldPos) / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
         areaForm = mix(max(0.0, areaForm), abs(areaForm), areaTwoSided);
         if (areaForm > 0.0) {
           areaLightAdd(
-            lightPos, lightDir, iesAxis, lightCone, lightColor * (areaWindow * areaWindow), areaForm,
+            seenCentre, lightDir, iesAxis, seenHalf, lightColor * (areaWindow * areaWindow), areaForm,
             1.0, vec3(1.0), n, albedo, metal, specColor, surfaceRoughness, modelled,
             lampOpen, lampShadowed
           );
@@ -1244,7 +1259,16 @@ export const MAIN_GLSL = `void main() {
        * same way three.js windows its own, so the light still ends where it says it does.
        */
       float falloff;
-      if (uLightFalloff == 1) {
+      /*
+       * **A light may name its own falloff, and then it is Unreal's for a light without
+       * inverse-square falloff**: \`(1 - (d/R)^2)^n\` with no distance term, so a fill authored to
+       * light a whole hall across a hundred metres does, where the inverse square would have it
+       * gone a few metres out. Zero is the frame's own rule below, which every light was before.
+       */
+      if (lightExponent > 0.0) {
+        float reach = dist / max(lightRadius, 1e-4);
+        falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), lightExponent);
+      } else if (uLightFalloff == 1) {
         float window = clamp(1.0 - pow(dist / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
         falloff = window * window / max(dist * dist, 0.01);
       } else {
@@ -1507,7 +1531,11 @@ export const MAIN_GLSL = `void main() {
         photometric = mix(1.0, iesGain, step(0.0, iesProfile));
       }
 
-      float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
+      /* A light's own exponent already is its whole curve; the frame's smooth rule squares its own. */
+      float shape =
+        (lightExponent > 0.0 || uLightFalloff == 1 ? falloff : falloff * falloff) *
+        coneFalloff *
+        photometric;
       glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;
       if (ndl <= 0.0 && !modelledBehind) continue;
       /*
@@ -1584,16 +1612,15 @@ export const MAIN_GLSL = `void main() {
       if (vSpecular > 0.0 || metal > 0.0) {
         vec3 toEyeLamp = normalize(uCameraPos - vWorldPos);
         vec3 lampHalfway = normalize(toLight / max(dist, 1e-4) + toEyeLamp);
-        /* The same grazing whitening the sun's highlight takes, and zero at metal 0. */
-        vec3 lampSpec = mix(
-          specColor,
-          vec3(1.0),
-          pow(1.0 - max(dot(toEyeLamp, lampHalfway), 0.0), 5.0) * metal
-        );
+        /* The same grazing whitening the sun's highlight takes, and zero at metal 0 for the look. */
+        vec3 lampSpec = highlightTint(specColor, max(dot(toEyeLamp, lampHalfway), 0.0), metal);
+        /* The look's lobe, or GGX's own where the surface asks for it: see \`physicalLobe\`. */
+        float lampNdh = max(dot(n, lampHalfway), 0.0);
+        float lampLobe = physicalSpecular()
+          ? physicalLobe(lampNdh, ndl, dot(n, toEyeLamp), surfaceRoughness, lightSourceRadius, dist)
+          : sphereLobe(lampNdh, surfaceRoughness, lightSourceRadius, dist);
         /* Held back with the diffuse half, and shadowed by the same term it always was. */
-        vec3 lampHighlight =
-          lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
-          * lampSpec * shape * lightWeight;
+        vec3 lampHighlight = lightColor * lampLobe * lampSpec * shape * lightWeight;
         lampOpen += lampHighlight;
         lampShadowed += lampHighlight * shaded * lampGlass;
       }
@@ -1637,10 +1664,18 @@ export const MAIN_GLSL = `void main() {
       vec3 centre = uAreaLightPos[a];
       vec3 right = uAreaLightRight[a];
       vec3 up = uAreaLightUp[a];
-      vec2 halfSize = uAreaLightSize[a];
+      vec2 halfSize = uAreaLightSize[a].xy;
+      /*
+       * **The part of the rectangle this fragment sees past its barn doors** (\`areaBarnDoors\`),
+       * which its light and highlight come from. Its shadow keeps the whole rectangle's centre and
+       * size below, because that is what its map was baked from.
+       */
+      vec3 seenCentre = centre;
+      vec2 seenHalf = halfSize;
+      if (!areaBarnDoors(seenCentre, right, up, seenHalf, uAreaLightSize[a].zw)) continue;
 
       /* The form factor and its sign, which is the sidedness: see \`areaSignedForm\`. */
-      float signedForm = areaSignedForm(n, centre, right, up, halfSize);
+      float signedForm = areaSignedForm(n, seenCentre, right, up, seenHalf);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
       float backForm = glassTransmission > 0.0
@@ -1757,7 +1792,7 @@ export const MAIN_GLSL = `void main() {
       if (form <= 0.0) continue;
       /* The diffuse, the model's answer or the lobe integrated over the rectangle: see areaLight.ts. */
       areaLightAdd(
-        centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,
+        seenCentre, right, up, seenHalf, uAreaLightColor[a], form, areaOccl, areaGlass,
         n, albedo, metal, specColor, surfaceRoughness, modelled, lampOpen, lampShadowed
       );
     }

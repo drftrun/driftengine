@@ -3,6 +3,7 @@ import { particleShaders, type ParticleMaterial } from '../../particleMaterial.t
 import { PARTICLE_BINDINGS } from '../../shaders/generated/particle.wgsl.ts';
 import { PARTICLE_BLADES, PARTICLE_INDICES, PARTICLE_VERTS } from '../../shaders/particle.ts';
 import type { ParticleInstances } from '../../particlePool.ts';
+import { DEVICE_PARTICLE_FLOATS } from '../../particlePool.ts';
 import { packSpriteStream, type ParticleBlend, type ParticleFacing } from '../../particleBatch.ts';
 import { createParticleSort, type ParticleSort } from '../../particleSort.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
@@ -58,7 +59,7 @@ const USAGE_UNIFORM_DST = 0x0040 | 0x0008;
  * Floats per instance, in the order they are packed: position 3, size 1, spin 1, colour 3,
  * alpha 1, age 1, seed 1, velocity 3, and a sprite's frame and half-height 2.
  */
-const INSTANCE_FLOATS = 16;
+const INSTANCE_FLOATS = DEVICE_PARTICLE_FLOATS;
 
 const INSTANCE_ATTRIBUTES: GPUVertexAttribute[] = [
   { shaderLocation: 2, offset: 0, format: 'float32x3' },

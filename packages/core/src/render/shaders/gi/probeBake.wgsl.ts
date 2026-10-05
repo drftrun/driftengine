@@ -684,15 +684,19 @@ fn probeLampsAt(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
   var sum = vec3<f32>(0.0);
   let count = u32(bake.lightCount);
   for (var i = 0u; i < count; i = i + 1u) {
-    let at = bounceLights[i * 3u];
-    let colour = bounceLights[i * 3u + 1u];
-    let aim = bounceLights[i * 3u + 2u];
+    let at = bounceLights[i * 4u];
+    let colour = bounceLights[i * 4u + 1u];
+    let aim = bounceLights[i * 4u + 2u];
+    let lightExponent = bounceLights[i * 4u + 3u].x;
     let lightRadius = at.w;
     let toLight = at.xyz - p;
     let dist = length(toLight);
     let coneFalloff = smoothstep(aim.w, colour.w, dot(-toLight / max(dist, 1e-4), aim.xyz));
     var falloff: f32;
-    if (bake.falloff == 1.0) {
+    if (lightExponent > 0.0) {
+      let reach = dist / max(lightRadius, 1e-4);
+      falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), lightExponent);
+    } else if (bake.falloff == 1.0) {
       let window = clamp(1.0 - pow(dist / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
       falloff = window * window / max(dist * dist, 0.01);
     } else {
@@ -701,7 +705,7 @@ fn probeLampsAt(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     if (falloff <= 0.0) { continue; }
     let ndl = max(dot(n, toLight / max(dist, 1e-4)), 0.0);
     if (ndl <= 0.0) { continue; }
-    let shape = select(falloff * falloff, falloff, bake.falloff == 1.0) * coneFalloff;
+    let shape = select(falloff * falloff, falloff, lightExponent > 0.0 || bake.falloff == 1.0) * coneFalloff;
     if (shape <= 0.0) { continue; }
     let fixture = max(0.3, 2.0 * march.finestStep);
     let seen = probeLampVisible(p, n, toLight / max(dist, 1e-4), dist - fixture);

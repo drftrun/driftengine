@@ -8,6 +8,13 @@
  *                                               the table shades it: the control, which must match
  *                                               the line above but for what the fixed arm adds —
  *                                               nothing here, since the panel casts no shadow
+ *     ...&barn=20&barnlength=0.3                 every panel with barn doors at 20° from its normal
+ *     ...&top=1                                  looking straight down from 10 m, so a floor point's
+ *                                               pixel is its x and z: the one panel's doors above
+ *                                               change nothing within 1.04 m of its centre along x
+ *                                               and 0.69 m along z, and leave nothing lit past
+ *                                               4.94 m and 2.32 m — each the line through a door's
+ *                                               tip, from 1.2 m below a 1.2 by 0.5 m panel
  *
  * Deterministic: a fixed camera, panels from a closed form, no clock.
  */
@@ -26,6 +33,8 @@ const ASKED = new URLSearchParams(location.search);
 const BACKGROUND: Vec3 = [0, 0, 0];
 const COLUMNS = 8;
 const ROWS = 5;
+const BARN_ANGLE = ASKED.has('barn') ? Number(ASKED.get('barn')) : undefined;
+const BARN_LENGTH = ASKED.has('barnlength') ? Number(ASKED.get('barnlength')) : undefined;
 
 function panel(x: number, z: number, hue: number, range: number): AreaLightSource {
   return {
@@ -45,6 +54,8 @@ function panel(x: number, z: number, hue: number, range: number): AreaLightSourc
     halfWidth: 0.6,
     halfHeight: 0.25,
     range,
+    ...(BARN_ANGLE === undefined ? {} : { barnDoorAngle: BARN_ANGLE }),
+    ...(BARN_LENGTH === undefined ? {} : { barnDoorLength: BARN_LENGTH }),
   };
 }
 
@@ -84,8 +95,9 @@ async function main(): Promise<void> {
   camera.fovYDeg = 50;
   camera.near = 0.3;
   camera.far = 200;
-  camera.position[1] = one === null ? 18 : 4;
-  camera.position[2] = one === null ? 9 : 3;
+  const top = ASKED.get('top') === '1';
+  camera.position[1] = top ? 10 : one === null ? 18 : 4;
+  camera.position[2] = top ? 1e-4 : one === null ? 9 : 3;
   camera.lookAt(0, 0, 0);
   renderer.resize();
   camera.updateMatrices(canvas.height > 0 ? canvas.width / canvas.height : 1);

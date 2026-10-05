@@ -8,10 +8,11 @@
  * otherwise**, which on a phone is every BC texture: in a worker, because a 2048² BC7 image is
  * 262,144 blocks and a phone's main thread spends the better part of a second on them.
  *
- * **Never silently slower.** Where there is no `Worker`, or the one this module starts fails to
- * load — a bundler that does not understand `new Worker(new URL(…))` — the decode moves to the main
- * thread and `reason` says so, and the loader prints it once. A request in flight when the worker
- * fails is decoded again there rather than left waiting.
+ * **Never silently slower.** Where no worker is named (`spawnBcWorker`, behind a specifier of its
+ * own so the barrel names none), where there is no `Worker`, or where the one started fails to load —
+ * a bundler that does not understand `new Worker(new URL(…))` — the decode moves to the main thread
+ * and `reason` says so, and the loader prints it once. A request in flight when the worker fails is
+ * decoded again there rather than left waiting.
  */
 import { uploadsCompressed } from '@driftengine/core';
 import type { CompressedTextureFormat } from '@driftengine/core';
@@ -74,20 +75,10 @@ function settle(reply: BcReply, pending: Pending): void {
 }
 
 /**
- * The worker this package ships, built the way a bundler understands, or null where there is no
- * `Worker` at all. `createBcDecoder`'s `spawn` is the way past either.
+ * A decoder over a worker `spawn` starts, or on the main thread where it is null — the default, since
+ * the worker's factory lives behind its own specifier (`bcWorkers.ts`) and a caller names it.
  */
-const defaultSpawn: (() => BcWorker) | null =
-  // platform: feature probe — no `Worker` means BC decodes on the main thread, with a reason
-  typeof Worker === 'undefined'
-    ? null
-    : (): BcWorker =>
-        // platform: browser default — `createBcDecoder(spawn)` is the seam a host supplies
-        new Worker(new URL('./bcWorker.ts', import.meta.url), {
-          type: 'module',
-        }) as unknown as BcWorker;
-
-export function createBcDecoder(spawn: (() => BcWorker) | null = defaultSpawn): BcDecoder {
+export function createBcDecoder(spawn: (() => BcWorker) | null = null): BcDecoder {
   let worker: BcWorker | null = null;
   let reason = '';
   const pending = new Map<number, Pending>();
@@ -103,7 +94,9 @@ export function createBcDecoder(spawn: (() => BcWorker) | null = defaultSpawn): 
   };
 
   if (spawn === null) {
-    reason = 'BC textures decode on the main thread: this runtime has no Worker';
+    reason =
+      'BC textures decode on the main thread: no worker was named. Pass `bcWorker: spawnBcWorker`, ' +
+      'exported by @driftengine/assets/src/bcWorkers.ts, to decode them off it';
   } else {
     try {
       worker = spawn();

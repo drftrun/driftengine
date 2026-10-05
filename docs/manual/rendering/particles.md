@@ -254,6 +254,47 @@ positions, velocities, sizes, colours and opacities, set `count`, and draw it. N
 velocity; it is only the direction a spark is stretched along. Because nothing is simulated, the
 same time draws the same frame however the frames were spaced, which is what an exported clip needs.
 
+## Particles a compute shader writes
+
+```ts sample=snippets/particles.ts#device
+/** `GPUBufferUsage.STORAGE | VERTEX`, as values: the globals exist only in a browser. */
+const STORAGE_VERTEX = 0x0080 | 0x0020;
+
+/** A buffer a compute shader fills with `capacity` particles and a pool then draws. WebGPU only. */
+export function particleBuffer(device: GPUDevice, capacity: number): DeviceParticles {
+  const buffer = device.createBuffer({
+    size: capacity * DEVICE_PARTICLE_FLOATS * 4,
+    usage: STORAGE_VERTEX,
+  });
+  return { buffer, count: capacity };
+}
+
+/** Each frame: step the simulation on the device, then draw what it wrote, where it lies. */
+export function drawSimulated(
+  renderer: RendererApi,
+  simulate: ComputeHandle,
+  batch: ParticleHandle,
+  particles: DeviceParticles,
+  camera: Camera,
+  env: Environment,
+  time: number,
+): void {
+  renderer.dispatchCompute(simulate);
+  renderer.drawDeviceParticles(batch, particles, camera, env, time);
+}
+```
+
+On WebGPU a simulation can run entirely on the device: a compute shader of your own, registered with
+`registerCompute` (see [Custom passes and compute](custom-passes.md)), writes its particles into a
+buffer of yours, and `drawDeviceParticles` draws a pool's material from that buffer where it lies,
+with nothing read back. Each particle is `DEVICE_PARTICLE_FLOATS` (16) floats: position, half-width,
+roll, colour, opacity, age, seed, velocity, a sprite's frame and its half-height, the streams of a
+`ParticleInstances` interleaved in that order. The buffer needs `VERTEX` usage beside `STORAGE`. A
+slot whose half-width is 0 draws nothing, so a fixed-size buffer can hold fewer live particles than
+it has room for. The particles are drawn as written and not sorted; an alpha-blended set that must
+be drawn far to near sorts itself. WebGL2 has no compute stage: there it says so once and draws
+nothing, so check `computeSupported` and fall back to a pool.
+
 ## Birds
 
 ```ts sample=snippets/particles.ts#flock

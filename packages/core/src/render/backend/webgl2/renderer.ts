@@ -136,7 +136,12 @@ import {
   MORPH_DELTA_TEXTURE_UNIT,
   SKIN_PALETTE_TEXTURE_UNIT,
 } from '../../lightBudget.ts';
-import { MODEL_PARAM_FLOATS, eyeAxisInWorld, packModel } from '../../surfaceModel.ts';
+import {
+  MODEL_PARAM_FLOATS,
+  eyeAxisInWorld,
+  packModel,
+  skinProfileDistance,
+} from '../../surfaceModel.ts';
 import type { SurfaceModelKind } from '../../surfaceModel.ts';
 import { lightmapRegionsBound, modelBound, skinHalfBound } from '../../shaders/flat/models.ts';
 import {
@@ -251,6 +256,8 @@ import type { IncrementalMesh } from '../../mesh.ts';
 import type { MeshData } from '../../mesh.ts';
 import type { MeshOptions } from '../api.ts';
 import { SurfaceTexture } from '../../surfaceTexture.ts';
+import { sceneCaptureTexels } from '../../sceneCapture.ts';
+import { GlSceneCaptureTarget } from './sceneCaptureTarget.ts';
 import { glCompressedFormats } from '../../glCompressed.ts';
 import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
 import type { SurfaceMaterial, SurfaceTextureOptions } from '../../surfaceTexture.ts';
@@ -274,7 +281,7 @@ import { PlanarReflection } from '../../planarReflection.ts';
 import { InstancedMesh } from '../../instancedMesh.ts';
 import { ParticleBatch } from '../../particleBatch.ts';
 import type { ParticleBatchOptions } from '../../particleBatch.ts';
-import type { ParticleInstances } from '../../particlePool.ts';
+import type { DeviceParticles, ParticleInstances } from '../../particlePool.ts';
 import { BoltBatch } from '../../boltBatch.ts';
 import type { BoltSegments } from '../../boltPool.ts';
 import { LineBatch } from '../../lineBatch.ts';
@@ -435,6 +442,11 @@ export interface Environment extends Atmosphere {
   lightDirections: Float32Array;
   /** Two per active light: the cosine of the inner cone angle, then of the outer. */
   lightConeCos: Float32Array;
+  /**
+   * One per active light: its own falloff exponent, or 0 for the frame's. Optional: absent is 0 for
+   * every light. See `PointLightSource.falloffExponent`.
+   */
+  lightFalloffExponents?: Float32Array;
   /** One per active light: a row of the photometric atlas, or −1 for none. */
   lightIesProfiles: Float32Array;
   /**
@@ -1621,6 +1633,15 @@ export class WebGL2Renderer implements RendererApi {
   private warnedEnvironmentAmbient = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
   private probePassActive = false;
+  /**
+   * Whether a scene capture is being drawn (`captureScene`): an off-screen pass like a bake, so the
+   * frame's own view, its refraction copy and skin's spread are left alone, but lit as the frame is.
+   */
+  private capturePassActive = false;
+  /** Each capture's framebuffer, beside the texture a material binds. See `createSceneCapture`. */
+  private readonly captureTargets = new WeakMap<SurfaceTexture, GlSceneCaptureTarget>();
+  /** Said once, where a driver refuses to draw into a capture. */
+  private warnedCapture = false;
   /** Whether the bake under way lights its faces by the grid. `ProbeBakeOptions.bounce`. */
   private probeBounce = false;
   /** The clip-control extension, or null where this context does not offer it. */
@@ -1692,12 +1713,14 @@ export class WebGL2Renderer implements RendererApi {
    * the camera's matrix unchanged and multiplies nothing.
    */
   private viewProjFor(camera: { readonly viewProjection: ReadonlyMat4 }): ReadonlyMat4 {
-    const scene = this.probePassActive
-      ? (cubeFaceProjection(
-          this.cubeFaceViewProj,
-          this.sceneMatrix(camera.viewProjection) as unknown as ArrayLike<number>,
-        ) as unknown as ReadonlyMat4)
-      : this.sceneMatrix(camera.viewProjection);
+    /* A capture's rows are flipped as a probe face's are, so it reads as an image does. */
+    const scene =
+      this.probePassActive || this.capturePassActive
+        ? (cubeFaceProjection(
+            this.cubeFaceViewProj,
+            this.sceneMatrix(camera.viewProjection) as unknown as ArrayLike<number>,
+          ) as unknown as ReadonlyMat4)
+        : this.sceneMatrix(camera.viewProjection);
     /*
      * **The jitter goes on here and nowhere else.** This is the one funnel every geometry upload
      * passes through, so one line covers the mesh passes, the sky, the water and the effects
@@ -3500,6 +3523,92 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * A texture the scene can be drawn into, for a material to show. See `RendererApi` and
+   * `sceneCapture.ts`. Half floats where the frame keeps range, as a probe does.
+   */
+  createSceneCapture(width: number, height: number): SurfaceTexture {
+    const float = this.quality.hdrScene && this.gl.getExtension('EXT_color_buffer_float') !== null;
+    const texture = new SurfaceTexture(this.gl, sceneCaptureTexels(width, height, float), {
+      wrap: 'clamp',
+      mipmap: false,
+    });
+    this.captureTargets.set(
+      texture,
+      new GlSceneCaptureTarget(
+        this.gl,
+        texture,
+        width,
+        height,
+        this.sceneTarget?.sampleCount ?? 1,
+        float,
+      ),
+    );
+    return texture;
+  }
+
+  /**
+   * Draw the scene into a capture from `camera`: `draw` is handed the camera, its matrices updated
+   * for the capture's shape, and submits the scene as it would to the screen. See `RendererApi`.
+   *
+   * **Radiance, as a probe bake stores it**: the output transform and exposure are held off for the
+   * pass, so the frame grades a screen showing it once. No temporal jitter, which a capture has no
+   * resolve to undo. Returns whether it drew: false for a texture that is not a capture, or one the
+   * driver will not draw into.
+   */
+  captureScene(
+    capture: SurfaceTexture,
+    camera: Camera,
+    clearColor: Vec3,
+    draw: (camera: Camera) => void,
+  ): boolean {
+    if (this.contextLost) return false;
+    const target = this.captureTargets.get(capture);
+    if (target === undefined) return false;
+    if (!target.usable) {
+      if (!this.warnedCapture) {
+        this.warnedCapture = true;
+        console.warn(
+          'Renderer: this driver will not draw into a scene capture, so it keeps its clear. ' +
+            'Nothing else is affected.',
+        );
+      }
+      return false;
+    }
+    camera.updateMatrices(target.width / target.height);
+    const { gl } = this;
+    const jittering = this.temporalJittering;
+    this.temporalJittering = false;
+    this.capturePassActive = true;
+    this.useFlatProgram();
+    gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, 0);
+    gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, 1);
+    this.materials.dirty();
+    target.begin(gl, clearColor, this.depthClear);
+    /*
+     * **Rows flipped, as a probe face's are.** A GL framebuffer's first row is its bottom and an
+     * image's is its top, so a capture drawn upright would be shown upside down by every material
+     * reading it as the image it is; `viewProjFor` negates clip y for the pass, and negating one axis
+     * reverses every triangle's winding, which the front face follows. WebGPU's rows already run
+     * the image's way.
+     */
+    gl.frontFace(gl.CW);
+    try {
+      draw(camera);
+    } finally {
+      target.end(gl);
+      gl.frontFace(gl.CCW);
+      this.useFlatProgram();
+      gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.gradeCode());
+      gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.gradeExposure());
+      this.materials.dirty();
+      this.capturePassActive = false;
+      this.temporalJittering = jittering;
+      this.restoreViewport();
+    }
+    return true;
+  }
+
+  /**
    * Replace a surface texture's pixels, keeping the GPU object and its sampler state.
    *
    * Goes through the renderer because the GL context does not leave this directory, and
@@ -3519,6 +3628,8 @@ export class WebGL2Renderer implements RendererApi {
   disposeSurfaceTexture(texture: SurfaceTexture): void {
     if (this.contextLost) return;
     texture.dispose(this.gl);
+    this.captureTargets.get(texture)?.dispose(this.gl);
+    this.captureTargets.delete(texture);
   }
 
   /**
@@ -3751,9 +3862,9 @@ export class WebGL2Renderer implements RendererApi {
     if (model?.kind === 'skin' && this.skinScatter !== null) {
       this.skinScatter.setProfile(
         model.profile,
-        model.scatterColor[0] * model.radius,
-        model.scatterColor[1] * model.radius,
-        model.scatterColor[2] * model.radius,
+        skinProfileDistance(model, 0),
+        skinProfileDistance(model, 1),
+        skinProfileDistance(model, 2),
       );
     }
     /*
@@ -3901,7 +4012,14 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (modelMap !== null) modelMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
     gl.uniform1i(u['uModelMap'] ?? null, MODEL_MAP_TEXTURE_UNIT);
-    packModel(material?.model ?? null, modelMap !== null, this.modelParams);
+    packModel(
+      material?.model ?? null,
+      modelMap !== null,
+      this.modelParams,
+      material?.physicalSpecular === true,
+    );
+    /* The first physical highlight asked for is when the lit programs start carrying one. */
+    if (material?.physicalSpecular === true) this.askLit('PHYSICAL_SPECULAR');
     gl.uniform4fv(u['uModelParams'] ?? null, this.modelParams);
 
     /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
@@ -3964,18 +4082,6 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
-   * A pass-level scale over the grain the geometry itself declared, 0 to 1.
-   *
-   * Which surfaces are mineral is now `MeshData.grain`, stated per vertex through
-   * `MeshBuilder.setGrain` — because it is a property of a material, and absent means none.
-   * This stays as the override for the case that has no answer to state: an imported model
-   * arrives with no grain information at all, and a caller drawing one decides for it.
-   *
-   * Pass state, like `setSurfaceTexture`, because a material covers many draws. The default
-   * is 1 and `bindMeshPass` restores it, so it scales geometry that declared grain and
-   * leaves geometry that did not exactly as it is.
-   */
-  /**
    * The ambient the following draws take, as nine spherical-harmonic coefficients of incoming
    * radiance — red, green and blue of each, twenty-seven numbers — or `null` for the frame's own:
    * the sky's gradient, or the probes'. See `ambientHarmonics.ts` for the basis and the axes.
@@ -3985,16 +4091,6 @@ export class WebGL2Renderer implements RendererApi {
    * character takes the light of its spot rather than the frame's. It replaces the diffuse ambient
    * only — a glossy surface still reflects the probes — and it is pass state like the material,
    * which `bindMeshPass` clears, so a mirror or a probe bake drawn after does not inherit it.
-   */
-  /**
-   * How much of the environment the following draws mirror, 0 to 1.
-   *
-   * Pass state beside the grain, and the counterpart to it: grain is a surface being uneven,
-   * this is a surface being smooth enough to carry an image. Polished paint, glass, chrome
-   * and still water want it; plaster and stone want none.
-   *
-   * Defaults to zero and bindMeshPass restores it, so a scene that never calls this looks
-   * exactly as it did.
    */
   setAmbientSH(coefficients: ArrayLike<number> | null): void {
     if (this.contextLost) return;
@@ -4007,6 +4103,16 @@ export class WebGL2Renderer implements RendererApi {
     this.useFlatProgram();
   }
 
+  /**
+   * How much of the environment the following draws mirror, 0 to 1.
+   *
+   * Pass state beside the grain, and the counterpart to it: grain is a surface being uneven,
+   * this is a surface being smooth enough to carry an image. Polished paint, glass, chrome
+   * and still water want it; plaster and stone want none.
+   *
+   * Defaults to zero and bindMeshPass restores it, so a scene that never calls this looks
+   * exactly as it did.
+   */
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
@@ -4056,6 +4162,18 @@ export class WebGL2Renderer implements RendererApi {
     );
   }
 
+  /**
+   * A pass-level scale over the grain the geometry itself declared, 0 to 1.
+   *
+   * Which surfaces are mineral is now `MeshData.grain`, stated per vertex through
+   * `MeshBuilder.setGrain` — because it is a property of a material, and absent means none.
+   * This stays as the override for the case that has no answer to state: an imported model
+   * arrives with no grain information at all, and a caller drawing one decides for it.
+   *
+   * Pass state, like `setSurfaceTexture`, because a material covers many draws. The default
+   * is 1 and `bindMeshPass` restores it, so it scales geometry that declared grain and
+   * leaves geometry that did not exactly as it is.
+   */
   setSurfaceGrain(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
@@ -4485,7 +4603,7 @@ export class WebGL2Renderer implements RendererApi {
     const refraction = options.refraction ?? 0;
     const glassy = resolveGlass(options.glass, this.glassScratch);
     if (refraction <= 0 && !glassy) return false;
-    if (this.probePassActive || this.reflectionPassActive) return false;
+    if (this.probePassActive || this.reflectionPassActive || this.capturePassActive) return false;
     const snapshot = this.sceneTarget?.snapshotColor(false, glassy) ?? null;
     if (snapshot === null) return false;
     gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
@@ -4848,6 +4966,29 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Particles a caller's own compute wrote: WebGPU's alone, since this backend has no compute stage
+   * to have written them (`computeSupported`). Said once, and nothing is drawn.
+   */
+  drawDeviceParticles(
+    _batch: ParticleBatch,
+    _particles: DeviceParticles,
+    _camera: Camera,
+    _env: Environment,
+    _timeSeconds: number,
+  ): void {
+    if (this.warnedDeviceParticles) return;
+    this.warnedDeviceParticles = true;
+    console.warn(
+      'Renderer: drawDeviceParticles draws particles a compute shader wrote, and WebGL2 has no ' +
+        'compute stage, so nothing is drawn. Check `computeSupported`, and draw a pool with ' +
+        '`drawParticles` where it is false.',
+    );
+  }
+
+  /** Said once: see `drawDeviceParticles`. */
+  private warnedDeviceParticles = false;
+
+  /**
    * Draw a live particle pool.
    *
    * Uploads and draws together, unlike the scatter path where the two are
@@ -4913,7 +5054,12 @@ export class WebGL2Renderer implements RendererApi {
     const u = batch.uniforms;
     const scene = this.sceneTarget;
     let depth: WebGLTexture | null = null;
-    if (batch.softDepth > 0 && !this.reflectionPassActive && !this.probePassActive) {
+    if (
+      batch.softDepth > 0 &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.capturePassActive
+    ) {
       depth = scene?.snapshotDepth(true) ?? null;
       if (depth === null && !this.warnedSpriteDepth) {
         this.warnedSpriteDepth = true;
@@ -5982,6 +6128,7 @@ export class WebGL2Renderer implements RendererApi {
       lightFixtures: this.litOn.LIGHT_FIXTURES,
       surfaceEffects: this.litOn.SURFACE_EFFECTS,
       driftLight: this.litOn.DRIFT_LIGHT,
+      physicalSpecular: this.litOn.PHYSICAL_SPECULAR,
       maxLights: budget.maxLights,
       maxAreaLights: budget.maxAreaLights,
     });
@@ -7877,7 +8024,12 @@ export class WebGL2Renderer implements RendererApi {
      * other position, and the anti-flicker's period never started.
      */
     if (this.framePresented) this.temporalJittering = false;
-    if (!this.reflectionPassActive && !this.probePassActive && !this.framePresented) {
+    if (
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.capturePassActive &&
+      !this.framePresented
+    ) {
       this.frameViewProj = camera.viewProjection;
       /* Copied rather than referenced: a caller moves its camera in place, and the decal pass
          reads this at the end of the frame. */
@@ -8599,6 +8751,7 @@ export class WebGL2Renderer implements RendererApi {
       !this.skinScattered &&
       !this.reflectionPassActive &&
       !this.probePassActive &&
+      !this.capturePassActive &&
       !this.framePresented &&
       skin.ready(scene)
     );
@@ -8619,7 +8772,8 @@ export class WebGL2Renderer implements RendererApi {
     /* Latched whether or not skin was drawn: a skin drawn after this point is the whole surface. */
     this.skinScattered = true;
     if (!skin.pending) return;
-    if (this.reflectionPassActive || this.probePassActive || projection === null) return;
+    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return;
+    if (projection === null) return;
     const depth = scene.snapshotDepth(true);
     mat4.invert(this.skinInverseProjection, projection);
     skin.spread(scene, depth, this.emptyTexture2D, projection, this.skinInverseProjection);

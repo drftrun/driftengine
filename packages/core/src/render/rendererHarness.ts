@@ -119,6 +119,9 @@ export function recordingGl(
     ONE: 1,
     ONE_MINUS_SRC_ALPHA: 0x0303,
     TRIANGLES: 0x0004,
+    /* The winding a pass names, so a test can tell which one it chose. */
+    CW: 0x0900,
+    CCW: 0x0901,
     TEXTURE0: 0x84c0,
     DEPTH_BUFFER_BIT: 0x00000100,
     DEPTH_TEST: 0x0b71,

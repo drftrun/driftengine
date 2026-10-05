@@ -30,7 +30,16 @@ void anisotropicSurface() {
     direction.x * uModelParams[0].y - direction.y * uModelParams[0].z,
     direction.x * uModelParams[0].z + direction.y * uModelParams[0].y
   );
-  aAlong = normalize(mTangent * turned.x + mBitangent * turned.y);
+  vec3 along = mTangent * turned.x + mBitangent * turned.y;
+  /*
+   * A mesh with neither tangents nor texture coordinates has no frame to take a direction from,
+   * and normalising the zero it gives was a NaN that drew the whole surface black. Any direction in
+   * the surface stands in, the one across the world's up, so the highlight is stretched somewhere.
+   */
+  if (dot(along, along) < 1e-12) {
+    along = cross(abs(mNormal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), mNormal);
+  }
+  aAlong = normalize(along);
   aAcross = cross(mNormal, aAlong);
   aStrength = strength;
 }
@@ -50,12 +59,37 @@ float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   return energy / max(d * d, 1e-8);
 }
 
+/**
+ * The same stretch as GGX's own BRDF, \`π · D · Vis · N·L\`, for a surface whose highlight is
+ * physical: the distribution normalised, and Smith's height-correlated masking stretched with it
+ * (Heitz 2014, as Filament writes it). \`anisotropicPhysicalLobe\` in anisotropicLobe.ts.
+ */
+float anisotropicPhysical(vec3 l, vec3 h, float ndl, float sourceRadius, float dist) {
+  float alpha = max(mRoughness * mRoughness, MIN_LOBE_ALPHA);
+  float alongWidth = alpha + (1.0 - alpha) * aStrength * aStrength;
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float along = clamp(alongWidth + grow, alongWidth, 1.0);
+  float across = clamp(alpha + grow, alpha, 1.0);
+  float x = dot(aAlong, h) / along;
+  float y = dot(aAcross, h) / across;
+  float z = dot(mNormal, h);
+  float d = x * x + y * y + z * z;
+  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  float ndv = max(dot(mNormal, mToEye), 1e-4);
+  float viewed = ndl * length(vec3(along * dot(aAlong, mToEye), across * dot(aAcross, mToEye), ndv));
+  float lit = ndv * length(vec3(along * dot(aAlong, l), across * dot(aAcross, l), ndl));
+  return 3.14159265 * distribution * (0.5 / max(viewed + lit, 1e-5)) * ndl;
+}
+
 void anisotropicLight(vec3 l, float sourceRadius, float dist) {
   float ndl = max(dot(mNormal, l), 0.0);
   vec3 h = normalize(l + mToEye);
-  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  vec3 tint = highlightTint(mSpecColor, max(dot(mToEye, h), 0.0), mMetal);
   mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
-  mSpecular = ndl > 0.0 ? tint * anisotropicLobe(h, sourceRadius, dist) : vec3(0.0);
+  float lobe = physicalSpecular()
+    ? anisotropicPhysical(l, h, ndl, sourceRadius, dist)
+    : anisotropicLobe(h, sourceRadius, dist);
+  mSpecular = ndl > 0.0 ? tint * lobe : vec3(0.0);
 }
 
 /* The environment's normal, bent toward the stretch by its strength and the surface's roughness. */

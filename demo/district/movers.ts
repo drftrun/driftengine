@@ -14,6 +14,7 @@
  * Nothing here allocates per frame once the batches are bound.
  */
 import { DrftLoader, writePartMaterial } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 import type { DrftPart } from '@driftengine/assets';
 import type {
   RendererApi,
@@ -48,7 +49,11 @@ export class DistrictMovers {
   changes = 0;
 
   constructor(private readonly renderer: RendererApi) {
-    this.loader = new DrftLoader(renderer, { revealSec: 0, anisotropy: 16 });
+    this.loader = new DrftLoader(renderer, {
+      bcWorker: spawnBcWorker,
+      revealSec: 0,
+      anisotropy: 16,
+    });
   }
 
   /** Fetch the movers; resolves once their container has arrived. A district with none draws none. */

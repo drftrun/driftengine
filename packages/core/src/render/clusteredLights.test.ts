@@ -57,7 +57,10 @@ describe("the cluster table's shape", () => {
 
   it('allocates the table once, at the size the shape implies', () => {
     /*
-     * 320 x 221 texels of RGBA32UI: 282,880 uints, 1.1 MB.
+     * 320 x 222 texels of RGBA32UI: 284,160 uints, 1.1 MB.
+     *
+     * **222 since 4.8.7**: a sixth texel a light for its own falloff exponent, one row of 320, 5 KB
+     * of a table near 1.1 MB.
      *
      * **It was 59 rows until 2026-09-25, when a froxel's run went from five texels to twenty**:
      * sixteen lights a froxel to seventy-six, because a candlelit interior asked up to fifty of one
@@ -73,7 +76,7 @@ describe("the cluster table's shape", () => {
      * which is a quarter of the smaller half.
      */
     expect(createClusterTable()).toHaveLength(TABLE_WIDTH * TABLE_HEIGHT * 4);
-    expect(TABLE_HEIGHT).toBe(221);
+    expect(TABLE_HEIGHT).toBe(222);
   });
 
   it('lays the last cluster inside the table rather than one texel past it', () => {
@@ -588,6 +591,27 @@ describe('the two-texel record', () => {
     expect(lightChannelsOf(undefined)).toBe(1);
   });
 
+  /*
+   * **A light with its own falloff exponent is read to its sixth texel**, where the exponent sits:
+   * a plain light is taken to fall off by the frame's rule without being read, so a light that
+   * names its own has to say so through the fixture flag. Anything not a positive finite number is
+   * the frame's rule, 0, on both arms.
+   */
+  it('A LIGHT WITH ITS OWN FALLOFF EXPONENT CARRIES IT, AND IS READ AS FAR AS IT IS', () => {
+    const record = new Uint32Array(LIGHT_TEXELS * 4);
+    writeLightRecord(oneLight({ falloffExponents: new Float32Array([8]) }), 0, 0, record, 0);
+    expect(floatOf(record[LIGHT_RECORD.falloffExponent] ?? 0)).toBe(8);
+    expect((record[LIGHT_RECORD.sizeAndWeight] ?? 0) & LIGHT_FIXTURE_FLAG).not.toBe(0);
+    expect(lightHasFixture(oneLight({ falloffExponents: new Float32Array([0]) }), 0, 0)).toBe(
+      false,
+    );
+    for (const bad of [-2, Number.NaN, Number.POSITIVE_INFINITY]) {
+      writeLightRecord(oneLight({ falloffExponents: new Float32Array([bad]) }), 0, 0, record, 0);
+      expect(floatOf(record[LIGHT_RECORD.falloffExponent] ?? 0), String(bad)).toBe(0);
+    }
+    expect(LIGHT_RECORD.falloffExponent, 'in the sixth texel').toBe(20);
+  });
+
   it('flags a light with a shadow slot, a cone, a profile or a cookie, and nothing else', () => {
     const flagged = (set: ClusterLightSet, slots = 0): boolean => {
       const record = new Uint32Array(LIGHT_TEXELS * 4);
@@ -686,6 +710,7 @@ describe('the two-texel record', () => {
         iesAxes: new Float32Array(0),
         cookies: new Float32Array(0),
         axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
+        conesAndFalloffs: new Float32Array(MAX_POINT_LIGHTS * 4),
         heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
         heldWeights: new Float32Array(MAX_POINT_LIGHTS),
       },
@@ -723,6 +748,7 @@ describe('a rectangle in the froxel table', () => {
     areas.sizes.set([1, 1, 0.6, 0.4, 1, 1]);
     areas.twoSided.set([0, 1, 0]);
     areas.ranges?.set([1, 0.5, 1]);
+    areas.barnDoors?.set([0, 0, 0.5, 0.3, 0, 0]);
     return {
       count,
       positions: new Float32Array(count * 3),
@@ -751,6 +777,9 @@ describe('a rectangle in the froxel table', () => {
     expect(floatOf(record[LIGHT_RECORD.cosInner] ?? 0), 'half-width').toBeCloseTo(0.6);
     expect(floatOf(record[LIGHT_RECORD.cosOuter] ?? 0), 'half-height').toBeCloseTo(0.4);
     expect(floatOf(record[LIGHT_RECORD.iesAxisZ] ?? 0), 'up').toBe(1);
+    expect(floatOf(record[LIGHT_RECORD.barnDoorCos] ?? 0), 'the doors').toBe(0.5);
+    expect(floatOf(record[LIGHT_RECORD.barnDoorLength] ?? 0)).toBe(Math.fround(0.3));
+    expect(floatOf(record[LIGHT_RECORD.falloffExponent] ?? 0), 'no exponent').toBe(0);
     expect(clusteredMode(lights, 1, 0)).toBe(2);
   });
 

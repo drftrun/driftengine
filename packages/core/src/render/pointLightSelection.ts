@@ -1,6 +1,10 @@
 /** Allocation-free selection and packing of point lights for a fixed shader budget. */
 
-import { POINT_LIGHT_COS_INNER, POINT_LIGHT_COS_OUTER } from './clusteredLights.ts';
+import {
+  POINT_LIGHT_COS_INNER,
+  POINT_LIGHT_COS_OUTER,
+  lightFalloffExponentOf,
+} from './clusteredLights.ts';
 import { MAX_POINT_LIGHTS, POINT_SHADOW_POOL } from './lightBudget.ts';
 import { gatherLights } from './lightGrid.ts';
 import type { LightGrid } from './lightGrid.ts';
@@ -198,6 +202,14 @@ export interface PointLightSource {
    * whose uniform budget has none to spare.
    */
   inLightField?: boolean;
+  /**
+   * How the light fades with distance when it names its own way: `(1 - (d/R)^2)^n` with no distance
+   * term, `R` its radius and `n` this. Unreal's falloff for a light without inverse-square falloff,
+   * so a rig authored there — a fill of brightness 160 across 164 m, a key at exponent 8 — lights
+   * the space it was authored for rather than one that ends a few metres out. Absent or 0, the
+   * frame's own falloff (`pointLightFalloff`), which is every light before 4.8.7.
+   */
+  falloffExponent?: number;
 }
 
 export interface PointLightBuffer {
@@ -256,6 +268,11 @@ export interface PointLightBuffer {
   readonly directions: Float32Array;
   /** Two per slot: the cosine of the inner cone angle, then of the outer. */
   readonly coneCos: Float32Array;
+  /**
+   * One per slot: the light's own falloff exponent, or 0 for the frame's falloff. See
+   * `PointLightSource.falloffExponent`.
+   */
+  readonly falloffExponents: Float32Array;
   /** One per slot: a row of the photometric atlas, or −1 for a light with no profile. */
   readonly iesProfiles: Float32Array;
   /** Internal insertion-sort storage; exposed only to keep one flat object. */
@@ -307,6 +324,7 @@ export function createPointLightBuffer(capacity: number = MAX_POINT_LIGHTS): Poi
     weights: new Float32Array(shaded),
     directions: new Float32Array(shaded * 3),
     coneCos: new Float32Array(shaded * 2),
+    falloffExponents: new Float32Array(shaded),
     /* −1 rather than 0, because row 0 is a real fixture and a light that asked for none must not
        be shaped by whichever profile happened to load first. */
     iesProfiles: new Float32Array(shaded).fill(-1),
@@ -587,6 +605,7 @@ function choose(
      * Restricting it to spots would be a smaller feature for no saving.
      */
     out.iesProfiles[slot] = light.iesProfile ?? -1;
+    out.falloffExponents[slot] = lightFalloffExponentOf(light.falloffExponent);
   }
   out.count = chosen;
 

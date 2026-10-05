@@ -30,6 +30,7 @@
 import { Camera, createEnvironment, createRenderer } from '../../packages/core/src/index';
 import type { RendererApi } from '../../packages/core/src/index';
 import { DrftLoader } from '../../packages/assets/src/index';
+import { spawnBcWorker } from '../../packages/assets/src/bcWorkers';
 import type { LoadedRegion } from '../../packages/assets/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 import { CityArrays } from '../sprawl/arrays';
@@ -95,7 +96,11 @@ async function main(): Promise<void> {
     [...arrays.names()].map(async (name) => arrays.take(name, await picture(name))),
   );
 
-  const loader = new DrftLoader(renderer, { revealSec: 0, uploadMsPerFrame: 1000 });
+  const loader = new DrftLoader(renderer, {
+    bcWorker: spawnBcWorker,
+    revealSec: 0,
+    uploadMsPerFrame: 1000,
+  });
   await loader.consume(drftResponse, { fit: 'none' });
   const classes = new Map(plan.regions.map((r) => [r.id, r]));
 

@@ -12,9 +12,9 @@
  *
  * **What it gives up** is a matrix per instance where a scatter spends five floats: 80 bytes
  * against 44, and no wind. **What would make it wrong** is a caller wanting per-instance
- * anything beyond an opacity — a morph weight, a texture cell — which wants another attribute,
- * and the sixteen WebGL2 guarantees are already spent. The opacity rides the float the stride was
- * padded with, which is why it costs nothing.
+ * anything beyond an opacity and a texture cell — a morph weight, say — which wants another
+ * attribute, and the sixteen WebGL2 guarantees are already spent. The opacity rides the float the
+ * stride was padded with and the cell the matrix's bottom row, which is why neither costs a byte.
  */
 export interface MeshInstances {
   /**
@@ -51,6 +51,20 @@ export interface MeshInstances {
    * either mismatch is said once on the console.
    */
   readonly lightmapRegions?: Float32Array;
+  /**
+   * Four floats each, the instance's cell of its texture: `[scaleU, scaleV, offsetU, offsetV]`,
+   * applied to the mesh's coordinates before the material's own scale and offset, in every pass
+   * that reads them — so one draw carries particles in different cells of a flipbook, or props
+   * wearing different tiles of one atlas. **Absent, or past `count`, is the whole texture**,
+   * `[1, 1, 0, 0]`, which is what every instance read before 4.8.7.
+   *
+   * **It rides the matrix's bottom row**, which an instance's placement — a turn, a scale and a
+   * move — leaves at `[0, 0, 0, 1]`, and which every stage drawing an instance rebuilds as that.
+   * So a placement must be affine, as every placement of a solid object is; a projective one is
+   * drawn as its affine part. A culled batch (`cullInstances`) carries the cells only into a
+   * target that has the array.
+   */
+  readonly uvRegions?: Float32Array;
   /** How many instances the arrays hold. Fixed at creation; the buffers are sized from it. */
   readonly capacity: number;
   /** How many are live. The rest of the buffer is neither uploaded nor drawn. */
@@ -75,8 +89,8 @@ export function createMeshInstances(capacity: number): MeshInstances {
 }
 
 /**
- * Floats one instance occupies in the interleaved vertex buffer: sixteen of matrix, three of
- * tint, and the opacity.
+ * Floats one instance occupies in the interleaved vertex buffer: sixteen of matrix, the bottom row
+ * of which carries the texture cell, three of tint, and the opacity.
  *
  * **Twenty so the stride is 80 bytes rather than 76.** A vertex buffer's stride must be a multiple
  * of four on both backends, which 76 already is — the twentieth float was padding for the
@@ -101,12 +115,18 @@ export const INSTANCE_STRIDE = INSTANCE_FLOATS * 4;
  * Writes nothing beyond `count`, and allocates nothing: `out` is the caller's staging array.
  */
 export function packInstances(instances: MeshInstances, out: Float32Array): void {
-  const { models, tints, alphas, lightmapRegions } = instances;
+  const { models, tints, alphas, lightmapRegions, uvRegions } = instances;
   const count = Math.min(instances.count, instances.capacity);
   for (let i = 0; i < count; i += 1) {
     const at = i * INSTANCE_FLOATS;
     const m = i * 16;
     for (let c = 0; c < 16; c += 1) out[at + c] = models[m + c] as number;
+    /* The texture cell in the bottom row an affine placement leaves free. See `uvRegions`. */
+    const cell = i * 4;
+    out[at + 3] = uvRegions?.[cell] ?? 1;
+    out[at + 7] = uvRegions?.[cell + 1] ?? 1;
+    out[at + 11] = uvRegions?.[cell + 2] ?? 0;
+    out[at + 15] = uvRegions?.[cell + 3] ?? 0;
     if (lightmapRegions !== undefined) {
       /* The region in the tint's and the opacity's place. See `lightmapRegions`. */
       for (let c = 0; c < 4; c += 1) out[at + 16 + c] = lightmapRegions[i * 4 + c] as number;

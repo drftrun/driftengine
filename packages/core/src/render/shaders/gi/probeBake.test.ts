@@ -142,8 +142,12 @@ test('A LAMP LIGHTS WHAT A PROBE STRIKES AS IT LIGHTS THE FRAME, its falloff, co
       'smoothstep(aim.w, colour.w, dot(-toLight / max(dist, 1e-4), aim.xyz));',
     ],
     [
-      'float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;',
-      'let shape = select(falloff * falloff, falloff, bake.falloff == 1.0) * coneFalloff;',
+      'falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), lightExponent);',
+      'falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), lightExponent);',
+    ],
+    [
+      '(lightExponent > 0.0 || uLightFalloff == 1 ? falloff : falloff * falloff) *',
+      'let shape = select(falloff * falloff, falloff, lightExponent > 0.0 || bake.falloff == 1.0) * coneFalloff;',
     ],
     [
       'vec3 lampDiffuse = albedo * lightColor * ndl * shape * lightWeight * (1.0 - metal);',

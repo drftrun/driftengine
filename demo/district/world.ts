@@ -27,6 +27,7 @@ import type {
   TranslucentMeshOptions,
 } from '../../packages/core/src/index';
 import { DrftLoader } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 import type { DrftPart } from '@driftengine/assets';
 
 import type { SceneFile } from './bake/write';
@@ -97,7 +98,11 @@ export class DistrictWorld {
   ) {
     this.hlod = new HlodSet({ capacity: CAPACITY, fadeSec });
     /* A city's walls are seen along the street, at grazing angles, which is what anisotropy is for. */
-    this.loader = new DrftLoader(renderer, { revealSec: 0, anisotropy: 16 });
+    this.loader = new DrftLoader(renderer, {
+      bcWorker: spawnBcWorker,
+      revealSec: 0,
+      anisotropy: 16,
+    });
   }
 
   /** Stream the container and its scene file; resolves once the container's last byte has arrived. */

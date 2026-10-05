@@ -24,6 +24,7 @@
  * which is how the band beside a pier was found to be a decal (see `BLENDED`).
  */
 import { DrftLoader, writePartMaterial } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 import { STONE_ALBEDO, paleFloor, stoneSurface } from './stone';
 import { lanternGlass } from './glass';
 import type { DrftLight } from '@driftengine/drft';
@@ -112,6 +113,7 @@ export class SponzaPacks {
     const cap = askedCap(search);
     for (const pack of askedPacks(search)) {
       const loader = new DrftLoader(renderer, {
+        bcWorker: spawnBcWorker,
         anisotropy: 16,
         /*
          * A load behind a veil draws no world, so its frames can spend what a drawn one could not,

@@ -12,6 +12,10 @@
  *     /ssr.html?ssr=1     the left half of the floor reflects
  *     /ssr.html?ssr=1&lift=1   the blocks rise, and their reflections move away from them
  *     /ssr.html?ssr=1&fx=0     no off-screen target, so nothing to march against
+ *     /ssr.html?ssr=1&strength=0.04&fresnel=1&roughness=0.2
+ *                              the strength read as the floor's reflectance head-on and weighed
+ *                              per pixel by its view (`ReflectiveSurface.fresnel`): at a strength
+ *                              of 1 and roughness 0 that is 1 at every angle, the constant's frame
  *
  * **Dark floor, bright blocks, flat light, no clock read anywhere.** A reflection is a fraction of
  * what it reflects, so the floor has to be dark enough for that fraction to show, and everything
@@ -80,7 +84,9 @@ async function main(): Promise<void> {
     halfExtents: [2.5, 4.5, 0.3],
     forward: [0, -1, 0],
     up: [0, 0, 1],
-    strength: 0.7,
+    strength: Number(asked.get('strength') ?? '0.7'),
+    fresnel: asked.get('fresnel') === '1',
+    roughness: Number(asked.get('roughness') ?? '0'),
     reachM: 10,
   });
 

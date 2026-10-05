@@ -39,3 +39,32 @@ export function anisotropicLobe(
   const d = x * x + y * y + nh * nh;
   return 1 / Math.max(d * d, 1e-8);
 }
+
+/** Three components in the lobe's frame: along the direction, across it, along the normal. */
+export type FrameVector = readonly [number, number, number];
+
+/**
+ * The physical form of the same lobe, `π · D · Vis · N·L`, for a surface whose highlight is GGX's
+ * own (`SurfaceMaterial.physicalSpecular`): the stretched distribution normalised as a BRDF's, and
+ * Smith's height-correlated masking stretched with it (Heitz 2014, as Filament writes it), Fresnel
+ * left to the caller. The half vector, the light and the view are each in the lobe's frame. At
+ * strength 0 it is isotropic GGX, the term skin's and the eye's highlights are.
+ */
+export function anisotropicPhysicalLobe(
+  half: FrameVector,
+  light: FrameVector,
+  view: FrameVector,
+  alphaT: number,
+  alphaB: number,
+): number {
+  const x = half[0] / alphaT;
+  const y = half[1] / alphaB;
+  const d = x * x + y * y + half[2] * half[2];
+  const distribution = 1 / (Math.PI * alphaT * alphaB * d * d);
+  const ndl = light[2];
+  const ndv = view[2];
+  const lambdaView = ndl * Math.hypot(alphaT * view[0], alphaB * view[1], ndv);
+  const lambdaLight = ndv * Math.hypot(alphaT * light[0], alphaB * light[1], ndl);
+  const visibility = 0.5 / Math.max(lambdaView + lambdaLight, 1e-5);
+  return Math.PI * distribution * visibility * ndl;
+}

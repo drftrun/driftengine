@@ -1,10 +1,14 @@
 /**
- * Particles a game positions itself, sprites from a flipbook, and a flock of birds.
+ * Particles a game positions itself, particles a compute shader writes, sprites from a flipbook,
+ * and a flock of birds.
  *
  * A snippet, typechecked with the examples and quoted by the manual's particles chapter.
  */
+import { DEVICE_PARTICLE_FLOATS } from '@driftengine/core';
 import type {
   Camera,
+  ComputeHandle,
+  DeviceParticles,
   Environment,
   FlockParams,
   ParticleHandle,
@@ -91,5 +95,33 @@ export function stepFlipbook(particles: ParticleInstances): void {
   const frames = particles.frames;
   if (frames === undefined) return;
   for (let i = 0; i < particles.count; i += 1) frames[i] = (particles.ages[i] ?? 0) * 15.999;
+}
+// #endregion
+
+// #region device
+/** `GPUBufferUsage.STORAGE | VERTEX`, as values: the globals exist only in a browser. */
+const STORAGE_VERTEX = 0x0080 | 0x0020;
+
+/** A buffer a compute shader fills with `capacity` particles and a pool then draws. WebGPU only. */
+export function particleBuffer(device: GPUDevice, capacity: number): DeviceParticles {
+  const buffer = device.createBuffer({
+    size: capacity * DEVICE_PARTICLE_FLOATS * 4,
+    usage: STORAGE_VERTEX,
+  });
+  return { buffer, count: capacity };
+}
+
+/** Each frame: step the simulation on the device, then draw what it wrote, where it lies. */
+export function drawSimulated(
+  renderer: RendererApi,
+  simulate: ComputeHandle,
+  batch: ParticleHandle,
+  particles: DeviceParticles,
+  camera: Camera,
+  env: Environment,
+  time: number,
+): void {
+  renderer.dispatchCompute(simulate);
+  renderer.drawDeviceParticles(batch, particles, camera, env, time);
 }
 // #endregion

@@ -20,6 +20,7 @@
  * ```
  */
 import { DrftLoader } from '../../packages/assets/src/index';
+import { spawnBcWorker } from '../../packages/assets/src/bcWorkers';
 import {
   captureFile,
   collisionMesh,
@@ -132,6 +133,7 @@ async function main(): Promise<void> {
    * the file, and the difference between the two is the whole subject of this page.
    */
   const loader = new DrftLoader(renderer, {
+    bcWorker: spawnBcWorker,
     fetchImpl: () => Promise.resolve(new Response(bytes)),
   });
   await loader.load('capture.drft', { footprint: HALF * 2, height: HEIGHT, baseY: 0 });

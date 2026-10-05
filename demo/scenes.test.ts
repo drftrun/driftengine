@@ -177,6 +177,12 @@ const MODULES = [
   ).filter(([id]) => !id.startsWith('./dev/') && !id.startsWith('./native/')),
 ].filter(([id]) => !id.endsWith('.test.ts'));
 
+/** The worker factories packages publish beside their barrels. See the rule below. */
+const WORKER_SPECIFIERS = [
+  '@driftengine/physics/src/workers.ts',
+  '@driftengine/assets/src/bcWorkers.ts',
+];
+
 test('every scene reaches the engine through the public barrel alone', () => {
   for (const [id, source] of MODULES) {
     const specifiers = [...source.matchAll(/ from '([^']+)';/g)].map(([, specifier]) => specifier);
@@ -211,6 +217,12 @@ test('every scene reaches the engine through the public barrel alone', () => {
          * pattern-matched, so this stays a list of what a demo may reach rather than a hole.
          */
         specifier === 'driftscript' ||
+        /*
+         * A worker's factory, which a package publishes behind a specifier of its own so that its
+         * barrel names no worker (`scripts/worker-entry.test.mjs`): a consumer that wants the
+         * worker names this exactly as it names a barrel. Listed, for the reason `driftscript` is.
+         */
+        WORKER_SPECIFIERS.includes(specifier) ||
         /* A sibling, a scene's own subdirectory, or back up out of one. */
         /^\.\.?\/[A-Za-z]+(\/[A-Za-z]+)?$/.test(specifier) ||
         /* A DriftScript module beside the file that hosts it. */

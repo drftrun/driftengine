@@ -248,7 +248,10 @@ test('a shining surface takes a highlight from the sun, and only where it is ask
      assertions are split to match — that it is built with the sun's shadow, and that it reaches
      `lit` — because the property under test is the shadow, not the line number. */
   expect(source, 'and it is shadowed like any other sunlight').toContain(
-    'sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;',
+    'vec3 sunHighlight = sunColor * sunLobe * sunSpec * sunShade * sunFacing;',
+  );
+  expect(source, "the look's lobe unless the surface asks for GGX's own").toContain(
+    ': specularLobe(sunNdh, surfaceRoughness);',
   );
   /*
    * **Both halves, because the split is the whole point.** A dielectric's share goes in before the
@@ -1011,12 +1014,66 @@ test('there is no irradiance where there is no probe', () => {
  * none.
  */
 test('the direct highlight takes a Fresnel that whitens it at grazing, and only for metal', () => {
-  expect(source).toContain('mix(specColor, vec3(1.0), pow(1.0 - sunVoH, 5.0) * metal)');
+  expect(source).toContain('vec3 sunSpec = highlightTint(specColor, sunVoH, metal);');
   expect(source).toContain(
-    'vec3 lampSpec = mix( specColor, vec3(1.0), pow(1.0 - max(dot(toEyeLamp, lampHalfway), 0.0), 5.0) * metal );',
+    'vec3 lampSpec = highlightTint(specColor, max(dot(toEyeLamp, lampHalfway), 0.0), metal);',
   );
   /* Scaled by metal, so mix(specColor, white, 0) is specColor and the dielectric case is
-     the expression it replaces — which is what keeps the published scenes bit-identical. */
+     the expression it replaces — which is what keeps the published scenes bit-identical. A
+     physical highlight reads the attribute as F0, so there it whitens every surface that has one. */
+  expect(source).toContain('float edge = pow(1.0 - voh, 5.0);');
+  expect(source).toContain(
+    'return mix(specColor, vec3(1.0), physicalSpecular() && reflects ? edge : edge * metal);',
+  );
+});
+
+/*
+ * **A physical highlight is GGX's own, `π · D · Vis · N·L`**, the term skin's and the eye's are, on a
+ * lamp, the sun and the anisotropic model alike, and only where a material asks: `physicalSpecular`
+ * reads the switch first, which is off in every program until a material first asks
+ * (`PHYSICAL_SPECULAR`, a lit switch), and then the material's own lane of `uModelParams`.
+ */
+/*
+ * **A brushed surface with no frame still has a direction.** A mesh with neither tangents nor
+ * texture coordinates gives the model a zero to normalise, which was a NaN that drew the whole
+ * surface black until 4.8.7; any direction in the surface stands in.
+ */
+test('AN ANISOTROPIC SURFACE WITH NO FRAME TAKES A DIRECTION IN IT, NOT A NaN', () => {
+  expect(source).toContain('if (dot(along, along) < 1e-12) {');
+  expect(source).toContain(
+    'along = cross(abs(mNormal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), mNormal);',
+  );
+  expect(source.indexOf('aAlong = normalize(along);')).toBeGreaterThan(
+    source.indexOf('if (dot(along, along) < 1e-12) {'),
+  );
+});
+
+test('A PHYSICAL HIGHLIGHT IS GGX’S OWN WHERE A MATERIAL ASKS, AND COMPILED OUT UNTIL ONE DOES', () => {
+  expect(source).toContain(
+    'return 3.14159265 * ggxLobe(ndh, alpha) * smithMasking(ndl, max(ndv, 1e-4), alpha) * ndl;',
+  );
+  expect(source).toContain(
+    'float alpha = min(max(roughness * roughness, MIN_LOBE_ALPHA) + grow, 1.0);',
+  );
+  expect(source, "a lamp's, widened by its size").toContain(
+    '? physicalLobe(lampNdh, ndl, dot(n, toEyeLamp), surfaceRoughness, lightSourceRadius, dist)',
+  );
+  expect(source, "the sun's, a point").toContain(
+    '? physicalLobe(sunNdh, ndl, dot(n, normalize(uCameraPos - vWorldPos)), surfaceRoughness, 0.0, 1.0)',
+  );
+  expect(source, "the anisotropic model's").toContain(
+    '? anisotropicPhysical(l, h, ndl, sourceRadius, dist)',
+  );
+  expect(source).toContain('if (PHYSICAL_SPECULAR) {');
+  expect(source).toContain('return uModelParams[1].z > 0.5;');
+  const without = flatFrag({
+    pointShadows: true,
+    directionalShadows: true,
+    environmentProbe: true,
+    nightEmissive: false,
+    physicalSpecular: false,
+  });
+  expect(without).toContain('const bool PHYSICAL_SPECULAR = false;');
 });
 
 /**
@@ -1533,7 +1590,7 @@ test("SUNLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR in every term the sun ligh
   expect(source).toContain('vec3 sunColor = uDirectionalColor * sunGlass;');
   expect(source).toContain('lit = albedo * (ambient + sunColor * direct * (1.0 - metal));');
   expect(source).toContain('glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;');
-  expect(source).toMatch(/sunColor \* specularLobe\(/);
+  expect(source).toMatch(/sunColor \* sunLobe \*/);
   /* The lookup counts a pane only when the receiver is behind it, as glassShadow.ts's tapTint. */
   expect(source).toContain('uniform highp sampler2DArray uSunGlassTints;');
 });
@@ -1550,11 +1607,12 @@ test("LAMPLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR, a lamp's and a rectangle
   expect(source).toContain(
     'glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;',
   );
-  /* A rectangle's two terms are shaded in `areaLightAdd`, which every arm calls with its own pair. */
+  /* A rectangle's two terms are shaded in `areaLightAdd`, which every arm calls with its own pair,
+     over the part of the rectangle its barn doors leave in view. */
   expect(source).toContain('lampShadowed += areaDiffuse * occl * glass;');
   expect(source).toContain('lampShadowed += areaHighlight * occl * glass;');
   expect(source).toContain(
-    'centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,',
+    'seenCentre, right, up, seenHalf, uAreaLightColor[a], form, areaOccl, areaGlass,',
   );
   expect(source).toContain('glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;');
   /* The glass sits beside its light's layer, and the tint is a layer a light. */

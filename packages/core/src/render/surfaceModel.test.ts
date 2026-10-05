@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  SKIN_MEAN_EXIT,
   anisotropicModel,
   eyeAxisInWorld,
   eyeModel,
   hairModel,
   packModel,
   skinModel,
+  skinProfileDistance,
 } from './surfaceModel.ts';
 
 const packed = (...args: Parameters<typeof packModel>): number[] => {
@@ -40,7 +42,7 @@ describe('packModel', () => {
         true,
         out,
       ),
-    ).toEqual([0.5, 0.25, 0.125, 0.01, 0.75, 3, 0, 1]);
+    ).toEqual([0.5, 0.25, 0.125, 0.004, 0.75, 3, 0, 1]);
     expect(
       packed(
         eyeModel({
@@ -54,6 +56,22 @@ describe('packModel', () => {
         out,
       ),
     ).toEqual([0.2, 0.004, 1.4, 0.05, 0, 1, 0, 0]);
+  });
+
+  /*
+   * **A physical highlight rides the lane the models that read it leave free**: the standard
+   * model's, the anisotropic one's and a lightmap's sixth float. Skin, hair and the eye shade their
+   * own and never take it, and the eye's axis is in that lane.
+   */
+  it('PUTS A PHYSICAL HIGHLIGHT IN THE SIXTH FLOAT, AND ONLY WHERE A MODEL READS IT', () => {
+    const out = new Float32Array(8);
+    expect(packed(null, false, out, true)).toEqual([0, 0, 0, 0, 0, 0, 1, 0]);
+    expect(packed(anisotropicModel({ strength: 0.5 }), true, out, true)).toEqual([
+      0.5, 1, 0, 0, 0, 0, 1, 1,
+    ]);
+    expect(packed(hairModel(), false, out, true)[6]).toBe(0);
+    expect(packed(skinModel(), false, out, true)[6]).toBe(0);
+    expect(packed(null, false, out)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it('refuses a number out of its range by name, and freezes what it makes', () => {
@@ -89,4 +107,29 @@ it("TURNS AN EYE'S AXIS BY ITS JOINT AND THEN ITS DRAW", () => {
   for (let k = 0; k < 11; k++) palette[16 + k] = (palette[16 + k] as number) * 2;
   eyeAxisInWorld(eyeModel({ joint: 1 }), quarterZ, palette, out, 0);
   expect(Array.from(out, (v) => Math.round(v * 1e6) / 1e6)).toEqual([0, 1, 0]);
+});
+
+/*
+ * **A skin's `radius` is how far its light travels, and Burley's profile carries it two and a half
+ * of its own distances on average**, so the profile both paths scatter by is at `radius / 2.5`.
+ * The 2.5 is held to the profile itself rather than to the code: its radial density
+ * `(e^(−r/d) + e^(−r/3d)) / 4d`, integrated by hand, has the mean `(d² + 9d²) / 4d`. Summed here
+ * numerically at d = 1, out to where nothing is left. Until 4.8.7 the radius was `d`, and light went
+ * two and a half times as far as the model said: a face at arm's length blurred over sixty pixels.
+ */
+it('A SKIN’S LIGHT TRAVELS ITS RADIUS ON AVERAGE, SO THE PROFILE IS AT TWO FIFTHS OF IT', () => {
+  let mass = 0;
+  let moment = 0;
+  const dr = 1e-3;
+  for (let r = dr / 2; r < 80; r += dr) {
+    const density = (Math.exp(-r) + Math.exp(-r / 3)) / 4;
+    mass += density * dr;
+    moment += r * density * dr;
+  }
+  expect(mass).toBeCloseTo(1, 6);
+  expect(moment / mass).toBeCloseTo(2.5, 6);
+  expect(SKIN_MEAN_EXIT).toBe(2.5);
+  /* Red at 0.707 of a 1.2 cm radius: 8.484 mm travelled, a profile at 3.3936 mm. */
+  const skin = skinModel({ scatterColor: [0.707, 0.48, 0.36], radius: 0.012 });
+  expect(skinProfileDistance(skin, 0)).toBeCloseTo(0.0033936, 9);
 });

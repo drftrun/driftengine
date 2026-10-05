@@ -3,42 +3,52 @@ import { describe, expect, it } from 'vitest';
 import { LIGHTMAP_LAYERS, lightmapTexels, withLightmapUvs } from './lightmap.ts';
 import { MODEL_PARAM_FLOATS, lightmapModel, packModel } from './surfaceModel.ts';
 
-/** A half float's bits as the number they hold: sign, five exponent bits, ten of mantissa. */
-function half(bits: number): number {
-  const sign = bits & 0x8000 ? -1 : 1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  if (exponent === 0) return sign * 2 ** -14 * (mantissa / 1024);
-  return sign * 2 ** (exponent - 15) * (1 + mantissa / 1024);
-}
-
 describe('a lightmap page as both backends upload it', () => {
   /*
-   * Two texels, so a layout that interleaved the layers, or read the direction from the wrong
-   * texel, puts a value where the hand-written one is not. 0.25, 1.5 and 3 are exact in a half;
-   * byte 255 is 1, byte 0 is 0, and 51 is 0.2 to the half's precision.
+   * Two texels, so a layout that interleaved the layers or read the wrong texel puts a value where
+   * the hand-derived one is not. (0.25, 1.5, 3): the largest is 3, so the exponent is
+   * floor(log2 3) + 1 + 15 = 17 and the step 2^(17 - 24) = 1/128, giving mantissas 32, 192 and 384,
+   * the word 32 | 192 << 9 | 384 << 18 | 17 << 27 = 2,382,463,008 and the bytes, lowest first,
+   * 32, 128, 1, 142. (0.5, 0, 2): the same exponent, mantissas 64, 0 and 256: bytes 64, 0, 0, 140.
    */
-  it('LAYS THE IRRADIANCE OUT AS ONE LAYER AND THE DIRECTION AS THE NEXT, FOUR HALVES A TEXEL', () => {
+  it('PACKS FLOAT IRRADIANCE AS ONE RGB9E5 WORD A TEXEL, AND TAKES THE DIRECTION AS ITS BYTES', () => {
+    const direction = new Uint8Array([255, 0, 51, 255, 0, 255, 0, 0]);
     const texels = lightmapTexels({
       width: 2,
       height: 1,
       irradiance: new Float32Array([0.25, 1.5, 3, 0.5, 0, 2]),
-      direction: new Uint8Array([255, 0, 51, 255, 0, 255, 0, 0]),
+      direction,
     });
-    expect(texels.layers).toBe(LIGHTMAP_LAYERS);
+    expect(texels.layers).toHaveLength(LIGHTMAP_LAYERS);
     expect(texels.width).toBe(2);
-    expect(Array.from(texels.texels.subarray(0, 8), half)).toEqual([0.25, 1.5, 3, 1, 0.5, 0, 2, 1]);
-    const direction = Array.from(texels.texels.subarray(8, 16), half);
-    expect(direction[0]).toBe(1);
-    expect(direction[1]).toBe(0);
-    expect(direction[2]).toBeCloseTo(0.2, 3);
-    expect(direction.slice(3)).toEqual([1, 0, 1, 0, 0]);
+    expect(Array.from(texels.layers[0] ?? [])).toEqual([32, 128, 1, 142, 64, 0, 0, 140]);
+    expect(texels.layers[1], 'the direction uploads where it lies').toBe(direction);
+  });
+
+  /*
+   * A bake that arrives packed is the case the format exists for: 21.8 million texels of floats
+   * were 348 MB on the device as half floats and a second copy on the way. A packed page is read
+   * where it lies, so its bytes are a view of the caller's own words.
+   */
+  it('READS PACKED IRRADIANCE WHERE IT LIES, WITH NO COPY', () => {
+    const words = new Uint32Array([2382463008, 2348810304]);
+    const texels = lightmapTexels({
+      width: 2,
+      height: 1,
+      irradiance: words,
+      direction: new Uint8Array(8),
+    });
+    expect(texels.layers[0]?.buffer).toBe(words.buffer);
+    expect(Array.from(texels.layers[0] ?? [])).toEqual([32, 128, 1, 142, 64, 0, 0, 140]);
   });
 
   it('refuses arrays that are not the page, naming the one that is short', () => {
     const page = { width: 2, height: 2, direction: new Uint8Array(16) };
     expect(() => lightmapTexels({ ...page, irradiance: new Float32Array(11) })).toThrow(
       /11 irradiance floats .* wants 12/,
+    );
+    expect(() => lightmapTexels({ ...page, irradiance: new Uint32Array(3) })).toThrow(
+      /3 irradiance words .* wants 4: one rgb9e5 word a texel/,
     );
     expect(() =>
       lightmapTexels({ ...page, irradiance: new Float32Array(12), direction: new Uint8Array(15) }),

@@ -23,15 +23,20 @@
  */
 
 import type { PointLightSet } from '../lightBudget.ts';
-import { POINT_LIGHT_COS_INNER, POINT_LIGHT_COS_OUTER } from '../clusteredLights.ts';
+import {
+  POINT_LIGHT_COS_INNER,
+  POINT_LIGHT_COS_OUTER,
+  lightFalloffExponentOf,
+} from '../clusteredLights.ts';
 
 /** Lights the probe bake shades a hit with. */
 export const MAX_BOUNCE_LIGHTS = 32;
 /**
  * Floats a light takes: where it is and how far it reaches; its colour at its weight and the cosine
- * of its inner cone; the way it points and the cosine of its outer cone.
+ * of its inner cone; the way it points and the cosine of its outer cone; and its own falloff
+ * exponent, 0 for the frame's, in a fourth row of its own (`PointLightSource.falloffExponent`).
  */
-export const BOUNCE_LIGHT_FLOATS = 12;
+export const BOUNCE_LIGHT_FLOATS = 16;
 
 export function createBounceLights(): Float32Array {
   return new Float32Array(MAX_BOUNCE_LIGHTS * BOUNCE_LIGHT_FLOATS);
@@ -62,6 +67,10 @@ export function resolveBounceLights(lights: PointLightSet | null, out: Float32Ar
     out[at + 9] = lights.lightDirections?.[i * 3 + 1] ?? 0;
     out[at + 10] = lights.lightDirections?.[i * 3 + 2] ?? 0;
     out[at + 11] = lights.lightConeCos?.[i * 2 + 1] ?? POINT_LIGHT_COS_OUTER;
+    out[at + 12] = lightFalloffExponentOf(lights.lightFalloffExponents?.[i]);
+    out[at + 13] = 0;
+    out[at + 14] = 0;
+    out[at + 15] = 0;
     count++;
   }
   return count;

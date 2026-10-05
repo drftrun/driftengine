@@ -97,6 +97,22 @@ export interface AreaLightSource {
    * of a scene unit, and never inside the rectangle itself. Unreal's `AttenuationRadius`, in metres.
    */
   range?: number;
+  /**
+   * Barn doors: a flap hinged at each of the rectangle's four edges, standing this many degrees from
+   * its normal. 90, or absent, folds them flat and they hide nothing; smaller closes them, so the
+   * light narrows to the opening they leave — a rectangle at 50° throws a beam rather than filling
+   * its hemisphere. Unreal's `BarnDoorAngle`, whose default of 88° is nearly flat.
+   *
+   * What a fragment sees past the doors is the part of the rectangle no door's tip hides, one axis
+   * at a time, and the rectangle then shades as that smaller rectangle, its highlight included.
+   * Its shadow map is still baked from the whole rectangle's centre. **What it gives up**: each
+   * door is taken as endless along its hinge, so the two axes clip apart and the corner where two
+   * doors meet hides a square rather than the mitre two real flaps make. One-sided: a two-sided
+   * rectangle's back face has none.
+   */
+  barnDoorAngle?: number;
+  /** The barn doors' length in metres. Absent, 0.2: Unreal's default of 20 cm. */
+  barnDoorLength?: number;
 }
 
 /** The irradiance a derived `range` ends at, in scene units. See `AreaLightSource.range`. */
@@ -113,6 +129,11 @@ export interface AreaLightBuffer {
   readonly twoSided: Float32Array;
   /** One a rectangle: how far its light reaches. See `AreaLightSource.range`. */
   readonly ranges?: Float32Array;
+  /**
+   * Two a rectangle: the cosine of its barn doors' angle from its normal, then their length in
+   * metres — 0 and 0 for none. See `AreaLightSource.barnDoorAngle`.
+   */
+  readonly barnDoors?: Float32Array;
 }
 
 export function createAreaLightBuffer(capacity: number = MAX_AREA_LIGHTS): AreaLightBuffer {
@@ -125,7 +146,43 @@ export function createAreaLightBuffer(capacity: number = MAX_AREA_LIGHTS): AreaL
     sizes: new Float32Array(capacity * 2),
     twoSided: new Float32Array(capacity),
     ranges: new Float32Array(capacity),
+    barnDoors: new Float32Array(capacity * 2),
   };
+}
+
+/** Unreal's default barn door length, in metres. See `AreaLightSource.barnDoorLength`. */
+export const DEFAULT_BARN_DOOR_LENGTH = 0.2;
+
+/**
+ * A rectangle's barn doors as the shader reads them, into `out[at]` and `out[at + 1]`: the cosine of
+ * their angle and their length. An angle not between 0 and 90 degrees, or a length not above zero,
+ * is no doors at all, written as 0 and 0 — which the shader reads as "nothing hidden".
+ */
+export function barnDoorsOf(light: AreaLightSource, out: Float32Array, at: number): void {
+  const angle = light.barnDoorAngle;
+  const length = light.barnDoorLength ?? DEFAULT_BARN_DOOR_LENGTH;
+  if (angle === undefined || !(angle >= 0 && angle < 90) || !(length > 0)) {
+    out[at] = 0;
+    out[at + 1] = 0;
+    return;
+  }
+  out[at] = Math.cos((angle * Math.PI) / 180);
+  out[at + 1] = length;
+}
+
+/**
+ * The fixed arm's half extents and barn doors, four a rectangle as `uAreaLightSize` holds them: the
+ * two half extents, then the doors' cosine and length. Into a target the binder owns, for the first
+ * `MAX_AREA_LIGHTS` alone, which are all the fixed arm reads.
+ */
+export function packAreaSizesAndDoors(lights: AreaLightBuffer, out: Float32Array): void {
+  const doors = lights.barnDoors;
+  for (let a = 0; a < MAX_AREA_LIGHTS; a++) {
+    out[a * 4] = lights.sizes[a * 2] ?? 0;
+    out[a * 4 + 1] = lights.sizes[a * 2 + 1] ?? 0;
+    out[a * 4 + 2] = doors?.[a * 2] ?? 0;
+    out[a * 4 + 3] = doors?.[a * 2 + 1] ?? 0;
+  }
 }
 
 /**
@@ -227,6 +284,7 @@ export function selectAreaLights(
           ? light.range
           : areaRange(light.r, light.g, light.b, light.halfWidth, light.halfHeight);
     }
+    if (out.barnDoors !== undefined) barnDoorsOf(light, out.barnDoors, slot * 2);
   }
 
   return out;

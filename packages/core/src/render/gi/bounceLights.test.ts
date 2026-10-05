@@ -43,6 +43,11 @@ test('A SUMMED LIGHT IS LEFT OUT OF THE BOUNCE, AND AN EXACT ONE IS IN IT AT ITS
     0,
     0,
     POINT_LIGHT_COS_OUTER,
+    /* The frame's falloff, as a light that names no exponent of its own has. */
+    0,
+    0,
+    0,
+    0,
   ]);
   expect(out[BOUNCE_LIGHT_FLOATS], 'then light 2, at x = 2').toBe(2);
   expect(out[BOUNCE_LIGHT_FLOATS + 4], 'at full colour').toBe(0.5);

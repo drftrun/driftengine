@@ -242,6 +242,7 @@ function build(renderer: RendererApi): SceneHooks {
     env.lightDirections = chosen.directions;
     env.lightConeCos = chosen.coneCos;
     env.lightIesProfiles = chosen.iesProfiles;
+    env.lightFalloffExponents = chosen.falloffExponents;
     env.activeLightWorldIndices = chosen.sourceIndex;
     for (let slot = 0; slot < chosen.count; slot += 1) {
       const spot = chosen.sourceIndex[slot] === SPOT;

@@ -101,6 +101,12 @@ void main() {
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
+  /* The bottom row is the instance's texture cell, rebuilt as the row it stands for: see flat. */
+  vec4 instanceCell = vec4(model[0].w, model[1].w, model[2].w, model[3].w);
+  model[0].w = 0.0;
+  model[1].w = 0.0;
+  model[2].w = 0.0;
+  model[3].w = 1.0;
 #else
   mat4 model = uModel;
 #endif
@@ -125,7 +131,12 @@ void main() {
   vLightPosition = uLightViewProj * vec4(bent, world.w);
   gl_Position = vLightPosition;
 #if CUTOUT
+#if INSTANCED
+  /* A cutout instance's shadow is cut by its own cell, as its picture is. */
+  vUv = vec3((aUv.xy * instanceCell.xy + instanceCell.zw) * uUvScale + uUvOffset, aUv.z);
+#else
   vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
+#endif
   vAlphaCutout = uAlphaCutout;
 #endif
 #if GLASS

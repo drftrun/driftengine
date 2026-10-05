@@ -33,6 +33,7 @@
  * skips the navigation bake, and `?hold=` freezes the drawing the way every other page here does.
  */
 import { DrftLoader } from '../../packages/assets/src/index';
+import { spawnBcWorker } from '../../packages/assets/src/bcWorkers';
 import {
   DEPTH_ANYTHING_3,
   browserFrameSource,
@@ -504,6 +505,7 @@ async function run(): Promise<void> {
   const renderer: RendererApi = created.renderer;
   renderer.resize();
   const loader = new DrftLoader(renderer, {
+    bcWorker: spawnBcWorker,
     fetchImpl: () => Promise.resolve(new Response(bytes)),
   });
   /*

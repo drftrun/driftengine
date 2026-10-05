@@ -350,9 +350,30 @@ export function towardCameraFade(direction: ReadonlyVec3, viewDirection: Readonl
   return Math.min(1, Math.max(0, (along + 1) / 2));
 }
 
+/**
+ * What a `ReflectiveSurface` is made with: its box, which way the surfaces inside it face, and how
+ * much and how far they reflect. Every number but the box has a default; see each field.
+ */
 export interface ReflectiveSurfaceOptions extends DecalBox {
-  /** How much of what the ray finds lands on the surface, 0 to 1. */
+  /**
+   * How much of what the ray finds lands on the surface, 0 to 1: one share over the box, or with
+   * `fresnel` the surface's reflectance head-on.
+   */
   readonly strength?: number;
+  /**
+   * Whether `strength` is the surface's reflectance head-on, F0, rather than one share over the
+   * box. Each pixel then returns `F0 · A + B` of what its ray finds, the split-sum environment BRDF
+   * at its own view and `roughness` — Karis's fit, the one the lit stage reflects its environment
+   * by — so a floor returns more toward the horizon than underfoot, and the share follows the
+   * camera as Unreal weighs its reflections. **False by default**, the one share as before.
+   *
+   * **What it gives up**: the pass has no material buffer, so the roughness and F0 are the box's,
+   * not each pixel's, and nothing occludes the reflection where the lit stage's ambient occlusion
+   * would. A floor of one material is what it is for.
+   */
+  readonly fresnel?: boolean;
+  /** The surface's roughness, 0 to 1, that `fresnel` weighs by. 0, a polished surface, if absent. */
+  readonly roughness?: number;
   /** How far a ray may travel, world metres. */
   readonly reachM?: number;
   /** How deep a depth sample is treated as being. See `ScreenSpaceMarch.thicknessM`. */
@@ -382,6 +403,9 @@ export class ReflectiveSurface {
   readonly tint = new Float32Array(3);
 
   strength: number;
+  /** See `ReflectiveSurfaceOptions.fresnel`. */
+  fresnel: boolean;
+  roughness: number;
   reachM: number;
   thicknessM: number;
   steps: number;
@@ -405,6 +429,8 @@ export class ReflectiveSurface {
     /* Half, because a mirror is the rare case: a wet floor, polished stone and a car bonnet all
        return a fraction of what lands on them, and a consumer who wants a mirror asks for one. */
     this.strength = options.strength ?? 0.5;
+    this.fresnel = options.fresnel ?? false;
+    this.roughness = options.roughness ?? 0;
     /* Eight metres covers a room and a street corner. Further costs steps rather than accuracy,
        since the step is the reach divided by them. */
     this.reachM = options.reachM ?? 8;
@@ -469,6 +495,8 @@ export interface RecordedReflection {
   readonly axis: Float32Array;
   readonly tint: Float32Array;
   strength: number;
+  fresnel: boolean;
+  roughness: number;
   reachM: number;
   thicknessM: number;
   steps: number;
@@ -482,6 +510,8 @@ function newRecord(): RecordedReflection {
     axis: new Float32Array(3),
     tint: new Float32Array(3),
     strength: 0.5,
+    fresnel: false,
+    roughness: 0,
     reachM: 8,
     thicknessM: 0.25,
     steps: 24,
@@ -537,6 +567,8 @@ export class ReflectionQueue {
     record.axis.set(surface.axis);
     record.tint.set(surface.tint);
     record.strength = Math.min(1, Math.max(0, surface.strength));
+    record.fresnel = surface.fresnel;
+    record.roughness = Math.min(1, Math.max(0, surface.roughness));
     record.reachM = Math.max(0, surface.reachM);
     record.thicknessM = Math.max(0, surface.thicknessM);
     record.steps = Math.min(32, Math.max(1, Math.round(surface.steps)));

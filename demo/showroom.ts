@@ -59,6 +59,7 @@ import type {
 } from '../packages/core/src/index';
 import type { DrftMaterial } from '@driftengine/drft';
 import { DEFAULT_COARSE_CELLS, DrftLoader } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -1126,6 +1127,8 @@ class ShowroomHandle implements DemoHandle {
      * angle. Everything else about the load is the loader's.
      */
     this.loader = new DrftLoader(this.renderer, {
+      /* BC textures a device cannot take as blocks decode in a worker, not on the main thread. */
+      bcWorker: spawnBcWorker,
       /*
        * Hold the states of the reveal, so a viewer can go back through them.
        *

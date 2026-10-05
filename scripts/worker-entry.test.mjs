@@ -90,7 +90,14 @@ test('every worker entry compiles as an IIFE, which is what a bundler does to it
     try {
       execFileSync(
         ESBUILD,
-        [entry, '--bundle', '--format=iife', '--platform=browser', '--outfile=/dev/null'],
+        [
+          entry,
+          '--bundle',
+          '--format=iife',
+          '--platform=browser',
+          '--conditions=drift-source',
+          '--outfile=/dev/null',
+        ],
         { cwd: ROOT, stdio: 'pipe' },
       );
     } catch (error) {
@@ -137,7 +144,21 @@ test('no package barrel reaches a worker construction', () => {
     try {
       execFileSync(
         ESBUILD,
-        [entry, '--bundle', '--format=esm', '--platform=browser', `--outfile=${out}`],
+        /*
+         * **From source, and said rather than inherited**, as `size-gate.test.mjs` bundles. An engine
+         * import resolves to `dist` by default, so a barrel importing another package bundled only
+         * where the packages were built — on CI that is wherever `packages.test.mjs`'s `npm pack`
+         * had run its `prepack` first — and was skipped below otherwise. That ordering hid the
+         * assets barrel's BC worker from 4.8.4 to 4.8.6.
+         */
+        [
+          entry,
+          '--bundle',
+          '--format=esm',
+          '--platform=browser',
+          '--conditions=drift-source',
+          `--outfile=${out}`,
+        ],
         { cwd: ROOT, stdio: 'pipe' },
       );
     } catch {

@@ -80,6 +80,15 @@ to the radius, zero exactly at the edge and gentle near the source. `'inverseSqu
 physical law, windowed so the light still ends at its radius, and is far brighter close in. The
 strip under the example switches between them.
 
+A light may name its own fall instead, with `falloffExponent`: `(1 - (d/R)^2)^n`, `R` its radius
+and `n` the exponent, with no distance term at all. That is Unreal's falloff for a light without
+inverse-square falloff, so a rig authored there keeps its shape: a fill meant to light a whole hall
+across a hundred metres does, where the inverse square would have it gone a few metres out. Absent
+or 0, the light takes the frame's falloff. Each chosen light's exponent reaches the environment as
+`env.lightFalloffExponents`, filled from the selection's `falloffExponents` beside the cones. Water,
+DriftLight's volume and DriftRay's bounce read it too, so the light falls the same way on every
+surface it reaches.
+
 ## Choosing the lights a frame shades
 
 ```ts sample=lights/main.ts#select
@@ -109,6 +118,7 @@ function chooseLights(focusX: number, focusZ: number): void {
   env.lightDirections = chosen.directions;
   env.lightConeCos = chosen.coneCos;
   env.lightIesProfiles = chosen.iesProfiles;
+  env.lightFalloffExponents = chosen.falloffExponents;
   env.activeLightWorldIndices = chosen.sourceIndex;
   for (let slot = 0; slot < chosen.count; slot += 1) {
     const spot = chosen.sourceIndex[slot] === SPOT;
@@ -324,6 +334,14 @@ buffer. The fixed path shades up to four rectangles (`maxAreaLights`); with `clu
 the rest go through the froxel table with the point lights, as [Clustered shading](#clustered-shading)
 describes.
 
+`barnDoorAngle` hangs barn doors on a rectangle: a flap hinged at each edge, standing that many
+degrees from its normal, `barnDoorLength` metres long (20 cm when absent). At 90 they fold flat and
+hide nothing; smaller narrows the light to the opening they leave, a softbox becoming a beam. Each
+fragment shades the part of the rectangle no door's tip hides, light and highlight alike, on the
+fixed path and through the froxel table. Each door is taken as endless along its hinge, so where two
+meet the corner they hide is square rather than mitred, and a shadowed rectangle's map is still
+baked from its whole face.
+
 A rectangle does not cast a shadow unless `castsShadow` is set, and then it must say how far its
 shadow reaches with `shadowRange`, since a rectangle has no radius to take it from. It casts into
 the same shadow array the point lights use, so it needs `pointShadows` on, and **the same list, in
@@ -432,8 +450,9 @@ the fixed path is the better choice there. Off by default.
 Shading cost follows how many lights each froxel holds, which grows with how much the lights overlap
 on screen. At 3840 by 2160, 320 lights of radius 8 crowded around the view hold 13.5 lights in an
 occupied froxel on average and cost 7.4 ms of shading on a desktop GPU; at radius 12 the same lights
-cost 12.7 ms. A light with a cone, a profile, a cookie or a point shadow is read in five texels and a
-plain one in two, and a frame whose lights are all plain never reads the other three.
+cost 12.7 ms. A light with a cone, a profile, a cookie, a point shadow, channels or a falloff
+exponent of its own is read in six texels and a plain one in two, and a frame whose lights are all
+plain never reads the other four.
 
 A spot is binned by its cone, not only by the sphere its radius draws: a froxel the cone cannot
 reach takes nothing from it, so a narrow spot with a long reach costs the froxels it lights.

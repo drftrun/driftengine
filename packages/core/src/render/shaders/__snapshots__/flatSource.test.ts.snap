@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "3a49a469:237222",
-  "directionalShadows+environmentProbe": "f7102da5:263233",
-  "directionalShadows+environmentProbe+nightEmissive": "2b7e1e79:265719",
-  "directionalShadows+nightEmissive": "0084f82b:239708",
-  "environmentProbe": "7fed7d62:243270",
-  "environmentProbe+nightEmissive": "36fd741a:245756",
-  "nightEmissive": "f1bb3a62:219745",
-  "none": "f6bc0aa0:217259",
-  "pointShadows": "a3b92494:256467",
-  "pointShadows+directionalShadows": "ff7db805:276430",
-  "pointShadows+directionalShadows+environmentProbe": "d5459e49:302441",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "9dbab145:304927",
-  "pointShadows+directionalShadows+nightEmissive": "7549e88f:278916",
-  "pointShadows+environmentProbe": "9b025d4e:282478",
-  "pointShadows+environmentProbe+nightEmissive": "c20667ce:284964",
-  "pointShadows+nightEmissive": "1a22a68e:258953",
+  "directionalShadows": "ab8ba78e:248076",
+  "directionalShadows+environmentProbe": "32972b50:274087",
+  "directionalShadows+environmentProbe+nightEmissive": "fa9fbf10:276573",
+  "directionalShadows+nightEmissive": "2c46b82c:250562",
+  "environmentProbe": "d5400d3b:254124",
+  "environmentProbe+nightEmissive": "ce3f3c53:256610",
+  "nightEmissive": "7d2fca1d:230599",
+  "none": "4f5238a3:228113",
+  "pointShadows": "46a0d6b7:267321",
+  "pointShadows+directionalShadows": "0208494a:287284",
+  "pointShadows+directionalShadows+environmentProbe": "431d29cc:313295",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "00befb9c:315781",
+  "pointShadows+directionalShadows+nightEmissive": "7cb33f60:289770",
+  "pointShadows+environmentProbe": "5efcec3f:293332",
+  "pointShadows+environmentProbe+nightEmissive": "82c5b0e7:295818",
+  "pointShadows+nightEmissive": "bae707e9:269807",
 }
 `;
 
@@ -735,9 +735,9 @@ uniform vec4 uHighlightMax;
 #define CLUSTER_Z 24
 #define CLUSTER_TEXELS 20
 #define MAX_LIGHTS_PER_CLUSTER 76
-#define LIGHT_TEXELS 5
+#define LIGHT_TEXELS 6
 #define LIGHT_FIXTURE_FLAG 32768u
-#define LIGHT_REGION_TEXELS 1600
+#define LIGHT_REGION_TEXELS 1920
 #define CLUSTER_TABLE_WIDTH 320
 uniform highp usampler2D uClusterTable;  // wgsl:share shadow
 /**
@@ -823,13 +823,15 @@ uniform float uLightWeight[MAX_LIGHTS];
  */
 uniform vec3 uLightDir[MAX_LIGHTS];
 /**
- * The cosine of each light's inner cone angle, then of its outer.
+ * The cosine of each light's inner cone angle, then of its outer, and in z the light's own falloff
+ * exponent, 0 for the frame's falloff (\`PointLightSource.falloffExponent\`): a \`vec2\` array cost
+ * a whole row a light anyway, so the exponent spends no row of its own.
  *
  * A light with no cone carries -1 and -2, which makes \`smoothstep(outer, inner, dot)\` exactly 1
  * for every direction on the sphere. See \`POINT_LIGHT_COS_OUTER\`: the pair is chosen so a point
  * light collapses to the arithmetic it had rather than to something very close to it.
  */
-uniform vec2 uLightCone[MAX_LIGHTS];
+uniform vec4 uLightCone[MAX_LIGHTS];
 /**
  * Which row of the photometric atlas each light uses, or a negative index for none.
  *
@@ -934,7 +936,12 @@ uniform vec3 uAreaLightColor[MAX_AREA_LIGHTS];
 /** The rectangle's in-plane axes, unit length, and its half extents along each. */
 uniform vec3 uAreaLightRight[MAX_AREA_LIGHTS];
 uniform vec3 uAreaLightUp[MAX_AREA_LIGHTS];
-uniform vec2 uAreaLightSize[MAX_AREA_LIGHTS];
+/*
+ * Each rectangle's half extents, and in zw its barn doors: the cosine of their angle from its normal
+ * and their length, 0 for none (\`areaBarnDoors\`). A \`vec2\` array costs a whole row a rectangle
+ * anyway, so the doors spend no row of their own.
+ */
+uniform vec4 uAreaLightSize[MAX_AREA_LIGHTS];
 /**
  * Whether the rectangle emits from both faces, 1 or 0.
  *
@@ -3072,6 +3079,12 @@ const bool SKIN_ALBEDO = false;  // wgsl:override
  * Declared after skin's halves so that every switch before it keeps the id it shipped with.
  */
 const bool MODEL_LIGHTMAP = false;  // wgsl:override
+/*
+ * Not a model either: whether this program carries GGX's own highlight for a material that asks
+ * (\`SurfaceMaterial.physicalSpecular\`). A lit switch, off until a material first asks and then
+ * on for good, as \`litSwitchesGlsl\`'s are; declared last so every switch before it keeps its id.
+ */
+const bool PHYSICAL_SPECULAR = true;  // wgsl:override
 
 /*
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
@@ -3150,15 +3163,57 @@ float smithMasking(float ndl, float ndv, float alpha) {
   );
 }
 
+/*
+ * Whether this surface's highlights are GGX's own (\`SurfaceMaterial.physicalSpecular\`), from the
+ * lane the standard, lightmap and anisotropic models leave free (\`packModel\`). Skin, hair and the
+ * eye shade their own highlights, and the eye's axis holds that lane, so they are never asked. The
+ * lit switch first, so a program built before any material asked carries none of it.
+ */
+bool physicalSpecular() {
+  if (PHYSICAL_SPECULAR) {
+    if (MODEL_HAIR) return false;
+    if (MODEL_SKIN) return false;
+    if (MODEL_EYE) return false;
+    return uModelParams[1].z > 0.5;
+  }
+  return false;
+}
+
+/**
+ * GGX as a BRDF in this engine's light units, \`π · D · Vis · N·L\` with Fresnel left to the caller:
+ * the term skin's and the eye's highlights are, for a surface that asks for it. Its peak is
+ * \`1 / (4 α²)\` of the light head-on, against the look's 1. A lamp's size widens α as \`sphereLobe\`
+ * widens it, and a normalised distribution keeps its energy as it widens.
+ */
+float physicalLobe(float ndh, float ndl, float ndv, float roughness, float sourceRadius, float dist) {
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float alpha = min(max(roughness * roughness, MIN_LOBE_ALPHA) + grow, 1.0);
+  return 3.14159265 * ggxLobe(ndh, alpha) * smithMasking(ndl, max(ndv, 1e-4), alpha) * ndl;
+}
+
+/**
+ * A highlight's colour: Schlick's Fresnel from the surface's reflectance toward white at a grazing
+ * \`voh\`. On a metal alone for the look, whose dielectric attribute is a strength rather than a
+ * reflectance; on every surface where the highlight is physical, whose attribute is its F0 — but
+ * one reflecting nothing head-on keeps nothing, as the lamps' gate on that attribute has it.
+ */
+vec3 highlightTint(vec3 specColor, float voh, float metal) {
+  float edge = pow(1.0 - voh, 5.0);
+  bool reflects = max(max(specColor.r, specColor.g), specColor.b) > 0.0;
+  return mix(specColor, vec3(1.0), physicalSpecular() && reflects ? edge : edge * metal);
+}
+
 /** The standard model's answer to one light, which a model falls back to for what it does not change. */
 void standardLight(vec3 l, float sourceRadius, float dist) {
   float ndl = max(dot(mNormal, l), 0.0);
   vec3 h = normalize(l + mToEye);
   float ndh = max(dot(mNormal, h), 0.0);
-  float lobe = sourceRadius > 0.0
-    ? sphereLobe(ndh, mRoughness, sourceRadius, dist)
-    : specularLobe(ndh, mRoughness);
-  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  float lobe = physicalSpecular()
+    ? physicalLobe(ndh, ndl, dot(mNormal, mToEye), mRoughness, sourceRadius, dist)
+    : sourceRadius > 0.0
+      ? sphereLobe(ndh, mRoughness, sourceRadius, dist)
+      : specularLobe(ndh, mRoughness);
+  vec3 tint = highlightTint(mSpecColor, max(dot(mToEye, h), 0.0), mMetal);
   mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
   mSpecular = ndl > 0.0 ? tint * lobe : vec3(0.0);
 }
@@ -3182,7 +3237,16 @@ void anisotropicSurface() {
     direction.x * uModelParams[0].y - direction.y * uModelParams[0].z,
     direction.x * uModelParams[0].z + direction.y * uModelParams[0].y
   );
-  aAlong = normalize(mTangent * turned.x + mBitangent * turned.y);
+  vec3 along = mTangent * turned.x + mBitangent * turned.y;
+  /*
+   * A mesh with neither tangents nor texture coordinates has no frame to take a direction from,
+   * and normalising the zero it gives was a NaN that drew the whole surface black. Any direction in
+   * the surface stands in, the one across the world's up, so the highlight is stretched somewhere.
+   */
+  if (dot(along, along) < 1e-12) {
+    along = cross(abs(mNormal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), mNormal);
+  }
+  aAlong = normalize(along);
   aAcross = cross(mNormal, aAlong);
   aStrength = strength;
 }
@@ -3202,12 +3266,37 @@ float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   return energy / max(d * d, 1e-8);
 }
 
+/**
+ * The same stretch as GGX's own BRDF, \`π · D · Vis · N·L\`, for a surface whose highlight is
+ * physical: the distribution normalised, and Smith's height-correlated masking stretched with it
+ * (Heitz 2014, as Filament writes it). \`anisotropicPhysicalLobe\` in anisotropicLobe.ts.
+ */
+float anisotropicPhysical(vec3 l, vec3 h, float ndl, float sourceRadius, float dist) {
+  float alpha = max(mRoughness * mRoughness, MIN_LOBE_ALPHA);
+  float alongWidth = alpha + (1.0 - alpha) * aStrength * aStrength;
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float along = clamp(alongWidth + grow, alongWidth, 1.0);
+  float across = clamp(alpha + grow, alpha, 1.0);
+  float x = dot(aAlong, h) / along;
+  float y = dot(aAcross, h) / across;
+  float z = dot(mNormal, h);
+  float d = x * x + y * y + z * z;
+  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  float ndv = max(dot(mNormal, mToEye), 1e-4);
+  float viewed = ndl * length(vec3(along * dot(aAlong, mToEye), across * dot(aAcross, mToEye), ndv));
+  float lit = ndv * length(vec3(along * dot(aAlong, l), across * dot(aAcross, l), ndl));
+  return 3.14159265 * distribution * (0.5 / max(viewed + lit, 1e-5)) * ndl;
+}
+
 void anisotropicLight(vec3 l, float sourceRadius, float dist) {
   float ndl = max(dot(mNormal, l), 0.0);
   vec3 h = normalize(l + mToEye);
-  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  vec3 tint = highlightTint(mSpecColor, max(dot(mToEye, h), 0.0), mMetal);
   mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
-  mSpecular = ndl > 0.0 ? tint * anisotropicLobe(h, sourceRadius, dist) : vec3(0.0);
+  float lobe = physicalSpecular()
+    ? anisotropicPhysical(l, h, ndl, sourceRadius, dist)
+    : anisotropicLobe(h, sourceRadius, dist);
+  mSpecular = ndl > 0.0 ? tint * lobe : vec3(0.0);
 }
 
 /* The environment's normal, bent toward the stretch by its strength and the surface's roughness. */
@@ -3555,19 +3644,50 @@ vec3 modelEnvironment(vec3 environment) {
 }
 
 /**
+ * One texel of a page's irradiance layer: its four bytes put back into the rgb9e5 word they are,
+ * lowest first, and decoded — three 9-bit mantissas over the exponent in the top five bits.
+ */
+vec3 bakedIrradianceAt(ivec3 texel) {
+  uvec4 bytes = uvec4(texelFetch(uModelMap, texel, 0) * 255.0 + 0.5);
+  uint word = bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (bytes.w << 24u);
+  float scale = exp2(float(word >> 27u) - 24.0);
+  return vec3(float(word & 511u), float((word >> 9u) & 511u), float((word >> 18u) & 511u)) * scale;
+}
+
+/**
  * What a baked page adds to this surface's diffuse: nothing in any pipeline but a lightmapped one,
  * nor in one whose page is missing. The page's two layers at the surface's second coordinates, which
  * ride the grain and relief lanes as \`-1 - uv\` (lightmap.ts) and are placed by the material's
  * region: the irradiance, and the first-order harmonic its direction is, answered by the shading
  * normal.
- * **An explicit level**, because the page has one and nothing here needs a derivative.
+ *
+ * **Filtered here, because the page cannot be filtered as it is stored**: the irradiance is a
+ * shared-exponent word in four bytes, and a blend of two words is not the blend of their colours.
+ * So the four texels around the sample are fetched, decoded and blended, as a bilinear sampler
+ * clamped at the page's edge would. Fetches need no derivative, so the branch costs nothing there.
  */
 vec3 modelBaked(vec3 n, vec3 albedo, float metal) {
   if (MODEL_LIGHTMAP) {
     if (uModelParams[1].w <= 0.0) return vec3(0.0);
     vec2 at = (vec2(-1.0) - vec2(vGrain, vRelief)) * uModelParams[0].xy + uModelParams[0].zw;
-    vec3 irradiance = textureLod(uModelMap, vec3(at, 0.0), 0.0).rgb;
-    vec4 d = textureLod(uModelMap, vec3(at, 1.0), 0.0) * 2.0 - 1.0;
+    ivec2 size = textureSize(uModelMap, 0).xy;
+    vec2 texel = at * vec2(size) - 0.5;
+    vec2 corner = floor(texel);
+    vec2 f = texel - corner;
+    ivec2 last = size - 1;
+    ivec2 lo = clamp(ivec2(corner), ivec2(0), last);
+    ivec2 hi = clamp(ivec2(corner) + 1, ivec2(0), last);
+    vec3 irradiance = mix(
+      mix(bakedIrradianceAt(ivec3(lo.x, lo.y, 0)), bakedIrradianceAt(ivec3(hi.x, lo.y, 0)), f.x),
+      mix(bakedIrradianceAt(ivec3(lo.x, hi.y, 0)), bakedIrradianceAt(ivec3(hi.x, hi.y, 0)), f.x),
+      f.y
+    );
+    vec4 direction = mix(
+      mix(texelFetch(uModelMap, ivec3(lo.x, lo.y, 1), 0), texelFetch(uModelMap, ivec3(hi.x, lo.y, 1), 0), f.x),
+      mix(texelFetch(uModelMap, ivec3(lo.x, hi.y, 1), 0), texelFetch(uModelMap, ivec3(hi.x, hi.y, 1), 0), f.x),
+      f.y
+    );
+    vec4 d = direction * 2.0 - 1.0;
     return albedo * (1.0 - metal) * irradiance * max(dot(d.xyz, n) + d.w, 0.0);
   }
   return vec3(0.0);
@@ -3603,6 +3723,52 @@ float areaSignedForm(vec3 n, vec3 centre, vec3 right, vec3 up, vec2 halfSize) {
   vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
   vec3 c3 = centre - right * halfSize.x - up * halfSize.y;
   return quadFormFactor(n, vWorldPos, c0, c1, c2, c3);
+}
+
+/**
+ * How far along one of a rectangle's axes a fragment still sees it past the barn door on that axis's
+ * positive edge: \`p\` the fragment's place along the axis, \`height\` its height above the
+ * rectangle's plane, \`halfSize\` the rectangle's half extent, and the door's tip \`tipOut\` beyond
+ * the edge and \`tipUp\` above the plane. Points of the rectangle past the answer are hidden.
+ *
+ * Above the tip, the tip's shadow on the plane as seen from the fragment is the limit. Below it, a
+ * fragment beside the door and outside its line is hidden from all of it, and one inside the door's
+ * reach is hidden from none of it.
+ */
+float barnDoorLimit(float p, float height, float halfSize, float tipOut, float tipUp) {
+  float tipAt = halfSize + tipOut;
+  if (height > tipUp) return (height * tipAt - tipUp * p) / (height - tipUp);
+  if (p > halfSize && height * tipOut < tipUp * (p - halfSize)) return -1e9;
+  return 1e9;
+}
+
+/**
+ * The part of a rectangle a fragment sees past its barn doors, written into \`centre\` and
+ * \`halfSize\` as the smaller rectangle that is left, or false where the doors hide all of it.
+ * \`doors\` is the cosine of their angle from the normal and their length; a length of 0 is no doors.
+ * Each axis is clipped by its own two doors, which is what makes this four projections and a min.
+ */
+bool areaBarnDoors(inout vec3 centre, vec3 right, vec3 up, inout vec2 halfSize, vec2 doors) {
+  if (doors.y <= 0.0) return true;
+  vec3 toFragment = vWorldPos - centre;
+  float height = dot(toFragment, cross(right, up));
+  /* Behind the emitting side: nothing to clip, and the form factor already answers it. */
+  if (height <= 0.0) return true;
+  float tipOut = doors.y * sqrt(max(1.0 - doors.x * doors.x, 0.0));
+  float tipUp = doors.y * doors.x;
+  vec2 p = vec2(dot(toFragment, right), dot(toFragment, up));
+  vec2 hi = vec2(
+    min(halfSize.x, barnDoorLimit(p.x, height, halfSize.x, tipOut, tipUp)),
+    min(halfSize.y, barnDoorLimit(p.y, height, halfSize.y, tipOut, tipUp))
+  );
+  vec2 lo = vec2(
+    max(-halfSize.x, -barnDoorLimit(-p.x, height, halfSize.x, tipOut, tipUp)),
+    max(-halfSize.y, -barnDoorLimit(-p.y, height, halfSize.y, tipOut, tipUp))
+  );
+  if (hi.x <= lo.x || hi.y <= lo.y) return false;
+  centre += right * (0.5 * (lo.x + hi.x)) + up * (0.5 * (lo.y + hi.y));
+  halfSize = 0.5 * (hi - lo);
+  return true;
 }
 
 /**
@@ -4212,7 +4378,7 @@ void main() {
      * specularLobe's header argues for at length.
      */
     float sunVoH = max(dot(normalize(uCameraPos - vWorldPos), halfway), 0.0);
-    vec3 sunSpec = mix(specColor, vec3(1.0), pow(1.0 - sunVoH, 5.0) * metal);
+    vec3 sunSpec = highlightTint(specColor, sunVoH, metal);
     /*
      * **Held back until after the environment blend, because that blend is a mix and would
      * otherwise erase this.**
@@ -4231,8 +4397,12 @@ void main() {
      * Zero for the whole world that carries no specular attribute and no metalness, exactly as
      * before: \`sunSpec\` is \`vec3(vSpecular)\` at metal 0 and \`vSpecular\` defaults to 0.
      */
-    vec3 sunHighlight =
-      sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
+    /* GGX's own where the surface asks (\`physicalSpecular\`): the sun is a point, so nothing widens it. */
+    float sunNdh = max(dot(n, halfway), 0.0);
+    float sunLobe = physicalSpecular()
+      ? physicalLobe(sunNdh, ndl, dot(n, normalize(uCameraPos - vWorldPos)), surfaceRoughness, 0.0, 1.0)
+      : specularLobe(sunNdh, surfaceRoughness);
+    vec3 sunHighlight = sunColor * sunLobe * sunSpec * sunShade * sunFacing;
     if (modelled) sunHighlight = sunModelSpecular;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
@@ -4730,6 +4900,10 @@ void main() {
       float cookie;
       /* The light's lighting channels, a mask: 1 unless it names others. See \`uLightIesAxis\`. */
       float lightChannels = 1.0;
+      /* The light's own falloff exponent, or 0 for the frame's falloff. See \`uLightCone\`. */
+      float lightExponent = 0.0;
+      /* A clustered rectangle's barn doors: their cosine and length, none at 0. See \`areaBarnDoors\`. */
+      vec2 areaDoors = vec2(0.0);
       /*
        * **A rectangle in the froxel table** — one past the fixed arm's \`maxAreaLights\` — which
        * its record says with a negative radius, its reach negated. Its fields come out of the
@@ -4780,8 +4954,8 @@ void main() {
       lightWeight = sizeAndWeight.y;
       /*
        * **The fixture, read only for a light that has one.** What a plain light's record holds in
-       * the last three texels is exactly these values, so a light carrying no shadow slot, cone,
-       * profile or cookie shades the same whether they are read or assumed, and at heavy overlap
+       * the last four texels is exactly these values, so a light carrying no shadow slot, cone,
+       * profile, cookie, channels or falloff of its own shades the same whether they are read or assumed, and at heavy overlap
        * reading them was a third of the pass. A branch on a value from a texture around
        * \`texelFetch\` is not the 2026-08-07 case: an integer fetch takes no derivative.
        *
@@ -4801,6 +4975,7 @@ void main() {
           uvec4 rec2 = clusterTexel(record + 2);
           uvec4 rec3 = clusterTexel(record + 3);
           uvec4 rec4 = clusterTexel(record + 4);
+          uvec4 rec5 = clusterTexel(record + 5);
           shadowSlot = clusteredArea ? -1 : int(uintBitsToFloat(rec2.x));
           areaTwoSided = uintBitsToFloat(rec2.x);
           lightDir = vec3(
@@ -4813,6 +4988,8 @@ void main() {
           iesAxis = vec3(
             uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
           lightChannels = uintBitsToFloat(rec4.w);
+          lightExponent = uintBitsToFloat(rec5.x);
+          areaDoors = vec2(uintBitsToFloat(rec5.y), uintBitsToFloat(rec5.z));
         }
       }
       } else {
@@ -4825,7 +5002,8 @@ void main() {
       lightWeight = uLightWeight[i];
       shadowSlot = i;
       lightDir = uLightDir[i];
-      lightCone = uLightCone[i];
+      lightCone = uLightCone[i].xy;
+      lightExponent = uLightCone[i].z;
       iesProfile = uLightIesProfile[i];
       iesAxis = uLightIesAxis[i].xyz;
       lightChannels = uLightIesAxis[i].w;
@@ -4851,12 +5029,15 @@ void main() {
        * froxel it is binned into has no edge in the picture.
        */
       if (clusteredArea) {
-        float areaForm = areaSignedForm(n, lightPos, lightDir, iesAxis, lightCone);
+        vec3 seenCentre = lightPos;
+        vec2 seenHalf = lightCone;
+        if (!areaBarnDoors(seenCentre, lightDir, iesAxis, seenHalf, areaDoors)) continue;
+        float areaForm = areaSignedForm(n, seenCentre, lightDir, iesAxis, seenHalf);
         float areaWindow = clamp(1.0 - pow(length(lightPos - vWorldPos) / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
         areaForm = mix(max(0.0, areaForm), abs(areaForm), areaTwoSided);
         if (areaForm > 0.0) {
           areaLightAdd(
-            lightPos, lightDir, iesAxis, lightCone, lightColor * (areaWindow * areaWindow), areaForm,
+            seenCentre, lightDir, iesAxis, seenHalf, lightColor * (areaWindow * areaWindow), areaForm,
             1.0, vec3(1.0), n, albedo, metal, specColor, surfaceRoughness, modelled,
             lampOpen, lampShadowed
           );
@@ -4907,7 +5088,16 @@ void main() {
        * same way three.js windows its own, so the light still ends where it says it does.
        */
       float falloff;
-      if (uLightFalloff == 1) {
+      /*
+       * **A light may name its own falloff, and then it is Unreal's for a light without
+       * inverse-square falloff**: \`(1 - (d/R)^2)^n\` with no distance term, so a fill authored to
+       * light a whole hall across a hundred metres does, where the inverse square would have it
+       * gone a few metres out. Zero is the frame's own rule below, which every light was before.
+       */
+      if (lightExponent > 0.0) {
+        float reach = dist / max(lightRadius, 1e-4);
+        falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), lightExponent);
+      } else if (uLightFalloff == 1) {
         float window = clamp(1.0 - pow(dist / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
         falloff = window * window / max(dist * dist, 0.01);
       } else {
@@ -5165,7 +5355,11 @@ void main() {
         photometric = mix(1.0, iesGain, step(0.0, iesProfile));
       }
 
-      float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
+      /* A light's own exponent already is its whole curve; the frame's smooth rule squares its own. */
+      float shape =
+        (lightExponent > 0.0 || uLightFalloff == 1 ? falloff : falloff * falloff) *
+        coneFalloff *
+        photometric;
       glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;
       if (ndl <= 0.0 && !modelledBehind) continue;
       /*
@@ -5242,16 +5436,15 @@ void main() {
       if (vSpecular > 0.0 || metal > 0.0) {
         vec3 toEyeLamp = normalize(uCameraPos - vWorldPos);
         vec3 lampHalfway = normalize(toLight / max(dist, 1e-4) + toEyeLamp);
-        /* The same grazing whitening the sun's highlight takes, and zero at metal 0. */
-        vec3 lampSpec = mix(
-          specColor,
-          vec3(1.0),
-          pow(1.0 - max(dot(toEyeLamp, lampHalfway), 0.0), 5.0) * metal
-        );
+        /* The same grazing whitening the sun's highlight takes, and zero at metal 0 for the look. */
+        vec3 lampSpec = highlightTint(specColor, max(dot(toEyeLamp, lampHalfway), 0.0), metal);
+        /* The look's lobe, or GGX's own where the surface asks for it: see \`physicalLobe\`. */
+        float lampNdh = max(dot(n, lampHalfway), 0.0);
+        float lampLobe = physicalSpecular()
+          ? physicalLobe(lampNdh, ndl, dot(n, toEyeLamp), surfaceRoughness, lightSourceRadius, dist)
+          : sphereLobe(lampNdh, surfaceRoughness, lightSourceRadius, dist);
         /* Held back with the diffuse half, and shadowed by the same term it always was. */
-        vec3 lampHighlight =
-          lightColor * sphereLobe(max(dot(n, lampHalfway), 0.0), surfaceRoughness, lightSourceRadius, dist)
-          * lampSpec * shape * lightWeight;
+        vec3 lampHighlight = lightColor * lampLobe * lampSpec * shape * lightWeight;
         lampOpen += lampHighlight;
         lampShadowed += lampHighlight * shaded * lampGlass;
       }
@@ -5295,10 +5488,18 @@ void main() {
       vec3 centre = uAreaLightPos[a];
       vec3 right = uAreaLightRight[a];
       vec3 up = uAreaLightUp[a];
-      vec2 halfSize = uAreaLightSize[a];
+      vec2 halfSize = uAreaLightSize[a].xy;
+      /*
+       * **The part of the rectangle this fragment sees past its barn doors** (\`areaBarnDoors\`),
+       * which its light and highlight come from. Its shadow keeps the whole rectangle's centre and
+       * size below, because that is what its map was baked from.
+       */
+      vec3 seenCentre = centre;
+      vec2 seenHalf = halfSize;
+      if (!areaBarnDoors(seenCentre, right, up, seenHalf, uAreaLightSize[a].zw)) continue;
 
       /* The form factor and its sign, which is the sidedness: see \`areaSignedForm\`. */
-      float signedForm = areaSignedForm(n, centre, right, up, halfSize);
+      float signedForm = areaSignedForm(n, seenCentre, right, up, seenHalf);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
       float backForm = glassTransmission > 0.0
@@ -5413,7 +5614,7 @@ void main() {
       if (form <= 0.0) continue;
       /* The diffuse, the model's answer or the lobe integrated over the rectangle: see areaLight.ts. */
       areaLightAdd(
-        centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,
+        seenCentre, right, up, seenHalf, uAreaLightColor[a], form, areaOccl, areaGlass,
         n, albedo, metal, specColor, surfaceRoughness, modelled, lampOpen, lampShadowed
       );
     }
@@ -5917,6 +6118,15 @@ void main() {
   vec3 localNormal = aNormal;
   vec3 localTangent = aTangent.xyz;
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
+  /*
+   * **The bottom row is the instance's texture cell** (\`MeshInstances.uvRegions\`), which an
+   * affine placement leaves free: read, and rebuilt as the \`[0, 0, 0, 1]\` it stands for.
+   */
+  vec4 instanceCell = vec4(model[0].w, model[1].w, model[2].w, model[3].w);
+  model[0].w = 0.0;
+  model[1].w = 0.0;
+  model[2].w = 0.0;
+  model[3].w = 1.0;
   vec3 tint = aInstanceTint.rgb;
   if (LIGHTMAP_REGIONS) tint = vec3(1.0);
   vec4 world = model * local;
@@ -5942,7 +6152,8 @@ void main() {
   vColor = aColor * tint;
   vEmissive = aEmissive;
   vSpecular = aSpecular;
-  vUv = vec3(aUv.xy * uUvScale + uUvOffset, aUv.z);
+  /* The instance's cell first, then the material's scale and offset. */
+  vUv = vec3((aUv.xy * instanceCell.xy + instanceCell.zw) * uUvScale + uUvOffset, aUv.z);
   vEmissiveColor = aEmissiveColor;
   vRoughness = aRoughness;
   vGrain = aGrain;

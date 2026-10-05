@@ -25,6 +25,7 @@ import type {
   ShadowCasters,
 } from '../../packages/core/src/index';
 import { DrftLoader } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 import type { DrftPart, LoadedRegion } from '@driftengine/assets';
 
 import { CityArrays } from './arrays';
@@ -102,6 +103,7 @@ export class CityWorld {
       fadeSec: options.fadeSec ?? 0.4,
     });
     this.loader = new DrftLoader(renderer, {
+      bcWorker: spawnBcWorker,
       revealSec: 0,
       onImage: (name, image) => {
         if (this.arrays === null) this.early.set(name, image);

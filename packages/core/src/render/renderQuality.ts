@@ -219,13 +219,14 @@ export interface RenderQuality {
    * **`'pre-integrated'`, the default**: the lit stage's fit alone — a terminator softened and
    * reddened by the surface's curvature, light through thin parts, a penumbra each channel crosses
    * as far as it travels — at no cost beyond the skin pipeline itself. **`'screen-space'`** adds
-   * Burley's blur in the picture as well: a skin draw writes its diffuse to a target of its own (it
-   * is drawn twice to do so), which is spread across the pixels its scatter distance covers and
-   * added back before anything blended is drawn, so light crosses a shadow's edge and a nostril's
-   * rim in the picture rather than in a fit. See `skinBlur.ts`.
+   * Burley's blur in the picture as well: a skin draw writes the light its diffuse is made of to a
+   * target of its own and its colour to another (it is drawn three times to do so), and the light is
+   * spread across the pixels its scatter distance covers, multiplied by the colour and added back
+   * before anything blended is drawn, so light crosses a shadow's edge and a nostril's rim in the
+   * picture rather than in a fit. See `skinBlur.ts`.
    *
-   * Construction-time: two half-float targets the size of the frame, and a multisampled one under
-   * multisampling, made at the first skin draw. It needs the composite (`screenEffects`), which is
+   * Construction-time: three half-float targets the size of the frame, and two multisampled ones
+   * under multisampling, made at the first skin draw. It needs the composite (`screenEffects`), which is
    * where the frame is still linear light to add to; without one, skin is pre-integrated and the
    * renderer says so once. What would make the default wrong is a close-up face that reads as wax
    * at a shadow's edge — that is what the blur is for.

@@ -652,6 +652,79 @@ case of its own, because the plain bound keeps froxels behind a spot whose spher
 past its apex. The CPU and GPU tables stay byte-identical, and the picture cannot change: a froxel
 the cone misses received nothing from it.
 
+## 4l. A lightmap page in eight bytes, and the filter the shader does itself
+
+**A page was two half-float layers, sixteen bytes a texel**, and a stage's 49 pages took 348 MB. The
+irradiance is an rgb9e5 word now, three 9-bit mantissas over a shared exponent, beside the
+direction's four bytes, in one array of two `rgba8` layers: eight bytes a texel. **Not a format of
+its own**, though WebGPU samples and filters `rgb9e5ufloat`: the two layers must be one array,
+because WebGL2 has no unit left for a second sampler, and an array has one format. So the lit stage
+fetches the four texels around a sample, decodes each and filters them itself. A bake that arrives
+packed, as Unreal's does, uploads where it lies. Measured: a page of one value is still 0 pixels from
+the same ambient raised by `setAmbientSH`, and the room within one level of the half-float page.
+
+## 4m. A light's own falloff, in a lane it had already paid for
+
+**The fixed arm's cone was a `vec2` array, and a GLSL ES array spends a whole uniform row an element
+whatever its type**, so widening it to a `vec4` to carry `falloffExponent` in its third lane cost the
+eight-light build no row. The froxel record grows one texel instead, to six, the table to 222 rows. A
+light with an exponent takes `(1 - (d/R)^2)^n` and no distance term, and every reader of a light's
+falloff takes it: the two arms, water, DriftLight's volume and DriftRay's bounce, so the summed far
+field and the shaded near field still meet without a seam. One light drawn by either arm is 0 pixels
+apart on both backends.
+
+## 4n. Barn doors are a smaller rectangle
+
+**A door hides the part of the rectangle behind the line from the fragment through its tip**, so each
+fragment shades the rectangle that line leaves, clipped one axis at a time, and the form factor and
+the integrated highlight are those of that smaller rectangle. Taking each door as endless along its
+hinge is what makes the axes separable; the corner two doors meet at is then square where real flaps
+would mitre it. The fixed arm reads the doors in the size uniform's spare lanes, as 4m read the
+exponent in the cone's. **The check was the geometry rather than a picture**: from straight above,
+nothing changes inside the box the tips leave whole and nothing is lit past where they hide all of it.
+
+## 4o. A physical highlight behind a switch
+
+**The engine's highlight is a look: a peak of one times the specular attribute.** GGX's own
+`pi * D * Vis * F * N.L` peaks at `1 / (4 alpha^2)` and reads the attribute as F0, which is what a
+model authored in Unreal expects. It is an opt-in a material makes, `physicalSpecular`, carried in a
+lane of the model's uniforms the standard, lightmap and anisotropic models leave free, and its code is
+a lit switch declared after the models' so every shipped override keeps its id: compiled into the lit
+programs the first time a material asks, absent before. What every pipeline does compile this release,
+the exponent and the doors, was measured on RADV at a phone's viewport: 2.8 to 6.4% more instructions
+and the same registers, where 4.8.2's regression was the registers.
+
+## 4p. A skin's radius, measured before it was changed
+
+**Screen-space skin smeared a face at arm's length over tens of pixels, and the first question was
+whether the kernel was wrong.** It was not: a step of light at 0.75 m came back with its edges at the
+taps' predicted offsets and its levels at the profile's own tail masses, to within a level. What was
+wrong was the distance handed to it. `radius` was documented as how far light travels, and was given
+to Burley's profile as its `d`, which carries light 2.5 `d` on average and the taps out to 9 `d`. The
+profile is at `radius / 2.5` now, in the blur and the pre-integrated fit alike, so the two still agree;
+the step's reach fell from 65 pixels to 26.
+
+## 4q. An instance's cell, in the row a placement leaves free
+
+**Every vertex attribute an instanced draw can have is spent**, so a texture cell an instance had no
+attribute to ride. An instance's placement is a turn, a scale and a move, whose matrix's bottom row is
+`[0, 0, 0, 1]`, so the cell rides that row and every stage drawing an instance, the lit, depth and
+motion stages, rebuilds it. The cost is that an instanced placement must be affine, which every
+placement of a solid object is. One instanced draw of eight cards on eight cells is 0 pixels from
+eight draws with the cell in their materials.
+
+## 4r. A scene capture is a probe bake with one face
+
+**The arrangement already existed**: a probe bake sets the frame's pass aside, draws the caller's
+scene from another camera into a target at the world's format and sample count, holds the output
+transform off so it stores radiance, and gives everything back. A capture is that, once, into a
+texture a material binds, with the frame's camera, jitter, motion, refraction copy and skin spread
+left alone while it draws. **WebGL2 flips its rows**, as it flips a probe face's, because a GL
+framebuffer's first row is its bottom and an image's is its top. The control is exact: a second
+camera's view shown unlit on a quad filling the frame is 0 pixels from that view drawn directly. At
+four samples WebGL2's capture equals WebGPU's frame and differs from WebGL2's own direct frame on 392
+edge pixels, its rows being flipped against the same sample pattern.
+
 ## 5. What must stay true
 
 - **Defaults do not move.** Every item here lands as a quality option or a pass property whose

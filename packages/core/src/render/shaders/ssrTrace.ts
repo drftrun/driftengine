@@ -21,6 +21,7 @@
  */
 
 import { glslIsFarDepth } from '../depthConvention.ts';
+import { ENV_BRDF_GLSL } from './flat/lobes.ts';
 
 /**
  * The most samples the march may take. `uSsrSteps` breaks out early.
@@ -64,6 +65,11 @@ uniform vec3 uSsrEye;
 uniform vec3 uSsrAxis;
 uniform vec3 uSsrTint;
 uniform float uSsrStrength;
+/**
+ * Whether \`uSsrStrength\` is the surface's reflectance head-on, carried per pixel through the
+ * split-sum BRDF (x, 1 or 0), and the roughness it is carried at (y). \`ReflectiveSurface.fresnel\`.
+ */
+uniform vec2 uSsrFresnel;
 uniform float uSsrFacingCos;
 uniform float uSsrReach;
 uniform float uSsrThickness;
@@ -72,6 +78,8 @@ uniform float uSsrSteps;
 uniform float uSsrEdgeFade;
 
 out vec4 fragColor;
+
+${ENV_BRDF_GLSL}
 
 /** What the frame drew at a screen position, as a world point. */
 vec3 worldAt(vec2 uv, float stored) {
@@ -133,7 +141,18 @@ void main() {
   mask *= smoothstep(uSsrFacingCos, min(1.0, uSsrFacingCos + 0.25), facing);
   /* Nothing was drawn here, so there is no surface to reflect in. */
   mask *= ${glslIsFarDepth('stored')} ? 0.0 : 1.0;
-  mask *= uSsrStrength;
+  /*
+   * **How much the surface returns**: one number over the box, or, where the caller asks, its
+   * reflectance head-on carried through the split-sum BRDF at this pixel's own view and the
+   * surface's roughness — the lit stage's fit, so the two agree on what a surface reflects. A floor
+   * then returns more toward the horizon than underfoot, and the share follows the camera.
+   */
+  float returned = uSsrStrength;
+  if (uSsrFresnel.x > 0.5) {
+    vec2 dfg = envBrdfApprox(clamp(dot(normal, normalize(toEye)), 0.0, 1.0), uSsrFresnel.y);
+    returned = clamp(uSsrStrength * dfg.x + dfg.y, 0.0, 1.0);
+  }
+  mask *= returned;
 
   vec3 found = vec3(0.0);
   float weight = 0.0;

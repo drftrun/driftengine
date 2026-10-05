@@ -173,6 +173,7 @@ export class SsrPass {
       gl.uniform3fv(u['uSsrAxis'] ?? null, surface.axis);
       gl.uniform3fv(u['uSsrTint'] ?? null, surface.tint);
       gl.uniform1f(u['uSsrStrength'] ?? null, surface.strength);
+      gl.uniform2f(u['uSsrFresnel'] ?? null, surface.fresnel ? 1 : 0, surface.roughness);
       gl.uniform1f(u['uSsrFacingCos'] ?? null, surface.facingCos);
       gl.uniform1f(u['uSsrReach'] ?? null, surface.reachM);
       gl.uniform1f(u['uSsrThickness'] ?? null, surface.thicknessM);

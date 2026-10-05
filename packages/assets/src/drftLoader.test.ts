@@ -668,8 +668,10 @@ test('A BC TEXTURE GOES UP AS ITS BLOCKS WHERE THE DEVICE TAKES THEM, AND DECODE
     const [pixels] = phone[0] as [{ data: Uint8ClampedArray; width: number }, string];
     expect(pixels.width).toBe(8);
     expect(Array.from(pixels.data)).toEqual(Array.from(decodeBc('bc1', 8, 8, level0)));
+    /* No worker named, so none in the barrel's graph: the decode is on the main thread, said once
+       with the specifier that would move it. See `bcWorkers.ts`. */
     expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(/main thread: this runtime has no Worker/),
+      expect.stringMatching(/main thread: no worker was named.*bcWorkers\.ts/),
     );
   } finally {
     warn.mockRestore();

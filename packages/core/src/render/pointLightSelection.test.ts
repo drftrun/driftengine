@@ -581,3 +581,17 @@ test('A TIE FOR A SHADOW MAP GOES TO THE LAMP LISTED FIRST, not to the way its d
   expect(out.shadowCount).toBe(2);
   expect([out.shadowIndex[0], out.shadowIndex[1]]).toEqual([0, 1]);
 });
+
+/*
+ * A light's own falloff exponent rides its slot like its cone, so a lamp that names one keeps it
+ * wherever the selection puts it, and a slot a light without one takes does not keep the last
+ * holder's: the slot reads 0, the frame's falloff, again.
+ */
+test('A LIGHT THAT NAMES ITS OWN FALLOFF EXPONENT CARRIES IT INTO ITS SLOT, AND NOBODY ELSE DOES', () => {
+  const buffer = createPointLightBuffer();
+  selectPointLights([{ ...light(5, 0, 0), falloffExponent: 8 }, light(1, 0, 0)], 0, 0, 0, buffer);
+  /* Nearest first: the plain light at x = 1, then the one at exponent 8. */
+  expect(Array.from(buffer.falloffExponents.subarray(0, 2))).toEqual([0, 8]);
+  selectPointLights([light(5, 0, 0), light(1, 0, 0)], 0, 0, 0, buffer);
+  expect(Array.from(buffer.falloffExponents.subarray(0, 2))).toEqual([0, 0]);
+});

@@ -129,7 +129,7 @@ import {
   FACE_COUNT,
   createResolvedPointShadows,
 } from '../../pointShadowImage.ts';
-import { MAX_AREA_LIGHTS, type AreaLightSource } from '../../areaLights.ts';
+import { MAX_AREA_LIGHTS, packAreaSizesAndDoors, type AreaLightSource } from '../../areaLights.ts';
 import {
   areaShadowLayerCount,
   castingRange,
@@ -175,11 +175,18 @@ import {
 import type { TextStyle } from '../../textLayout.ts';
 import { deviceSnappedCellSize, deviceSnappedOrigin } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
+import { GpuSceneCaptureTarget } from './sceneCaptureTarget.ts';
+import { sceneCaptureTexels } from '../../sceneCapture.ts';
 import { gpuCompressedFormats } from './compressedUpload.ts';
 import { GpuClothBinding, GpuClothParticles, clothStandIn } from './clothTextures.ts';
 import type { ClothViews } from './clothTextures.ts';
 import type { ComputeHost } from './computeHost.ts';
-import { MODEL_PARAM_FLOATS, eyeAxisInWorld, packModel } from '../../surfaceModel.ts';
+import {
+  MODEL_PARAM_FLOATS,
+  eyeAxisInWorld,
+  packModel,
+  skinProfileDistance,
+} from '../../surfaceModel.ts';
 import type { SurfaceModel } from '../../surfaceModel.ts';
 import { validateClothBinding } from '../../clothBindingData.ts';
 import type { ClothBindingData } from '../../clothBindingData.ts';
@@ -337,7 +344,7 @@ import type { LineSegments } from '../../linePoints.ts';
 import { buildPlumeGeometry } from '../../plumeGeometry.ts';
 import type { ParticleMaterial } from '../../particleMaterial.ts';
 import { facingCode, type ParticleBatchOptions } from '../../particleBatch.ts';
-import type { ParticleInstances } from '../../particlePool.ts';
+import type { DeviceParticles, ParticleInstances } from '../../particlePool.ts';
 import { PARTICLE_INDICES } from '../../shaders/particle.ts';
 import type { PlumeOptions, PlumePlacement } from '../../plumeRenderer.ts';
 import type { InstanceData } from '../../instancedMesh.ts';
@@ -2949,6 +2956,110 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * A texture the scene can be drawn into, for a material to show. See `RendererApi` and
+   * `sceneCapture.ts`. At the world's own format, which under `hdrScene` is half floats.
+   */
+  createSceneCapture(width: number, height: number): GpuSurfaceTexture {
+    const texture = new GpuSurfaceTexture(
+      this.surface.device,
+      this.pipelines,
+      sceneCaptureTexels(width, height, this.quality.hdrScene),
+      { wrap: 'clamp', mipmap: false },
+    );
+    this.captureTargets.set(texture, new GpuSceneCaptureTarget(this.surface.device, width, height));
+    return texture;
+  }
+
+  /** Each capture's attachments, beside the texture a material binds. */
+  private readonly captureTargets = new WeakMap<GpuSurfaceTexture, GpuSceneCaptureTarget>();
+  /**
+   * Whether a scene capture is being drawn: an off-screen pass as a probe bake is, so the frame's
+   * camera, jitter, motion, refraction copy, skin's spread and late routing are left alone, but
+   * lit by the probes and DriftLight as the frame is. See `captureScene`.
+   */
+  private capturePassActive = false;
+
+  /**
+   * Draw the scene into a capture from `camera`. See `RendererApi.captureScene`.
+   *
+   * **Its own encoder, as a probe bake's**: the frame's pass is set aside and restored, the rings
+   * are marked and rewound around the submit, and the frame graph is flushed at both boundaries so
+   * no recorded draw crosses one. **Radiance**: the output transform and exposure are held off.
+   */
+  captureScene(
+    capture: GpuSurfaceTexture,
+    camera: Camera,
+    clearColor: Vec3,
+    draw: (camera: Camera) => void,
+  ): boolean {
+    if (this.surface.lost) return false;
+    const target = this.captureTargets.get(capture);
+    const resolve = capture.layerView();
+    if (target === undefined || resolve === null) return false;
+    camera.updateMatrices(target.width / target.height);
+    const { device } = this.surface;
+    const { depth, colorMsaa } = target.attachments(this.samples, this.pipelines.format);
+
+    const savedPass = this.pass;
+    if (this.quality.frameGraph) this.flushGraph();
+    const savedEncoder = this.encoder;
+    this.markRings();
+    const skinMark = this.skinPalettes.mark();
+    const frameEpoch = this.encoderEpoch;
+    this.encoderEpoch = ++this.encoderEpochs;
+    const encoder = device.createCommandEncoder({ label: 'capture' });
+    this.encoder = encoder;
+    this.capturePassActive = true;
+    const heldGrade = this.perFrameInts[this.materialField('uOutputTransform')] ?? 0;
+    const heldExposure = this.perFrameFloats[this.materialField('uOutputExposure')] ?? 1;
+    this.perFrameInts[this.materialField('uOutputTransform')] = 0;
+    this.perFrameFloats[this.materialField('uOutputExposure')] = 1;
+    this.materials.dirty();
+    const pass = encoder.beginRenderPass({
+      label: 'capture',
+      colorAttachments: [
+        {
+          view: colorMsaa ?? resolve,
+          resolveTarget: colorMsaa === null ? undefined : resolve,
+          loadOp: 'clear',
+          storeOp: resolvedStoreOp(
+            colorMsaa !== null,
+            true,
+            this.quality.discardResolvedAttachments,
+          ),
+          clearValue: { r: clearColor[0], g: clearColor[1], b: clearColor[2], a: 1 },
+        },
+      ],
+      depthStencilAttachment: {
+        view: depth,
+        depthClearValue: DEPTH_CLEAR,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'discard',
+      },
+    });
+    this.pass = pass;
+    try {
+      draw(camera);
+      /* The callback's draws replayed into this pass before it ends: see `bakeProbe`. */
+      if (this.quality.frameGraph) this.flushGraph();
+    } finally {
+      pass.end();
+      this.pass = null;
+      this.flushRings();
+      device.queue.submit([encoder.finish()]);
+      this.rewindRings(skinMark);
+      this.encoderEpoch = frameEpoch;
+      this.encoder = savedEncoder;
+      this.pass = savedPass;
+      this.perFrameInts[this.materialField('uOutputTransform')] = heldGrade;
+      this.perFrameFloats[this.materialField('uOutputExposure')] = heldExposure;
+      this.materials.dirty();
+      this.capturePassActive = false;
+    }
+    return true;
+  }
+
+  /**
    * GPU textures an `updateSurfaceTexture` replaced, destroyed when the next frame begins.
    *
    * Not at once, because a draw recorded earlier in the frame the update landed in may still read
@@ -2996,6 +3107,8 @@ export class WebGPURenderer implements RendererApi {
     if (this.modelMap === texture) this.modelMap = null;
     this.forgetBindingsOf(texture);
     texture.dispose();
+    this.captureTargets.get(texture)?.dispose();
+    this.captureTargets.delete(texture);
   }
 
   /**
@@ -3207,9 +3320,9 @@ export class WebGPURenderer implements RendererApi {
     if (model?.kind === 'skin' && this.skinScatter !== null) {
       this.skinScatter.setProfile(
         model.profile,
-        model.scatterColor[0] * model.radius,
-        model.scatterColor[1] * model.radius,
-        model.scatterColor[2] * model.radius,
+        skinProfileDistance(model, 0),
+        skinProfileDistance(model, 1),
+        skinProfileDistance(model, 2),
       );
     }
     this.material((f, i) => {
@@ -3259,7 +3372,14 @@ export class WebGPURenderer implements RendererApi {
       f[emissive + 1] = asked?.[1] ?? 1;
       f[emissive + 2] = asked?.[2] ?? 1;
       /* The model's numbers and whether its map is bound. See `packModel`. */
-      packModel(material?.model ?? null, modelMap !== null, this.modelParams);
+      packModel(
+        material?.model ?? null,
+        modelMap !== null,
+        this.modelParams,
+        material?.physicalSpecular === true,
+      );
+      /* The first physical highlight asked for is when the lit pipelines start carrying one. */
+      if (material?.physicalSpecular === true) this.enableLit('PHYSICAL_SPECULAR');
       f.set(this.modelParams, this.materialField('uModelParams'));
     });
     /*
@@ -4175,7 +4295,43 @@ export class WebGPURenderer implements RendererApi {
 
     const device = this.surface.device;
     device.queue.writeBuffer(batch.instances, 0, batch.staging, 0, live * PARTICLE_INSTANCE_FLOATS);
+    this.drawParticleInstances(batch, batch.instances, live, camera, env, timeSeconds);
+  }
 
+  /**
+   * Draw particles a caller's own compute wrote, where they lie. See `DeviceParticles`.
+   *
+   * **The pool's draw with its instance stream swapped**: the same material, blend, flipbook, soft
+   * edge and fog, reading the caller's buffer in place of the one the pool uploads into — so nothing
+   * crosses back to the CPU. Not sorted, and a count past what the buffer holds is cut to it rather
+   * than handed to a draw the device would refuse with the frame.
+   */
+  drawDeviceParticles(
+    batch: GpuParticles,
+    particles: DeviceParticles,
+    camera: Camera,
+    env: Environment,
+    timeSeconds: number,
+  ): void {
+    const fits = Math.floor(particles.buffer.size / (PARTICLE_INSTANCE_FLOATS * 4));
+    const live = Math.min(Math.max(0, Math.floor(particles.count)), fits);
+    /* Not above zero covers a NaN as well: a count or a size that is no number draws nothing. */
+    if (!this.canDraw() || !(live > 0)) return;
+    if (batch.drawnInEncoder === this.encoderEpoch) return;
+    batch.drawnInEncoder = this.encoderEpoch;
+    this.drawParticleInstances(batch, particles.buffer, live, camera, env, timeSeconds);
+  }
+
+  /** A pool's uniforms for this view, and its draw from `instances`: both entry points' tail. */
+  private drawParticleInstances(
+    batch: GpuParticles,
+    instances: GPUBuffer,
+    live: number,
+    camera: Camera,
+    env: Environment,
+    timeSeconds: number,
+  ): void {
+    const device = this.surface.device;
     const v = batch.vertFloats;
     const atV = (name: string): number => (PARTICLE_VERT_FIELDS[name]?.offset ?? -4) / 4;
     mat4.multiply(this.correctedViewProj, CLIP_CORRECTION, camera.viewProjection);
@@ -4255,7 +4411,7 @@ export class WebGPURenderer implements RendererApi {
       particleCommand.pipeline = particlePipe;
       particleCommand.bindGroup = group;
       particleCommand.vertexBuffers[0] = batch.corners;
-      particleCommand.vertexBuffers[1] = batch.instances;
+      particleCommand.vertexBuffers[1] = instances;
       particleCommand.vertexCount = 2;
       particleCommand.indexBuffer = batch.indexBuffer;
       particleCommand.indexed = true;
@@ -4267,7 +4423,7 @@ export class WebGPURenderer implements RendererApi {
       pass.setPipeline(particlePipe);
       pass.setBindGroup(0, group);
       pass.setVertexBuffer(0, batch.corners);
-      pass.setVertexBuffer(1, batch.instances);
+      pass.setVertexBuffer(1, instances);
       pass.setIndexBuffer(batch.indexBuffer, 'uint32');
       pass.drawIndexed(PARTICLE_INDICES, live);
     }
@@ -4286,7 +4442,12 @@ export class WebGPURenderer implements RendererApi {
     const fields = batch.fields;
     const atF = (name: string): number => (fields[name]?.offset ?? -4) / 4;
     let depth: GPUTextureView | null = null;
-    if (batch.softDepth > 0 && !this.reflectionPassActive && !this.probePassActive) {
+    if (
+      batch.softDepth > 0 &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.capturePassActive
+    ) {
       if (this.openPass() !== null && this.takeVolumeDepth()) depth = this.resolvedDepthView;
       if (depth === null && !this.warnedSpriteDepth) {
         this.warnedSpriteDepth = true;
@@ -4660,6 +4821,7 @@ export class WebGPURenderer implements RendererApi {
     scatterInto(f, WATER_FRAG_FIELDS['uLightRadius'], lights.radii, 1);
     scatterInto(f, WATER_FRAG_FIELDS['uLightSourceRadius'], lights.sourceRadii, 1);
     scatterInto(f, WATER_FRAG_FIELDS['uLightWeight'], lights.weights, 1);
+    scatterInto(f, WATER_FRAG_FIELDS['uLightCone'], lights.conesAndFalloffs, 4);
 
     const medium = resolveAtmosphere(
       env,
@@ -5617,8 +5779,11 @@ export class WebGPURenderer implements RendererApi {
     cookies: new Float32Array(0),
     heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
     axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
+    conesAndFalloffs: new Float32Array(MAX_POINT_LIGHTS * 4),
     heldWeights: new Float32Array(MAX_POINT_LIGHTS),
   };
+  /** The fixed arm's rectangles as `uAreaLightSize` holds them. See `packAreaSizesAndDoors`. */
+  private readonly areaSizesAndDoors = new Float32Array(MAX_AREA_LIGHTS * 4);
   /** Refilled per frame rather than allocated; see `resolveAtmosphere`. */
   private readonly medium: ResolvedAtmosphere = {
     fogColor: new Float32Array(3),
@@ -8217,7 +8382,7 @@ export class WebGPURenderer implements RendererApi {
      * the viewer sees, and bounding it through a mirrored camera puts it in the wrong half of the
      * screen.
      */
-    if (!this.reflectionPassActive) {
+    if (!this.reflectionPassActive && !this.capturePassActive) {
       mat4.copy(this.frameRawViewProj, camera.viewProjection);
       /* The eye in world space, which the resolve's normals are turned to face. */
       this.reconEye.set(camera.position);
@@ -8251,7 +8416,8 @@ export class WebGPURenderer implements RendererApi {
      * second temporal frame stepped the sequence twice a frame, so the world saw every other
      * position and the anti-flicker's period never started.
      */
-    if (this.framePresented) this.viewProj = this.correctedViewProj;
+    /* A capture has no resolve to undo a jitter and is no frame of the sequence. */
+    if (this.framePresented || this.capturePassActive) this.viewProj = this.correctedViewProj;
     else this.jitterFrame();
     /*
      * The frustum, once a frame, and from the **uncorrected** matrix.
@@ -8593,7 +8759,8 @@ export class WebGPURenderer implements RendererApi {
      * uniform added on one backend is bound on both in the same change.
      */
     scatterInto(f, this.fragment.fields['uLightDir'], lights.directions, 3);
-    scatterInto(f, this.fragment.fields['uLightCone'], lights.coneCos, 2);
+    /* The cone and, in z, the light's own falloff exponent. See `conesAndFalloffs`. */
+    scatterInto(f, this.fragment.fields['uLightCone'], lights.conesAndFalloffs, 4);
     scatterInto(f, this.fragment.fields['uLightIesProfile'], lights.iesProfiles, 1);
     /* The azimuth and, in w, the light's channels. See `axesAndChannels`. */
     scatterInto(f, this.fragment.fields['uLightIesAxis'], lights.axesAndChannels, 4);
@@ -8615,7 +8782,9 @@ export class WebGPURenderer implements RendererApi {
       scatterInto(f, this.fragment.fields['uAreaLightColor'], area.colors, 3);
       scatterInto(f, this.fragment.fields['uAreaLightRight'], area.right, 3);
       scatterInto(f, this.fragment.fields['uAreaLightUp'], area.up, 3);
-      scatterInto(f, this.fragment.fields['uAreaLightSize'], area.sizes, 2);
+      /* The half extents and, in zw, the barn doors. See `packAreaSizesAndDoors`. */
+      packAreaSizesAndDoors(area, this.areaSizesAndDoors);
+      scatterInto(f, this.fragment.fields['uAreaLightSize'], this.areaSizesAndDoors, 4);
       scatterInto(f, this.fragment.fields['uAreaLightTwoSided'], area.twoSided, 1);
     }
 
@@ -11723,7 +11892,7 @@ export class WebGPURenderer implements RendererApi {
       routesLate(
         this.reconstructing,
         this.reflectionPassActive,
-        this.probePassActive,
+        this.probePassActive || this.capturePassActive,
         this.framePresented,
       )
     );
@@ -11803,7 +11972,7 @@ export class WebGPURenderer implements RendererApi {
     return tracksMotion(
       this.reconstructing,
       this.reflectionPassActive,
-      this.probePassActive,
+      this.probePassActive || this.capturePassActive,
       this.framePresented,
     );
   }
@@ -12260,6 +12429,8 @@ export class WebGPURenderer implements RendererApi {
       f.set(surface.axis, base + at('uSsrAxis'));
       f.set(surface.tint, base + at('uSsrTint'));
       f[base + at('uSsrStrength')] = surface.strength;
+      f[base + at('uSsrFresnel')] = surface.fresnel ? 1 : 0;
+      f[base + at('uSsrFresnel') + 1] = surface.roughness;
       f[base + at('uSsrFacingCos')] = surface.facingCos;
       f[base + at('uSsrReach')] = surface.reachM;
       f[base + at('uSsrThickness')] = surface.thicknessM;
@@ -12963,7 +13134,7 @@ export class WebGPURenderer implements RendererApi {
    * glass, and a frame that refracts nothing breaks no pass at all.
    */
   private takeRefractSnapshot(): boolean {
-    if (this.reflectionPassActive || this.probePassActive) return false;
+    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return false;
     if (this.refractSnapshotTaken) return true;
     /* A late draw refracts the reconstructed picture, which does not exist until the resolve has
        run; `runLate` takes the copy then, once, before any late draw is replayed. */
@@ -13044,6 +13215,7 @@ export class WebGPURenderer implements RendererApi {
       !this.skinScattered &&
       !this.reflectionPassActive &&
       !this.probePassActive &&
+      !this.capturePassActive &&
       !this.framePresented &&
       !this.overlayActive &&
       this.oitMode === 'none'
@@ -13133,6 +13305,7 @@ export class WebGPURenderer implements RendererApi {
     this.skinScattered = true;
     if (!skin.pending) return;
     if (this.reflectionPassActive || this.probePassActive || this.oitReplaying) return;
+    if (this.capturePassActive) return;
     const encoder = this.encoder;
     const depth = this.depthView;
     const resolved = this.resolvedDepthView;
@@ -13201,7 +13374,7 @@ export class WebGPURenderer implements RendererApi {
      * own terms: `resolvedDepthView` holds the *frame's* depth, and clamping a mirrored beam
      * against it would stop it at geometry that is not in front of it.
      */
-    if (this.reflectionPassActive) return false;
+    if (this.reflectionPassActive || this.capturePassActive) return false;
     if (this.resolvedDepthView === null) return false;
     if (this.volumeDepthTaken) return true;
     const encoder = this.encoder;
@@ -13761,7 +13934,9 @@ export class WebGPURenderer implements RendererApi {
    * any future branch added to one belongs in the other.
    */
   private targetPipelines(): PipelineCache {
-    if (this.probePassActive || this.reflectionPassActive) return this.pipelines;
+    if (this.probePassActive || this.reflectionPassActive || this.capturePassActive) {
+      return this.pipelines;
+    }
     return this.overlayActive || this.framePresented ? this.overlayPipelines : this.pipelines;
   }
 

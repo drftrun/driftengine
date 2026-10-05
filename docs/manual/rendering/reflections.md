@@ -203,5 +203,42 @@ export function polishedFloor(renderer: RendererApi, env: Environment, camera: C
 dimmer than the light a polished floor should show. `bindMeshPass` resets both. See
 [Materials](materials.md) for the rest of a surface.
 
+## Reflecting what the frame drew
+
+```ts sample=snippets/reflections.ts#screen
+/**
+ * A polished stone floor that reflects what the frame drew on it, weighed as the stone itself
+ * would: four per cent head-on, rising toward the horizon, at the stone's roughness.
+ */
+export const stoneFloor = new ReflectiveSurface({
+  center: [0, 0, 0],
+  halfExtents: [12, 12, 0.2],
+  forward: [0, -1, 0],
+  up: [0, 0, 1],
+  strength: 0.04,
+  fresnel: true,
+  roughness: 0.2,
+});
+
+/** Submitted each frame between `beginFrame` and `endFrame`, and traced when the frame ends. */
+export function drawFloorReflection(renderer: RendererApi): void {
+  renderer.drawReflection(stoneFloor);
+}
+```
+
+A `ReflectiveSurface` is a box; the surfaces inside it that face back along its `forward` axis
+reflect what the frame has already drawn. `drawReflection` submits it each frame, and when the frame
+ends a ray is marched from every pixel it covers against the frame's own depth. It follows the
+surface per pixel, whatever its shape, and is exact where an object meets the floor; it cannot
+reflect anything off screen or hidden behind the surface. It needs `screenEffects`, and says so once
+where there are none.
+
+`strength` is the share of what the ray finds that lands on the surface, one number over the box.
+With `fresnel: true` it is the surface's reflectance head-on instead, and each pixel returns
+`strength · A + B` of what it finds: the split-sum BRDF at its own view and the box's `roughness`,
+the fit the lit stage reflects its environment by. A floor then reflects more toward the horizon
+than underfoot, and the share follows the camera, as Unreal weighs its reflections. The roughness
+and reflectance are the box's rather than each pixel's, since the pass reads no material.
+
 Water reflects through its own planar mirror; see [Water](water.md). For a wet street, see
 [Wet surfaces](wet-surfaces.md).

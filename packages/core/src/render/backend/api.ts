@@ -1,5 +1,6 @@
 import type { Bounds } from '../../math/bounds.ts';
 import type { Vec3 } from '../../math/color.ts';
+import type { Camera } from '../camera.ts';
 import type { ReadonlyMat4 } from 'gl-matrix';
 import type { MeshData } from '../mesh.ts';
 import type { ProbeBakeOptions } from '../reflectionProbe.ts';
@@ -8,6 +9,7 @@ import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
 import type { SurfaceSource } from '../compressedSource.ts';
 import type { LightmapPage } from '../lightmap.ts';
+import type { DeviceParticles } from '../particlePool.ts';
 import type { ClothBindingData } from '../clothBindingData.ts';
 import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
@@ -276,6 +278,7 @@ export type RendererApi = Omit<
   | 'disposeCaustics'
   | 'createParticles'
   | 'drawParticles'
+  | 'drawDeviceParticles'
   | 'disposeParticles'
   | 'createWindStreaks'
   | 'drawWindStreaks'
@@ -302,6 +305,8 @@ export type RendererApi = Omit<
   | 'createSurfaceTexture'
   | 'createSurfaceTextureArray'
   | 'createLightmap'
+  | 'createSceneCapture'
+  | 'captureScene'
   | 'updateSurfaceTexture'
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
@@ -365,12 +370,40 @@ export type RendererApi = Omit<
 
   /**
    * A baked lightmap page on the device, as the texture a `lightmapModel` material takes for its
-   * `modelMap`: two layers of half floats, the irradiance and the direction, filtered linearly and
-   * clamped at its edges, with no mip chain. Disposed as any texture is, with
+   * `modelMap`: two layers of four bytes a texel, the irradiance as an rgb9e5 word and the
+   * direction, which the lit stage decodes and filters itself, clamped at the page's edges, with no
+   * mip chain. A page whose irradiance arrives packed uploads where it lies. Disposed as any texture is, with
    * `disposeSurfaceTexture`; `updateSurfaceTexture` refuses it, as it refuses any array. See
    * `lightmap.ts` for what a surface does with it.
    */
   createLightmap(page: LightmapPage): SurfaceTextureHandle;
+
+  /**
+   * A texture the scene can be drawn into from a camera of the caller's (`captureScene`), which a
+   * material then shows like any image — most often as its `emissive`, for a screen in the world
+   * showing what a camera elsewhere sees. `width` and `height` in pixels, 1 to 4096. It holds
+   * radiance, at the colour format a probe takes: half floats under `hdrScene`, bytes otherwise.
+   * Disposed as any texture is; `updateSurfaceTexture` refuses it. See `sceneCapture.ts`.
+   */
+  createSceneCapture(width: number, height: number): SurfaceTextureHandle;
+
+  /**
+   * Draw the scene into a capture from `camera`, at the moment a caller says, usually once a frame
+   * before the frame's own world. `draw` is handed the camera, its matrices updated for the
+   * capture's shape, and submits the scene exactly as it would to the screen — `bindMeshPass`,
+   * `drawMesh` and the rest; `bindMeshPass` the frame's own camera again afterwards. The output
+   * transform is held off, so a screen showing it is graded once, with the frame.
+   *
+   * **The mesh pass alone**, as a probe bake is: what a scene draws after its world is in the
+   * capture only if `draw` draws it, and no temporal resolve or effect after the world runs on it.
+   * Returns whether it drew: false for a texture that is not a capture.
+   */
+  captureScene(
+    capture: SurfaceTextureHandle,
+    camera: Camera,
+    clearColor: Vec3,
+    draw: (camera: Camera) => void,
+  ): boolean;
 
   /**
    * Replace a texture's pixels, keeping the GPU object and its sampler state.
@@ -730,6 +763,20 @@ export type RendererApi = Omit<
   drawParticles(
     batch: ParticleHandle,
     data: Parameters<Renderer['drawParticles']>[1],
+    camera: Parameters<Renderer['drawParticles']>[2],
+    env: Parameters<Renderer['drawParticles']>[3],
+    timeSeconds: number,
+  ): void;
+
+  /**
+   * Draw a pool's particles from a buffer a caller's own compute wrote (`registerCompute`), where
+   * they lie: the pool's material, blend, flipbook and fades, its instance stream the caller's
+   * buffer. WebGPU only; WebGL2 says so once and draws nothing. Not sorted. See `DeviceParticles`
+   * for the layout.
+   */
+  drawDeviceParticles(
+    batch: ParticleHandle,
+    particles: DeviceParticles,
     camera: Parameters<Renderer['drawParticles']>[2],
     env: Parameters<Renderer['drawParticles']>[3],
     timeSeconds: number,

@@ -54,7 +54,12 @@ export interface SkinModel {
   readonly kind: 'skin';
   /** The colour light keeps travelling beneath the surface — the mean free path, as a colour. */
   readonly scatterColor: Vec3;
-  /** Metres: how far light travels beneath it before it leaves. */
+  /**
+   * Metres: how far light travels beneath it, on average, before it leaves — from where it entered
+   * to where it leaves, for a channel whose share of `scatterColor` is 1. Burley's profile, which
+   * the lit stage and the screen-space blur both scatter by, does that at a distance `d` two fifths
+   * of it, and carries a tail of light out to about three and a half times it.
+   */
   readonly radius: number;
   /** 0 to 1: how much a light behind a thin part shows through it. */
   readonly transmission: number;
@@ -159,7 +164,25 @@ export function hairModel(
   });
 }
 
-/** Skin. The defaults are a fair skin's: a red mean free path a little over a centimetre long. */
+/**
+ * How far Burley's normalised diffusion carries light on average, in units of its own distance
+ * `d`: its radial density `(e^(−r/d) + e^(−r/3d)) / 4d` has the mean `(d² + 9d²) / 4d = 2.5 d`. So a
+ * skin whose light travels `radius` scatters by a profile at `d = radius / 2.5`.
+ *
+ * **Until 4.8.7 `radius` was `d` itself**, so light travelled two and a half times as far as the
+ * model said, and the screen-space blur — whose taps reach nine `d` — spread a face at arm's length
+ * over sixty pixels: a nose, lips and brows washed into one blur where a centimetre covers a few.
+ * The lit stage's pre-integrated fit, transmission and penumbra take the same `d`, so the two paths
+ * still agree with each other.
+ */
+export const SKIN_MEAN_EXIT = 2.5;
+
+/** Burley's distance `d` for one channel of a skin, in metres: see `SKIN_MEAN_EXIT`. */
+export function skinProfileDistance(model: SkinModel, channel: 0 | 1 | 2): number {
+  return ((model.scatterColor[channel] as number) * model.radius) / SKIN_MEAN_EXIT;
+}
+
+/** Skin. The defaults are a fair skin's: red light leaving a little over a centimetre away. */
 export function skinModel(
   options: { scatterColor?: Vec3; radius?: number; transmission?: number; profile?: number } = {},
 ): SkinModel {
@@ -218,24 +241,36 @@ export function lightmapModel(options: { region?: LightmapRegion } = {}): Lightm
 
 /**
  * A model's numbers into `out` — eight floats, `uModelParams[0]` then `[1]` — and whether a model
- * map is bound into the last. Zeros for the standard model. An eye's axis goes in with the
- * descriptor's own until the draw turns it: see `eyeAxisInWorld`.
+ * map is bound into the last. An eye's axis goes in with the descriptor's own until the draw turns
+ * it: see `eyeAxisInWorld`. `physical` is `SurfaceMaterial.physicalSpecular`, in the lane the
+ * models that read it leave free; skin, hair and the eye shade their own highlights and never do.
  *
- * - anisotropic: strength, cos and sin of the rotation · −, −, −, map
+ * - standard (null): − · −, −, physical, −
+ * - anisotropic: strength, cos and sin of the rotation · −, −, physical, map
  * - hair: shift, scatter, backlit, − · −, −, −, map
- * - skin: the scatter colour, radius · transmission, profile, −, map
+ * - skin: the scatter colour, radius / `SKIN_MEAN_EXIT` · transmission, profile, −, map
  * - eye: iris radius, iris depth, ior, cornea roughness · the axis, map
- * - lightmap: the region's scale and bias · −, −, −, map
+ * - lightmap: the region's scale and bias · −, −, physical, map
  */
-export function packModel(model: SurfaceModel | null, mapped: boolean, out: Float32Array): void {
+export function packModel(
+  model: SurfaceModel | null,
+  mapped: boolean,
+  out: Float32Array,
+  physical = false,
+): void {
   out.fill(0);
-  if (model === null) return;
+  const highlight = physical ? 1 : 0;
+  if (model === null) {
+    out[6] = highlight;
+    return;
+  }
   out[7] = mapped ? 1 : 0;
   switch (model.kind) {
     case 'anisotropic':
       out[0] = model.strength;
       out[1] = Math.cos(model.rotation);
       out[2] = Math.sin(model.rotation);
+      out[6] = highlight;
       return;
     case 'hair':
       out[0] = model.shift;
@@ -246,7 +281,8 @@ export function packModel(model: SurfaceModel | null, mapped: boolean, out: Floa
       out[0] = model.scatterColor[0];
       out[1] = model.scatterColor[1];
       out[2] = model.scatterColor[2];
-      out[3] = model.radius;
+      /* Burley's distance for a channel of share 1, which the shader scales by each share. */
+      out[3] = model.radius / SKIN_MEAN_EXIT;
       out[4] = model.transmission;
       out[5] = model.profile;
       return;
@@ -264,6 +300,7 @@ export function packModel(model: SurfaceModel | null, mapped: boolean, out: Floa
       out[1] = model.region[1];
       out[2] = model.region[2];
       out[3] = model.region[3];
+      out[6] = highlight;
       return;
   }
 }

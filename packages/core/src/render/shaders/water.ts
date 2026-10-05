@@ -177,8 +177,11 @@ uniform vec3 uAmbient;
  * is the single strongest cue that a surface *is* water switched off because no
  * directional source existed to make it. A lantern on a jetty threw nothing.
  *
- * Same slots, same weights and the same two falloff shapes as the surface shader, so a
- * lamp behaves the same way over water as it does over the ground beside it.
+ * Same slots, same weights and the surface shader's falloffs, a light's own exponent among
+ * them, so a lamp reaches as far over water as over the ground beside it. **What it gives up**:
+ * a spot's cone, which water does not read, so a spot lights the water around it as a lamp
+ * would; and the smooth falloff's square, which the surface applies and this has never, so under
+ * that falloff a lamp's pool on water is the wider of the two.
  */
 #define MAX_LIGHTS ${MAX_POINT_LIGHTS}
 uniform int uLightCount;
@@ -187,6 +190,8 @@ uniform vec3 uLightColor[MAX_LIGHTS];
 uniform float uLightRadius[MAX_LIGHTS];
 uniform float uLightWeight[MAX_LIGHTS];
 uniform int uLightFalloff;
+/* The surface shader's cone record, of which water reads z alone: a light's own falloff exponent. */
+uniform vec4 uLightCone[MAX_LIGHTS];
 ${FOG_GLSL}
 uniform vec3 uCameraPos;
 uniform sampler2D uReflectionMap;
@@ -243,7 +248,11 @@ void main() {
     vec3 toLight = uLightPos[i] - vWorldPos;
     float lightDist = length(toLight);
     float falloff;
-    if (uLightFalloff == 1) {
+    float exponent = uLightCone[i].z;
+    if (exponent > 0.0) {
+      float reach = lightDist / max(uLightRadius[i], 1e-4);
+      falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), exponent);
+    } else if (uLightFalloff == 1) {
       float window = clamp(1.0 - pow(lightDist / max(uLightRadius[i], 1e-4), 4.0), 0.0, 1.0);
       falloff = window * window / max(lightDist * lightDist, 0.01);
     } else {

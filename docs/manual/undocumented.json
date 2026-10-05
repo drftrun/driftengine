@@ -117,7 +117,6 @@
   "render/RainField",
   "render/recordPassLabel",
   "render/ReflectionOptions",
-  "render/ReflectiveSurfaceOptions",
   "render/RendererApi",
   "render/RenderQuality",
   "render/ResolutionGovernor",

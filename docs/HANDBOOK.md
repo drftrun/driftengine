@@ -660,7 +660,9 @@ of baked light. **Neither survives a bake today.** The glTF reader does not read
 the container has no place for a second set of coordinates, so a mesh baked to `.drft` arrives
 without them and draws with the dynamic lights alone. A lightmapped surface is built by your own
 code: decode the page into a `LightmapPage`, give the `MeshData` its `lightmapUvs`, and draw it with
-a `lightmapModel` material, as the manual's materials chapter shows. `docs/CAPABILITIES.md` keeps
+a `lightmapModel` material, as the manual's materials chapter shows. A page's irradiance may stay as a
+bake hands it over when that is rgb9e5, as Unreal's is: a `Uint32Array` of packed words uploads
+where it lies, at eight bytes a texel with its direction. `docs/CAPABILITIES.md` keeps
 this as an absent row, so the release that carries it has to say so.
 
 ## 5. Proving two bakes agree

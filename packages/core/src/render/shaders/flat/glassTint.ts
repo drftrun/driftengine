@@ -29,7 +29,12 @@ vec4 glassUnmix(vec4 mip, float centreClarity) {
  * about which optional code a lit program carries. See `litSwitchesGlsl`.
  */
 export type LitSwitch =
-  'GLASS_SHADOWS' | 'CLUSTERED_LIGHTS' | 'LIGHT_FIXTURES' | 'SURFACE_EFFECTS' | 'DRIFT_LIGHT';
+  | 'GLASS_SHADOWS'
+  | 'CLUSTERED_LIGHTS'
+  | 'LIGHT_FIXTURES'
+  | 'SURFACE_EFFECTS'
+  | 'DRIFT_LIGHT'
+  | 'PHYSICAL_SPECULAR';
 
 /** Every switch off: what a renderer starts from before its profile and its content say otherwise. */
 export function noLitSwitches(): Record<LitSwitch, boolean> {
@@ -39,6 +44,7 @@ export function noLitSwitches(): Record<LitSwitch, boolean> {
     LIGHT_FIXTURES: false,
     SURFACE_EFFECTS: false,
     DRIFT_LIGHT: false,
+    PHYSICAL_SPECULAR: false,
   };
 }
 
@@ -61,7 +67,8 @@ export interface LitSwitches {
  * first uses them — a measured profile or a cookie, a material with an effects table, a DriftLight
  * volume — and then on for good; see `PipelineCache.enable` and the WebGL2 renderer's rebuild.
  * Measured on RADV against the lit shader with glass already out: 6,852 instructions and 120
- * registers, 4,641 and 96 with all four out.
+ * registers, 4,641 and 96 with all four out. `PHYSICAL_SPECULAR` is a sixth, declared with the
+ * models so that theirs keep their ids (`modelsGlsl`).
  */
 export function litSwitchesGlsl(switches: LitSwitches): string {
   return /* glsl */ `

@@ -28,12 +28,50 @@ test('packing interleaves matrix then tint, one stride apart', () => {
   const out = new Float32Array(2 * INSTANCE_FLOATS);
   packInstances(instances, out);
 
-  expect(Array.from(out.subarray(0, 16))).toEqual(Array.from({ length: 16 }, (_, i) => i));
+  /* The matrix's top three rows, and in its bottom row the whole texture: see the test below. */
+  const placed = (base: number): number[] =>
+    Array.from({ length: 16 }, (_, i) => (i % 4 === 3 ? [1, 1, 0, 0][i >> 2] : base + i) as number);
+  expect(Array.from(out.subarray(0, 16))).toEqual(placed(0));
   expect(Array.from(out.subarray(16, 19))).toEqual([1, 2, 3]);
-  expect(Array.from(out.subarray(INSTANCE_FLOATS, INSTANCE_FLOATS + 16))).toEqual(
-    Array.from({ length: 16 }, (_, i) => 100 + i),
-  );
+  expect(Array.from(out.subarray(INSTANCE_FLOATS, INSTANCE_FLOATS + 16))).toEqual(placed(100));
   expect(Array.from(out.subarray(INSTANCE_FLOATS + 16, INSTANCE_FLOATS + 19))).toEqual([4, 5, 6]);
+});
+
+/*
+ * **An instance's texture cell rides the bottom row of its matrix**, which an affine placement
+ * leaves at [0, 0, 0, 1] and every stage drawing an instance rebuilds as that: scale u, scale v,
+ * offset u, offset v down the four columns' last floats. Absent, it is the whole texture. A culled
+ * copy keeps each survivor's cell beside it.
+ */
+test('AN INSTANCE’S TEXTURE CELL RIDES ITS MATRIX’S BOTTOM ROW, AND A CULLED COPY KEEPS IT', () => {
+  const instances = { ...createMeshInstances(2), uvRegions: new Float32Array(8) };
+  instances.models.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 6, 7, 1], 0);
+  instances.models.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 8, 9, 10, 1], 16);
+  instances.uvRegions.set([0.25, 0.5, 0.75, 0, 0.25, 0.5, 0, 0.5]);
+  instances.count = 2;
+  const out = new Float32Array(2 * INSTANCE_FLOATS);
+  packInstances(instances, out);
+  const row = (at: number): number[] =>
+    [out[at + 3], out[at + 7], out[at + 11], out[at + 15]].map(Number);
+  expect(row(0)).toEqual([0.25, 0.5, 0.75, 0]);
+  expect(row(INSTANCE_FLOATS)).toEqual([0.25, 0.5, 0, 0.5]);
+  expect([out[12], out[13], out[14]], 'the placement is untouched').toEqual([5, 6, 7]);
+
+  /* Behind a frustum that keeps only the second: its cell goes with it. */
+  const kept = { ...createMeshInstances(2), uvRegions: new Float32Array(8) };
+  const frustum = new Float32Array(24);
+  for (let plane = 0; plane < 6; plane++) frustum[plane * 4 + 3] = 1;
+  frustum[0] = 1;
+  frustum[3] = -7.5;
+  const dot = {
+    min: new Float32Array([-0.05, -0.05, -0.05]),
+    max: new Float32Array([0.05, 0.05, 0.05]),
+    centre: new Float32Array([0, 0, 0]),
+    radius: 0.1,
+  };
+  cullInstances(instances, dot, frustum, kept);
+  expect(kept.count).toBe(1);
+  expect(Array.from(kept.uvRegions.subarray(0, 4))).toEqual([0.25, 0.5, 0, 0.5]);
 });
 
 /*

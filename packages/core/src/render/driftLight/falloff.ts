@@ -9,13 +9,24 @@
  *
  * Both of the renderer's falloffs: `smooth`, the default, is a linear ramp squared, reaching zero at
  * the radius; `inverseSquare` is physical, windowed so it still reaches zero at the radius, and
- * floored at ten centimetres so a surface touching a light is not infinitely bright.
+ * floored at ten centimetres so a surface touching a light is not infinitely bright. And a light's
+ * own, which overrides both: `(1 - (d/R)^2)^n` with no distance term, for an exponent `n` above zero
+ * (`PointLightSource.falloffExponent`).
  */
 
 export type PointLightFalloff = 'smooth' | 'inverseSquare';
 
 /** The shader's `shape` for an unshaped point light: no cone, no photometric profile. */
-export function pointLightShape(dist: number, radius: number, falloff: PointLightFalloff): number {
+export function pointLightShape(
+  dist: number,
+  radius: number,
+  falloff: PointLightFalloff,
+  exponent = 0,
+): number {
+  if (exponent > 0) {
+    const reach = dist / Math.max(radius, 1e-4);
+    return Math.min(1, Math.max(0, 1 - reach * reach)) ** exponent;
+  }
   if (falloff === 'inverseSquare') {
     const ratio = dist / Math.max(radius, 1e-4);
     const window = Math.min(1, Math.max(0, 1 - ratio ** 4));

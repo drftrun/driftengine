@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/core",
-  "version": "4.8.6",
+  "version": "4.8.7",
   "description": "The runtime of DriftEngine, a WebGPU game engine with a WebGL2 fallback: renderer, loop, input, cameras, scene graph and physics",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,8 +29,8 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@driftengine/drft": "4.8.6",
-    "@driftengine/physics": "4.8.6",
+    "@driftengine/drft": "4.8.7",
+    "@driftengine/physics": "4.8.7",
     "gl-matrix": "^3.4.3"
   },
   "author": "Drift Technologies",
@@ -67,8 +67,8 @@
     "prepack": "node ../../scripts/build.mjs @driftengine/core"
   },
   "devDependencies": {
-    "@driftengine/nav": "4.8.6",
-    "@driftengine/network": "4.8.6",
-    "@driftengine/texture": "4.8.6"
+    "@driftengine/nav": "4.8.7",
+    "@driftengine/network": "4.8.7",
+    "@driftengine/texture": "4.8.7"
   }
 }

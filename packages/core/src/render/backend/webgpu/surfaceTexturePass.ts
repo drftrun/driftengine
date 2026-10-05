@@ -3,6 +3,8 @@ import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from '../../surfaceEffects.
 import { toHalfFloats } from '../../halfFloat.ts';
 import { isLightmapTexels } from '../../lightmap.ts';
 import type { LightmapTexels } from '../../lightmap.ts';
+import { isSceneCaptureTexels } from '../../sceneCapture.ts';
+import type { SceneCaptureTexels } from '../../sceneCapture.ts';
 import { layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
 import { compressedLayers, planBlocks, refuseBlockUpdate } from '../../compressedSource.ts';
 import type {
@@ -195,35 +197,54 @@ export class GpuSurfaceTexture {
   constructor(
     private readonly device: GPUDevice,
     private readonly pipelines: PipelineCache,
-    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels,
+    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels | SceneCaptureTexels,
     options: SurfaceTextureOptions = {},
     compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    /* A lightmap's page: half floats, uploaded as they are. See `lightmap.ts`. */
+    /* A scene capture's target: one empty layer the world is drawn into. See `sceneCapture.ts`. */
+    const capture = isSceneCaptureTexels(source) ? source : null;
+    /* A lightmap's page: two layers of bytes, uploaded as they are. See `lightmap.ts`. */
     const baked = isLightmapTexels(source) ? source : null;
     const listed = (
-      baked !== null ? [] : Array.isArray(source) ? source : [source]
+      baked !== null || capture !== null ? [] : Array.isArray(source) ? source : [source]
     ) as readonly SurfaceSource[];
     const blocks = compressedLayers(listed);
     const srgb = (options.colorSpace ?? 'linear') === 'srgb';
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
-       place it is correct — `surfaceTexture.ts` makes the argument in full. */
-    this.format = baked !== null ? 'rgba16float' : srgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
-    if (baked !== null) {
+       place it is correct — `surfaceTexture.ts` makes the argument in full. A capture takes the
+       world's own format, which its pass resolves into. */
+    this.format =
+      capture !== null
+        ? pipelines.format
+        : srgb && baked === null
+          ? 'rgba8unorm-srgb'
+          : 'rgba8unorm';
+    if (capture !== null) {
+      this.layers = 1;
+      this.blockFormat = null;
+      this.mipmapped = false;
+      this.width = capture.width;
+      this.height = capture.height;
+      this.levels = 1;
+      this.texture = this.allocate();
+    } else if (baked !== null) {
       /* No chain: a page is read at its own resolution, and a level of it would blend regions. */
-      this.layers = baked.layers;
+      this.layers = baked.layers.length;
       this.blockFormat = null;
       this.mipmapped = false;
       this.width = baked.width;
       this.height = baked.height;
       this.levels = 1;
       this.texture = this.allocate();
-      device.queue.writeTexture(
-        { texture: this.texture },
-        baked.texels,
-        { bytesPerRow: baked.width * 8, rowsPerImage: baked.height },
-        { width: baked.width, height: baked.height, depthOrArrayLayers: baked.layers },
-      );
+      /* A layer at a time, so a page's arrays are uploaded where they lie rather than joined. */
+      for (let layer = 0; layer < this.layers; layer++) {
+        device.queue.writeTexture(
+          { texture: this.texture, origin: [0, 0, layer] },
+          baked.layers[layer] as Uint8Array<ArrayBuffer>,
+          { bytesPerRow: baked.width * 4, rowsPerImage: baked.height },
+          { width: baked.width, height: baked.height, depthOrArrayLayers: 1 },
+        );
+      }
     } else if (blocks !== null) {
       /* Refused before anything is allocated; the stored chain, or level 0 alone where no chain
          was asked for. See `compressedUpload.ts`. */
@@ -282,7 +303,9 @@ export class GpuSurfaceTexture {
           : 1,
     });
 
-    if (blocks === null && baked === null) this.upload(listed as readonly TexImageSource[]);
+    if (blocks === null && baked === null && capture === null) {
+      this.upload(listed as readonly TexImageSource[]);
+    }
 
     /* Half floats, as `renderer.ts` uploads it: filterable, so the ordinary float layout takes it,
        and read by `textureLoad` alone, so the filter never runs. */
@@ -313,6 +336,13 @@ export class GpuSurfaceTexture {
   /** The view every binding of this image holds. A new one when `update` changes the size. */
   get view(): GPUTextureView {
     return this.current;
+  }
+
+  /** The only layer as a plain 2D view, which a scene capture's pass resolves into. */
+  layerView(): GPUTextureView | null {
+    return (
+      this.texture?.createView({ dimension: '2d', baseArrayLayer: 0, arrayLayerCount: 1 }) ?? null
+    );
   }
 
   /**

@@ -11,7 +11,7 @@ import type { DrftFieldPlacement } from './fieldPlacement.ts';
 import type { DrftTexture } from '@driftengine/drft';
 import { TextureSet, textureColorSpaces } from './drftTextures.ts';
 import { bcPlan, createBcDecoder } from './bcLoad.ts';
-import type { BcDecoder } from './bcLoad.ts';
+import type { BcDecoder, BcWorker } from './bcLoad.ts';
 import { decodeBc } from './bcDecode.ts';
 import { isCompressedSource, uploadsCompressed } from '@driftengine/core';
 import { CODEC_BC, codecName, readBcPayload } from '@driftengine/drft';
@@ -82,6 +82,13 @@ export interface DrftLoaderOptions {
    * the default.
    */
   readonly fetchImpl?: FetchLike;
+  /**
+   * What starts the worker a BC texture the device cannot take as blocks is decoded in:
+   * `spawnBcWorker`, from `@driftengine/assets/src/bcWorkers.ts`. Absent, they decode on the main
+   * thread and the loader says so once — the factory is behind its own specifier so a consumer that
+   * never names it has no worker in its build. See `bcWorkers.ts`.
+   */
+  readonly bcWorker?: () => BcWorker;
   /**
    * The most parts one `update` may take, however cheap they turn out to be.
    *
@@ -1523,7 +1530,7 @@ export class DrftLoader {
       done(image);
       return;
     }
-    if (this.bcDecoder === null) this.bcDecoder = createBcDecoder();
+    if (this.bcDecoder === null) this.bcDecoder = createBcDecoder(this.options.bcWorker ?? null);
     const decoder = this.bcDecoder;
     decoder
       .decode(image, asImage)

@@ -8,6 +8,10 @@
  *     /spriteParticles.html?sort=1          alpha sprites drawn farthest first
  *     /spriteParticles.html?blend=additive  added rather than laid over
  *     /spriteParticles.html?facing=velocity each card's up along its travel
+ *     /spriteParticles.html?device=1        the same sixteen written by a compute shader into a
+ *                                           buffer of the page's own and drawn where they lie
+ *                                           (`drawDeviceParticles`): the default's frame, pixel
+ *                                           for pixel, on WebGPU; on WebGL2 nothing, said once
  *
  * **The controls**: `?soft=0` against `?soft=0.4` moves only pixels near where a card meets the
  * floor or a card behind it; the cells are numbered and coloured, so a frame drawn from the wrong
@@ -20,6 +24,8 @@ import {
   createRenderer,
 } from '../../packages/core/src/index';
 import type {
+  ComputeDefinition,
+  DeviceParticles,
   ParticleBlend,
   ParticleFacing,
   ParticleInstances,
@@ -91,6 +97,72 @@ function particles(): ParticleInstances {
   return out;
 }
 
+/**
+ * The same sixteen, written on the device: `particles()` in WGSL, into the layout
+ * `DEVICE_PARTICLE_FLOATS` names. Velocity is left at zero, which a camera-facing card never reads.
+ */
+const WRITE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@compute @workgroup_size(16) fn main(@builtin(global_invocation_id) id: vec3u) {
+  let i = id.x;
+  if (i >= 16u) { return; }
+  let at = i * 16u;
+  let f = f32(i);
+  out[at] = (f32(i % 8u) - 3.5) * 1.4;
+  out[at + 1u] = 0.35;
+  out[at + 2u] = select(-3.0, 0.0, i < 8u) - f32(i % 3u) * 0.6;
+  out[at + 3u] = 0.8;
+  out[at + 4u] = 0.0;
+  out[at + 5u] = 1.0;
+  out[at + 6u] = 1.0;
+  out[at + 7u] = 1.0;
+  out[at + 8u] = 0.9;
+  out[at + 9u] = 0.0;
+  out[at + 10u] = 0.0;
+  out[at + 11u] = 0.0;
+  out[at + 12u] = 0.0;
+  out[at + 13u] = 0.0;
+  out[at + 14u] = f + 0.5;
+  out[at + 15u] = select(1.1, 0.0, i % 2u == 0u);
+}
+`;
+
+/** `GPUBufferUsage.STORAGE | VERTEX`, as values: the globals exist only in a browser. */
+const STORAGE_VERTEX = 0x0080 | 0x0020;
+
+/** A compute that fills a buffer of the page's own, and that buffer as the particles to draw. */
+function deviceParticles(): {
+  definition: ComputeDefinition;
+  particles: () => DeviceParticles | null;
+} {
+  let pipeline: GPUComputePipeline | null = null;
+  let group: GPUBindGroup | null = null;
+  let buffer: GPUBuffer | null = null;
+  return {
+    definition: {
+      label: 'sprite writer',
+      init({ device }) {
+        buffer = device.createBuffer({ size: COUNT * 16 * 4, usage: STORAGE_VERTEX });
+        pipeline = device.createComputePipeline({
+          layout: 'auto',
+          compute: { module: device.createShaderModule({ code: WRITE_WGSL }), entryPoint: 'main' },
+        });
+        group = device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer } }],
+        });
+      },
+      dispatch({ pass }) {
+        if (pipeline === null || group === null) return;
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, group);
+        pass.dispatchWorkgroups(1);
+      },
+    },
+    particles: () => (buffer === null ? null : { buffer, count: COUNT }),
+  };
+}
+
 async function main(): Promise<void> {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
   const stats = document.getElementById('stats') as HTMLElement;
@@ -126,12 +198,22 @@ async function main(): Promise<void> {
   });
   const data = particles();
   const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const device = ASKED.get('device') === '1' ? deviceParticles() : null;
+  const compute =
+    device !== null && renderer.computeSupported
+      ? renderer.registerCompute(device.definition)
+      : null;
+  /* Written once: nothing here moves, and a dispatch is submitted at once. */
+  if (compute !== null) renderer.dispatchCompute(compute);
 
   const frame = (): void => {
     renderer.beginFrame(BACKGROUND);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(ground, identity);
-    renderer.drawParticles(batch, data, camera, env, 0);
+    const written = device?.particles() ?? null;
+    if (device === null) renderer.drawParticles(batch, data, camera, env, 0);
+    else if (written !== null) renderer.drawDeviceParticles(batch, written, camera, env, 0);
+    else renderer.drawDeviceParticles(batch, { buffer: {} as GPUBuffer, count: 0 }, camera, env, 0);
     renderer.endFrame();
     requestAnimationFrame(frame);
   };

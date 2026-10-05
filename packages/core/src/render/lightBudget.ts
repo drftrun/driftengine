@@ -1,4 +1,5 @@
 /** Fixed point-light budget shared by CPU selection and the flat shader. */
+import { MAX_AREA_LIGHTS, packAreaSizesAndDoors } from './areaLights.ts';
 import type { AreaLightBuffer } from './areaLights.ts';
 import type { ResolvedAreaShadows } from './areaShadowSet.ts';
 import {
@@ -7,6 +8,7 @@ import {
   lampSourceRadius,
   lampWeight,
   lightChannelsOf,
+  lightFalloffExponentOf,
 } from './clusteredLights.ts';
 
 /**
@@ -401,10 +403,19 @@ export interface PointLightSet {
    * character's own key and rim lights, which the floor around the character must not take.
    */
   readonly lightChannels?: Float32Array;
+  /**
+   * One per light: its own falloff exponent, `(1 - (d/R)^2)^n` with no distance term, or 0 for the
+   * frame's falloff. **Absent, or a short array, is 0 for every light**, so a scene that names none
+   * falls off as it did. See `PointLightSource.falloffExponent`.
+   */
+  readonly lightFalloffExponents?: Float32Array;
 }
 
 /** Weights are optional per consumer; a short array means every light is fully present. */
 const FULLY_PRESENT: Float32Array = new Float32Array(MAX_POINT_LIGHTS).fill(1);
+
+/** The fixed arm's rectangles as `uAreaLightSize` holds them; refilled per bind, allocated once. */
+const AREA_SIZES_AND_DOORS = new Float32Array(MAX_AREA_LIGHTS * 4);
 
 /** No size at all, which is the behaviour every scene had before a light could have one. */
 const POINT_SOURCES: Float32Array = new Float32Array(MAX_POINT_LIGHTS);
@@ -504,7 +515,8 @@ export function bindPointLights(
    * every lamp switched off.
    */
   gl.uniform3fv(uniforms['uLightDir[0]'] ?? null, r.directions);
-  gl.uniform2fv(uniforms['uLightCone[0]'] ?? null, r.coneCos);
+  /* The cone and, in z, the light's own falloff exponent. See `conesAndFalloffs`. */
+  gl.uniform4fv(uniforms['uLightCone[0]'] ?? null, r.conesAndFalloffs);
   gl.uniform1fv(uniforms['uLightIesProfile[0]'] ?? null, r.iesProfiles);
   /* The azimuth and, in w, the channels. See `axesAndChannels`. */
   gl.uniform4fv(uniforms['uLightIesAxis[0]'] ?? null, r.axesAndChannels);
@@ -535,7 +547,9 @@ export function bindAreaLights(
   gl.uniform3fv(uniforms['uAreaLightColor[0]'] ?? null, lights.colors);
   gl.uniform3fv(uniforms['uAreaLightRight[0]'] ?? null, lights.right);
   gl.uniform3fv(uniforms['uAreaLightUp[0]'] ?? null, lights.up);
-  gl.uniform2fv(uniforms['uAreaLightSize[0]'] ?? null, lights.sizes);
+  /* The half extents and, in zw, the barn doors. See `packAreaSizesAndDoors`. */
+  packAreaSizesAndDoors(lights, AREA_SIZES_AND_DOORS);
+  gl.uniform4fv(uniforms['uAreaLightSize[0]'] ?? null, AREA_SIZES_AND_DOORS);
   gl.uniform1fv(uniforms['uAreaLightTwoSided[0]'] ?? null, lights.twoSided);
 }
 
@@ -590,6 +604,12 @@ export interface ResolvedPointLights {
    */
   readonly axesAndChannels: Float32Array;
   /**
+   * Owned, four a light: the cone's two cosines, then the light's own falloff exponent, as
+   * `uLightCone` carries them — a `vec2` array costs a whole row a light on WebGL2 anyway, so the
+   * exponent rides the half it left rather than a row of its own.
+   */
+  readonly conesAndFalloffs: Float32Array;
+  /**
    * Owned, `MAX_POINT_LIGHTS` long: the emitter sizes and weights as the froxel record carries
    * them, at half precision. `sourceRadii` and `weights` point here once a light set resolves, so
    * a lamp on the uniform path and the same lamp in the table shade with the same numbers. See
@@ -614,6 +634,7 @@ const glLights: ResolvedPointLights = {
   iesAxes: NO_IES_AXES,
   cookies: NO_COOKIES,
   axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
+  conesAndFalloffs: new Float32Array(MAX_POINT_LIGHTS * 4),
   heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
   heldWeights: new Float32Array(MAX_POINT_LIGHTS),
 };
@@ -649,6 +670,7 @@ export function resolvePointLights(
     out.iesAxes = NO_IES_AXES;
     out.cookies = NO_COOKIES;
     packAxesAndChannels(NO_IES_AXES, undefined, out.axesAndChannels);
+    packConesAndFalloffs(OPEN_CONES, undefined, out.conesAndFalloffs);
     return out;
   }
   /*
@@ -742,7 +764,23 @@ export function resolvePointLights(
   out.iesAxes = iesAxes;
   out.cookies = cookies;
   packAxesAndChannels(iesAxes, lights.lightChannels, out.axesAndChannels);
+  packConesAndFalloffs(coneCos, lights.lightFalloffExponents, out.conesAndFalloffs);
   return out;
+}
+
+/** The cone and the falloff exponent, four a light, as `uLightCone` holds them. */
+function packConesAndFalloffs(
+  cones: Float32Array,
+  exponents: Float32Array | undefined,
+  out: Float32Array,
+): void {
+  const named = (exponents?.length ?? 0) >= MAX_POINT_LIGHTS ? exponents : undefined;
+  for (let light = 0; light < MAX_POINT_LIGHTS; light++) {
+    out[light * 4] = cones[light * 2] ?? POINT_LIGHT_COS_INNER;
+    out[light * 4 + 1] = cones[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER;
+    out[light * 4 + 2] = lightFalloffExponentOf(named?.[light]);
+    out[light * 4 + 3] = 0;
+  }
 }
 
 /** The azimuth and the channels, four a light, as `uLightIesAxis` holds them. */

@@ -1065,8 +1065,12 @@ export {
   INSTANCE_FLOATS,
   INSTANCE_STRIDE,
 } from './render/instances.ts';
-export { ParticlePool } from './render/particlePool.ts';
-export type { ParticlePoolOptions, ParticleInstances } from './render/particlePool.ts';
+export { ParticlePool, DEVICE_PARTICLE_FLOATS } from './render/particlePool.ts';
+export type {
+  DeviceParticles,
+  ParticlePoolOptions,
+  ParticleInstances,
+} from './render/particlePool.ts';
 export { ParticleBatch } from './render/particleBatch.ts';
 export type {
   ParticleBatchOptions,

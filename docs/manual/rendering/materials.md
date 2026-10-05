@@ -59,8 +59,12 @@ Not every device samples BC: most phones have ASTC and ETC2 instead. `renderer.c
 says which this one takes, and `uploadsCompressed(source, formats, colorSpace)` answers for one
 source. A source the device cannot take is refused by name rather than decoded, because the engine
 ships no decoder; the model loader in `@driftengine/assets` asks first and decodes at load where the
-answer is no, so an imported model's BC images reach every device. A two-channel BC5 normal map
-keeps its two channels and the lit stage rebuilds the third.
+answer is no, so an imported model's BC images reach every device. It decodes in a worker when you
+name one, `new DrftLoader(renderer, { bcWorker: spawnBcWorker })` with `spawnBcWorker` from
+`@driftengine/assets/src/bcWorkers.ts`, and on the main thread otherwise, saying so once: the
+factory has a specifier of its own so that a game which never names it carries no worker in its
+build. On a phone, where every BC texture is decoded, name it. A two-channel BC5 normal map keeps its
+two channels and the lit stage rebuilds the third.
 
 ## Metalness and roughness
 
@@ -84,6 +88,20 @@ An ORM map packs three values into one image: ambient occlusion in red, roughnes
 metalness in blue. Metalness splits a surface into metal, which colours its reflection, and
 everything else, which reflects white. Roughness widens and softens the highlight. A material can
 scale each channel: `roughnessScale`, `metallicScale` and `occlusionStrength` are glTF's factors.
+
+### A physical highlight
+
+A lamp's highlight is normally a look control: it peaks at 1 times the specular value however rough
+the surface, so strength and width can be set apart. A material that sets `physicalSpecular: true`
+takes GGX's own term instead, `π · D · Vis · F · N·L`, as Unreal shades and as skin and the eye
+already do here. The peak is then `1 / (4 α²)` of the light head-on, where α is the roughness
+squared, so a polished surface's highlight is several times the look's and a rough one's lower and
+wider. The per-vertex `specular` value becomes the reflectance at normal incidence, F0: Unreal's
+`0.08 × Specular`, 0.04 for its default. Fresnel then brightens every surface toward a grazing angle,
+not only a metal. It reaches lamps and the sun, on the standard, lightmap and anisotropic models; a
+rectangle's highlight is integrated over the rectangle with the same F0 already, so it does not
+change. Without `hdrScene` an 8-bit frame clips the brighter peak. The code is compiled into the lit
+programs the first time a material asks for it, so a scene that never does pays nothing.
 
 ## A material
 
@@ -225,6 +243,56 @@ render() {
 per-frame ring, and repeating one mesh many times under one material is what
 [instancing](instancing.md) is for.
 
+### A screen showing another camera
+
+```ts sample=snippets/capture-screen.ts#screen
+/** A 1024 by 576 capture, made once with the scene, and the camera that films it. */
+export function createBroadcast(renderer: RendererApi) {
+  const feed = renderer.createSceneCapture(1024, 576);
+  const camera = new Camera();
+  camera.fovYDeg = 35;
+  return { feed, camera, screen: { emissive: feed } };
+}
+
+/** Each frame: film the world first, then draw the frame with the screen showing the film. */
+export function drawWithScreen(
+  renderer: RendererApi,
+  broadcast: ReturnType<typeof createBroadcast>,
+  viewer: Camera,
+  env: Environment,
+  clear: Vec3,
+  drawWorld: () => void,
+  screenMesh: MeshHandle,
+  screenPlacement: Float32Array,
+): void {
+  renderer.beginFrame(clear);
+  renderer.captureScene(broadcast.feed, broadcast.camera, clear, (filming) => {
+    renderer.bindMeshPass(filming, env);
+    drawWorld();
+  });
+  renderer.bindMeshPass(viewer, env);
+  drawWorld();
+  renderer.setMaterial(broadcast.screen);
+  renderer.drawMesh(screenMesh, screenPlacement);
+  renderer.setMaterial(null);
+  renderer.endFrame();
+}
+```
+
+`createSceneCapture(width, height)` makes a texture the scene can be drawn into, and
+`captureScene` draws it from a camera of your own: the callback is handed the camera, its matrices
+shaped to the capture, and draws the world exactly as it would to the screen. The texture then goes
+wherever an image goes, most often as a material's `emissive`, for a stadium screen, a monitor or a
+security feed. Capture before the frame binds its own camera, and bind it again afterwards.
+
+A capture holds light rather than display pixels, at the colour format a reflection probe takes,
+half floats under `hdrScene`. The output transform is held off while it is drawn, so the frame
+grades the screen once, with everything around it. It is the world's mesh pass alone: the sky,
+water and particles are in it only if the callback draws them, and no temporal resolve, bloom or
+other effect runs on it. It has no mip chain, so a screen seen small and far can shimmer. An
+emissive surface glows by the environment's `nightFactor`, so a screen meant to glow by day wants
+the factor up, or the capture as its `albedo` on an unlit draw.
+
 ## Shading models
 
 Most surfaces are the standard model: a diffuse term and one highlight whose width the roughness
@@ -245,7 +313,11 @@ sets. A few are made of something it cannot describe, and a material names one o
 - `skinModel({ scatterColor, radius, transmission, profile })`, for light that leaves skin a little
   way from where it entered: a softer, redder terminator on curved parts, a red edge to a shadow,
   and light through thin parts from a lamp behind them, as much as `transmission` lets through. Each
-  colour travels `radius` metres times its share of `scatterColor`, 1.2 cm for red by default.
+  colour travels `radius` metres times its share of `scatterColor` on average before it leaves, 1.2
+  cm for red by default; Burley's profile does that at two fifths of the distance, with a tail of
+  light reaching about three and a half times it. Until 4.8.7 the radius was the profile's own
+  distance, so light went two and a half times as far: a skin authored then and looking right with
+  `'pre-integrated'` keeps its look with `radius` raised by 2.5.
   Scale matters: at a person's size a cheek scatters; at a statue's ten times larger, almost nothing
   does.
 - `eyeModel({ irisRadius, irisDepth, ior, corneaRoughness, axis, joint })`, for an iris seen
@@ -332,7 +404,10 @@ export function bakedFloor(
 A `LightmapPage` is a `width` and `height`, `irradiance` as three linear floats a texel in the
 units every other light here is in, and `direction` as four bytes a texel: a first-order spherical
 harmonic in the engine's axes, each value stored as `v * 0.5 + 0.5`. `createLightmap` uploads it as
-two half-float layers. A material made with `lightmapModel({ region })` takes it as its `modelMap`,
+two layers of four bytes a texel: the irradiance packed as an rgb9e5 word, three 9-bit mantissas
+over a shared exponent, and the direction. Hand `irradiance` over as three floats a texel, or as a
+`Uint32Array` of words already packed, which is how a bake usually arrives and which uploads with
+no copy. A material made with `lightmapModel({ region })` takes it as its `modelMap`,
 and `region` says where the material's surfaces are on the page: `uv2 * scale + bias`, the whole
 page by default. The surface adds `albedo * (1 - metal) * irradiance * max(0, dot(d, n) + w)` to
 its diffuse, with `n` its shading normal, on top of the dynamic lights and the ambient. A bake that

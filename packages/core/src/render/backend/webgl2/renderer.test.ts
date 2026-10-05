@@ -1693,7 +1693,8 @@ test("A MATERIAL'S MODEL CHOOSES THE PROGRAM, AND AN EYE'S AXIS IS EACH DRAW'S",
   const plain = lastDraw();
 
   expect([skin.model, eye.model, plain.model]).toEqual(['SKIN', 'EYE', 'standard']);
-  expect(skin.params.slice(0, 4)).toEqual([0.85, 0.35, 0.22, 0.02]);
+  /* The radius as Burley's distance, two fifths of it: 0.02 / 2.5. See `SKIN_MEAN_EXIT`. */
+  expect(skin.params.slice(0, 4)).toEqual([0.85, 0.35, 0.22, 0.008]);
   /* A quarter turn about Y takes the eye's +Z to +X, written for that draw. */
   expect(eye.params.slice(4, 7)).toEqual([1, 0, 0]);
 });
@@ -1807,4 +1808,61 @@ test('SCREEN-SPACE SKIN DRAWS THREE HALVES INTO THREE TARGETS AND IS SPREAD ONCE
     const draws = calls.slice(start).filter((call) => call.name === 'drawElements');
     expect(draws, 'one draw, whole').toHaveLength(1);
   }
+});
+
+/*
+ * **A scene capture draws its callback into the capture, flipped and ungraded, and hands the frame
+ * back.** Rows flipped as a probe face's are, since a GL framebuffer's first row is its bottom and
+ * an image's its top — so the winding is clockwise for the pass and counter-clockwise after it. The
+ * output transform held at none for the pass, as a probe's radiance is, and the frame's put back.
+ * A texture that is not a capture is refused, and a side that is not a whole number of pixels is
+ * refused by name.
+ */
+test('A SCENE CAPTURE DRAWS ITS CALLBACK FLIPPED AND UNGRADED, AND HANDS THE FRAME BACK', () => {
+  const { canvas, calls, gl } = recordingGl({ uniforms: ['uOutputTransform'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const capture = renderer.createSceneCapture(64, 32);
+  const camera = new Camera();
+  const graded = (): unknown =>
+    calls
+      .filter(
+        (call) =>
+          call.name === 'uniform1i' &&
+          (call.args[0] as { name?: string } | null)?.name === 'uOutputTransform',
+      )
+      .at(-1)?.args[1];
+  const winding = (): unknown => calls.filter((call) => call.name === 'frontFace').at(-1)?.args[0];
+  let inside: unknown[] = [];
+  const drew = renderer.captureScene(capture, camera, [0, 0, 0], (seen) => {
+    inside = [winding(), graded(), seen === camera];
+  });
+  expect(drew).toBe(true);
+  expect(inside).toEqual([gl.CW, 0, true]);
+  expect(winding(), 'the winding is the frame’s again').toBe(gl.CCW);
+  const shape = (camera.projection[5] ?? 0) / (camera.projection[0] ?? 1);
+  expect(shape, 'the camera is shaped to the capture, 64 by 32').toBeCloseTo(2, 6);
+  const image = renderer.createSurfaceTexture(canvas);
+  expect(renderer.captureScene(image, camera, [0, 0, 0], () => {})).toBe(false);
+  expect(() => renderer.createSceneCapture(0, 32)).toThrow(/createSceneCapture: width/);
+  expect(() => renderer.createSceneCapture(64, 1.5)).toThrow(/createSceneCapture: height/);
+});
+
+/*
+ * **Particles a compute shader wrote are WebGPU's alone**, since this backend has no compute stage
+ * to have written them: asked twice, it says so once and issues no draw either time.
+ */
+test('DEVICE PARTICLES ARE REFUSED ONCE IN WORDS ON WEBGL2, AND NOTHING IS DRAWN', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const batch = renderer.createParticles(4, { material: 'spark', blend: 'additive' });
+  const before = calls.length;
+  const env = createEnvironment();
+  const particles = { buffer: {} as GPUBuffer, count: 4 };
+  renderer.drawDeviceParticles(batch, particles, new Camera(), env, 0);
+  renderer.drawDeviceParticles(batch, particles, new Camera(), env, 0);
+  const said = warn.mock.calls.filter((call) => String(call[0]).includes('drawDeviceParticles'));
+  expect(said).toHaveLength(1);
+  expect(calls.slice(before).filter((call) => call.name.startsWith('draw'))).toHaveLength(0);
+  warn.mockRestore();
 });

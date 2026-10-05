@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { bakeBrick, BRICK_TEXELS } from './bake.ts';
+import type { FieldLight } from './bake.ts';
 import { layoutLightField } from './layout.ts';
 
 /*
@@ -9,7 +10,15 @@ import { layoutLightField } from './layout.ts';
  * arriving, and the direction it mostly arrives from.
  */
 const SPACING = 1 / 3;
-const source = (x: number, y: number, z: number, radius: number, r = 1, g = 1, b = 1) => ({
+const source = (
+  x: number,
+  y: number,
+  z: number,
+  radius: number,
+  r = 1,
+  g = 1,
+  b = 1,
+): FieldLight => ({
   x,
   y,
   z,
@@ -22,7 +31,7 @@ const source = (x: number, y: number, z: number, radius: number, r = 1, g = 1, b
 const open = (): number => 10;
 
 function sampleAt(
-  lights: ReturnType<typeof source>[],
+  lights: FieldLight[],
   distance: ((x: number, y: number, z: number) => number) | null,
   x: number,
   y: number,
@@ -66,6 +75,12 @@ test('A SAMPLE HOLDS THE LIGHT THE SHADER WOULD DRAW THERE, and the way it comes
   expect(light[2]).toBeCloseTo(shape * 0.25, 6);
   expect(light[3]).toBe(1);
   for (let axis = 0; axis < 3; axis++) expect(direction[axis]).toBeCloseTo(1 / Math.sqrt(3), 6);
+});
+
+test('a light with its own falloff exponent is summed with it, as the shader draws it', () => {
+  /* The same corner, sqrt(0.75) from the light, at exponent 2: (1 - 0.75)^2, with no distance term. */
+  const { light } = sampleAt([{ ...source(0.5, 0.5, 0.5, 1), falloffExponent: 2 }], open, 0, 0, 0);
+  expect(light[0]).toBeCloseTo(0.0625, 6);
 });
 
 test('two equal lights on opposite sides leave no direction, only light', () => {

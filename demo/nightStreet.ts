@@ -56,6 +56,7 @@ import type {
 } from '../packages/core/src/index';
 import type { DrftMaterial } from '@driftengine/drft';
 import { DrftLoader } from '@driftengine/assets';
+import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -431,6 +432,7 @@ class NightStreetHandle implements DemoHandle {
       ),
     );
     this.loader = new DrftLoader(this.renderer, {
+      bcWorker: spawnBcWorker,
       transform: (mesh, material) => paint(mesh, material),
       surface: (material) => {
         const chosen = paintFor(material?.name ?? '');

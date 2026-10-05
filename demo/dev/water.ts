@@ -20,6 +20,10 @@
  * A capture of the two is the parity check. Four separate footprints, one of them at an angle to
  * everything else, is the picture; one shape, or four stacked in one place, is the bug.
  *
+ *     /water.html?lamp=1              a lamp four metres over the channel, the sun's light kept
+ *     /water.html?lamp=1&exponent=8   the same lamp with its own falloff, (1 - (d/R)^2)^8: water
+ *                                     reads a light's exponent as the ground beside it does
+ *
  * Deterministic without the held clock, because it reads no clock: `TIME_SEC` is a constant handed
  * to `drawWater`, which takes the instant to evaluate at. Two runs photograph the same pixels.
  *
@@ -162,6 +166,17 @@ async function main(): Promise<void> {
    */
   const water: WaterHandle = renderer.createWater();
   const env = createEnvironment();
+  const asked = new URLSearchParams(location.search);
+  if (asked.get('lamp') === '1') {
+    /* Into slot 0 of the full-length arrays `createEnvironment` allocates. See the header. */
+    env.lightCount = 1;
+    env.lightPositions.set([0, 4, 6]);
+    env.lightColors.set([6, 4.5, 2.5]);
+    env.lightRadii[0] = 14;
+    env.lightSourceRadii[0] = 0.05;
+    env.lightFalloffExponents = new Float32Array(env.lightRadii.length);
+    env.lightFalloffExponents[0] = Number(asked.get('exponent') ?? 0);
+  }
   const camera = new Camera();
   camera.fovYDeg = 52;
   camera.near = 0.3;
