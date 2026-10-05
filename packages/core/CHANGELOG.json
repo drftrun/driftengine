@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.8.5",
+    "date": "2026-10-05",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A game built with the shader comment stripper compiles its lit shader on WebGL2 again, broken since 4.4.0, and ships about 60 KB less script now that the commentary really leaves.",
+        "text": "The shader comment stripper a consumer's build runs, `shaderCommentStripper` from `@driftengine/core/dist/build/shaderComments.js`, found GLSL template literals with a pattern that paired the escaped backticks quoting an identifier inside a comment. A `//` comment quoting one was cut halfway and the rest of its line reached the compiler as code, so from 4.4.0, when such a comment arrived in the lit shader's shadow code, every lit shader a consumer built with the plugin failed to compile on WebGL2 at every light budget, while WebGPU, which never meets the GLSL, hid it. Literals are read with their escapes now, and comments of both kinds in one pass, so a `/*` inside a line comment opens nothing. A strip that changes how many literals a module opens and closes is refused, and the check that a GLSL marker survived reads the code rather than the prose, which had refused a correct strip of the lit shader's own three modules. The plugin's corpus test read the top of one shaders directory, 47 of the 130 modules the plugin reaches and not the lit shader's; it reads every package's shaders now and asserts that no backtick is left in the GLSL. A production game rebuilt with the fix compiles every program on WebGL2 and ships 62 KB less gzipped JavaScript, 1,319 KB to 1,257, because the old pattern's mispairing had been leaving much of the commentary in."
+      }
+    ]
+  },
+  {
     "version": "4.8.4",
     "date": "2026-10-05",
     "entries": [
