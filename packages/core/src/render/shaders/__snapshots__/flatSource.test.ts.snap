@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "8aa71a4b:227839",
-  "directionalShadows+environmentProbe": "ad788adc:253852",
-  "directionalShadows+environmentProbe+nightEmissive": "d8c3b178:256338",
-  "directionalShadows+nightEmissive": "31394df1:230325",
-  "environmentProbe": "2295d047:233889",
-  "environmentProbe+nightEmissive": "8547cd9f:236375",
-  "nightEmissive": "8f08c9dc:210362",
-  "none": "67d45a66:207876",
-  "pointShadows": "1100c3b8:247084",
-  "pointShadows+directionalShadows": "80d5d7f9:267047",
-  "pointShadows+directionalShadows+environmentProbe": "12e35706:293060",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "6528937a:295546",
-  "pointShadows+directionalShadows+nightEmissive": "a924c847:269533",
-  "pointShadows+environmentProbe": "ce1300bd:273097",
-  "pointShadows+environmentProbe+nightEmissive": "1f92a2bd:275583",
-  "pointShadows+nightEmissive": "7f943426:249570",
+  "directionalShadows": "3a49a469:237222",
+  "directionalShadows+environmentProbe": "f7102da5:263233",
+  "directionalShadows+environmentProbe+nightEmissive": "2b7e1e79:265719",
+  "directionalShadows+nightEmissive": "0084f82b:239708",
+  "environmentProbe": "7fed7d62:243270",
+  "environmentProbe+nightEmissive": "36fd741a:245756",
+  "nightEmissive": "f1bb3a62:219745",
+  "none": "f6bc0aa0:217259",
+  "pointShadows": "a3b92494:256467",
+  "pointShadows+directionalShadows": "ff7db805:276430",
+  "pointShadows+directionalShadows+environmentProbe": "d5459e49:302441",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "9dbab145:304927",
+  "pointShadows+directionalShadows+nightEmissive": "7549e88f:278916",
+  "pointShadows+environmentProbe": "9b025d4e:282478",
+  "pointShadows+environmentProbe+nightEmissive": "c20667ce:284964",
+  "pointShadows+nightEmissive": "1a22a68e:258953",
 }
 `;
 
@@ -153,10 +153,38 @@ uniform ivec4 uMaterialFlags;
  *
  * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
  * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
- * frame the dither's pattern is offset by, w spare. One vector rather than a float and two more,
- * because every loose scalar is a row of WebGL2's 224 that the light budget gives up.
+ * frame the dither's pattern is offset by, w the material's lighting channels — a mask a light
+ * shades it only where its own shares a bit with (\`SurfaceMaterial.lightChannels\`, 1 unless a
+ * material names others). One vector rather than a float and three more, because every loose
+ * scalar is a row of WebGL2's 224 that the light budget gives up.
  */
 uniform vec4 uCutout;
+/**
+ * A draw's own ambient, as nine spherical-harmonic coefficients of incoming radiance, red green blue
+ * in turn, twenty-seven floats, and in the last of the twenty-eight a 1 where they are on — 0 is the
+ * frame's own ambient, the sky's gradient or the probes'. \`ambientHarmonics.ts\` is the arithmetic
+ * and the basis, and its tests hold this to it. Seven rows of the material block, which is per draw
+ * as far as anything here is: \`setAmbientSH\` moves it between two draws as \`setMaterial\` does.
+ */
+uniform vec4 uAmbientSH[7];
+
+/** The ambient a surface facing \`n\` receives from \`uAmbientSH\`: \`ambientFromSH\`'s arithmetic. */
+vec3 ambientHarmonics(vec3 n) {
+  vec3 c0 = uAmbientSH[0].xyz;
+  vec3 c1 = vec3(uAmbientSH[0].w, uAmbientSH[1].xy);
+  vec3 c2 = vec3(uAmbientSH[1].zw, uAmbientSH[2].x);
+  vec3 c3 = uAmbientSH[2].yzw;
+  vec3 c4 = uAmbientSH[3].xyz;
+  vec3 c5 = vec3(uAmbientSH[3].w, uAmbientSH[4].xy);
+  vec3 c6 = vec3(uAmbientSH[4].zw, uAmbientSH[5].x);
+  vec3 c7 = uAmbientSH[5].yzw;
+  vec3 c8 = uAmbientSH[6].xyz;
+  /* The bands over pi after the cosine convolution: 1, 2/3 and 1/4. */
+  vec3 band1 = (0.488603 * 2.0 / 3.0) * (c1 * n.y + c2 * n.z + c3 * n.x);
+  vec3 band2 = 0.25 * (1.092548 * (c4 * n.x * n.y + c5 * n.y * n.z + c7 * n.x * n.z)
+    + 0.315392 * c6 * (3.0 * n.z * n.z - 1.0) + 0.546274 * c8 * (n.x * n.x - n.y * n.y));
+  return max(0.282095 * c0 + band1 + band2, vec3(0.0));
+}
 /**
  * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
  * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
@@ -217,8 +245,12 @@ uniform vec3 uOrmScale;
  *
  * A uniform rather than a permutation flag, following the ORM map's in \`uMaterialFlags\`: a fifth boolean doubles the
  * generated WGSL every consumer bundles as source, and this is a few multiply-adds.
+ *
+ * **x of \`uEnvironmentDials\`**, beside the two below: one row where three floats were three
+ * (\`uniformVectorBudget.ts\`). y is how much of the environment the material mirrors, z how
+ * bright what it mirrors is.
  */
-uniform float uEnvironmentPrefiltered;
+uniform vec3 uEnvironmentDials;
 
 /**
  * Where a surface glows, and in what colour.
@@ -381,8 +413,12 @@ uniform vec4 uClipPlane;
  * One row for all four, paid for by the flag the clip plane no longer needs.
  */
 uniform vec4 uSurfaceScene;
-uniform float uEmissiveGain;
-uniform float uNightFactor;
+/**
+ * What emission is multiplied by: x the gain (\`setEmissiveGain\`, the environment's own until a
+ * draw moves it), y the night factor emission is gated on. One row where two floats were two
+ * (\`uniformVectorBudget.ts\`).
+ */
+uniform vec2 uEmission;
 /**
  * Emission that only shows where the dominant light does not reach. 0 is off and is the default.
  *
@@ -509,10 +545,9 @@ uniform float uGrain;
  * Two numbers rather than one because they are what separates the surfaces this exists for.
  * Asphalt is coarse and deep, orange peel on paint is fine and shallow, cast concrete sits
  * between them, and the geometry carrying them is identical in all three cases. See
- * Renderer.setSurfaceRelief.
+ * Renderer.setSurfaceRelief. x is the strength and y the bumps to a metre, in one row.
  */
-uniform float uRelief;
-uniform float uReliefCycles;
+uniform vec2 uRelief;
 /**
  * How hard the bound surface texture's own luminance turns the shading normal, 0 for not at all.
  *
@@ -545,9 +580,8 @@ uniform float uTextureRelief;
  * how tight the lobe was made, because what makes a car body look wet is mostly the world
  * in it rather than the lights on it.
  *
- * Off by default, so every scene written before it is unchanged.
+ * Off by default, so every scene written before it is unchanged. **y of \`uEnvironmentDials\`.**
  */
-uniform float uReflectivity;
 /**
  * How bright the environment these surfaces reflect is, as a multiplier on it.
  *
@@ -567,9 +601,8 @@ uniform float uReflectivity;
  *
  * Applies to whatever the surface reflects, probe or hemispheric approximation alike, and to the
  * probe's own irradiance where a caller asked for that. **1 is the default and the identity**, so
- * every scene written before this is unchanged.
+ * every scene written before this is unchanged. **z of \`uEnvironmentDials\`.**
  */
-uniform float uEnvironmentGain;
 /**
  * The room itself, as a cubemap baked from one point, and whether one exists.
  *
@@ -667,10 +700,12 @@ uniform float uProbeGridAmbient;
  * for a grid that does not crossfade. See \`probeSweeps.ts\`.
  */
 uniform vec3 uProbeGridSets;
-/** A world-space box that lights up regardless of time of day (run finished). */
+/**
+ * A world-space box that lights up regardless of time of day: its corners, and in the far corner's
+ * w the gain — one row where a loose float was another (\`uniformVectorBudget.ts\`).
+ */
 uniform vec3 uHighlightMin;
-uniform vec3 uHighlightMax;
-uniform float uHighlightGain;
+uniform vec4 uHighlightMax;
 
 /*
  * The froxel table, and the numbers needed to find a fragment's place in it.
@@ -814,8 +849,13 @@ uniform float uLightIesProfile[MAX_LIGHTS];
  * tangent to a sphere, so any reference built from the aim alone flips somewhere — and the obvious
  * constructions put that flip exactly where these fixtures point, \`cross(worldUp, dir)\` being
  * singular for a light aimed straight down.
+ *
+ * **w is the light's lighting channels**, a mask compared with the material's (\`uCutout.w\`): a
+ * light shades a surface only where the two share a bit. In the lane the axis left, because an
+ * array of its own would be a row a light of a budget with none to spare; the froxel record keeps
+ * it beside the axis too, in the slot that was spare there.
  */
-uniform vec3 uLightIesAxis[MAX_LIGHTS];
+uniform vec4 uLightIesAxis[MAX_LIGHTS];
 /**
  * Which tile of the cookie atlas each light projects, or a negative index for none.
  *
@@ -833,32 +873,29 @@ uniform float uLightCookie[MAX_LIGHTS];
  * single row of ones, the multiplicative identity, because a declared sampler needs a complete
  * texture whether or not the branch reads it and a row of zeros would switch off every light.
  */
-/** Rows of profile in the fixture atlas, below its cookies. At least 1. */
-uniform float uIesAtlasRows;
 /**
- * Horizontal planes each profile occupies, so a row is \`profile * planes + plane\`.
+ * The fixture atlas's shape, three numbers in one row — a row each would be three of a budget that
+ * has none to give (\`uniformVectorBudget.ts\`):
  *
- * **1 for an atlas with nothing asymmetric in it**, which is nearly every atlas, and the whole
- * plane path is branched away on that — see \`photometric\` in \`main.ts\`. One count for the atlas
- * rather than one per profile, because a per-profile count would need a second number in a light's
- * record to divide by, and a light's record is where space is expensive.
+ * - **x, rows of profile** below its cookies. At least 1.
+ * - **y, horizontal planes each profile occupies**, so a row is \`profile * planes + plane\`. 1 for
+ *   an atlas with nothing asymmetric in it, which is nearly every atlas, and the whole plane path is
+ *   branched away on that — see \`photometric\` in \`main.ts\`. One count for the atlas rather
+ *   than one per profile, because a per-profile count would need a second number in a light's
+ *   record to divide by, and a light's record is where space is expensive.
+ * - **z, cookie tiles**: one row of square tiles, one a fixture's mask. 0 when no consumer has
+ *   loaded one, and the whole projection is branched away on it — a uniform is provably uniform
+ *   control flow, so a scene with no cookie performs no arithmetic and no fetch. With none loaded
+ *   the atlas holds a single white texel, the multiplicative identity, because a declared sampler
+ *   needs a complete texture whether or not the branch reads it and a black stand-in would switch
+ *   off every light that reached it.
  */
-uniform float uIesPlaneCount;
-/**
- * Cookies: one row of square tiles, one tile a fixture's mask.
- *
- * **0 when no consumer has loaded one, and the whole projection is branched away on it** — a
- * \`uniform float\` is provably uniform control flow, so a scene with no cookie performs no
- * arithmetic and no fetch. With none loaded this holds a single white texel, the multiplicative
- * identity, because a declared sampler needs a complete texture whether or not the branch reads it
- * and a black stand-in would switch off every light that reached it.
- */
-uniform float uCookieTiles;
+uniform vec3 uFixtureShape;
 /**
  * Both tables in one texture: the cookies' row of tiles in the top band, the profiles' rows below.
  * One sampler for the two since 2026-09-30, because the lit stage bound fifteen of the sixteen
  * WebGL2 guarantees; see \`fixtureAtlas.ts\`. The bands are found from \`textureSize\` and
- * \`uIesAtlasRows\`, so the fold cost no uniform.
+ * \`uFixtureShape.x\`, so the fold cost no uniform.
  */
 uniform sampler2D uFixtureAtlas;
 /**
@@ -2780,6 +2817,22 @@ mat3 tangentFrame(vec3 n, vec3 worldPos, vec2 uv, vec4 tangent, int hasTangents)
   return mat3(t, b, n);
 }
 
+vec3 normalMapped(vec3 n, vec3 at) {
+  vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;
+  /*
+   * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
+   * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
+   * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
+   * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
+   * that has to say what format it holds, and continuous at the boundary, since a unit texel
+   * lying flat has its z near zero either way. A texel with z above zero is left as it was.
+   */
+  mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
+  mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
+  return normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
+}
+
+
 float cutoutAlpha(float alpha, vec2 texels) {
   vec2 dx = dFdx(texels);
   vec2 dy = dFdy(texels);
@@ -3006,12 +3059,19 @@ const bool MODEL_HAIR = false;  // wgsl:override
 const bool MODEL_SKIN = false;  // wgsl:override
 const bool MODEL_EYE = false;  // wgsl:override
 /*
- * Skin's screen-space scattering, as two halves of one surface: the scene pass without its diffuse,
- * and a pass that is nothing but it, which the blur spreads before it is added back. Both off but
- * where \`skinScattering\` is \`'screen-space'\`; see \`skinBlur.ts\`.
+ * Skin's screen-space scattering, as halves of one surface: the scene pass without its diffuse; a
+ * pass that is nothing but the light the diffuse is made of, which the blur spreads; and a pass that
+ * is nothing but the colour that light is multiplied by once it has spread. All off but where
+ * \`skinScattering\` is \`'screen-space'\`; see \`skinBlur.ts\`.
  */
 const bool SKIN_SCREEN = false;  // wgsl:override
 const bool SKIN_DIFFUSE = false;  // wgsl:override
+const bool SKIN_ALBEDO = false;  // wgsl:override
+/*
+ * Not a model of light but a page of it: the standard model, plus what a bake left (lightmap.ts).
+ * Declared after skin's halves so that every switch before it keeps the id it shipped with.
+ */
+const bool MODEL_LIGHTMAP = false;  // wgsl:override
 
 /*
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
@@ -3034,6 +3094,14 @@ bool modelOn() {
 bool modelDiffuseAlone() {
   if (MODEL_SKIN) {
     if (SKIN_DIFFUSE) return true;
+  }
+  return false;
+}
+
+/** Whether this pipeline draws skin's colour alone, which the spread light is multiplied by. */
+bool modelAlbedoAlone() {
+  if (MODEL_SKIN) {
+    if (SKIN_ALBEDO) return true;
   }
   return false;
 }
@@ -3397,6 +3465,15 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   mTangent = frame[0];
   mBitangent = frame[1];
   mAlbedo = albedo;
+  /*
+   * **The diffuse half is light, not colour.** The blur spreads what this half writes, and what
+   * spreads beneath skin is the light: a brow, a lip line and a freckle stay where they are drawn.
+   * So this half shades a white surface and the colour is applied after the spread, from a half of
+   * its own. Spreading the coloured diffuse smeared every mark on a face into the skin around it.
+   */
+  if (MODEL_SKIN) {
+    if (SKIN_DIFFUSE) mAlbedo = vec3(1.0);
+  }
   mSpecColor = mix(vec3(vSpecular), albedo, metal);
   mRoughness = roughness;
   mMetal = metal;
@@ -3477,6 +3554,25 @@ vec3 modelEnvironment(vec3 environment) {
   return environment;
 }
 
+/**
+ * What a baked page adds to this surface's diffuse: nothing in any pipeline but a lightmapped one,
+ * nor in one whose page is missing. The page's two layers at the surface's second coordinates, which
+ * ride the grain and relief lanes as \`-1 - uv\` (lightmap.ts) and are placed by the material's
+ * region: the irradiance, and the first-order harmonic its direction is, answered by the shading
+ * normal.
+ * **An explicit level**, because the page has one and nothing here needs a derivative.
+ */
+vec3 modelBaked(vec3 n, vec3 albedo, float metal) {
+  if (MODEL_LIGHTMAP) {
+    if (uModelParams[1].w <= 0.0) return vec3(0.0);
+    vec2 at = (vec2(-1.0) - vec2(vGrain, vRelief)) * uModelParams[0].xy + uModelParams[0].zw;
+    vec3 irradiance = textureLod(uModelMap, vec3(at, 0.0), 0.0).rgb;
+    vec4 d = textureLod(uModelMap, vec3(at, 1.0), 0.0) * 2.0 - 1.0;
+    return albedo * (1.0 - metal) * irradiance * max(dot(d.xyz, n) + d.w, 0.0);
+  }
+  return vec3(0.0);
+}
+
 /** Skin's diffuse as the diffuse pass writes it, from the lit total before emission, fogged. */
 vec3 modelDiffuseOut(vec3 diffuse, float fog) {
   return diffuse * (1.0 - fog);
@@ -3491,6 +3587,93 @@ float modelReflectance(float standard) {
   if (MODEL_SKIN) return skinReflectance();
   if (MODEL_EYE) return eyeReflectance();
   return standard;
+}
+
+
+/**
+ * The rectangle's signed form factor at this fragment: its corners **wound so a surface on the
+ * emitting side sees them counter-clockwise**, which is what makes it positive there. The natural
+ * order — minus, plus, plus, minus — winds the other way, and every one-sided light then clamped to
+ * zero and the frame was black. The sign is the sidedness: a one-sided rectangle takes the positive
+ * part and a two-sided one the magnitude.
+ */
+float areaSignedForm(vec3 n, vec3 centre, vec3 right, vec3 up, vec2 halfSize) {
+  vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
+  vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
+  vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
+  vec3 c3 = centre - right * halfSize.x - up * halfSize.y;
+  return quadFormFactor(n, vWorldPos, c0, c1, c2, c3);
+}
+
+/**
+ * What one rectangle of colour \`color\` and form factor \`form\` adds to the lamps' two sums, open
+ * and shadowed by \`occl\` and \`glass\`.
+ *
+ * **A model answers a rectangle as it answers a lamp at its centre**, carried at the rectangle's
+ * own energy: the diffuse by the exact form factor over the centre's cosine, the specular by the
+ * form factor. An approximation, stated: a model's lobe is not integrated over the rectangle as the
+ * standard lobe is, so a glossy model under a large softbox shows a lobe from its centre rather than
+ * its shape.
+ *
+ * **The standard lobe is integrated over the rectangle**, rather than sampled at one point on it.
+ * What stood here once handed the closest point on the rectangle to \`sphereLobe\` and scaled it by
+ * \`form\`, the *diffuse* form factor. Measured against a brute-force integral by
+ * \`scripts/areaSpecular.mjs\`, that lost the reflection rather than blurring it: on polished metal
+ * facing a softbox it returned 0.000233 where the integral is 0.9207, and head-on on a rough surface
+ * it was 3.7 times too bright. Worst 287% either way; this is 40.1% where the light is what the
+ * surface reflects and 79.0% for one overhead. \`quadCoverage\` says what fraction of the specular
+ * lobe the rectangle covers and the environment BRDF says how much the surface returns, the split
+ * the probe path uses. **\`dfg.x + dfg.y\` and not \`envSpecularEnergy\`**, deliberately: the
+ * compensation returns the multiply-scattered share, and every direct lobe in this shader is
+ * single-scattering, so adding it here returns energy the light never had. Measured at 211%
+ * against 40.1%.
+ */
+void areaLightAdd(
+  vec3 centre,
+  vec3 right,
+  vec3 up,
+  vec2 halfSize,
+  vec3 color,
+  float form,
+  float occl,
+  vec3 glass,
+  vec3 n,
+  vec3 albedo,
+  float metal,
+  vec3 specColor,
+  float roughness,
+  bool modelled,
+  inout vec3 lampOpen,
+  inout vec3 lampShadowed
+) {
+  if (modelled) {
+    vec3 areaL = normalize(centre - vWorldPos);
+    modelLight(areaL, 0.0, 0.0);
+    vec3 areaModel = (mDiffuse * (form / max(dot(n, areaL), 1e-3)) + mSpecular * form) * color;
+    lampOpen += areaModel;
+    lampShadowed += areaModel * occl * glass;
+    return;
+  }
+  /* Held back with the point lamps', and shadowed by the same term it always was. */
+  vec3 areaDiffuse = albedo * color * form * (1.0 - metal);
+  lampOpen += areaDiffuse;
+  lampShadowed += areaDiffuse * occl * glass;
+
+  if (vSpecular > 0.0 || metal > 0.0) {
+    vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
+    vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
+    vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
+    vec3 c3 = centre - right * halfSize.x - up * halfSize.y;
+    vec3 toEyeArea = normalize(uCameraPos - vWorldPos);
+    float coverage = quadCoverage(n, vWorldPos, toEyeArea, roughness, c0, c1, c2, c3);
+    if (coverage > 0.0) {
+      vec2 areaDfg = envBrdfApprox(max(dot(n, toEyeArea), 0.0), roughness);
+      vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
+      vec3 areaHighlight = areaSpec * color * coverage;
+      lampOpen += areaHighlight;
+      lampShadowed += areaHighlight * occl * glass;
+    }
+  }
 }
 
 void main() {
@@ -3641,6 +3824,12 @@ void main() {
   float glassTransmission = uSeeThrough.z;
   float glassFrost = uSeeThrough.w;
 
+  /*
+   * The normal a refracting draw bends by: the shading normal, a normal map's tilt and every relief
+   * in it, as the lit block leaves it before turning a back face — the geometric normal where
+   * nothing tilts it, which is what refraction bent by before 4.8.6. See the refraction below.
+   */
+  vec3 shadingNormal = normalize(vNormal);
   if (uLightingEnabled != 0) {
     vec3 n = normalize(vNormal);
     /*
@@ -3674,20 +3863,7 @@ void main() {
      * right: a mipped colour image, sampled under uniform control flow, exactly as uAlbedo is
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
-    if (uNormalStrength > 0.0) {
-      vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
-      /*
-       * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
-       * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
-       * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
-       * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
-       * that has to say what format it holds, and continuous at the boundary, since a unit texel
-       * lying flat has its z near zero either way. A texel with z above zero is left as it was.
-       */
-      mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
-      mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
-      n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
-    }
+    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change
@@ -3711,7 +3887,8 @@ void main() {
      * widening driven by fwidth was measured making that artefact three times worse, because that
      * derivative spikes at every hard crease. See docs/IMPROVEMENTS.md.
      */
-    float reliefAmount = uRelief * vRelief;
+    /* Never below zero: a lightmapped mesh's coordinates ride this lane below it. See lightmap.ts. */
+    float reliefAmount = uRelief.x * max(vRelief, 0.0);
     /* Grown with the relief, before anything reads it. See the comment above: a normal that
        wanders cannot hold a highlight narrower than the wander. */
     /*
@@ -3752,11 +3929,11 @@ void main() {
      * variance is still roughness — a road that faded to smooth at distance would go glossy
      * instead of noisy, which is a worse artefact wearing better clothes.
      */
-    vec3 reliefPixel = fwidth(vWorldPos) * uReliefCycles;
+    vec3 reliefPixel = fwidth(vWorldPos) * uRelief.y;
     float reliefFootprint = max(max(reliefPixel.x, reliefPixel.y), reliefPixel.z);
     float reliefResolved = reliefAmount * (1.0 - smoothstep(0.5, 1.5, reliefFootprint));
     if (reliefResolved > 0.0) {
-      vec3 at = vWorldPos * uReliefCycles;
+      vec3 at = vWorldPos * uRelief.y;
       /* One cell of the noise, which is one bump: the gradient over any smaller step is the
          interpolant's own slope rather than the shape's. */
       float here = grain(at);
@@ -3853,6 +4030,7 @@ void main() {
      * Turning only the interpolated normal would leave a normal map's tilt pointing the wrong way
      * across the fold of every curtain.
      */
+    shadingNormal = n;
     if (backFace) n = -n;
     /*
      * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
@@ -3862,6 +4040,14 @@ void main() {
     bool modelled = modelOn();
     bool modelledBehind = modelSeesBehind();
     if (modelled) modelSurface(n, albedo, surfaceRoughness, metal, surfaceAt);
+    /*
+     * Skin's colour half leaves here, with the colour its spread light is multiplied by, and a whole
+     * alpha a multisampled edge resolves to its coverage. A branch on the switches alone, so uniform.
+     */
+    if (modelAlbedoAlone()) {
+      outColor = vec4(albedo, 1.0);
+      return;
+    }
 
     /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
@@ -3954,6 +4140,8 @@ void main() {
     vec3 irradiance = gridIrradiance(n, vWorldPos);
     irradiance = mix(irradiance, ambient, probeGridOutside(surfaceN, vWorldPos));
     ambient = mix(ambient, irradiance, uProbeGridAmbient * uEnvironmentEnabled);
+    /* A draw's own ambient, where one is set, in place of the frame's: \`setAmbientSH\`. */
+    if (uAmbientSH[6].w > 0.5) ambient = ambientHarmonics(n);
     /*
      * A metal keeps its ambient and loses its direct diffuse.
      *
@@ -3981,6 +4169,8 @@ void main() {
     } else {
       lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
     }
+    /* A baked page's light, beside the sky's and the sun's: nothing but where a material has one. */
+    lit += modelBaked(n, albedo, metal);
 
     /*
      * A sun highlight, for the few surfaces that ask for one.
@@ -4126,7 +4316,7 @@ void main() {
      */
     /* A model reflects its environment whatever the pass asked of the standard model: see
        modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
-    if (uReflectivity > 0.0 || uMaterialFlags.y != 0 || modelled) {
+    if (uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
       vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);
@@ -4226,7 +4416,7 @@ void main() {
       float footprintRough = 0.5 * sqrt(min(swingRad, 1.0));
       float lobeRough = min(1.0, sqrt(surfaceRoughness * surfaceRoughness + footprintRough * footprintRough));
       float envLod = clamp(
-        mix(boxLod, lobeRough * uEnvironmentMaxLod, uEnvironmentPrefiltered),
+        mix(boxLod, lobeRough * uEnvironmentMaxLod, uEnvironmentDials.x),
         0.0,
         uEnvironmentMaxLod
       );
@@ -4261,7 +4451,7 @@ void main() {
        * \`mix(1, gain, 0)\` is exactly 1, so a dielectric is arithmetically untouched however the
        * caller sets this.
        */
-      environment *= mix(1.0, uEnvironmentGain, metal);
+      environment *= mix(1.0, uEnvironmentDials.z, metal);
       float facing = 1.0 - max(dot(n, toEye), 0.0);
       /*
        * **A metal's Fresnel base is close to its albedo, not a dielectric's four percent.** Schlick
@@ -4295,7 +4485,7 @@ void main() {
        * which is what the old \`max(uReflectivity, metal) * (1 - r)\` came to, and both renderers
        * clamp that uniform non-negative on upload.
        */
-      float reflectAmount = max(uReflectivity * (1.0 - surfaceRoughness), metal);
+      float reflectAmount = max(uEnvironmentDials.y * (1.0 - surfaceRoughness), metal);
       /*
        * **With a prefiltered environment, how much a surface returns is an integral rather than a
        * curve somebody chose**, and this is where the comment above said the thinning should go
@@ -4364,7 +4554,7 @@ void main() {
        * bytes would be buying something.
        */
       vec2 dfg = envBrdfApprox(ndv, surfaceRoughness);
-      float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uReflectivity, metal), 0.0, 1.0);
+      float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uEnvironmentDials.y, metal), 0.0, 1.0);
       /*
        * **The split sum only where a prefiltered chain is what is being sampled.** It is the
        * correct share of a *prefiltered* environment; over a box chain it asserts an integral that
@@ -4376,7 +4566,7 @@ void main() {
       float weight = mix(
         clamp(fresnel * reflectAmount, 0.0, 1.0),
         integrated,
-        uEnvironmentEnabled * uEnvironmentPrefiltered
+        uEnvironmentEnabled * uEnvironmentDials.x
       );
       if (modelled) weight = modelReflectance(weight);
       if (modelled) environment = modelEnvironment(environment);
@@ -4510,8 +4700,8 @@ void main() {
     bool fixtureProfiles = false;
     bool fixtureShapes = false;
     if (LIGHT_FIXTURES) {
-      fixtureProfiles = uIesAtlasRows > 1.0;
-      fixtureShapes = uIesPlaneCount > 1.0 || uCookieTiles > 0.0;
+      fixtureProfiles = uFixtureShape.x > 1.0;
+      fixtureShapes = uFixtureShape.y > 1.0 || uFixtureShape.z > 0.0;
     }
 
     // Point lights. Inverse-square-ish falloff clipped to a finite radius, so a
@@ -4538,6 +4728,15 @@ void main() {
       float iesProfile;
       vec3 iesAxis;
       float cookie;
+      /* The light's lighting channels, a mask: 1 unless it names others. See \`uLightIesAxis\`. */
+      float lightChannels = 1.0;
+      /*
+       * **A rectangle in the froxel table** — one past the fixed arm's \`maxAreaLights\` — which
+       * its record says with a negative radius, its reach negated. Its fields come out of the
+       * fixture texels: sidedness, the right axis, the half extents and the up axis.
+       */
+      bool clusteredArea = false;
+      float areaTwoSided = 0.0;
       if (clusteredArm) {
       if (slot >= clusterLights) break;
       /*
@@ -4556,6 +4755,8 @@ void main() {
       lightPos = vec3(
         uintBitsToFloat(rec0.x), uintBitsToFloat(rec0.y), uintBitsToFloat(rec0.z));
       lightRadius = uintBitsToFloat(rec0.w);
+      clusteredArea = lightRadius < 0.0;
+      lightRadius = abs(lightRadius);
       /*
        * **Out of reach is decided on the first texel, before the rest of the record is read.**
        * A froxel holds every light whose sphere touches its box, so most of the lights a fragment
@@ -4600,7 +4801,8 @@ void main() {
           uvec4 rec2 = clusterTexel(record + 2);
           uvec4 rec3 = clusterTexel(record + 3);
           uvec4 rec4 = clusterTexel(record + 4);
-          shadowSlot = int(uintBitsToFloat(rec2.x));
+          shadowSlot = clusteredArea ? -1 : int(uintBitsToFloat(rec2.x));
+          areaTwoSided = uintBitsToFloat(rec2.x);
           lightDir = vec3(
             uintBitsToFloat(rec2.y), uintBitsToFloat(rec2.z), uintBitsToFloat(rec2.w));
           lightCone = vec2(uintBitsToFloat(rec3.x), uintBitsToFloat(rec3.y));
@@ -4610,6 +4812,7 @@ void main() {
              texel rather than being derived from the direction. */
           iesAxis = vec3(
             uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
+          lightChannels = uintBitsToFloat(rec4.w);
         }
       }
       } else {
@@ -4624,8 +4827,41 @@ void main() {
       lightDir = uLightDir[i];
       lightCone = uLightCone[i];
       iesProfile = uLightIesProfile[i];
-      iesAxis = uLightIesAxis[i];
+      iesAxis = uLightIesAxis[i].xyz;
+      lightChannels = uLightIesAxis[i].w;
       cookie = uLightCookie[i];
+      }
+      /*
+       * **A light shades a surface only where their channels meet**: the light's mask against the
+       * material's. Both default to channel 1, so a scene naming none takes every light as before
+       * — and **zero reads as that default on both sides**, so a pass that never writes the lane
+       * loses no light: an unwritten uniform is zero, and zero here would be every lamp switched
+       * off. A branch on a value read from a texture in the clustered arm, as the reach test above
+       * is, and it skips only what the light would add; no derivative is taken past it.
+       */
+      int litChannels = int(lightChannels);
+      int surfaceChannels = int(uCutout.w);
+      if (((litChannels == 0 ? 1 : litChannels) & (surfaceChannels == 0 ? 1 : surfaceChannels)) == 0) {
+        continue;
+      }
+      /*
+       * **A clustered rectangle is shaded here and goes no further**: by the fixed loop's own body
+       * (\`areaLight.ts\`), unshadowed — its occlusion is the fixed arm's, which is why the first
+       * \`maxAreaLights\` stay there — and windowed to nothing at its reach, as a lamp is, so the
+       * froxel it is binned into has no edge in the picture.
+       */
+      if (clusteredArea) {
+        float areaForm = areaSignedForm(n, lightPos, lightDir, iesAxis, lightCone);
+        float areaWindow = clamp(1.0 - pow(length(lightPos - vWorldPos) / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
+        areaForm = mix(max(0.0, areaForm), abs(areaForm), areaTwoSided);
+        if (areaForm > 0.0) {
+          areaLightAdd(
+            lightPos, lightDir, iesAxis, lightCone, lightColor * (areaWindow * areaWindow), areaForm,
+            1.0, vec3(1.0), n, albedo, metal, specColor, surfaceRoughness, modelled,
+            lampOpen, lampShadowed
+          );
+        }
+        continue;
       }
       /* A DriftLight field's own light carries a negative weight, and is shaded exactly only for the
          share of this pixel the field does not stand in for. See \`driftLight.ts\`. */
@@ -4826,7 +5062,7 @@ void main() {
        * and the result is selected afterwards with a \`mix\` on a compare — which is arithmetic
        * rather than control flow.
        *
-       * **And skipped outright where nothing loaded a profile**, behind \`uIesAtlasRows\`, which is
+       * **And skipped outright where nothing loaded a profile**, behind \`uFixtureShape.x\`, which is
        * one while the atlas holds only its row of ones. A uniform is provably uniform control
        * flow, so this branch is not the one the rule forbids. It was paid on every scene until a
        * 4K frame of 320 lamps and no shadows measured it at 0.7 ms of the main pass, rising to
@@ -4869,12 +5105,12 @@ void main() {
         if (iesRefLen > 1e-5) {
           iesRef /= iesRefLen;
           vec3 iesBinormal = cross(lightDir, iesRef);
-          if (uIesPlaneCount > 1.0) {
+          if (uFixtureShape.y > 1.0) {
             /* \`atan\` answers -PI..PI and \`fract\` of a negative wraps forward, so this is 0..1
                across the whole turn without a branch on the sign. */
             iesTurns = fract(atan(dot(iesRay, iesBinormal), dot(iesRay, iesRef)) / TAU_IES);
           }
-          if (uCookieTiles > 0.0) {
+          if (uFixtureShape.z > 0.0) {
             /*
              * **A perspective projection onto the plane one unit down the aim**, which is what a
              * fixture actually throws: the mask grows with distance rather than being pasted on
@@ -4921,10 +5157,10 @@ void main() {
        */
       float photometric = 1.0;
       if (fixtureProfiles) {
-        float iesBase = iesRow * (uIesPlaneCount + 1.0);
+        float iesBase = iesRow * (uFixtureShape.y + 1.0);
         /* The profiles are the atlas's bottom rows, below any cookies. */
-        float iesTop = fixtureSize.y - uIesAtlasRows;
-        float iesV = (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
+        float iesTop = fixtureSize.y - uFixtureShape.x;
+        float iesV = (iesTop + iesBase + iesTurns * uFixtureShape.y + 0.5) / fixtureSize.y;
         float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
         photometric = mix(1.0, iesGain, step(0.0, iesProfile));
       }
@@ -5061,22 +5297,8 @@ void main() {
       vec3 up = uAreaLightUp[a];
       vec2 halfSize = uAreaLightSize[a];
 
-      /*
-       * **Wound so a surface on the emitting side sees them counter-clockwise**, which is what
-       * makes the form factor positive there. The natural order — minus, plus, plus, minus — winds
-       * the other way, and every one-sided light then clamped to zero and the frame was black.
-       */
-      vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
-      vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
-      vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
-      vec3 c3 = centre - right * halfSize.x - up * halfSize.y;
-
-      /*
-       * **The sign is the sidedness.** A one-sided rectangle takes the positive part and a
-       * two-sided one the magnitude — no facing test, because the sign already answers it exactly
-       * per fragment rather than once for the rectangle's centre.
-       */
-      float signedForm = quadFormFactor(n, vWorldPos, c0, c1, c2, c3);
+      /* The form factor and its sign, which is the sidedness: see \`areaSignedForm\`. */
+      float signedForm = areaSignedForm(n, centre, right, up, halfSize);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
       float backForm = glassTransmission > 0.0
@@ -5189,55 +5411,11 @@ void main() {
 
       glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;
       if (form <= 0.0) continue;
-      /*
-       * A model answers a rectangle as it answers a lamp at its centre, carried at the rectangle's
-       * own energy: the diffuse by the exact form factor over the centre's cosine, the specular by
-       * the form factor. **An approximation, stated**: a model's lobe is not integrated over the
-       * rectangle as the standard lobe is, so a glossy model under a large softbox shows a lobe
-       * from its centre rather than its shape.
-       */
-      if (modelled) {
-        vec3 areaL = normalize(centre - vWorldPos);
-        modelLight(areaL, 0.0, 0.0);
-        vec3 areaModel = (mDiffuse * (form / max(dot(n, areaL), 1e-3)) + mSpecular * form)
-          * uAreaLightColor[a];
-        lampOpen += areaModel;
-        lampShadowed += areaModel * areaOccl * areaGlass;
-        continue;
-      }
-      /* Held back with the point lamps', and shadowed by the same term it always was. */
-      vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
-      lampOpen += areaDiffuse;
-      lampShadowed += areaDiffuse * areaOccl * areaGlass;
-
-      if (vSpecular > 0.0 || metal > 0.0) {
-        /*
-         * **The lobe integrated over the rectangle, rather than sampled at one point on it.**
-         *
-         * What stood here handed the closest point on the rectangle to \`sphereLobe\` and scaled it
-         * by \`form\`, the *diffuse* form factor. Measured against a brute-force integral by
-         * \`scripts/areaSpecular.mjs\`, that lost the reflection rather than blurring it: on
-         * polished metal facing a softbox it returned 0.000233 where the integral is 0.9207, and
-         * head-on on a rough surface it was 3.7 times too bright. Worst 287% either way; this is
-         * 40.1% where the light is what the surface reflects and 79.0% for one overhead.
-         *
-         * \`quadCoverage\` says what fraction of the specular lobe the rectangle covers and the
-         * environment BRDF says how much the surface returns, which is the same split the probe
-         * path uses. **\`dfg.x + dfg.y\` and not \`envSpecularEnergy\`**, deliberately and against
-         * the obvious argument: the compensation returns the multiply-scattered share, and every
-         * direct lobe in this shader is single-scattering, so adding it here returns energy the
-         * light never had. Measured at 211% against 40.1%.
-         */
-        vec3 toEyeArea = normalize(uCameraPos - vWorldPos);
-        float coverage = quadCoverage(n, vWorldPos, toEyeArea, surfaceRoughness, c0, c1, c2, c3);
-        if (coverage > 0.0) {
-          vec2 areaDfg = envBrdfApprox(max(dot(n, toEyeArea), 0.0), surfaceRoughness);
-          vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
-          vec3 areaHighlight = areaSpec * uAreaLightColor[a] * coverage;
-          lampOpen += areaHighlight;
-          lampShadowed += areaHighlight * areaOccl * areaGlass;
-        }
-      }
+      /* The diffuse, the model's answer or the lobe integrated over the rectangle: see areaLight.ts. */
+      areaLightAdd(
+        centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,
+        n, albedo, metal, specColor, surfaceRoughness, modelled, lampOpen, lampShadowed
+      );
     }
 
     /*
@@ -5377,10 +5555,10 @@ void main() {
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
     float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
-    lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor
+    lit += emissiveTint * emissiveMapped * uEmission.x * vEmissive * uEmission.y
       * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
     /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
-    lit += windowGlow * uEmissiveGain;
+    lit += windowGlow * uEmission.x;
 
     /*
      * And the same emission again, weighted by how far this surface faces away from the sun.
@@ -5411,9 +5589,9 @@ void main() {
     // Arrival glow: a world-space box lit independently of the clock, so
     // finishing a run reads the same at noon and at midnight. Costs one compare
     // per fragment and no extra draw call — the box is a uniform, not geometry.
-    if (uHighlightGain > 0.0) {
-      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax);
-      lit += albedo * uHighlightGain * inside.x * inside.y * inside.z;
+    if (uHighlightMax.w > 0.0) {
+      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
+      lit += albedo * uHighlightMax.w * inside.x * inside.y * inside.z;
     }
   }
 
@@ -5470,7 +5648,7 @@ void main() {
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**
    *
-   * The offset is along the surface normal in screen space, which is the cheap approximation every
+   * The offset is along the shading normal in screen space, which is the cheap approximation every
    * real-time renderer ships rather than a ray traced through two interfaces of a solid. What it
    * cannot do is show anything the frame had not already drawn, so a pane at the edge of the frame
    * refracts what is beside it -- and the clamp below is what keeps that from being worse than
@@ -5505,7 +5683,14 @@ void main() {
    * draw uses.
    */
   if (uSeeThrough.x > 0.0 || glassTransmission > 0.0) {
-    vec3 refractN = normalize(vNormal);
+    /*
+     * **Bent by the shading normal, so a normal map shimmers what is seen through it** — a heat
+     * haze, a distortion sphere, a rippled pane. Until 4.8.6 this was the geometric normal and a
+     * mapped surface refracted as a smooth lens. An unlit draw shaded no normal, so it reads the
+     * map here, on a branch on uniforms alone, which keeps its derivatives legal.
+     */
+    vec3 refractN = shadingNormal;
+    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
@@ -5653,7 +5838,17 @@ layout(location = 11) in vec4 aInstanceModel0;
 layout(location = 12) in vec4 aInstanceModel1;
 layout(location = 13) in vec4 aInstanceModel2;
 layout(location = 14) in vec4 aInstanceModel3;
-layout(location = 15) in vec3 aInstanceTint;
+/**
+ * The instance's tint, and its opacity in w: \`MeshInstances.alphas\`, 1 where none was given — or,
+ * in a lightmapped batch's pipeline, its region of the page (\`MeshInstances.lightmapRegions\`).
+ */
+layout(location = 15) in vec4 aInstanceTint;
+/*
+ * On in the pipeline a lightmapped material draws an instanced batch with, where the lane above is
+ * a region and not a tint: the second coordinates leave scaled and offset by it, under a tint and an
+ * opacity of one. See lightmap.ts.
+ */
+const bool LIGHTMAP_REGIONS = false; // wgsl:override
 
 /*
  * **After every uniform above it, and the position is the requirement.** A uniform block is packed
@@ -5722,7 +5917,8 @@ void main() {
   vec3 localNormal = aNormal;
   vec3 localTangent = aTangent.xyz;
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
-  vec3 tint = aInstanceTint;
+  vec3 tint = aInstanceTint.rgb;
+  if (LIGHTMAP_REGIONS) tint = vec3(1.0);
   vec4 world = model * local;
   /*
    * **The bend lands here, before vWorldPos, vLightPos and gl_Position read it.** All three have
@@ -5752,10 +5948,19 @@ void main() {
   vGrain = aGrain;
   vRelief = aRelief;
   vTangent = vec4(worldTangent, aTangent.w);
-  /* No channel on this path; the neutral values are what every mesh read before it existed. */
+  /*
+   * No channel on this path; the neutral values are what every mesh read before it existed — but
+   * for the opacity, which an instance carries of its own, 1 where none was given.
+   */
   vSkyDirect = 1.0;
-  vAlpha = 1.0;
+  vAlpha = aInstanceTint.w;
   vThickness = 1.0;
+  if (LIGHTMAP_REGIONS) {
+    /* Out of the lane's \`-1 - uv\`, through the region, and back into it. See lightmap.ts. */
+    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + aInstanceTint.z);
+    vRelief = -1.0 - ((-1.0 - aRelief) * aInstanceTint.y + aInstanceTint.w);
+    vAlpha = 1.0;
+  }
   vHasTangents = uHasTangents;
   gl_Position = uViewProj * world;
 }

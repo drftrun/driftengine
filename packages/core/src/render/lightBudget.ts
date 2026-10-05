@@ -6,6 +6,7 @@ import {
   POINT_LIGHT_COS_OUTER,
   lampSourceRadius,
   lampWeight,
+  lightChannelsOf,
 } from './clusteredLights.ts';
 
 /**
@@ -256,12 +257,22 @@ export const CLOTH_REST_TEXTURE_UNIT = CLOTH_PARTICLES_TEXTURE_UNIT + 1;
 export const MODEL_MAP_TEXTURE_UNIT = CLOTH_REST_TEXTURE_UNIT + 1;
 
 /**
- * The two units skin's screen-space blur reads on WebGL2 — its target and the frame's depth — past
+ * The units skin's screen-space blur reads on WebGL2 — its target and the frame's depth — past
  * every unit a lit program binds, so spreading skin in the middle of a frame unbinds nothing the
  * draws after it sample. WebGL2 guarantees thirty-two.
  */
 export const SKIN_BLUR_TEXTURE_UNIT = MODEL_MAP_TEXTURE_UNIT + 1;
 export const SKIN_BLUR_DEPTH_UNIT = SKIN_BLUR_TEXTURE_UNIT + 1;
+/** And the skin's colour, which the blur's second axis multiplies the spread light by. */
+export const SKIN_BLUR_ALBEDO_UNIT = SKIN_BLUR_DEPTH_UNIT + 1;
+
+/**
+ * A sprite particle's image and the frame's depth copy its soft edge reads, on WebGL2: past every
+ * unit a lit program binds, for the skin blur's reason — a particle is drawn in the middle of a
+ * frame, and the draws after it must find their textures where they left them.
+ */
+export const PARTICLE_SPRITE_UNIT = SKIN_BLUR_ALBEDO_UNIT + 1;
+export const PARTICLE_DEPTH_UNIT = PARTICLE_SPRITE_UNIT + 1;
 
 /**
  * A cookie's tile, in texels a side.
@@ -380,6 +391,16 @@ export interface PointLightSet {
    * drawn for one spot works in another with a different angle.
    */
   readonly lightCookies?: Float32Array;
+  /**
+   * One per light: the lighting channels it lights, as a bitmask in a float — 1, 2, 3 … 255.
+   * **Absent, or a short array, is channel 1 for every light**, which is every surface's default
+   * too, so a scene that never names a channel lights everything with everything as it did.
+   *
+   * A light shades a surface only where its mask and the surface's `SurfaceMaterial.lightChannels`
+   * share a bit. What it is for: a rig of lights that belongs to some draws and not others — a
+   * character's own key and rim lights, which the floor around the character must not take.
+   */
+  readonly lightChannels?: Float32Array;
 }
 
 /** Weights are optional per consumer; a short array means every light is fully present. */
@@ -485,7 +506,8 @@ export function bindPointLights(
   gl.uniform3fv(uniforms['uLightDir[0]'] ?? null, r.directions);
   gl.uniform2fv(uniforms['uLightCone[0]'] ?? null, r.coneCos);
   gl.uniform1fv(uniforms['uLightIesProfile[0]'] ?? null, r.iesProfiles);
-  gl.uniform3fv(uniforms['uLightIesAxis[0]'] ?? null, r.iesAxes);
+  /* The azimuth and, in w, the channels. See `axesAndChannels`. */
+  gl.uniform4fv(uniforms['uLightIesAxis[0]'] ?? null, r.axesAndChannels);
   gl.uniform1fv(uniforms['uLightCookie[0]'] ?? null, r.cookies);
 }
 
@@ -562,6 +584,12 @@ export interface ResolvedPointLights {
   iesAxes: Float32Array;
   cookies: Float32Array;
   /**
+   * Owned, four a light: the photometric azimuth in xyz and the light's channels in w, which is how
+   * `uLightIesAxis` carries them — the channels in a lane the axis left, rather than in a uniform
+   * array of their own, which would cost a row a light of a budget that has none to give.
+   */
+  readonly axesAndChannels: Float32Array;
+  /**
    * Owned, `MAX_POINT_LIGHTS` long: the emitter sizes and weights as the froxel record carries
    * them, at half precision. `sourceRadii` and `weights` point here once a light set resolves, so
    * a lamp on the uniform path and the same lamp in the table shade with the same numbers. See
@@ -585,6 +613,7 @@ const glLights: ResolvedPointLights = {
   iesProfiles: NO_PROFILES,
   iesAxes: NO_IES_AXES,
   cookies: NO_COOKIES,
+  axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
   heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
   heldWeights: new Float32Array(MAX_POINT_LIGHTS),
 };
@@ -619,6 +648,7 @@ export function resolvePointLights(
     out.iesProfiles = NO_PROFILES;
     out.iesAxes = NO_IES_AXES;
     out.cookies = NO_COOKIES;
+    packAxesAndChannels(NO_IES_AXES, undefined, out.axesAndChannels);
     return out;
   }
   /*
@@ -711,5 +741,21 @@ export function resolvePointLights(
   out.iesProfiles = iesProfiles;
   out.iesAxes = iesAxes;
   out.cookies = cookies;
+  packAxesAndChannels(iesAxes, lights.lightChannels, out.axesAndChannels);
   return out;
+}
+
+/** The azimuth and the channels, four a light, as `uLightIesAxis` holds them. */
+function packAxesAndChannels(
+  axes: Float32Array,
+  channels: Float32Array | undefined,
+  out: Float32Array,
+): void {
+  const named = (channels?.length ?? 0) >= MAX_POINT_LIGHTS ? channels : undefined;
+  for (let light = 0; light < MAX_POINT_LIGHTS; light++) {
+    out[light * 4] = axes[light * 3] ?? 0;
+    out[light * 4 + 1] = axes[light * 3 + 1] ?? 0;
+    out[light * 4 + 2] = axes[light * 3 + 2] ?? 0;
+    out[light * 4 + 3] = lightChannelsOf(named?.[light]);
+  }
 }

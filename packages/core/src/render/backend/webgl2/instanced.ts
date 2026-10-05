@@ -34,6 +34,8 @@ export class InstancedBatch {
   private readonly buffer: WebGLBuffer;
   private readonly vao: WebGLVertexArrayObject;
   private readonly staging: Float32Array;
+  /** The survivors of a lightmapped batch's cull, made the first time one is culled. */
+  private keptRegioned: MeshInstances | null = null;
   private readonly kept: {
     readonly buffer: WebGLBuffer;
     readonly vao: WebGLVertexArrayObject;
@@ -80,9 +82,17 @@ export class InstancedBatch {
   drawCulled(gl: WebGL2RenderingContext, data: MeshInstances, frustum: FrustumPlanes): number {
     const kept = this.kept;
     if (kept === null) return 0;
-    const count = cullInstances(data, this.mesh.bounds, frustum, kept.instances);
+    /* A lightmapped batch's survivors keep their regions, in a copy that carries them. */
+    const into =
+      data.lightmapRegions === undefined
+        ? kept.instances
+        : (this.keptRegioned ??= {
+            ...createMeshInstances(this.capacity),
+            lightmapRegions: new Float32Array(this.capacity * 4),
+          });
+    const count = cullInstances(data, this.mesh.bounds, frustum, into);
     if (count === 0) return 0;
-    packInstances(kept.instances, this.staging);
+    packInstances(into, this.staging);
     gl.bindBuffer(gl.ARRAY_BUFFER, kept.buffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.staging, 0, count * INSTANCE_FLOATS);
     this.mesh.drawInstancesThrough(gl, kept.vao, count);

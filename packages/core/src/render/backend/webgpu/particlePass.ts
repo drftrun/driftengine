@@ -3,7 +3,8 @@ import { particleShaders, type ParticleMaterial } from '../../particleMaterial.t
 import { PARTICLE_BINDINGS } from '../../shaders/generated/particle.wgsl.ts';
 import { PARTICLE_BLADES, PARTICLE_INDICES, PARTICLE_VERTS } from '../../shaders/particle.ts';
 import type { ParticleInstances } from '../../particlePool.ts';
-import type { ParticleBlend, ParticleFacing } from '../../particleBatch.ts';
+import { packSpriteStream, type ParticleBlend, type ParticleFacing } from '../../particleBatch.ts';
+import { createParticleSort, type ParticleSort } from '../../particleSort.ts';
 import { DEPTH_FORMAT } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import type { UniformFields } from './scatterPass.ts';
@@ -34,7 +35,9 @@ export function particleFragBindings(material: ParticleMaterial): {
       ? PARTICLE_BINDINGS.PARTICLE_SPARK_FRAG
       : material === 'mote'
         ? PARTICLE_BINDINGS.PARTICLE_MOTE_FRAG
-        : PARTICLE_BINDINGS.PARTICLE_SMOKE_FRAG;
+        : material === 'sprite'
+          ? PARTICLE_BINDINGS.PARTICLE_SPRITE_FRAG
+          : PARTICLE_BINDINGS.PARTICLE_SMOKE_FRAG;
   return { fields: stage.fields as UniformFields, size: stage.uniformSize };
 }
 
@@ -45,17 +48,17 @@ const USAGE_INDEX = 0x0010 | 0x0008;
 const USAGE_UNIFORM_DST = 0x0040 | 0x0008;
 
 /**
- * Ten attributes and eight slots, so the per-instance eight share one buffer.
+ * Eleven attributes and eight slots, so the per-instance nine share one buffer.
  *
- * **`maxVertexBuffers` is eight and this shader declares ten inputs**, so something has to
- * interleave. The per-instance streams are the ones that do: the engine holds them as eight
- * separate arrays and they are packed into one interleaved buffer per frame, which is a copy
- * the upload was already paying per stream rather than new work.
+ * **`maxVertexBuffers` is eight and this shader declares eleven inputs**, so something has to
+ * interleave. The per-instance streams are the ones that do: the engine holds them as separate
+ * arrays and they are packed into one interleaved buffer per frame, which is a copy the upload
+ * was already paying per stream rather than new work.
  *
  * Floats per instance, in the order they are packed: position 3, size 1, spin 1, colour 3,
- * alpha 1, age 1, seed 1, velocity 3.
+ * alpha 1, age 1, seed 1, velocity 3, and a sprite's frame and half-height 2.
  */
-const INSTANCE_FLOATS = 14;
+const INSTANCE_FLOATS = 16;
 
 const INSTANCE_ATTRIBUTES: GPUVertexAttribute[] = [
   { shaderLocation: 2, offset: 0, format: 'float32x3' },
@@ -66,6 +69,7 @@ const INSTANCE_ATTRIBUTES: GPUVertexAttribute[] = [
   { shaderLocation: 7, offset: 36, format: 'float32' },
   { shaderLocation: 8, offset: 40, format: 'float32' },
   { shaderLocation: 9, offset: 44, format: 'float32x3' },
+  { shaderLocation: 10, offset: 56, format: 'float32x2' },
 ];
 
 export function particleVertexLayouts(): GPUVertexBufferLayout[] {
@@ -102,8 +106,22 @@ export interface GpuParticles {
   readonly coreGain: number;
   /** Whether the mote fragment stage mixes toward the medium. Ignored by the other materials. */
   readonly fog: boolean;
+  /** A sprite's image view, or null for a procedural material. See `ParticleBatchOptions`. */
+  readonly texture: GPUTextureView | null;
+  readonly cells: readonly [number, number];
+  readonly blendCells: boolean;
+  readonly softDepth: number;
+  readonly cameraFade: number;
+  readonly cameraOffset: number;
+  /** Room to draw farthest first, where the batch asked. See `particleSort.ts`. */
+  readonly order: ParticleSort | null;
+  /** A sprite's bind group, which holds the frame's depth copy and is rebuilt when that moves. */
+  spriteGroup: GPUBindGroup | null;
+  spriteGroupDepth: GPUTextureView | null;
   /** Reused every frame; see `packInstances`. */
   readonly staging: Float32Array;
+  /** The sprite stream, two floats a particle, before it is woven into `staging`. */
+  readonly spriteStaging: Float32Array;
   /**
    * This batch's own uniform buffers, staging and bind group — never shared with another
    * batch of the same material. See the note on `createGpuParticles` for why: two pools of one
@@ -118,7 +136,8 @@ export interface GpuParticles {
   readonly fragFloats: Float32Array;
   readonly fragInts: Int32Array;
   readonly fields: UniformFields;
-  readonly bindGroup: GPUBindGroup;
+  /** The procedural materials' group; a sprite's holds the depth copy, so it is `spriteGroup`. */
+  readonly bindGroup: GPUBindGroup | null;
   /**
    * The encoder this batch was last drawn into, by the renderer's count, or -1.
    *
@@ -160,6 +179,7 @@ export function createGpuParticles(
   layout: GPUBindGroupLayout,
   fragFields: UniformFields,
   fragSize: number,
+  sprite: SpriteOptions | null = null,
 ): GpuParticles {
   /* The cross, built once: two blades of four corners, interleaved with the blade index. */
   const corners = new Float32Array(PARTICLE_VERTS * 3);
@@ -236,7 +256,17 @@ export function createGpuParticles(
     erosion,
     coreGain,
     fog,
+    texture: sprite?.texture ?? null,
+    cells: sprite?.cells ?? [1, 1],
+    blendCells: sprite?.blendCells ?? false,
+    softDepth: sprite?.softDepth ?? 0,
+    cameraFade: sprite?.cameraFade ?? 0,
+    cameraOffset: sprite?.cameraOffset ?? 0,
+    order: sprite?.sort === true ? createParticleSort(capacity) : null,
+    spriteGroup: null,
+    spriteGroupDepth: null,
     staging: new Float32Array(capacity * INSTANCE_FLOATS),
+    spriteStaging: new Float32Array(capacity * 2),
     vertUniforms,
     fragUniforms,
     vertStaging,
@@ -245,7 +275,10 @@ export function createGpuParticles(
     fragFloats: new Float32Array(fragStaging),
     fragInts: new Int32Array(fragStaging),
     fields: fragFields,
-    bindGroup: createParticleBindGroup(device, layout, vertUniforms, fragUniforms, fragSize),
+    bindGroup:
+      material === 'sprite'
+        ? null
+        : createParticleBindGroup(device, layout, vertUniforms, fragUniforms, fragSize),
     dispose(): void {
       cornerBuffer.destroy();
       instances.destroy();
@@ -265,6 +298,8 @@ export function createGpuParticles(
 export function packInstances(batch: GpuParticles, data: ParticleInstances): number {
   const n = Math.min(data.count, batch.capacity);
   const out = batch.staging;
+  /* The sprite's frame and half-height, two floats a particle, woven in below. */
+  packSpriteStream(data, n, batch.spriteStaging);
   for (let i = 0; i < n; i++) {
     const o = i * INSTANCE_FLOATS;
     const p = i * 3;
@@ -282,16 +317,34 @@ export function packInstances(batch: GpuParticles, data: ParticleInstances): num
     out[o + 11] = data.velocities[p] as number;
     out[o + 12] = data.velocities[p + 1] as number;
     out[o + 13] = data.velocities[p + 2] as number;
+    out[o + 14] = batch.spriteStaging[i * 2] as number;
+    out[o + 15] = batch.spriteStaging[i * 2 + 1] as number;
   }
   return n;
+}
+
+/** The floats `packInstances` writes per particle, for the caller's upload. */
+export const PARTICLE_INSTANCE_FLOATS = INSTANCE_FLOATS;
+
+/** What a `'sprite'` batch carries beyond a procedural one. See `ParticleBatchOptions`. */
+export interface SpriteOptions {
+  readonly texture: GPUTextureView | null;
+  readonly cells: readonly [number, number];
+  readonly blendCells: boolean;
+  readonly softDepth: number;
+  readonly cameraFade: number;
+  readonly cameraOffset: number;
+  readonly sort: boolean;
 }
 
 export function createParticleBindGroupLayout(
   device: GPUDevice,
   fragSize: number,
+  sprite = false,
 ): GPUBindGroupLayout {
+  const textures = PARTICLE_BINDINGS.PARTICLE_SPRITE_FRAG.textures;
   return device.createBindGroupLayout({
-    label: 'particle.layout',
+    label: sprite ? 'particle.layout:sprite' : 'particle.layout',
     entries: [
       {
         binding: VERT_BINDING,
@@ -303,6 +356,59 @@ export function createParticleBindGroupLayout(
         visibility: VISIBILITY_FRAGMENT,
         buffer: { type: 'uniform', minBindingSize: fragSize },
       },
+      /* The image, filtered, and the frame's depth copy, read texel for texel. */
+      ...(sprite
+        ? [
+            {
+              binding: textures.uSprite.texture,
+              visibility: VISIBILITY_FRAGMENT,
+              texture: { sampleType: 'float' as const, viewDimension: '2d-array' as const },
+            },
+            {
+              binding: textures.uSprite.sampler,
+              visibility: VISIBILITY_FRAGMENT,
+              sampler: { type: 'filtering' as const },
+            },
+            {
+              binding: textures.uDepth.texture,
+              visibility: VISIBILITY_FRAGMENT,
+              texture: { sampleType: 'unfilterable-float' as const },
+            },
+            {
+              binding: textures.uDepth.sampler,
+              visibility: VISIBILITY_FRAGMENT,
+              sampler: { type: 'non-filtering' as const },
+            },
+          ]
+        : []),
+    ],
+  });
+}
+
+/**
+ * A sprite batch's bind group: its uniforms, its image, and the frame's depth copy — or any
+ * single-sample float texture standing in, where the batch asks for no soft edge.
+ */
+export function createSpriteBindGroup(
+  device: GPUDevice,
+  layout: GPUBindGroupLayout,
+  batch: GpuParticles,
+  fragSize: number,
+  depth: GPUTextureView,
+  linear: GPUSampler,
+  nearest: GPUSampler,
+): GPUBindGroup {
+  const textures = PARTICLE_BINDINGS.PARTICLE_SPRITE_FRAG.textures;
+  return device.createBindGroup({
+    label: 'particle.bindGroup:sprite',
+    layout,
+    entries: [
+      { binding: VERT_BINDING, resource: { buffer: batch.vertUniforms, size: PARTICLE_VERT_SIZE } },
+      { binding: FRAG_BINDING, resource: { buffer: batch.fragUniforms, size: fragSize } },
+      { binding: textures.uSprite.texture, resource: batch.texture as GPUTextureView },
+      { binding: textures.uSprite.sampler, resource: linear },
+      { binding: textures.uDepth.texture, resource: depth },
+      { binding: textures.uDepth.sampler, resource: nearest },
     ],
   });
 }

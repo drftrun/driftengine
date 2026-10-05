@@ -1,3 +1,5 @@
+import type { AreaLightBuffer } from './areaLights.ts';
+
 /**
  * The froxel table: what it looks like in memory, and the CPU binner that fills it.
  *
@@ -146,7 +148,28 @@ export const LIGHT_RECORD = {
   iesAxisX: 16,
   iesAxisY: 17,
   iesAxisZ: 18,
+  /**
+   * The light's lighting channels, a mask (`PointLightSet.lightChannels`), in the slot that was
+   * spare. A light naming channels other than the default is read as carrying a fixture, so its
+   * last texels are fetched; a plain light's are not, and the shader takes the default for it.
+   */
+  channels: 19,
 } as const;
+
+/** The lighting channel every light and every surface is on unless it says otherwise. */
+export const DEFAULT_LIGHT_CHANNELS = 1;
+
+/**
+ * A light's channels as the shader compares them: a whole mask from 1 to 255, or the default where
+ * none was named or what was named is not one. The froxel record and the uniform path both write
+ * this, so a light named badly is on channel 1 in both rather than on two different guesses.
+ */
+export function lightChannelsOf(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value) || value < 1 || value > 255) {
+    return DEFAULT_LIGHT_CHANNELS;
+  }
+  return value;
+}
 
 /** Texels the lit pass reads for a light whose record carries no fixture. */
 export const PLAIN_LIGHT_TEXELS = 2;
@@ -401,6 +424,16 @@ export interface ClusterLightSet {
   readonly cookies?: Float32Array;
   /** One per light: an index into the IES atlas, or −1. */
   readonly iesProfiles?: Float32Array;
+  /** One per light: its lighting channels. See `PointLightSet.lightChannels`. */
+  readonly channels?: Float32Array;
+  /**
+   * The rectangles shaded through the table, after the `count` point lights: those of `areas` from
+   * `areaFrom` on, `areaCount` of them. The ones before `areaFrom` are the fixed arm's, which is
+   * where a rectangle's shadow lives. Absent, there are none.
+   */
+  readonly areas?: AreaLightBuffer | null;
+  readonly areaFrom?: number;
+  readonly areaCount?: number;
 }
 
 /** Where `fillClusterLightSet` reads a frame's lights from: the arrays `Environment` carries. */
@@ -416,6 +449,8 @@ export interface ClusterLightArrays {
   readonly lightIesProfiles?: Float32Array;
   readonly lightIesAxes?: Float32Array;
   readonly lightCookies?: Float32Array;
+  readonly lightChannels?: Float32Array;
+  readonly areaLights?: AreaLightBuffer | null;
 }
 
 /** A `ClusterLightSet` a renderer refills every frame. */
@@ -453,8 +488,17 @@ export function createClusterLightSet(): ClusterLightScratch {
 export function fillClusterLightSet(
   env: ClusterLightArrays,
   out: ClusterLightScratch,
+  /** How many rectangles the fixed arm shades; the rest of the buffer is clustered. */
+  areaFrom = 0,
 ): ClusterLightSet {
   out.count = Math.min(env.lightCount ?? 0, MAX_CLUSTERED_LIGHTS);
+  const areas = env.areaLights ?? null;
+  out.areas = areas;
+  out.areaFrom = areaFrom;
+  out.areaCount = Math.max(
+    0,
+    Math.min((areas?.count ?? 0) - areaFrom, MAX_CLUSTERED_LIGHTS - out.count),
+  );
   out.positions = env.lightPositions;
   out.colors = env.lightColors;
   out.radii = env.lightRadii;
@@ -465,6 +509,7 @@ export function fillClusterLightSet(
   out.iesProfiles = env.lightIesProfiles;
   out.iesAxes = env.lightIesAxes;
   out.cookies = env.lightCookies;
+  out.channels = env.lightChannels;
   return out;
 }
 
@@ -526,13 +571,16 @@ export function lightHasFixture(
   light: number,
   shadowSlots: number,
 ): boolean {
+  /* A rectangle's record always carries its axes and extents past the second texel. */
+  if (light >= lights.count) return true;
   const cone = lights.coneCos;
   return (
     light < shadowSlots ||
     (cone?.[light * 2] ?? POINT_LIGHT_COS_INNER) !== POINT_LIGHT_COS_INNER ||
     (cone?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER) !== POINT_LIGHT_COS_OUTER ||
     (lights.iesProfiles?.[light] ?? NO_IES_PROFILE) >= 0 ||
-    (lights.cookies?.[light] ?? NO_IES_PROFILE) >= 0
+    (lights.cookies?.[light] ?? NO_IES_PROFILE) >= 0 ||
+    lightChannelsOf(lights.channels?.[light]) !== DEFAULT_LIGHT_CHANNELS
   );
 }
 
@@ -576,6 +624,10 @@ export function writeLightRecord(
   out: Uint32Array,
   at: number,
 ): void {
+  if (light >= lights.count) {
+    writeAreaRecord(lights, light, out, at);
+    return;
+  }
   const directions = lights.directions;
   const cone = lights.coneCos;
   const axes = lights.iesAxes;
@@ -612,7 +664,72 @@ export function writeLightRecord(
   out[at + LIGHT_RECORD.iesAxisX] = floatBits(axes?.[light * 3] ?? 0);
   out[at + LIGHT_RECORD.iesAxisY] = floatBits(axes?.[light * 3 + 1] ?? 0);
   out[at + LIGHT_RECORD.iesAxisZ] = floatBits(axes?.[light * 3 + 2] ?? 0);
-  out[at + 19] = 0;
+  out[at + LIGHT_RECORD.channels] = floatBits(lightChannelsOf(lights.channels?.[light]));
+}
+
+/**
+ * Which rectangle of the area buffer clustered light `light` is, for a light past the point
+ * lights. See `ClusterLightSet.areas`.
+ */
+function areaSlot(lights: ClusterLightSet, light: number): number {
+  return (lights.areaFrom ?? 0) + light - lights.count;
+}
+
+/**
+ * A rectangle's record, which the shader tells from a lamp's by its **negative radius** — its
+ * reach, negated — and reads to its fifth texel: sidedness where a lamp keeps its shadow slot,
+ * the right axis where a spot keeps its direction, the half extents where its cone is, the up
+ * axis where the azimuth is, and the channels last. Never shadowed: a rectangle's occlusion is
+ * the fixed arm's, which is why the first `maxAreaLights` stay there.
+ */
+function writeAreaRecord(
+  lights: ClusterLightSet,
+  light: number,
+  out: Uint32Array,
+  at: number,
+): void {
+  const areas = lights.areas;
+  const a = areaSlot(lights, light);
+  const pos = areas?.positions;
+  const color = areas?.colors;
+  const right = areas?.right;
+  const up = areas?.up;
+  const sizes = areas?.sizes;
+  out[at + LIGHT_RECORD.positionX] = floatBits(pos?.[a * 3] ?? 0);
+  out[at + LIGHT_RECORD.positionY] = floatBits(pos?.[a * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.positionZ] = floatBits(pos?.[a * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.radius] = floatBits(-areaReach(lights, light));
+  out[at + LIGHT_RECORD.colorR] = floatBits(color?.[a * 3] ?? 0);
+  out[at + LIGHT_RECORD.colorG] = floatBits(color?.[a * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.colorB] = floatBits(color?.[a * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.sizeAndWeight] = packSizeAndWeight(0, 1, true);
+  out[at + LIGHT_RECORD.shadowSlot] = floatBits(areas?.twoSided[a] ?? 0);
+  out[at + LIGHT_RECORD.directionX] = floatBits(right?.[a * 3] ?? 1);
+  out[at + LIGHT_RECORD.directionY] = floatBits(right?.[a * 3 + 1] ?? 0);
+  out[at + LIGHT_RECORD.directionZ] = floatBits(right?.[a * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.cosInner] = floatBits(sizes?.[a * 2] ?? 0);
+  out[at + LIGHT_RECORD.cosOuter] = floatBits(sizes?.[a * 2 + 1] ?? 0);
+  out[at + LIGHT_RECORD.iesProfile] = floatBits(NO_IES_PROFILE);
+  out[at + LIGHT_RECORD.cookie] = floatBits(NO_IES_PROFILE);
+  out[at + LIGHT_RECORD.iesAxisX] = floatBits(up?.[a * 3] ?? 0);
+  out[at + LIGHT_RECORD.iesAxisY] = floatBits(up?.[a * 3 + 1] ?? 1);
+  out[at + LIGHT_RECORD.iesAxisZ] = floatBits(up?.[a * 3 + 2] ?? 0);
+  out[at + LIGHT_RECORD.channels] = floatBits(DEFAULT_LIGHT_CHANNELS);
+}
+
+/** A clustered rectangle's reach, which its record carries negated. See `AreaLightSource.range`. */
+function areaReach(lights: ClusterLightSet, light: number): number {
+  const areas = lights.areas;
+  const a = areaSlot(lights, light);
+  const named = areas?.ranges?.[a] ?? 0;
+  if (named > 0) return named;
+  const sizes = areas?.sizes;
+  return Math.hypot(sizes?.[a * 2] ?? 0, sizes?.[a * 2 + 1] ?? 0);
+}
+
+/** How many lights the table carries: the point lights and the clustered rectangles after them. */
+export function clusteredLightTotal(lights: ClusterLightSet): number {
+  return Math.min(lights.count + (lights.areaCount ?? 0), MAX_CLUSTERED_LIGHTS);
 }
 
 /**
@@ -670,7 +787,7 @@ export function buildLightClusters(
   table: Uint32Array,
   shadowSlots: number,
 ): number {
-  const count = Math.min(lights.count, MAX_CLUSTERED_LIGHTS);
+  const count = clusteredLightTotal(lights);
 
   /*
    * The whole cluster region, not just the counts.
@@ -686,10 +803,14 @@ export function buildLightClusters(
   for (let k = 0; k <= CLUSTER_Z; k++) sliceDepths[k] = sliceNearDepth(k, near, far);
 
   for (let light = 0; light < count; light++) {
-    const x = lights.positions[light * 3] ?? 0;
-    const y = lights.positions[light * 3 + 1] ?? 0;
-    const z = lights.positions[light * 3 + 2] ?? 0;
-    const radius = lights.radii[light] ?? 0;
+    /* A rectangle past the lamps is placed by its centre and binned by its reach. */
+    const area = light >= lights.count;
+    const from = area ? (lights.areas?.positions ?? lights.positions) : lights.positions;
+    const slot = area ? areaSlot(lights, light) : light;
+    const x = from[slot * 3] ?? 0;
+    const y = from[slot * 3 + 1] ?? 0;
+    const z = from[slot * 3 + 2] ?? 0;
+    const radius = area ? areaReach(lights, light) : (lights.radii[light] ?? 0);
 
     /* The record, as the shader reads it. World space; see the note above. */
     writeLightRecord(lights, light, shadowSlots, table, lightBase(light));
@@ -705,6 +826,40 @@ export function buildLightClusters(
 
     /* Entirely behind the camera, so no cluster can reach it. */
     if (depth + radius <= 0) continue;
+
+    /*
+     * **A spot is binned by its cone as well as its sphere.** A 10° spot reaching thirty metres
+     * touches every froxel its sphere does and lights a sliver of them, and a stage rigged with
+     * hundreds of such fixtures put every one of them in nearly every froxel near the floor: 313
+     * lights cost 11.7 ms of a 1600x900 frame. The cone is tested against each froxel's bounding
+     * sphere in view space, which is conservative, by the construction `coneBoxGap` describes.
+     */
+    const cosOuter = lights.coneCos?.[light * 2 + 1] ?? POINT_LIGHT_COS_OUTER;
+    const directions = lights.directions;
+    let coneCos = POINT_LIGHT_COS_OUTER;
+    let coneSin = 0;
+    let axisX = 0;
+    let axisY = 0;
+    let axisZ = 0;
+    if (!area && directions !== undefined && cosOuter > -1) {
+      const dx = directions[light * 3] ?? 0;
+      const dy = directions[light * 3 + 1] ?? 0;
+      const dz = directions[light * 3 + 2] ?? 0;
+      const ax = (view[0] ?? 0) * dx + (view[4] ?? 0) * dy + (view[8] ?? 0) * dz;
+      const ay = (view[1] ?? 0) * dx + (view[5] ?? 0) * dy + (view[9] ?? 0) * dz;
+      const az = -((view[2] ?? 0) * dx + (view[6] ?? 0) * dy + (view[10] ?? 0) * dz);
+      const length = Math.sqrt(ax * ax + ay * ay + az * az);
+      /* The shader measures the cone against the direction as given, so a long one is a wider
+         cone: `dot(L, d) >= c` is `dot(L, d / |d|) >= c / |d|`. */
+      if (length > 1e-6 && cosOuter / length > -1) {
+        coneCos = cosOuter / length;
+        coneSin = Math.sqrt(Math.max(0, 1 - coneCos * coneCos));
+        axisX = ax / length;
+        axisY = ay / length;
+        axisZ = az / length;
+      }
+    }
+    const spot = coneCos > -1;
 
     /*
      * The slices the sphere could possibly touch. The tiles are derived per slice, below.
@@ -765,12 +920,71 @@ export function buildLightClusters(
         for (let i = iLo; i <= iHi; i++) {
           sliceBounds(i, j, zNear, zFar, halfWNear, halfWFar, halfHNear, halfHFar, bounds);
           if (distanceSqToBounds(vx, vy, depth, bounds) > radiusSq) continue;
+          if (
+            spot &&
+            coneBoxGap(vx, vy, depth, axisX, axisY, axisZ, coneCos, coneSin, bounds) > 0
+          ) {
+            continue;
+          }
           insert(table, i + j * CLUSTER_X + k * CLUSTER_X * CLUSTER_Y, light, bounds);
         }
       }
     }
   }
   return count;
+}
+
+/**
+ * How far a froxel lies outside a spot's cone, in metres, or a negative number where the cone
+ * reaches it: positive is a froxel the light cannot shade. Everything in view space with depth
+ * positive, as the binner holds it; `axis` is unit length and `cosA`, `sinA` are the outer cone's.
+ *
+ * **The froxel's bounding sphere against the infinite cone**, after Wronski's cone test for
+ * clustered spots. With `V` from the apex to the sphere's centre at an angle `θ` from the axis and
+ * `A` the cone's half-angle, the centre's distance from the cone is `|V| sin(θ − A)` — which is
+ * `cosA |V⊥| − (V·axis) sinA` — while `θ − A` is under a right angle, and `|V|` past it, where the
+ * nearest point of the cone is its apex. Inside the cone it is negative. So the gap is exact for
+ * the sphere, and the sphere holds the froxel: the test can only keep a light, never drop one the
+ * shader would draw. The apex case is what drops a froxel behind a spot whose sphere reaches it,
+ * which the formula alone underestimates.
+ *
+ * **What it gives up** is tightness at the near end of the frustum, where a froxel is a long thin
+ * box whose sphere is much larger than it: a spot grazing such a froxel is kept. **What would make
+ * it wrong** is a profile showing those near froxels hold the cost; testing the box's corners is
+ * the tight version, at eight dot products a pair.
+ *
+ * Exported so the conformance page can tell a disagreement at the cone's edge from a real one; the
+ * GPU binner writes the same arithmetic in WGSL.
+ */
+export function coneBoxGap(
+  px: number,
+  py: number,
+  pz: number,
+  axisX: number,
+  axisY: number,
+  axisZ: number,
+  cosA: number,
+  sinA: number,
+  box: Float32Array,
+): number {
+  const b0 = box[0] ?? 0;
+  const b1 = box[1] ?? 0;
+  const b2 = box[2] ?? 0;
+  const b3 = box[3] ?? 0;
+  const b4 = box[4] ?? 0;
+  const b5 = box[5] ?? 0;
+  const ex = (b3 - b0) * 0.5;
+  const ey = (b4 - b1) * 0.5;
+  const ez = (b5 - b2) * 0.5;
+  const vx = (b0 + b3) * 0.5 - px;
+  const vy = (b1 + b4) * 0.5 - py;
+  const vz = (b2 + b5) * 0.5 - pz;
+  const along = vx * axisX + vy * axisY + vz * axisZ;
+  const lengthSq = vx * vx + vy * vy + vz * vz;
+  const across = Math.sqrt(Math.max(lengthSq - along * along, 0));
+  const reach = Math.sqrt(lengthSq);
+  const distance = along < -sinA * reach ? reach : cosA * across - along * sinA;
+  return distance - Math.sqrt(ex * ex + ey * ey + ez * ez);
 }
 
 /** An NDC coordinate to a tile index, clamped. */

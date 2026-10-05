@@ -73,6 +73,12 @@ const ATTRIBUTES = {
    * face on the other's picture.
    */
   layers: 1,
+  /*
+   * The lightmap's coordinates, keyed for the reason the first set is: two vertices at one position
+   * in two places on a lightmap page are two vertices, and welding them would light one face with
+   * the other's bake.
+   */
+  lightmapUvs: 2,
 } as const satisfies Record<PerVertexAttribute, number>;
 
 /**

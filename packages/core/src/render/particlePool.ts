@@ -38,6 +38,17 @@ export interface ParticleInstances {
   seeds: Float32Array;
   /** Current velocity, three floats each: what a streak is stretched along. */
   velocities: Float32Array;
+  /**
+   * A sprite's flipbook frame, one float each: its whole part names a cell of the image, counted
+   * across then down from the top-left, and its fraction is how far toward the next a batch that
+   * blends cells has come. Read by the `'sprite'` material alone. Absent is frame 0.
+   */
+  frames?: Float32Array;
+  /**
+   * A sprite's half-height in metres, one float each, beside `sizes`' half-width — a sprite need
+   * not be square. Read by the `'sprite'` material alone; absent or 0 is as tall as it is wide.
+   */
+  heights?: Float32Array;
   count: number;
   capacity: number;
 }
@@ -52,6 +63,8 @@ function createParticleInstances(capacity: number): ParticleInstances {
     ages: new Float32Array(capacity),
     seeds: new Float32Array(capacity),
     velocities: new Float32Array(capacity * 3),
+    frames: new Float32Array(capacity),
+    heights: new Float32Array(capacity),
     count: 0,
     capacity,
   };

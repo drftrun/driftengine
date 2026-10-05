@@ -59,12 +59,23 @@ import type {
 } from '../webgl2/renderer.ts';
 import type { IncrementalMeshHandle, MeshOptions } from '../api.ts';
 import { resolveAtmosphere, type ResolvedAtmosphere } from '../../atmosphere.ts';
+import { AMBIENT_SH_FLOATS, packAmbientSH } from '../../ambientHarmonics.ts';
+import {
+  lightmapTexels,
+  warnRegionsWithoutPage,
+  warnUnpagedLightmap,
+  withLightmapUvs,
+} from '../../lightmap.ts';
+import type { LightmapPage } from '../../lightmap.ts';
 import {
   BLOOM_FILTER_RADIUS_UV,
   BLOOM_LEVELS,
   bloomLevelSizes,
   bloomThresholdOf,
   bloomProfileWarning,
+  defaultBloomResponse,
+  resolveBloomResponse,
+  type BloomResponse,
 } from '../../bloomChain.ts';
 import {
   createResolvedWater,
@@ -221,7 +232,6 @@ import {
   AO_FRAG_WGSL,
   AO_TEXTURES,
   AO_UNIFORMS,
-  ADDITIVE_BLEND,
   BLOOM_DOWNSAMPLE_FIELDS,
   BLOOM_DOWNSAMPLE_FRAG_WGSL,
   BLOOM_PREFILTER_FIELDS,
@@ -230,6 +240,7 @@ import {
   BLOOM_TEXTURES,
   BLOOM_UNIFORMS,
   BLOOM_UPSAMPLE_FIELDS,
+  TINTED_ADD_BLEND,
   BLOOM_UPSAMPLE_FRAG_WGSL,
   RESOLVED_DEPTH_FORMAT,
   RUSH_FRAG_FIELDS,
@@ -325,7 +336,7 @@ import type { BoltSegments } from '../../boltPool.ts';
 import type { LineSegments } from '../../linePoints.ts';
 import { buildPlumeGeometry } from '../../plumeGeometry.ts';
 import type { ParticleMaterial } from '../../particleMaterial.ts';
-import type { ParticleBatchOptions } from '../../particleBatch.ts';
+import { facingCode, type ParticleBatchOptions } from '../../particleBatch.ts';
 import type { ParticleInstances } from '../../particlePool.ts';
 import { PARTICLE_INDICES } from '../../shaders/particle.ts';
 import type { PlumeOptions, PlumePlacement } from '../../plumeRenderer.ts';
@@ -439,14 +450,17 @@ import {
   type GpuPlumes,
 } from './plumePass.ts';
 import {
+  PARTICLE_INSTANCE_FLOATS,
   PARTICLE_VERT_FIELDS,
   createGpuParticles,
   createParticleBindGroupLayout,
+  createSpriteBindGroup,
   packInstances,
   particleFragBindings,
   particlePipeline,
   type GpuParticles,
 } from './particlePass.ts';
+import { sortBackToFront } from '../../particleSort.ts';
 import {
   WIND_STREAK_FRAG_FIELDS,
   WIND_STREAK_FRAG_SIZE,
@@ -528,6 +542,9 @@ const INDIRECT_PROBE_SPACING = 2;
 
 /** What the trace is given when a frame never said what was lighting it. */
 const NO_SUN: readonly number[] = [0, 0, 0];
+
+/** The halves of a skin draw the spread keeps, in the order they are drawn. See `keepSkinDiffuse`. */
+const SKIN_KEPT_HALVES = ['diffuse', 'albedo'] as const;
 import type { ComposedField } from './fieldCompose.ts';
 import type { FieldSource } from '../../gi/globalField.ts';
 import {
@@ -569,7 +586,9 @@ import { ClusterBinner } from './clusterBinner.ts';
 import {
   clusteredMode,
   createClusterLightSet,
+  clusteredLightTotal,
   fillClusterLightSet,
+  lightChannelsOf,
 } from '../../clusteredLights.ts';
 import {
   computeAt,
@@ -1224,12 +1243,17 @@ const DECAL_SLOT = DYNAMIC_UNIFORM_ALIGNMENT;
  */
 const SSR_SLOT = Math.ceil(SSR_FRAG_SIZE / DYNAMIC_UNIFORM_ALIGNMENT) * DYNAMIC_UNIFORM_ALIGNMENT;
 const BLOOM_SLOT = DYNAMIC_UNIFORM_ALIGNMENT;
-const BLOOM_SLOTS = BLOOM_LEVELS + 1;
+const BLOOM_SLOTS = BLOOM_LEVELS + 2;
 /** One slot per blur axis, aligned like every other dynamic-offset block here. */
 const AO_BLUR_SLOT = DYNAMIC_UNIFORM_ALIGNMENT;
 
-/** The last slot, holding the tent radius every upsample draw binds. */
+/**
+ * The tent radius every upsample draw binds, with white as the level it reads is multiplied by;
+ * and the same for the first draw up, which multiplies the deepest level by that level's tint.
+ * Every other level's tint is the blend constant of the draw adding onto it. See `BloomResponse`.
+ */
 const BLOOM_UPSAMPLE_SLOT = BLOOM_LEVELS;
+const BLOOM_UPSAMPLE_DEEPEST_SLOT = BLOOM_LEVELS + 1;
 
 /**
  * What one particle material's fragment stage needs a bind group *shaped* like, built once and
@@ -1448,7 +1472,7 @@ export class WebGPURenderer implements RendererApi {
    * Held rather than passed, like every other per-draw state here: `setSkinPalette` chooses and
    * the following draws use it, which is the shape `setMaterial` already has.
    */
-  private readonly skinPalettes = new SkinPaletteRing();
+  private readonly skinPalettes: SkinPaletteRing;
   private readonly skinnedBindGroupLayout: GPUBindGroupLayout;
   private readonly morphedBindGroupLayout: GPUBindGroupLayout;
   private readonly bothBindGroupLayout: GPUBindGroupLayout;
@@ -1900,6 +1924,17 @@ export class WebGPURenderer implements RendererApi {
   /** Whether this frame has spread its skin: once, at its first blended draw or before its end. */
   private skinScattered = false;
   private readonly skinInverseProjection = mat4.create();
+  /** Scratch for a sprite's depth conversion, so a particle draw allocates nothing. */
+  private readonly spriteInverseProjection = mat4.create();
+  /** Said once: a sprite asked for a soft edge where no depth copy could be had. */
+  private warnedSpriteDepth = false;
+  /** Said once: more rectangles than the fixed arm shades, and no froxel table for the rest. */
+  private warnedAreaOverflow = false;
+  /** What a sprite's depth binding holds where no copy was taken. See `spriteDepthStandIn`. */
+  private spriteDepthEmpty: GPUTextureView | null = null;
+  /** The samplers every sprite batch binds: its image filtered, the depth copy texel for texel. */
+  private spriteLinearSampler: GPUSampler | null = null;
+  private spriteNearestSampler: GPUSampler | null = null;
   private sceneColorView: GPUTextureView | null = null;
   /** The multisampled twin, when the profile asks for samples. Resolved into `sceneColor`. */
   private sceneColorMsaa: GPUTexture | null = null;
@@ -2905,6 +2940,14 @@ export class WebGPURenderer implements RendererApi {
     );
   }
 
+  /** A baked lightmap page, as a `lightmapModel` material's `modelMap`. See `RendererApi`. */
+  createLightmap(page: LightmapPage): GpuSurfaceTexture {
+    return new GpuSurfaceTexture(this.surface.device, this.pipelines, lightmapTexels(page), {
+      wrap: 'clamp',
+      mipmap: false,
+    });
+  }
+
   /**
    * GPU textures an `updateSurfaceTexture` replaced, destroyed when the next frame begins.
    *
@@ -3160,6 +3203,7 @@ export class WebGPURenderer implements RendererApi {
     this.materialModel = material?.model ?? null;
     /* What the blur spreads this skin by: the last material to name a profile says. */
     const model = material?.model;
+    warnUnpagedLightmap(model, modelMap);
     if (model?.kind === 'skin' && this.skinScatter !== null) {
       this.skinScatter.setProfile(
         model.profile,
@@ -3186,6 +3230,8 @@ export class WebGPURenderer implements RendererApi {
       f[cut] = cutoff;
       f[cut + 1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveStaged];
       f[cut + 2] = this.cutoutFrame;
+      /* The material's lighting channels, which the lamps' are compared with. See `uCutout`. */
+      f[cut + 3] = lightChannelsOf(material?.lightChannels);
       i[flags + 3] = material?.doubleSided === true ? 1 : 0;
       /* 0 is no map, and gates the whole block in the shader. See `uNormalStrength`. */
       f[this.materialField('uNormalStrength')] =
@@ -3340,17 +3386,27 @@ export class WebGPURenderer implements RendererApi {
     );
   }
 
+  /**
+   * The ambient the following draws take, nine spherical-harmonic coefficients or null for the
+   * frame's. See `Renderer.setAmbientSH`: material state, so the next draw takes a slot of its own.
+   */
+  setAmbientSH(coefficients: ArrayLike<number> | null): void {
+    if (this.surface.lost) return;
+    packAmbientSH(coefficients, this.ambientSH);
+    this.material((f) => f.set(this.ambientSH, this.materialField('uAmbientSH')));
+  }
+
   /** How reflective the surfaces drawn next are. Clamped, as `renderer.ts` clamps it. */
   setSurfaceReflectivity(amount: number): void {
     this.material((f) => {
-      f[this.materialField('uReflectivity')] = Math.min(1, Math.max(0, amount));
+      f[this.materialField('uEnvironmentDials') + 1] = Math.min(1, Math.max(0, amount));
     });
   }
 
   /** How bright the environment the surfaces drawn next reflect is. See `renderer.ts`. */
   setEnvironmentGain(gain: number): void {
     this.material((f) => {
-      f[this.materialField('uEnvironmentGain')] = Math.max(0, gain);
+      f[this.materialField('uEnvironmentDials') + 2] = Math.max(0, gain);
     });
   }
 
@@ -3390,7 +3446,7 @@ export class WebGPURenderer implements RendererApi {
   setSurfaceRelief(amount: number, cyclesPerMetre = 60): void {
     this.material((f) => {
       f[this.materialField('uRelief')] = Math.min(1, Math.max(0, amount));
-      f[this.materialField('uReliefCycles')] = Math.max(0.01, cyclesPerMetre);
+      f[this.materialField('uRelief') + 1] = Math.max(0.01, cyclesPerMetre);
     });
   }
 
@@ -3410,7 +3466,7 @@ export class WebGPURenderer implements RendererApi {
   /** Scale the emissive of the following draws. See `Renderer.setEmissiveGain` for why. */
   setEmissiveGain(gain: number): void {
     this.material((f) => {
-      f[this.materialField('uEmissiveGain')] = gain;
+      f[this.materialField('uEmission')] = gain;
     });
   }
 
@@ -4035,6 +4091,10 @@ export class WebGPURenderer implements RendererApi {
    */
   createParticles(capacity: number, options: ParticleBatchOptions): GpuParticles {
     const layout = this.particleLayoutFor(options.material);
+    const texture = (options.texture ?? null) as unknown as GpuSurfaceTexture | null;
+    if (options.material === 'sprite' && texture === null) {
+      throw new Error("createParticles: a 'sprite' draws an image, and was given no `texture`");
+    }
     return createGpuParticles(
       this.surface.device,
       capacity,
@@ -4048,6 +4108,15 @@ export class WebGPURenderer implements RendererApi {
       layout.layout,
       layout.fields,
       layout.fragSize,
+      {
+        texture: texture?.view ?? null,
+        cells: options.cells ?? [1, 1],
+        blendCells: options.blendCells === true,
+        softDepth: Math.max(0, options.softDepth ?? 0),
+        cameraFade: Math.max(0, options.cameraFade ?? 0),
+        cameraOffset: options.cameraOffset ?? 0,
+        sort: options.sort === true,
+      },
     );
   }
 
@@ -4099,11 +4168,13 @@ export class WebGPURenderer implements RendererApi {
       return;
     }
     batch.drawnInEncoder = this.encoderEpoch;
-    const live = packInstances(batch, data);
+    /* Farthest first where the batch asked; see `particleSort.ts`. */
+    const drawn = batch.order === null ? data : sortBackToFront(data, camera.position, batch.order);
+    const live = packInstances(batch, drawn);
     if (live === 0) return;
 
     const device = this.surface.device;
-    device.queue.writeBuffer(batch.instances, 0, batch.staging, 0, live * 14);
+    device.queue.writeBuffer(batch.instances, 0, batch.staging, 0, live * PARTICLE_INSTANCE_FLOATS);
 
     const v = batch.vertFloats;
     const atV = (name: string): number => (PARTICLE_VERT_FIELDS[name]?.offset ?? -4) / 4;
@@ -4111,7 +4182,8 @@ export class WebGPURenderer implements RendererApi {
     v.set(this.correctedViewProj, atV('uViewProj'));
     v.set(camera.position, atV('uCameraPos'));
     v[atV('uStretchSec')] = batch.stretchSec;
-    v[atV('uCameraFacing')] = batch.facing === 'camera' ? 1 : 0;
+    v[atV('uCameraFacing')] = facingCode(batch.facing);
+    v[atV('uCameraOffset')] = batch.cameraOffset;
 
     const f = batch.fragFloats;
     const i = batch.fragInts;
@@ -4163,9 +4235,13 @@ export class WebGPURenderer implements RendererApi {
     i[atF('uOutputTransform')] = this.gradeCode();
     f[atF('uOutputExposure')] = this.gradeExposure();
 
+    const spriteGroup = batch.material === 'sprite' ? this.spriteFades(batch, camera, f) : null;
+
     device.queue.writeBuffer(batch.vertUniforms, 0, batch.vertStaging);
     device.queue.writeBuffer(batch.fragUniforms, 0, batch.fragStaging);
 
+    const group = spriteGroup ?? batch.bindGroup;
+    if (group === null) return;
     const layout = this.particleLayoutFor(batch.material).layout;
     const particlePipe = particlePipeline(
       this.blendedPipelines(),
@@ -4177,7 +4253,7 @@ export class WebGPURenderer implements RendererApi {
     const particleCommand = this.recordBlended(0);
     if (particleCommand !== null) {
       particleCommand.pipeline = particlePipe;
-      particleCommand.bindGroup = batch.bindGroup;
+      particleCommand.bindGroup = group;
       particleCommand.vertexBuffers[0] = batch.corners;
       particleCommand.vertexBuffers[1] = batch.instances;
       particleCommand.vertexCount = 2;
@@ -4189,12 +4265,109 @@ export class WebGPURenderer implements RendererApi {
       const pass = this.openPass();
       if (pass === null) return;
       pass.setPipeline(particlePipe);
-      pass.setBindGroup(0, batch.bindGroup);
+      pass.setBindGroup(0, group);
       pass.setVertexBuffer(0, batch.corners);
       pass.setVertexBuffer(1, batch.instances);
       pass.setIndexBuffer(batch.indexBuffer, 'uint32');
       pass.drawIndexed(PARTICLE_INDICES, live);
     }
+  }
+
+  /**
+   * A sprite's flipbook and fades into its fragment block `f`, and the bind group holding the
+   * frame's depth copy its soft edge reads — built again only when that copy is replaced.
+   *
+   * **The copy is the volume's**: `takeVolumeDepth` ends the frame's pass, resolves the opaque
+   * depth and reopens, once a frame whoever asks. Only in the frame's own picture: in a mirror or
+   * a probe's face it would be another view's depth, and the edge stays hard there, as on WebGL2.
+   * Without a composite there is no copy, and the renderer says so once.
+   */
+  private spriteFades(batch: GpuParticles, camera: Camera, f: Float32Array): GPUBindGroup | null {
+    const fields = batch.fields;
+    const atF = (name: string): number => (fields[name]?.offset ?? -4) / 4;
+    let depth: GPUTextureView | null = null;
+    if (batch.softDepth > 0 && !this.reflectionPassActive && !this.probePassActive) {
+      if (this.openPass() !== null && this.takeVolumeDepth()) depth = this.resolvedDepthView;
+      if (depth === null && !this.warnedSpriteDepth) {
+        this.warnedSpriteDepth = true;
+        console.warn(
+          "WebGPU: a 'sprite' asked for a soft edge, which reads a copy of the frame's depth, and " +
+            'this profile keeps none — screenEffects is off. The edge is hard.',
+        );
+      }
+    }
+    f[atF('uCells')] = batch.cells[0];
+    f[atF('uCells') + 1] = batch.cells[1];
+    f[atF('uCells') + 2] = batch.blendCells ? 1 : 0;
+    f[atF('uFade')] = batch.softDepth;
+    f[atF('uFade') + 1] = batch.cameraFade;
+    f[atF('uFade') + 2] = depth === null ? 0 : 1;
+    mat4.invert(this.spriteInverseProjection, camera.projection);
+    const inverse = this.spriteInverseProjection;
+    f[atF('uDepthToViewZ')] = inverse[10] ?? 0;
+    f[atF('uDepthToViewZ') + 1] = inverse[14] ?? 0;
+    f[atF('uDepthToViewZ') + 2] = inverse[11] ?? 0;
+    f[atF('uDepthToViewZ') + 3] = inverse[15] ?? 1;
+    /*
+     * The pixels a fragment's own coordinate counts in: the output's where blended draws land
+     * after reconstruction, the scene's otherwise. The copy is sampled by the fraction, so its own
+     * size does not matter. Read off the canvas rather than `sceneSize`, which builds an object.
+     */
+    const { canvas } = this.surface;
+    const ratio = this.drawsLate() || !this.reconstructionWanted ? 1 : this.quality.reconstruction;
+    /* `reconRenderSize`'s own rounding — up, from the floored output — without its object. */
+    const width = Math.max(1, Math.floor(canvas.width));
+    const height = Math.max(1, Math.floor(canvas.height));
+    f[atF('uViewport')] = ratio > 1 ? Math.max(1, Math.ceil(width / ratio)) : width;
+    f[atF('uViewport') + 1] = ratio > 1 ? Math.max(1, Math.ceil(height / ratio)) : height;
+
+    /* Something single-sampled and unfilterable stands in where there is no copy to read. */
+    const bound = depth ?? this.spriteDepthStandIn();
+    if (batch.spriteGroup === null || batch.spriteGroupDepth !== bound) {
+      batch.spriteGroup = createSpriteBindGroup(
+        this.surface.device,
+        this.particleLayoutFor('sprite').layout,
+        batch,
+        this.particleLayoutFor('sprite').fragSize,
+        bound,
+        this.spriteSampler(true),
+        this.spriteSampler(false),
+      );
+      batch.spriteGroupDepth = bound;
+    }
+    return batch.spriteGroup;
+  }
+
+  /** A sprite's image sampler, repeating nothing and filtered, or its depth's, nearest. */
+  private spriteSampler(linear: boolean): GPUSampler {
+    const device = this.surface.device;
+    if (linear) {
+      this.spriteLinearSampler ??= device.createSampler({
+        label: 'particle.sprite',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipmapFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+      return this.spriteLinearSampler;
+    }
+    this.spriteNearestSampler ??= device.createSampler({ label: 'particle.depth' });
+    return this.spriteNearestSampler;
+  }
+
+  /** A one-texel `r32float` for a sprite's depth binding where no copy was taken. */
+  private spriteDepthStandIn(): GPUTextureView {
+    if (this.spriteDepthEmpty === null) {
+      const texture = this.surface.device.createTexture({
+        label: 'particle.depthStandIn',
+        size: [1, 1],
+        format: 'r32float',
+        usage: 0x04 | 0x02,
+      });
+      this.spriteDepthEmpty = texture.createView();
+    }
+    return this.spriteDepthEmpty;
   }
 
   /**
@@ -4213,7 +4386,7 @@ export class WebGPURenderer implements RendererApi {
     const device = this.surface.device;
     const frag = particleFragBindings(material);
     const built: ParticleLayout = {
-      layout: createParticleBindGroupLayout(device, frag.size),
+      layout: createParticleBindGroupLayout(device, frag.size, material === 'sprite'),
       fields: frag.fields,
       fragSize: frag.size,
     };
@@ -5443,6 +5616,7 @@ export class WebGPURenderer implements RendererApi {
     iesAxes: new Float32Array(0),
     cookies: new Float32Array(0),
     heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
+    axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
     heldWeights: new Float32Array(MAX_POINT_LIGHTS),
   };
   /** Refilled per frame rather than allocated; see `resolveAtmosphere`. */
@@ -6236,6 +6410,8 @@ export class WebGPURenderer implements RendererApi {
     this.materialBudget.limit(quality.materialChangesPerFrame);
     this.drawBudget.limit(quality.drawsPerFrame);
     this.shadowDrawBudget.limit(quality.drawsPerFrame);
+    /* A palette per draw at most, which is the most a frame can bind. See `SkinPaletteRing`. */
+    this.skinPalettes = new SkinPaletteRing(quality.drawsPerFrame);
     this.maxDrawingBufferPixels = quality.maxDrawingBufferPixels;
     this.exposure = quality.outputExposure;
     this.flushSchedule =
@@ -7935,7 +8111,9 @@ export class WebGPURenderer implements RendererApi {
     return keyed;
   }
 
-  createMesh(data: MeshData, options: MeshOptions = {}): GpuMesh {
+  createMesh(given: MeshData, options: MeshOptions = {}): GpuMesh {
+    /* The streams it is drawn with, before anything records which it has. See `withLightmapUvs`. */
+    const data = withLightmapUvs(given);
     const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
     return this.keyed(createGpuMesh(this.surface.device, data, options.dynamic === true), fullKey);
   }
@@ -7949,7 +8127,8 @@ export class WebGPURenderer implements RendererApi {
    * straddle one, and going on writing to a dead device would raise validation errors a consumer
    * can do nothing about. Done with `complete` still false is the signal that it was abandoned.
    */
-  createMeshIncremental(data: MeshData, options: MeshOptions = {}): IncrementalMeshHandle {
+  createMeshIncremental(given: MeshData, options: MeshOptions = {}): IncrementalMeshHandle {
+    const data = withLightmapUvs(given);
     const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
     const { mesh, upload } = createGpuMeshIncremental(
       this.surface.device,
@@ -8017,6 +8196,19 @@ export class WebGPURenderer implements RendererApi {
   bindMeshPass(camera: Camera, env: Environment): void {
     if (this.surface.lost) return;
 
+    /* Rectangles past the fixed arm's are the froxel table's, and without it nobody shades them. */
+    if (
+      !this.warnedAreaOverflow &&
+      !this.quality.clusteredLights &&
+      (env.areaLights?.count ?? 0) > this.shadedAreaLights
+    ) {
+      this.warnedAreaOverflow = true;
+      console.warn(
+        `WebGPU: ${env.areaLights?.count ?? 0} rectangular lights and ${this.shadedAreaLights} ` +
+          'shaded without clusteredLights: the rest are not drawn. Turn clusteredLights on, and the ' +
+          'froxel table shades every one past the fixed ones, unshadowed.',
+      );
+    }
     /* Corrected once a frame, not once a draw: every draw copies the same matrix. */
     mat4.multiply(this.correctedViewProj, CLIP_CORRECTION, camera.viewProjection);
     /*
@@ -8189,16 +8381,18 @@ export class WebGPURenderer implements RendererApi {
      * switched grain off. That is the same failure the missing properties had — silence that
      * reads as a setting rather than as an omission.
      *
-     * `uReliefCycles` is 60 because `renderer.ts` says 60. Nothing in either file explains the
+     * `uRelief.y` is 60 because `renderer.ts` says 60. Nothing in either file explains the
      * number, so this is a copy and is marked as one; the two must move together.
      */
     f[at('uGrain')] = 1;
-    f[at('uReflectivity')] = 0;
+    f[at('uEnvironmentDials') + 1] = 0;
     /* No weighting and no dither until a pass or a crossfade asks. See `setDitherFade`. */
     f[at('uWriteMode')] = 0;
     f[at('uWriteMode') + 1] = 0;
     /* 1, not 0: a multiplier's identity is one. See `setEnvironmentGain`. */
-    f[at('uEnvironmentGain')] = 1;
+    f[at('uEnvironmentDials') + 2] = 1;
+    /* The frame's own ambient until a draw asks for its own. See `setAmbientSH`. */
+    f.fill(0, at('uAmbientSH'), at('uAmbientSH') + AMBIENT_SH_FLOATS);
     /*
      * **Only where the variant declares it.** The irradiance block lives inside the probe's own
      * `#if`, because it exists to be filled from a cube only that permutation has, so `at` throws
@@ -8252,7 +8446,7 @@ export class WebGPURenderer implements RendererApi {
         f[base + 2] = sets[2] ?? 0;
       }
       /* Which chain is bound, because the level and the weight both depend on it. */
-      f[at('uEnvironmentPrefiltered')] = this.quality.environmentPrefilter ? 1 : 0;
+      f[at('uEnvironmentDials')] = this.quality.environmentPrefilter ? 1 : 0;
     }
     /* DriftLight, or zeros that switch it off: see `driftLight/uniforms.ts`. */
     this.uploadLightField();
@@ -8283,10 +8477,10 @@ export class WebGPURenderer implements RendererApi {
     f[emissiveScale + 1] = 1;
     f[emissiveScale + 2] = 1;
     f[at('uRelief')] = 0;
-    f[at('uReliefCycles')] = 60;
+    f[at('uRelief') + 1] = 60;
     f[at('uTextureRelief')] = 0;
-    f[at('uEmissiveGain')] = env.emissiveGain;
-    f[at('uNightFactor')] = env.nightFactor;
+    f[at('uEmission')] = env.emissiveGain;
+    f[at('uEmission') + 1] = env.nightFactor;
     /*
      * **Only where the variant declares it**, because `at` throws on a name the permutation does
      * not hold and this term is compiled in by `nightEmissive` alone.
@@ -8303,7 +8497,8 @@ export class WebGPURenderer implements RendererApi {
     if (this.quality.nightEmissive) f[at('uNightEmissive')] = env.nightEmissive ?? 0;
     f.set(env.highlightMin, at('uHighlightMin'));
     f.set(env.highlightMax, at('uHighlightMax'));
-    f[at('uHighlightGain')] = env.highlightGain;
+    /* The gain in the far corner's w. See `uHighlightMax`. */
+    f[at('uHighlightMax') + 3] = env.highlightGain;
     /*
      * No grading here. `renderer.ts` grades in this pass only when there is no composite to do
      * it in; this backend has no composite yet, and adding one is its own row. Exposure is 1
@@ -8400,11 +8595,13 @@ export class WebGPURenderer implements RendererApi {
     scatterInto(f, this.fragment.fields['uLightDir'], lights.directions, 3);
     scatterInto(f, this.fragment.fields['uLightCone'], lights.coneCos, 2);
     scatterInto(f, this.fragment.fields['uLightIesProfile'], lights.iesProfiles, 1);
-    scatterInto(f, this.fragment.fields['uLightIesAxis'], lights.iesAxes, 3);
+    /* The azimuth and, in w, the light's channels. See `axesAndChannels`. */
+    scatterInto(f, this.fragment.fields['uLightIesAxis'], lights.axesAndChannels, 4);
     scatterInto(f, this.fragment.fields['uLightCookie'], lights.cookies, 1);
-    f[at('uIesAtlasRows')] = this.iesRows;
-    f[at('uIesPlaneCount')] = this.iesPlanes;
-    f[at('uCookieTiles')] = this.cookieTiles;
+    /* The fixture atlas's shape, three numbers in one row: profile rows, planes, cookie tiles. */
+    f[at('uFixtureShape')] = this.iesRows;
+    f[at('uFixtureShape') + 1] = this.iesPlanes;
+    f[at('uFixtureShape') + 2] = this.cookieTiles;
 
     /*
      * The rectangular emitters. Bound on both backends in the same change, per the 2026-08-13
@@ -8568,8 +8765,20 @@ export class WebGPURenderer implements RendererApi {
      * same terms here, which is why a pass cannot inherit a material from the one before it.
      */
     this.materials.dirty();
-    /* A pass starts with no material, exactly as `renderer.ts` resets these terms. */
+    /*
+     * A pass starts with no material, exactly as `renderer.ts` resets these terms — **every map,
+     * not the albedo alone**. `setMaterial` skips the lookup when the maps it is given are the ones
+     * held, so a pass that kept the last pass's normal, ORM, emissive and model maps here while
+     * binding the blank group made the next `setMaterial` naming those same maps a no-op: the draw
+     * kept the blank group and read the stand-ins while its flags said the maps were bound. A scene
+     * whose first material in a pass was the last of the pass before — any scene of one material —
+     * lost its maps from the second frame on, on this backend alone. Until 4.8.6.
+     */
     this.albedo = null;
+    this.normalMap = null;
+    this.ormMap = null;
+    this.emissiveMap = null;
+    this.modelMap = null;
     this.bindGroup = this.blankAlbedoBindGroup;
     this.uvScale[0] = 1;
     this.uvScale[1] = 1;
@@ -9305,6 +9514,7 @@ export class WebGPURenderer implements RendererApi {
     options: TranslucentMeshOptions,
   ): void {
     if (!this.canDraw() || this.viewProj === null) return;
+    warnRegionsWithoutPage(this.materialModel, data.lightmapRegions);
     const mesh = batch.mesh;
     /* Nor a batch of a mesh with nothing in it: see `GpuMesh.indexCount`. */
     if (!mesh.complete || mesh.indexCount === 0) return;
@@ -12595,7 +12805,7 @@ export class WebGPURenderer implements RendererApi {
      *
      * `load` rather than `clear` wherever there is a blend, and that is the other half of what
      * makes the sum of the octaves a sum: a cleared attachment discards the level the downsample
-     * wrote and adds the octave to nothing. See `ADDITIVE_BLEND`.
+     * wrote and adds the octave to nothing. See `TINTED_ADD_BLEND`.
      */
     const stage = (
       label: string,
@@ -12605,6 +12815,7 @@ export class WebGPURenderer implements RendererApi {
       source: number,
       slot: number,
       blend?: GPUBlendState,
+      constant?: number[],
     ): void => {
       const group = this.bloomGroups[source];
       if (group === undefined) return;
@@ -12632,6 +12843,7 @@ export class WebGPURenderer implements RendererApi {
         ),
       );
       pass.setBindGroup(0, group, [slot * BLOOM_SLOT]);
+      if (constant !== undefined) pass.setBlendConstant(constant);
       pass.draw(3);
       pass.end();
     };
@@ -12654,19 +12866,29 @@ export class WebGPURenderer implements RendererApi {
       );
     }
 
-    /* And back up. Every draw reads the same tent radius, so they share one slot rather than
-       holding five copies of one constant. */
+    /*
+     * And back up. Every draw reads the same tent radius, so they share one slot rather than
+     * holding five copies of one constant — but for the first, which multiplies the deepest level
+     * by its tint. Each level being added onto takes its own tint from the blend constant.
+     */
+    const response = this.bloomResponse;
     for (let index = levels.length - 1; index > 0; index--) {
       const target = levels[index - 1];
-      if (target === undefined) break;
+      const constant = this.bloomConstants[index - 1];
+      if (target === undefined || constant === undefined) break;
+      const into = 1 + (index - 1) * 3;
+      constant[0] = response[into] ?? 1;
+      constant[1] = response[into + 1] ?? 1;
+      constant[2] = response[into + 2] ?? 1;
       stage(
         'post.bloomUp',
         'post.bloomUpsample',
         BLOOM_UPSAMPLE_FRAG_WGSL,
         target,
         index + 1,
-        BLOOM_UPSAMPLE_SLOT,
-        ADDITIVE_BLEND,
+        index === levels.length - 1 ? BLOOM_UPSAMPLE_DEEPEST_SLOT : BLOOM_UPSAMPLE_SLOT,
+        TINTED_ADD_BLEND,
+        constant,
       );
     }
   }
@@ -12829,9 +13051,10 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
-   * A skin draw's diffuse half, kept for the spread: the frame's draw again, with the same slots,
-   * buffers and bind group, through the pipeline that writes the diffuse alone into the blur's
-   * target and tests for the depth its frame half wrote.
+   * A skin draw's diffuse and colour halves, kept for the spread: the frame's draw again, twice,
+   * with the same slots, buffers and bind group, through the pipelines that write the diffuse's
+   * light alone and its colour alone into the blur's targets and test for the depth its frame half
+   * wrote.
    */
   private keepSkinDiffuse(
     mesh: GpuMesh,
@@ -12850,45 +13073,49 @@ export class WebGPURenderer implements RendererApi {
     const pipelines = this.skinPipelines;
     const present = this.meshPresent.get(base);
     if (skin === null || pipelines === null || present === undefined) return;
-    const key = `${frameKey}|sd`;
-    const pipeline =
-      pipelines.peek(key) ??
-      flatPipeline(
-        pipelines,
-        this.surface.device,
-        this.flatLayoutFor(skinned, morphed),
-        this.variant,
-        key,
-        present,
-        false,
-        skinned,
-        morphed,
-        true,
-        layer,
-        false,
-        'none',
-        this.materialDoubleSided,
-        false,
-        eight,
-        clothed,
-        'skin',
-        'diffuse',
-      );
-    const command = skin.take();
-    command.pipeline = pipeline;
-    command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
-    command.offsetA = slot;
-    command.offsetB = material;
-    command.offsetCount = 2;
-    for (let index = 0; index < mesh.vertexBuffers.length; index++) {
-      command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
+    const bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
+    /* The light alone, which the blur spreads, then the colour alone, which it is multiplied by. */
+    for (const half of SKIN_KEPT_HALVES) {
+      const key = `${frameKey}|${half === 'diffuse' ? 'sd' : 'sa'}`;
+      const pipeline =
+        pipelines.peek(key) ??
+        flatPipeline(
+          pipelines,
+          this.surface.device,
+          this.flatLayoutFor(skinned, morphed),
+          this.variant,
+          key,
+          present,
+          false,
+          skinned,
+          morphed,
+          true,
+          layer,
+          false,
+          'none',
+          this.materialDoubleSided,
+          false,
+          eight,
+          clothed,
+          'skin',
+          half,
+        );
+      const command = half === 'diffuse' ? skin.take() : skin.takeAlbedo();
+      command.pipeline = pipeline;
+      command.bindGroup = bindGroup;
+      command.offsetA = slot;
+      command.offsetB = material;
+      command.offsetCount = 2;
+      for (let index = 0; index < mesh.vertexBuffers.length; index++) {
+        command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
+      }
+      command.vertexCount = mesh.vertexBuffers.length;
+      command.indexBuffer = mesh.indexBuffer;
+      command.indexed = true;
+      command.count = mesh.indexCount;
+      command.instances = 1;
+      command.indirect = null;
     }
-    command.vertexCount = mesh.vertexBuffers.length;
-    command.indexBuffer = mesh.indexBuffer;
-    command.indexed = true;
-    command.count = mesh.indexCount;
-    command.instances = 1;
-    command.indirect = null;
   }
 
   /**
@@ -14373,10 +14600,11 @@ export class WebGPURenderer implements RendererApi {
     f[frustumAt + 3] = aspect;
     f.set(camera.view as Float32Array, at('uView'));
 
-    const set = fillClusterLightSet(env, this.clusterLights);
+    /* The rectangles past the fixed arm's go into the table. See `ClusterLightSet.areas`. */
+    const set = fillClusterLightSet(env, this.clusterLights, this.shadedAreaLights);
     /* A slot is read only under `POINT_SHADOWS`; see `lightHasFixture`. */
     const shadowSlots = this.quality.pointShadows ? MAX_POINT_LIGHTS : 0;
-    i[at('uClustered')] = clusteredMode(set, set.count, shadowSlots);
+    i[at('uClustered')] = clusteredMode(set, clusteredLightTotal(set), shadowSlots);
     binner.setFrame({
       lights: set,
       view: camera.view as Float32Array,
@@ -14715,6 +14943,16 @@ export class WebGPURenderer implements RendererApi {
    */
 
   private bloomScale = 1;
+  /** The draw's own ambient, as `packAmbientSH` writes it; zeros are the frame's. */
+  private readonly ambientSH = new Float32Array(AMBIENT_SH_FLOATS);
+  /** The ramp and each level's tint, as `resolveBloomResponse` writes them; the subtraction and white. */
+  private readonly bloomResponse = defaultBloomResponse();
+  /** The response before the last `setBloom`, to tell whether the blocks need writing again. */
+  private readonly bloomResponseNext = defaultBloomResponse();
+  /** Each level's tint as a blend constant, rewritten in place: `setBlendConstant` takes a colour. */
+  private readonly bloomConstants: number[][] = Array.from({ length: BLOOM_LEVELS }, () => [
+    1, 1, 1, 1,
+  ]);
   /** In scene units, once `setBloom` has moved it; null reads the profile's. */
   private bloomThresholdSet: number | null = null;
   private rushStrength = 0;
@@ -14858,14 +15096,23 @@ export class WebGPURenderer implements RendererApi {
     this.gradeSize = lut.size;
   }
 
-  setBloom(scale: number, threshold?: number): void {
+  setBloom(scale: number, threshold?: number, response?: BloomResponse | null): void {
     this.bloomScale = Math.min(Math.max(scale, 0), 1);
-    if (threshold === undefined) return;
-    const next = bloomThresholdOf(threshold);
-    if (next === this.bloomThresholdSet) return;
-    this.bloomThresholdSet = next;
-    /* The blocks are written once per size, so a moved threshold rewrites them now. */
-    if (this.bloomLevels.length > 0) this.writeBloomBlocks();
+    let moved = false;
+    if (threshold !== undefined) {
+      const next = bloomThresholdOf(threshold);
+      moved = next !== this.bloomThresholdSet;
+      this.bloomThresholdSet = next;
+    }
+    if (response !== undefined) {
+      this.bloomResponseNext.set(this.bloomResponse);
+      resolveBloomResponse(response, this.bloomResponse);
+      for (let i = 0; i < this.bloomResponse.length && !moved; i++) {
+        moved = this.bloomResponse[i] !== this.bloomResponseNext[i];
+      }
+    }
+    /* The blocks are written once per size, so a moved threshold or response rewrites them now. */
+    if (moved && this.bloomLevels.length > 0) this.writeBloomBlocks();
   }
 
   /**
@@ -15678,6 +15925,60 @@ export class WebGPURenderer implements RendererApi {
     if (!this.setProbeGrid({ origin: WORLD_ORIGIN, spacing: UNIT_STEP, counts: SINGLE_PROBE })) {
       return false;
     }
+    this.uploadProbeFaces(probe, image);
+    const encoder = device.createCommandEncoder({ label: 'probe.environmentImage' });
+    this.buildProbeChain(encoder, probe, 0);
+    device.queue.submit([encoder.finish()]);
+
+    this.markProbeFilled(0);
+    this.probeAmbient = options?.irradiance ?? true;
+    this.rebuildFlatBindGroup();
+    return true;
+  }
+
+  /** One layer of the declared grid from an image. See `Renderer.setProbeLayerImage`. */
+  setProbeLayerImage(
+    layer: number,
+    image: {
+      readonly width: number;
+      readonly height: number;
+      readonly data: Float32Array;
+    },
+    options?: ProbeBakeOptions,
+  ): boolean {
+    if (this.surface.lost) return false;
+    const probe = this.probe;
+    const grid = this.probes;
+    if (probe === null || grid === null || this.probeArray === null) {
+      console.warn(
+        'WebGpuRenderer: setProbeLayerImage needs a reflection probe (`reflectionProbeSize`) and ' +
+          'a grid declared with setProbeGrid; the image was ignored.',
+      );
+      return false;
+    }
+    if (!Number.isInteger(layer) || layer < 0 || layer >= grid.layers) {
+      console.warn(
+        `WebGpuRenderer: setProbeLayerImage was given layer ${layer}, and the grid has ${grid.layers}.`,
+      );
+      return false;
+    }
+    this.uploadProbeFaces(probe, image);
+    const { device } = this.surface;
+    const encoder = device.createCommandEncoder({ label: 'probe.layerImage' });
+    this.buildProbeChain(encoder, probe, this.probeSweeps?.writeLayer(layer) ?? layer);
+    device.queue.submit([encoder.finish()]);
+    this.markProbeFilled(layer);
+    this.probeAmbient = options?.irradiance ?? true;
+    this.rebuildFlatBindGroup();
+    return true;
+  }
+
+  /** An equirectangular image onto the capture cube's six faces, in the cube's own format. */
+  private uploadProbeFaces(
+    probe: GPUTexture,
+    image: { readonly width: number; readonly height: number; readonly data: Float32Array },
+  ): void {
+    const { device } = this.surface;
     const faces = equirectToCubeFaces(image, this.probeSize);
     const format = this.pipelines.format;
     for (let face = 0; face < faces.length; face++) {
@@ -15708,15 +16009,6 @@ export class WebGPURenderer implements RendererApi {
         { width: this.probeSize, height: this.probeSize, depthOrArrayLayers: 1 },
       );
     }
-
-    const encoder = device.createCommandEncoder({ label: 'probe.environmentImage' });
-    this.buildProbeChain(encoder, probe, 0);
-    device.queue.submit([encoder.finish()]);
-
-    this.markProbeFilled(0);
-    this.probeAmbient = options?.irradiance ?? true;
-    this.rebuildFlatBindGroup();
-    return true;
   }
 
   /**
@@ -16660,6 +16952,15 @@ export class WebGPURenderer implements RendererApi {
 
     const up = (name: string): number => this.postField(BLOOM_UPSAMPLE_FIELDS, name);
     f[slot(BLOOM_UPSAMPLE_SLOT) + up('uRadius')] = BLOOM_FILTER_RADIUS_UV;
+    f[slot(BLOOM_UPSAMPLE_DEEPEST_SLOT) + up('uRadius')] = BLOOM_FILTER_RADIUS_UV;
+    /* White on every draw up but the first, which reads the deepest level and carries its tint. */
+    const response = this.bloomResponse;
+    const deepest = 1 + (levels.length - 1) * 3;
+    for (let c = 0; c < 3; c++) {
+      f[slot(BLOOM_UPSAMPLE_SLOT) + up('uScale') + c] = 1;
+      f[slot(BLOOM_UPSAMPLE_DEEPEST_SLOT) + up('uScale') + c] = response[deepest + c] ?? 1;
+    }
+    f[slot(0) + prefilter('uRamp')] = response[0] ?? 0;
 
     this.surface.device.queue.writeBuffer(this.bloomUniforms, 0, this.bloomStaging);
   }

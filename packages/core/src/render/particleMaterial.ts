@@ -2,6 +2,7 @@ import {
   PARTICLE_MOTE_FRAG,
   PARTICLE_SMOKE_FRAG,
   PARTICLE_SPARK_FRAG,
+  PARTICLE_SPRITE_FRAG,
   PARTICLE_VERT,
 } from './shaders/particle.ts';
 import {
@@ -9,6 +10,7 @@ import {
   PARTICLE_MOTE_FRAG_WGSL,
   PARTICLE_SMOKE_FRAG_WGSL,
   PARTICLE_SPARK_FRAG_WGSL,
+  PARTICLE_SPRITE_FRAG_WGSL,
   PARTICLE_VERT_WGSL,
 } from './shaders/generated/particle.wgsl.ts';
 
@@ -27,7 +29,7 @@ import {
  * document that. Naming them makes the pairing explicit instead of leaving it to a caller to
  * match a source with the constants that suit it.
  */
-export type ParticleMaterial = 'smoke' | 'spark' | 'mote';
+export type ParticleMaterial = 'smoke' | 'spark' | 'mote' | 'sprite';
 
 /** Both compilations of one material, and what the generator recorded about each stage. */
 export interface ParticleShaders {
@@ -65,6 +67,14 @@ const MATERIALS: Readonly<Record<ParticleMaterial, ParticleShaders>> = {
     fragmentSource: PARTICLE_MOTE_FRAG,
     vertexWgsl: PARTICLE_VERT_WGSL,
     fragmentWgsl: PARTICLE_MOTE_FRAG_WGSL,
+  },
+  /* An image a consumer supplies, not a shape this engine draws: see `PARTICLE_SPRITE_FRAG`. */
+  sprite: {
+    label: 'particle:sprite',
+    vertexSource: PARTICLE_VERT,
+    fragmentSource: PARTICLE_SPRITE_FRAG,
+    vertexWgsl: PARTICLE_VERT_WGSL,
+    fragmentWgsl: PARTICLE_SPRITE_FRAG_WGSL,
   },
 };
 

@@ -5,6 +5,7 @@ import {
   TABLE_HEIGHT,
   TABLE_WIDTH,
   type ClusterLightSet,
+  clusteredLightTotal,
   writeLightRecord,
 } from '../../clusteredLights.ts';
 import { MAX_POINT_LIGHTS } from '../../lightBudget.ts';
@@ -167,7 +168,8 @@ export class ClusterBinner {
     if (frame === null || device === null || pipeline === null || group === null) return;
     if (params === null || lightBuffer === null) return;
 
-    const count = Math.min(frame.lights.count, MAX_CLUSTERED_LIGHTS);
+    /* The lamps and the clustered rectangles after them. See `ClusterLightSet.areas`. */
+    const count = clusteredLightTotal(frame.lights);
 
     /*
      * The records, by the function `buildLightClusters` writes them with, because the shader

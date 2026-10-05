@@ -27,7 +27,9 @@
  * 3. **Upsample**, additively back up the chain through a tent filter.
  *
  * Deliberately absent, because they were asked against by name: lens dirt, anamorphic streaks
- * and ghosting. One threshold, one radius, one strength.
+ * and ghosting. One threshold, one radius, one strength — and, since 4.8.6, how a colour comes in
+ * past the threshold and a tint for each octave, which is how another engine's stage is matched
+ * rather than how this one looks: see `BloomResponse` in `bloomChain.ts`.
  */
 
 /**
@@ -128,6 +130,11 @@ uniform sampler2D uSource;
 uniform vec2 uTexel;
 /** In scene units. 1.0 is "brighter than white", which is the useful place to start. */
 uniform float uThreshold;
+/**
+ * Scene units over which a colour comes in past the threshold, or 0 to subtract the threshold
+ * instead. See \`BloomResponse.ramp\`.
+ */
+uniform float uRamp;
 
 out vec4 fragColor;
 
@@ -144,6 +151,8 @@ ${BLOOM_BRIGHTNESS}
 vec3 fetch(vec2 uv) {
   vec3 c = min(textureLod(uSource, uv, 0.0).rgb, vec3(BLOOM_CEILING));
   float bright = brightness(c);
+  /* A ramp keeps a share of the colour, all of it a ramp's width past the line. */
+  if (uRamp > 0.0) return c * clamp((bright - uThreshold) / uRamp, 0.0, 1.0);
   return c * (max(bright - uThreshold, 0.0) / max(bright, 1e-4));
 }
 
@@ -194,7 +203,9 @@ ${BLOOM_BOXES}
 /**
  * Stage three: a 3x3 tent, added into the level above.
  *
- * **Additive rather than a mix, and each octave counts the same.** A lone bright pixel arrives
+ * **Additive rather than a mix, and each octave counts the same** unless a tint says otherwise:
+ * the level being added onto is multiplied by its own tint as it is, by the blend, and the deepest
+ * by `uScale` on the first draw. White everywhere is exactly the sum. A lone bright pixel arrives
  * at level n divided by four to the n, spread over four to the n pixels, so summing the levels
  * lifts its own pixel by about a third and lays a long shallow tail around it. That falloff is
  * what a real glare looks like; a single gaussian gives a disc with an end to it.
@@ -209,6 +220,12 @@ precision highp float;
 in vec2 vUv;
 
 uniform sampler2D uSource;
+/**
+ * What the level being read is multiplied by: its tint, on the first draw up from the deepest
+ * level, and white on every other — each other level's tint is applied to the level below as it
+ * is added onto, by the blend. See \`BloomResponse.tints\`.
+ */
+uniform vec3 uScale;
 /** How far the tent reaches, in UV. One number for the whole chain. */
 uniform float uRadius;
 
@@ -227,6 +244,6 @@ void main() {
   vec3 i = textureLod(uSource, vUv + vec2( r, -r), 0.0).rgb;
 
   vec3 sum = e * 4.0 + (b + d + f + h) * 2.0 + (a + c + g + i);
-  fragColor = vec4(sum * 0.0625, 1.0);
+  fragColor = vec4(sum * 0.0625 * uScale, 1.0);
 }
 `;

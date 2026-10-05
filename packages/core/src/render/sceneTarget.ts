@@ -497,6 +497,15 @@ export class SceneTarget {
    * must reject it in the same place or the accumulation and the revealage cover different
    * fragments.
    */
+  /** The frame's size in pixels, as its targets are allocated. */
+  get frameWidth(): number {
+    return this.width;
+  }
+
+  get frameHeight(): number {
+    return this.height;
+  }
+
   /**
    * The depth the frame draws against, for a second framebuffer to share: skin's diffuse half,
    * which tests against it and writes none. The multisampled renderbuffer where the frame is
@@ -783,6 +792,8 @@ export class SceneTarget {
       readonly strength: number;
       /** In scene units, which is why this wants `keepsRange`. See `BloomPass`. */
       readonly threshold: number;
+      /** The ramp and each level's tint, as `resolveBloomResponse` writes them. */
+      readonly response: Float32Array;
     },
     /*
      * Depth of field, between the camera smear and the occlusion in the shader's own order. Like
@@ -966,7 +977,13 @@ export class SceneTarget {
     let bloomTexture: WebGLTexture | null = null;
     if (bloom !== undefined && scene !== null) {
       this.bloom ??= new BloomPass(gl);
-      bloomTexture = this.bloom.run(scene, this.width, this.height, bloom.threshold);
+      bloomTexture = this.bloom.run(
+        scene,
+        this.width,
+        this.height,
+        bloom.threshold,
+        bloom.response,
+      );
     }
 
     /*

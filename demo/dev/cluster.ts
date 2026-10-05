@@ -21,7 +21,7 @@
  * more than a consumer, exactly as `askedQuality.ts` is. Nothing under `packages/` may import this,
  * and nothing here is engine API.
  */
-import { createRenderer } from '../../packages/core/src/index';
+import { createAreaLightBuffer, createRenderer } from '../../packages/core/src/index';
 import type { RendererApi } from '../../packages/core/src/index';
 import {
   CLUSTER_COUNT,
@@ -34,6 +34,7 @@ import {
   buildLightClusters,
   clusterBase,
   clusterViewBounds,
+  coneBoxGap,
   createClusterTable,
   type ClusterLightSet,
 } from '../../packages/core/src/render/clusteredLights';
@@ -48,6 +49,7 @@ const FAR = 400;
 const TAN_HALF_FOV = 0.5773502691896258;
 const ASPECT = 16 / 9;
 const LIGHT_COUNT = 96;
+const AREA_COUNT = 12;
 
 /** The camera at the origin looking down -z, so a world z of -12 is a view depth of 12. */
 const VIEW = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -65,7 +67,25 @@ function lightSet(): ClusterLightSet {
   const radii = new Float32Array(LIGHT_COUNT);
   const sourceRadii = new Float32Array(LIGHT_COUNT);
   const weights = new Float32Array(LIGHT_COUNT);
+  /* Every third light a spot, so the cone test is compared as well as the sphere. */
+  const directions = new Float32Array(LIGHT_COUNT * 3);
+  const coneCos = new Float32Array(LIGHT_COUNT * 2);
   for (let n = 0; n < LIGHT_COUNT; n++) {
+    if (n % 3 === 0) {
+      const x = Math.sin(n * 0.7);
+      const y = -0.6;
+      const z = Math.cos(n * 1.3);
+      const length = Math.hypot(x, y, z);
+      directions[n * 3] = x / length;
+      directions[n * 3 + 1] = y / length;
+      directions[n * 3 + 2] = z / length;
+      const outer = ((12 + (n % 5) * 9) * Math.PI) / 180;
+      coneCos[n * 2] = Math.cos(outer * 0.8);
+      coneCos[n * 2 + 1] = Math.cos(outer);
+    } else {
+      coneCos[n * 2] = -1;
+      coneCos[n * 2 + 1] = -2;
+    }
     /* A closed form rather than a generator, so the numbers are the same in every browser. */
     positions[n * 3] = Math.sin(n * 1.7) * 24;
     positions[n * 3 + 1] = Math.sin(n * 0.9) * 9;
@@ -77,7 +97,31 @@ function lightSet(): ClusterLightSet {
     sourceRadii[n] = 0.1;
     weights[n] = 1;
   }
-  return { count: LIGHT_COUNT, positions, colors, radii, sourceRadii, weights };
+  /* And rectangles after the lamps, binned by their reach and never by a cone. */
+  const areas = createAreaLightBuffer(AREA_COUNT);
+  areas.count = AREA_COUNT;
+  for (let n = 0; n < AREA_COUNT; n++) {
+    areas.positions.set([Math.cos(n * 2.1) * 18, Math.sin(n * 1.3) * 6, -(4 + n * 5)], n * 3);
+    areas.colors.set([1, 0.8, 0.6], n * 3);
+    areas.right.set([1, 0, 0], n * 3);
+    areas.up.set([0, 0, 1], n * 3);
+    /* A half-height a cone test would read as a cosine, which is exactly what must not happen. */
+    areas.sizes.set([0.8, 0.5], n * 2);
+    areas.ranges?.set([4 + (n % 4)], n);
+  }
+  return {
+    count: LIGHT_COUNT,
+    positions,
+    colors,
+    radii,
+    sourceRadii,
+    weights,
+    directions,
+    coneCos,
+    areas,
+    areaFrom: 0,
+    areaCount: AREA_COUNT,
+  };
 }
 
 interface Disagreement {
@@ -95,6 +139,8 @@ interface Result {
   real: Disagreement[];
   /** Differences where the light sits within `BORDERLINE_M` of that cluster's bounds. */
   borderline: number;
+  /** Light-in-froxel pairs the cone test removed from what the sphere alone would bin. */
+  coneCulled: number;
   /** Records compared, which is the light region both binners wrote. */
   recordsCompared: number;
   recordMismatches: number;
@@ -104,9 +150,13 @@ const bounds = new Float32Array(6);
 
 /** The view-space centre of a light, matching what both binners compute. */
 function viewOf(lights: ClusterLightSet, light: number): [number, number, number] {
-  const x = lights.positions[light * 3] ?? 0;
-  const y = lights.positions[light * 3 + 1] ?? 0;
-  const z = lights.positions[light * 3 + 2] ?? 0;
+  /* A rectangle past the lamps is placed by its centre in the area buffer. */
+  const area = light >= lights.count;
+  const from = area ? (lights.areas?.positions ?? lights.positions) : lights.positions;
+  const at = area ? light - lights.count : light;
+  const x = from[at * 3] ?? 0;
+  const y = from[at * 3 + 1] ?? 0;
+  const z = from[at * 3 + 2] ?? 0;
   /* Identity view, so this is the position; kept explicit so a different view can be dropped in. */
   return [x, y, -z];
 }
@@ -137,7 +187,28 @@ function borderline(lights: ClusterLightSet, cluster: number, light: number): bo
         ? vz - (bounds[5] ?? 0)
         : 0;
   const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  return Math.abs(distance - (lights.radii[light] ?? 0)) < BORDERLINE_M;
+  const reach =
+    light >= lights.count
+      ? (lights.areas?.ranges?.[light - lights.count] ?? 0)
+      : (lights.radii[light] ?? 0);
+  if (Math.abs(distance - reach) < BORDERLINE_M) return true;
+  if (light >= lights.count) return false;
+  /* Or on the cone's edge. The view is the identity, so the axis is the direction with z flipped. */
+  const cosOuter = lights.coneCos?.[light * 2 + 1] ?? -2;
+  const d = lights.directions;
+  if (d === undefined || cosOuter <= -1) return false;
+  const gap = coneBoxGap(
+    vx,
+    vy,
+    vz,
+    d[light * 3] ?? 0,
+    d[light * 3 + 1] ?? 0,
+    -(d[light * 3 + 2] ?? 0),
+    cosOuter,
+    Math.sqrt(Math.max(0, 1 - cosOuter * cosOuter)),
+    bounds,
+  );
+  return Math.abs(gap) < BORDERLINE_M;
 }
 
 function listOf(table: Uint32Array, cluster: number): number[] {
@@ -163,6 +234,7 @@ async function main(): Promise<void> {
     clusters: CLUSTER_COUNT,
     real: [],
     borderline: 0,
+    coneCulled: 0,
     recordsCompared: 0,
     recordMismatches: 0,
   };
@@ -210,8 +282,24 @@ async function main(): Promise<void> {
       const cpuTable = createClusterTable();
       buildLightClusters(lights, VIEW, NEAR, FAR, TAN_HALF_FOV, ASPECT, cpuTable, LIGHT_COUNT);
 
+      /* What the sphere alone bins, to show the cones were exercised rather than assumed. */
+      const sphereTable = createClusterTable();
+      buildLightClusters(
+        { ...lights, directions: undefined },
+        VIEW,
+        NEAR,
+        FAR,
+        TAN_HALF_FOV,
+        ASPECT,
+        sphereTable,
+        LIGHT_COUNT,
+      );
+      for (let cluster = 0; cluster < CLUSTER_COUNT; cluster++) {
+        result.coneCulled += listOf(sphereTable, cluster).length - listOf(cpuTable, cluster).length;
+      }
+
       /* The records, which the dispatch copies verbatim and the CPU writes directly. */
-      result.recordsCompared = LIGHT_COUNT * LIGHT_TEXELS * 4;
+      result.recordsCompared = (LIGHT_COUNT + AREA_COUNT) * LIGHT_TEXELS * 4;
       for (let n = 0; n < result.recordsCompared; n++) {
         if (cpuTable[n] !== gpuTable[n]) result.recordMismatches++;
       }
@@ -243,7 +331,8 @@ async function main(): Promise<void> {
     `backend ${result.backend}\ncomputeSupported ${result.supported}\n` +
     (result.error !== null ? `error ${result.error}\n` : '') +
     `clusters ${result.clusters}\nreal disagreements ${result.real.length}\n` +
-    `borderline ${result.borderline}\nrecord mismatches ${result.recordMismatches}`;
+    `borderline ${result.borderline}\ncone culled ${result.coneCulled}\n` +
+    `record mismatches ${result.recordMismatches}`;
 }
 
 void main();

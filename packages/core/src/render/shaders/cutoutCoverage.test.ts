@@ -46,7 +46,7 @@ test('A BACK FACE OF A TWO-SIDED SURFACE IS LIT AS ITS FRONT, after its map and 
   const flip = MAIN_GLSL.indexOf('if (backFace) n = -n;');
   expect(flip).toBeGreaterThan(0);
   expect(flip).toBeGreaterThan(
-    MAIN_GLSL.indexOf('n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));'),
+    MAIN_GLSL.indexOf('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);'),
   );
   expect(flip).toBeGreaterThan(MAIN_GLSL.indexOf('n = normalize(abs(det) * n - slope);'));
 });

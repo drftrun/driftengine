@@ -3,11 +3,14 @@
  * the kernel to, and nothing at run time calls it.
  *
  * **What it spreads.** With `skinScattering: 'screen-space'`, a skin draw writes its specular to the
- * frame and its diffuse — the light that went beneath the surface — to a target of its own, with the
- * profile it scatters by in the alpha. Before anything blended is drawn, that target is blurred
- * along the screen's two axes by Burley's normalised diffusion, one width per channel, and added
- * back: light that entered a cheek leaves it a centimetre away, reddest furthest, across the
- * pixels that centimetre covers at the cheek's distance. The pre-integrated fit stays in the lit
+ * frame, the light its diffuse is made of — the light that went beneath the surface, shaded on a
+ * white surface — to a target of its own with the profile it scatters by in the alpha, and its
+ * colour to a third. Before anything blended is drawn, the light is blurred along the screen's two
+ * axes by Burley's normalised diffusion, one width per channel, multiplied by the colour at each
+ * pixel and added back: light that entered a cheek leaves it a centimetre away, reddest furthest,
+ * across the pixels that centimetre covers at the cheek's distance, and a brow stays where it is
+ * drawn. **Until 4.8.6 the coloured diffuse was spread**, which smeared every mark on a face into
+ * the skin around it and laid faint copies of each mark at the taps' offsets. The pre-integrated fit stays in the lit
  * stage for what this cannot see — a terminator's curvature — and this carries what that cannot:
  * light crossing a shadow's edge, or a nostril's rim, in the picture rather than in a fit.
  *

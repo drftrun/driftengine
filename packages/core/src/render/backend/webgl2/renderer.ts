@@ -63,7 +63,9 @@ import {
   clusteredMode,
   createClusterLightSet,
   createClusterTable,
+  clusteredLightTotal,
   fillClusterLightSet,
+  lightChannelsOf,
 } from '../../clusteredLights.ts';
 import type {
   PassContext,
@@ -88,7 +90,14 @@ import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
 import { SceneTarget } from '../../sceneTarget.ts';
 import type { ColourGradeLut } from '../../colourGrade.ts';
 import { FILM_LOOK_WITHOUT_COMPOSITE } from '../../shaders/filmLook.ts';
-import { bloomProfileWarning, bloomThresholdOf } from '../../bloomChain.ts';
+import { AMBIENT_SH_FLOATS, packAmbientSH } from '../../ambientHarmonics.ts';
+import {
+  bloomProfileWarning,
+  bloomThresholdOf,
+  defaultBloomResponse,
+  resolveBloomResponse,
+  type BloomResponse,
+} from '../../bloomChain.ts';
 import {
   createEmptyTexture2D,
   createEmptyTexture2DArray,
@@ -129,7 +138,14 @@ import {
 } from '../../lightBudget.ts';
 import { MODEL_PARAM_FLOATS, eyeAxisInWorld, packModel } from '../../surfaceModel.ts';
 import type { SurfaceModelKind } from '../../surfaceModel.ts';
-import { modelBound, skinHalfBound } from '../../shaders/flat/models.ts';
+import { lightmapRegionsBound, modelBound, skinHalfBound } from '../../shaders/flat/models.ts';
+import {
+  lightmapTexels,
+  warnRegionsWithoutPage,
+  warnUnpagedLightmap,
+  withLightmapUvs,
+} from '../../lightmap.ts';
+import type { LightmapPage } from '../../lightmap.ts';
 import type { SkinHalf } from '../../shaders/flat/models.ts';
 import { GlSkinScatter } from './skinScatter.ts';
 import {
@@ -224,6 +240,7 @@ import {
   bindAreaLights,
   bindAreaShadows,
   openCones,
+  PARTICLE_DEPTH_UNIT,
 } from '../../lightBudget.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
 import type { RenderQuality, RenderQualityOptions } from '../../renderQuality.ts';
@@ -431,6 +448,12 @@ export interface Environment extends Atmosphere {
   /** One per active light: a tile of the cookie atlas, or −1 for none. */
   lightCookies: Float32Array;
   /**
+   * One per active light: the lighting channels it lights, a mask from 1 to 255. Absent, short, or
+   * a light at 1 is the default channel every surface is on too. See `PointLightSet.lightChannels`
+   * and `SurfaceMaterial.lightChannels`.
+   */
+  lightChannels?: Float32Array;
+  /**
    * The rectangular emitters this frame, or null for none.
    *
    * A buffer rather than loose arrays, unlike the point lights: those grew their arrays one at a
@@ -508,6 +531,8 @@ export function createEnvironment(overrides: Partial<Environment> = {}): Environ
     lightIesAxes: new Float32Array(MAX_POINT_LIGHTS * 3),
     /* −1, because tile 0 is a real cookie and no light here has asked for one. */
     lightCookies: new Float32Array(MAX_POINT_LIGHTS).fill(-1),
+    /* Channel 1, the default every surface is on, so every light lights everything. */
+    lightChannels: new Float32Array(MAX_POINT_LIGHTS).fill(1),
     /* None, so the shader's loop breaks before it reads anything. */
     areaLights: null,
     activeLightWorldIndices: new Int32Array(MAX_POINT_LIGHTS).fill(-1),
@@ -618,6 +643,9 @@ export interface SkyColors {
 export { MAX_DEPTH_LAYER } from '../../depthConvention.ts';
 
 /** The identity tint, handed back after any draw that asked for one. See `drawMesh`. */
+/** The far corner of no highlight box: what an environment that names none reads. */
+const NO_HIGHLIGHT: readonly number[] = [0, 0, 0];
+
 const WHITE_TINT = new Float32Array([1, 1, 1]);
 /** The lit stage's clip plane when there is no mirror: zero, which clips nothing. */
 const NO_CLIP_PLANE = new Float32Array(4);
@@ -1364,6 +1392,23 @@ export class WebGL2Renderer implements RendererApi {
   private motionBlurScale = 1;
   /** How much of the bloom ceiling this frame takes. See `setBloom`. */
   private bloomScale = 1;
+  /** The draw's own ambient, as `packAmbientSH` writes it; zeros are the frame's. */
+  private readonly ambientSH = new Float32Array(AMBIENT_SH_FLOATS);
+  /** Scratch for a sprite's depth conversion, so a particle draw allocates nothing. */
+  private readonly spriteInverseProjection = mat4.create();
+  /** Said once: a sprite asked for a soft edge where no depth copy could be had. */
+  private warnedSpriteDepth = false;
+  /** Said once: more rectangles than the fixed arm shades, and no froxel table for the rest. */
+  private warnedAreaOverflow = false;
+  /**
+   * `uEnvironmentDials` as it stands: which chain the probe holds, the reflectivity, the gain. One
+   * vector on the device, so written whole, and kept here so a setter moving one keeps the others.
+   */
+  private readonly environmentDials = new Float32Array(3);
+  /** `uEmission` as it stands: the emissive gain and the night factor. */
+  private readonly emission = new Float32Array([1, 0]);
+  /** The ramp and each level's tint, as `resolveBloomResponse` writes them; the subtraction and white. */
+  private readonly bloomResponse = defaultBloomResponse();
   /** In scene units, once `setBloom` has moved it; null reads the profile's. */
   private bloomThresholdSet: number | null = null;
   /**
@@ -2460,9 +2505,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.activeTexture(gl.TEXTURE0 + FIXTURE_ATLAS_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.fixtureTexture);
     gl.uniform1i(u['uFixtureAtlas'] ?? null, FIXTURE_ATLAS_TEXTURE_UNIT);
-    gl.uniform1f(u['uIesAtlasRows'] ?? null, this.iesRows);
-    gl.uniform1f(u['uIesPlaneCount'] ?? null, this.iesPlanes);
-    gl.uniform1f(u['uCookieTiles'] ?? null, this.cookieTiles);
+    gl.uniform3f(u['uFixtureShape'] ?? null, this.iesRows, this.iesPlanes, this.cookieTiles);
     gl.activeTexture(gl.TEXTURE0);
   }
 
@@ -2516,7 +2559,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniformMatrix4fv(u['uView'] ?? null, false, camera.view);
 
     this.clusterTable ??= createClusterTable();
-    const lights = fillClusterLightSet(env, this.clusterLights);
+    /* The rectangles past the fixed arm's go into the table. See `ClusterLightSet.areas`. */
+    const lights = fillClusterLightSet(env, this.clusterLights, this.shadedAreaLights);
     /* A slot is read only under `POINT_SHADOWS`; see `lightHasFixture`. */
     const shadowSlots = this.quality.pointShadows ? this.lightBudget.maxLights : 0;
     buildLightClusters(
@@ -2536,7 +2580,10 @@ export class WebGL2Renderer implements RendererApi {
        */
       shadowSlots,
     );
-    gl.uniform1i(u['uClustered'] ?? null, clusteredMode(lights, lights.count, shadowSlots));
+    gl.uniform1i(
+      u['uClustered'] ?? null,
+      clusteredMode(lights, clusteredLightTotal(lights), shadowSlots),
+    );
     gl.texSubImage2D(
       gl.TEXTURE_2D,
       0,
@@ -3252,8 +3299,9 @@ export class WebGL2Renderer implements RendererApi {
      * one. Measured on hardware: WebGL2 drew neither the bend nor the bulge while WebGPU drew
      * both, which is the two-backend comparison doing exactly what it is for.
      */
-    this.warmVariants(data);
-    return new Mesh(this.gl, data, options.dynamic === true);
+    const drawn = withLightmapUvs(data);
+    this.warmVariants(drawn);
+    return new Mesh(this.gl, drawn, options.dynamic === true);
   }
 
   /**
@@ -3266,8 +3314,9 @@ export class WebGL2Renderer implements RendererApi {
    * the signal that it was abandoned.
    */
   createMeshIncremental(data: MeshData, options: MeshOptions = {}): IncrementalMesh {
-    this.warmVariants(data);
-    const { mesh, upload } = createMeshIncremental(this.gl, data, options.dynamic === true);
+    const drawn = withLightmapUvs(data);
+    this.warmVariants(drawn);
+    const { mesh, upload } = createMeshIncremental(this.gl, drawn, options.dynamic === true);
     return {
       mesh,
       upload: {
@@ -3445,6 +3494,11 @@ export class WebGL2Renderer implements RendererApi {
     return new SurfaceTexture(this.gl, sources, options, this.compressedFormats);
   }
 
+  /** A baked lightmap page, as a `lightmapModel` material's `modelMap`. See `RendererApi`. */
+  createLightmap(page: LightmapPage): SurfaceTexture {
+    return new SurfaceTexture(this.gl, lightmapTexels(page), { wrap: 'clamp', mipmap: false });
+  }
+
   /**
    * Replace a surface texture's pixels, keeping the GPU object and its sampler state.
    *
@@ -3522,7 +3576,7 @@ export class WebGL2Renderer implements RendererApi {
     const label = `flat.${variant}.${kind}.${half}`;
     const program = compileProgram(
       gl,
-      litVertexOf(variant),
+      modelVertexOf(variant, kind),
       skinHalfBound(modelBound(this.flatFragSource, kind), half),
       label,
     );
@@ -3693,6 +3747,7 @@ export class WebGL2Renderer implements RendererApi {
     this.currentMaterial = material;
     /* What the blur spreads this skin by: the last material to name a profile says. */
     const model = material?.model;
+    warnUnpagedLightmap(model, material?.modelMap);
     if (model?.kind === 'skin' && this.skinScatter !== null) {
       this.skinScatter.setProfile(
         model.profile,
@@ -3738,7 +3793,8 @@ export class WebGL2Renderer implements RendererApi {
     v[0] = material?.cutout ?? 0;
     v[1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveNow(material, translucent)];
     v[2] = this.cutoutFrame;
-    v[3] = 0;
+    /* The material's lighting channels, which the lamps' are compared with. See `uCutout`. */
+    v[3] = lightChannelsOf(material?.lightChannels);
     return v;
   }
 
@@ -3866,6 +3922,8 @@ export class WebGL2Renderer implements RendererApi {
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
       this.materialFlags[0] = 0;
       gl.uniform4iv(u['uMaterialFlags'] ?? null, this.materialFlags);
+      /* No image to cut, and the channels all the same: a material needs no albedo to name them. */
+      gl.uniform4f(u['uCutout'] ?? null, 0, 0, 0, lightChannelsOf(material?.lightChannels));
       return;
     }
     albedo.bind(gl, SURFACE_TEXTURE_UNIT);
@@ -3918,6 +3976,17 @@ export class WebGL2Renderer implements RendererApi {
    * leaves geometry that did not exactly as it is.
    */
   /**
+   * The ambient the following draws take, as nine spherical-harmonic coefficients of incoming
+   * radiance — red, green and blue of each, twenty-seven numbers — or `null` for the frame's own:
+   * the sky's gradient, or the probes'. See `ambientHarmonics.ts` for the basis and the axes.
+   *
+   * **For a thing lit by where it stands**: a consumer sampling a stage's baked volume of indirect
+   * light at a character every frame sets the result around that character's draws, and the
+   * character takes the light of its spot rather than the frame's. It replaces the diffuse ambient
+   * only — a glossy surface still reflects the probes — and it is pass state like the material,
+   * which `bindMeshPass` clears, so a mirror or a probe bake drawn after does not inherit it.
+   */
+  /**
    * How much of the environment the following draws mirror, 0 to 1.
    *
    * Pass state beside the grain, and the counterpart to it: grain is a surface being uneven,
@@ -3927,10 +3996,22 @@ export class WebGL2Renderer implements RendererApi {
    * Defaults to zero and bindMeshPass restores it, so a scene that never calls this looks
    * exactly as it did.
    */
+  setAmbientSH(coefficients: ArrayLike<number> | null): void {
+    if (this.contextLost) return;
+    packAmbientSH(coefficients, this.ambientSH);
+    this.materials.dirty();
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.gl.uniform4fv(target.uniforms['uAmbientSH[0]'] ?? null, this.ambientSH);
+    }
+    this.useFlatProgram();
+  }
+
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.writeFlatFloat('uReflectivity', Math.min(1, Math.max(0, amount)));
+    this.environmentDials[1] = Math.min(1, Math.max(0, amount));
+    this.writeFlatVector('uEnvironmentDials', this.environmentDials);
   }
 
   /**
@@ -3948,7 +4029,8 @@ export class WebGL2Renderer implements RendererApi {
   setEnvironmentGain(gain: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.writeFlatFloat('uEnvironmentGain', Math.max(0, gain));
+    this.environmentDials[2] = Math.max(0, gain);
+    this.writeFlatVector('uEnvironmentDials', this.environmentDials);
   }
 
   /**
@@ -4019,6 +4101,18 @@ export class WebGL2Renderer implements RendererApi {
     this.useFlatProgram();
   }
 
+  /** A vector of material state, two to four floats, into every flat program. */
+  private writeFlatVector(name: string, value: Float32Array): void {
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      const at = target.uniforms[name] ?? null;
+      if (value.length === 2) this.gl.uniform2fv(at, value);
+      else if (value.length === 3) this.gl.uniform3fv(at, value);
+      else this.gl.uniform4fv(at, value);
+    }
+    this.useFlatProgram();
+  }
+
   /** One int of material state, into every flat program, for `writeFlatFloat`'s reason. */
   private writeFlatInt(name: string, value: number): void {
     for (const target of this.flatTargets) {
@@ -4083,8 +4177,13 @@ export class WebGL2Renderer implements RendererApi {
   setSurfaceRelief(amount: number, cyclesPerMetre = 60): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.writeFlatFloat('uRelief', Math.min(1, Math.max(0, amount)));
-    this.writeFlatFloat('uReliefCycles', Math.max(0.01, cyclesPerMetre));
+    const strength = Math.min(1, Math.max(0, amount));
+    const cycles = Math.max(0.01, cyclesPerMetre);
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.gl.uniform2f(target.uniforms['uRelief'] ?? null, strength, cycles);
+    }
+    this.useFlatProgram();
   }
 
   /**
@@ -4142,7 +4241,8 @@ export class WebGL2Renderer implements RendererApi {
   setEmissiveGain(gain: number): void {
     if (this.contextLost) return;
     this.materials.dirty();
-    this.writeFlatFloat('uEmissiveGain', gain);
+    this.emission[0] = gain;
+    this.writeFlatVector('uEmission', this.emission);
   }
 
   /* -- Instanced meshes --------------------------------------------------------------- */
@@ -4254,6 +4354,7 @@ export class WebGL2Renderer implements RendererApi {
     options: TranslucentMeshOptions,
   ): void {
     if (this.contextLost) return;
+    warnRegionsWithoutPage(this.currentMaterial?.model, data.lightmapRegions);
     const mesh = batch.mesh;
     /* Nor a batch of a mesh with nothing in it: see `Mesh.indexCount`. */
     if (!mesh.complete || mesh.indexCount === 0) return;
@@ -4767,8 +4868,9 @@ export class WebGL2Renderer implements RendererApi {
     const { gl } = this;
     const u = batch.uniforms;
     gl.useProgram(batch.program);
-    batch.upload(gl, data);
+    batch.upload(gl, data, camera.position);
     batch.bindMaterial(gl);
+    if (batch.material === 'sprite') this.bindSpriteFades(batch, camera);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, this.viewProjFor(camera));
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     gl.uniform1f(u['uTime'] ?? null, timeSeconds);
@@ -4798,6 +4900,48 @@ export class WebGL2Renderer implements RendererApi {
     if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     batch.drawTo(gl, data.count);
     if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
+  }
+
+  /**
+   * A sprite's two fades and the depth copy the soft one reads. The copy is the frame's opaque
+   * depth, so it is taken only in the frame's own picture: in a mirror or a probe's face it would
+   * be another view's, and the edge stays hard there. Without a scene target there is no copy at
+   * all, and the renderer says so once rather than drawing a hard edge that was asked to be soft.
+   */
+  private bindSpriteFades(batch: ParticleBatch, camera: Camera): void {
+    const { gl } = this;
+    const u = batch.uniforms;
+    const scene = this.sceneTarget;
+    let depth: WebGLTexture | null = null;
+    if (batch.softDepth > 0 && !this.reflectionPassActive && !this.probePassActive) {
+      depth = scene?.snapshotDepth(true) ?? null;
+      if (depth === null && !this.warnedSpriteDepth) {
+        this.warnedSpriteDepth = true;
+        console.warn(
+          "WebGL2: a 'sprite' asked for a soft edge, which reads a copy of the frame's depth, and " +
+            'this profile keeps none — screenEffects is off, or the driver refused the copy. The ' +
+            'edge is hard.',
+        );
+      }
+    }
+    gl.activeTexture(gl.TEXTURE0 + PARTICLE_DEPTH_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, depth ?? this.emptyTexture2D);
+    gl.uniform1i(u['uDepth'] ?? null, PARTICLE_DEPTH_UNIT);
+    gl.uniform4f(u['uFade'] ?? null, batch.softDepth, batch.cameraFade, depth === null ? 0 : 1, 0);
+    mat4.invert(this.spriteInverseProjection, camera.projection);
+    const inverse = this.spriteInverseProjection;
+    gl.uniform4f(
+      u['uDepthToViewZ'] ?? null,
+      inverse[10] ?? 0,
+      inverse[14] ?? 0,
+      inverse[11] ?? 0,
+      inverse[15] ?? 1,
+    );
+    gl.uniform2f(
+      u['uViewport'] ?? null,
+      scene?.frameWidth ?? gl.drawingBufferWidth,
+      scene?.frameHeight ?? gl.drawingBufferHeight,
+    );
   }
 
   /** Build a batch for electrical arcs. `capacity` is in segments, not arcs. */
@@ -5918,7 +6062,7 @@ export class WebGL2Renderer implements RendererApi {
       const label = `flat.${variant}.${kind}.${half}`;
       const program = compileProgram(
         gl,
-        litVertexOf(variant),
+        modelVertexOf(variant, kind),
         skinHalfBound(modelBound(this.flatFragSource, kind), half),
         label,
       );
@@ -6800,10 +6944,17 @@ export class WebGL2Renderer implements RendererApi {
    * and wrong for a day whose exposure spans 2.5 to 14: a courtyard blooming at noon, or candles
    * never blooming at night. A caller whose exposure moves passes what it wants on screen over the
    * exposure. Omitted leaves it where it was, so a caller that never passes one keeps the profile's.
+   *
+   * **`response` is how a colour comes in past the threshold and what colour each octave of the
+   * halo takes** — a ramp in place of the subtraction, and a tint a level — held until moved like
+   * the threshold; `null` goes back to the subtraction and white. See `BloomResponse`: it is what
+   * matches a stage built for another engine's bloom, whose tints are how a strength past 1 is
+   * asked for.
    */
-  setBloom(scale: number, threshold?: number): void {
+  setBloom(scale: number, threshold?: number, response?: BloomResponse | null): void {
     this.bloomScale = Math.min(Math.max(scale, 0), 1);
     if (threshold !== undefined) this.bloomThresholdSet = bloomThresholdOf(threshold);
+    if (response !== undefined) resolveBloomResponse(response, this.bloomResponse);
   }
 
   /**
@@ -7364,6 +7515,7 @@ export class WebGL2Renderer implements RendererApi {
         ? {
             strength: bloomStrength,
             threshold: this.bloomThresholdSet ?? this.quality.bloomThreshold,
+            response: this.bloomResponse,
           }
         : undefined;
 
@@ -7699,6 +7851,19 @@ export class WebGL2Renderer implements RendererApi {
   bindMeshPass(camera: Camera, env: Environment): void {
     /* The pass's own material is reopened, so the next draw opens one. See `materialChanges.ts`. */
     this.materials.dirty();
+    /* Rectangles past the fixed arm's are the froxel table's, and without it nobody shades them. */
+    if (
+      !this.warnedAreaOverflow &&
+      !this.quality.clusteredLights &&
+      (env.areaLights?.count ?? 0) > this.shadedAreaLights
+    ) {
+      this.warnedAreaOverflow = true;
+      console.warn(
+        `WebGL2: ${env.areaLights?.count ?? 0} rectangular lights and ${this.shadedAreaLights} ` +
+          'shaded without clusteredLights: the rest are not drawn. Turn clusteredLights on, and the ' +
+          'froxel table shades every one past the fixed ones, unshadowed.',
+      );
+    }
     /*
      * Captured here rather than taken as an argument to `endFrame`, because this is the
      * camera the world was drawn with and a caller should not have to hand it over twice.
@@ -7810,6 +7975,13 @@ export class WebGL2Renderer implements RendererApi {
     this.materialHasMaps = false;
     this.currentMaterial = null;
     this.currentSurfaceTexture = null;
+    /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
+    this.ambientSH.fill(0);
+    /* No reflection and an environment at its own brightness; the emission the world asks for. */
+    this.environmentDials[1] = 0;
+    this.environmentDials[2] = 1;
+    this.emission[0] = env.emissiveGain;
+    this.emission[1] = env.nightFactor;
     for (const target of this.flatTargets) {
       this.gl.useProgram(target.program);
       this.writeMeshPassState(target.uniforms, camera, env);
@@ -8036,13 +8208,18 @@ export class WebGL2Renderer implements RendererApi {
     this.oitWeight = 0;
     this.ditherFade = 0;
     gl.uniform2f(u['uWriteMode'] ?? null, 0, 0);
-    /* No environment reflection unless a caller asks, so existing scenes are unchanged. */
-    gl.uniform1f(u['uReflectivity'] ?? null, 0);
-    /* 1, not 0: this one is a multiplier and its identity is one. See `setEnvironmentGain`. */
-    gl.uniform1f(u['uEnvironmentGain'] ?? null, 1);
+    /* The draw's own ambient as it stands, which `bindMeshPass` has just cleared: a program built
+       in the middle of a pass takes what the caller set. See `setAmbientSH`. */
+    gl.uniform4fv(u['uAmbientSH[0]'] ?? null, this.ambientSH);
+    /*
+     * Which chain the probe holds, no environment reflection, and an environment at its own
+     * brightness — the reflectivity's identity is 0 and the gain's is 1 — as `bindMeshPass` set
+     * them, or as a draw since has: a program built in the middle of a pass takes what stands.
+     * See `setSurfaceReflectivity` and `setEnvironmentGain`.
+     */
+    gl.uniform3fv(u['uEnvironmentDials'] ?? null, this.environmentDials);
     /* And no relief unless a caller asks, for the same reason. */
-    gl.uniform1f(u['uRelief'] ?? null, 0);
-    gl.uniform1f(u['uReliefCycles'] ?? null, 60);
+    gl.uniform2f(u['uRelief'] ?? null, 0, 60);
     /* And no relief read off a surface texture either, for the same reason. */
     gl.uniform1f(u['uTextureRelief'] ?? null, 0);
     /* The mirror's plane in a reflection pass, and zero — which clips nothing — in every other. */
@@ -8060,8 +8237,8 @@ export class WebGL2Renderer implements RendererApi {
       this.reflectionPassActive ? this.reflectionAtmosphereY : (camera.position[1] ?? 0),
       this.quality.underwaterAtmosphere,
     );
-    gl.uniform1f(u['uEmissiveGain'] ?? null, env.emissiveGain);
-    gl.uniform1f(u['uNightFactor'] ?? null, env.nightFactor);
+    /* The emissive gain and the night factor, as the pass set them. See `uEmission`. */
+    gl.uniform2fv(u['uEmission'] ?? null, this.emission);
     /* Absent means zero, so a world written before this term existed adds nothing. */
     gl.uniform1f(u['uNightEmissive'] ?? null, env.nightEmissive ?? 0);
     /*
@@ -8083,8 +8260,16 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uShadowMaxSlope'] ?? null, this.quality.directionalShadowMaxSlope);
     gl.uniform1i(u['uShadowFilterTaps'] ?? null, this.quality.shadowFilterTaps);
     gl.uniform3fv(u['uHighlightMin'] ?? null, env.highlightMin);
-    gl.uniform3fv(u['uHighlightMax'] ?? null, env.highlightMax);
-    gl.uniform1f(u['uHighlightGain'] ?? null, env.highlightGain);
+    /* The far corner, and the gain in its w. See `uHighlightMax`. */
+    /* An environment written by hand may leave the box out; then there is none, as before. */
+    const max = env.highlightMax ?? NO_HIGHLIGHT;
+    gl.uniform4f(
+      u['uHighlightMax'] ?? null,
+      max[0] ?? 0,
+      max[1] ?? 0,
+      max[2] ?? 0,
+      env.highlightGain ?? 0,
+    );
 
     bindPointLights(gl, u, env, this.quality.pointLightFalloff);
     this.bindClusters(u, camera, env);
@@ -8184,7 +8369,8 @@ export class WebGL2Renderer implements RendererApi {
        * between them; there is one array, so `RenderQuality.environmentPrefilter` decides what the
        * convolution writes and a profile that changes it has to bake again.
        */
-      gl.uniform1f(u['uEnvironmentPrefiltered'] ?? null, this.quality.environmentPrefilter ? 1 : 0);
+      this.environmentDials[0] = this.quality.environmentPrefilter ? 1 : 0;
+      gl.uniform3fv(u['uEnvironmentDials'] ?? null, this.environmentDials);
       gl.uniform1f(u['uEnvironmentMaxLod'] ?? null, array?.ggxMaxLevel ?? 0);
       /*
        * The map's edge, which used to be `exp2(maxLod)` and is not any more: the chain stops one
@@ -8383,12 +8569,17 @@ export class WebGL2Renderer implements RendererApi {
     if (this.quality.cullDraws && this.occluded(mesh.bounds, model)) return;
     this.drawBudget.ask();
     this.takeMaterial();
-    /* Skin under the screen-space blur draws its two halves: the frame's, then at once its diffuse. */
+    /*
+     * Skin under the screen-space blur draws its halves: the frame's, then at once its diffuse's
+     * light and its colour, each into the blur's own target.
+     */
     const splits = this.skinSplits();
     this.drawMeshHalf(mesh, model, depthLayer, tint, splits ? 'scene' : 'whole');
     if (splits && this.skinScatter !== null) {
       this.skinScatter.begin();
       this.drawMeshHalf(mesh, model, depthLayer, tint, 'diffuse');
+      this.skinScatter.beginAlbedo();
+      this.drawMeshHalf(mesh, model, depthLayer, tint, 'albedo');
       this.sceneTarget?.bind();
     }
   }
@@ -8574,8 +8765,9 @@ export class WebGL2Renderer implements RendererApi {
      * depth 1.0 against a buffer cleared to 1.0, and under `LESS` it would not draw at
      * all. Film, caustics and text lie flush on surfaces for the same reason.
      */
-    /* A skin's diffuse half is the same surface again: it finds the depth its frame half wrote. */
-    const again = half === 'diffuse';
+    /* A skin's diffuse and colour halves are the same surface again: each finds the depth its
+       frame half wrote. */
+    const again = half === 'diffuse' || half === 'albedo';
     gl.depthFunc(again ? gl.EQUAL : this.reversedDepth ? gl.GREATER : gl.LESS);
     if (again) gl.depthMask(false);
     /* A dithered cutout in a multisampled frame with no temporal resolve: its share becomes the
@@ -9031,6 +9223,62 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * One layer of the declared probe grid from an image, the way `setEnvironmentImage` fills a
+   * single probe: the same equirectangular image of linear RGB floats, projected onto the capture
+   * cube and prefiltered into that layer, the others left as they are. Returns false — and says
+   * why — where there is no probe, no grid, or no such layer.
+   *
+   * **What it is for**: a scene baked somewhere else. Another engine's reflection captures are
+   * images taken where each one stands; a consumer fits them to a lattice — for each point, the
+   * capture whose reach holds it — and hands each point its image here, where `bakeProbe` would
+   * have drawn this engine's own world into it.
+   *
+   * `options.irradiance` decides, at grid scope as a bake's does, whether the grid also lights the
+   * scene's diffuse ambient. A grid that crossfades writes the set being swept, as a bake does.
+   */
+  setProbeLayerImage(
+    layer: number,
+    image: {
+      readonly width: number;
+      readonly height: number;
+      readonly data: Float32Array;
+    },
+    options?: ProbeBakeOptions,
+  ): boolean {
+    if (this.contextLost) return false;
+    const probe = this.probeCapture;
+    const array = this.probeArray;
+    const grid = this.probes;
+    const sweeps = this.probeSweeps;
+    if (probe === null || array === null || grid === null || sweeps === null) {
+      console.warn(
+        'Renderer: setProbeLayerImage needs a reflection probe (`reflectionProbeSize`) and a grid ' +
+          'declared with setProbeGrid; the image was ignored.',
+      );
+      return false;
+    }
+    if (!Number.isInteger(layer) || layer < 0 || layer >= grid.layers) {
+      console.warn(
+        `Renderer: setProbeLayerImage was given layer ${layer}, and the grid has ${grid.layers}.`,
+      );
+      return false;
+    }
+    if (!probe.upload(this.gl, equirectToCubeFaces(image, probe.size))) return false;
+    this.probeAmbient = options?.irradiance ?? true;
+    this.environmentPrefilter?.run(
+      this.gl,
+      probe,
+      array,
+      sweeps.writeLayer(layer),
+      ENVIRONMENT_TEXTURE_UNIT,
+      this.quality.environmentPrefilterSamples,
+      this.quality.environmentPrefilter,
+    );
+    sweeps.baked(layer);
+    return true;
+  }
+
+  /**
    * Draw a volume of light: a beam from a lamp, a shaft through a window, the cone under a
    * street light.
    *
@@ -9420,6 +9668,15 @@ const NO_MODEL_PARAMS = new Float32Array(MODEL_PARAM_FLOATS);
  * The lit vertex stage a program of this variant compiles: the standard programs' and the cloth's,
  * which `modelProgram` pairs a model's fragment stage with.
  */
+/**
+ * The vertex stage a model's program draws with: the variant's own, but for a lightmapped instanced
+ * batch, whose tint lane is each instance's region of the page. See `lightmap.ts`.
+ */
+function modelVertexOf(variant: string, kind: SurfaceModelKind): string {
+  const vertex = litVertexOf(variant);
+  return kind === 'lightmap' && variant === 'instanced' ? lightmapRegionsBound(vertex) : vertex;
+}
+
 function litVertexOf(variant: string): string {
   if (variant.startsWith('cloth')) {
     const eight = variant[5] === '8';

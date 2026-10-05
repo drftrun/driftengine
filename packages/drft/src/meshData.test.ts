@@ -152,3 +152,33 @@ describe('texture-array layers', () => {
     ).not.toThrow();
   });
 });
+
+describe('lightmap coordinates', () => {
+  it('refuses a lightmapUvs array that is not two floats a vertex', () => {
+    expect(() => validateMeshData({ ...base(), lightmapUvs: new Float32Array(4) })).toThrow(
+      /lightmapUvs has 4 floats for 3 vertices/,
+    );
+  });
+
+  /*
+   * They ride the grain and relief lanes, so a mesh asking for both would lose one of the two
+   * without a word. A lane of zeros is what a builder writes for a mesh that asked for neither.
+   */
+  it('REFUSES THEM BESIDE GRAIN OR RELIEF, AND ACCEPTS THEM BESIDE LANES OF ZEROS', () => {
+    const lightmapUvs = new Float32Array(6);
+    expect(() =>
+      validateMeshData({ ...base(), lightmapUvs, grain: new Float32Array([0, 0.5, 0]) }),
+    ).toThrow(/lightmapUvs and grain or relief/);
+    expect(() =>
+      validateMeshData({ ...base(), lightmapUvs, relief: new Float32Array([0, 0, 1]) }),
+    ).toThrow(/lightmapUvs and grain or relief/);
+    expect(() =>
+      validateMeshData({
+        ...base(),
+        lightmapUvs,
+        grain: new Float32Array(3),
+        relief: new Float32Array(3),
+      }),
+    ).not.toThrow();
+  });
+});

@@ -15,6 +15,11 @@
  *     /refraction.html?variant=ramp      thickness ramped across the pane by the channel's .w lane
  *     /refraction.html?variant=nolane    the same absorbing pane carrying no channel array at all
  *
+ * Any of them with `&map=1` wears a normal map of ripples, which the bending follows rather than
+ * the flat sheet's own normal; `&lit=1` draws the bending variants lit, where the lit block's
+ * shading normal is the one taken. `&map=1` against `&map=1&lit=1` is the pair that must agree: the
+ * map is read through one function either way.
+ *
  * **The pattern behind the pane is high-contrast vertical bars**, because a displacement is only
  * measurable against something whose position is known: a flat backdrop refracts to itself and
  * every assertion about bending would pass on a shader that does nothing.
@@ -122,7 +127,7 @@ function backdrop(): MeshData {
  * The `.w` lane of the per-vertex channel carries the thickness multiplier. `ramp` fills it 0 to 1
  * across the sheet; every other variant leaves it at 1 so the draw's own thickness stands.
  */
-function pane(variant: Variant): MeshData {
+function pane(variant: Variant, mapped: boolean): MeshData {
   const CELLS = 16;
   const HALF = 5;
   const verts = (CELLS + 1) * (CELLS + 1);
@@ -131,6 +136,7 @@ function pane(variant: Variant): MeshData {
   const colors = new Float32Array(verts * 3);
   const emissive = new Float32Array(verts);
   const channel = new Float32Array(verts * 4);
+  const uvs = new Float32Array(verts * 2);
 
   for (let iy = 0; iy <= CELLS; iy++) {
     for (let ix = 0; ix <= CELLS; ix++) {
@@ -140,6 +146,8 @@ function pane(variant: Variant): MeshData {
       positions[i * 3] = (u - 0.5) * 2 * HALF;
       positions[i * 3 + 1] = (v - 0.5) * 2 * HALF;
       positions[i * 3 + 2] = 0;
+      uvs[i * 2] = u;
+      uvs[i * 2 + 1] = v;
       /* Flat: one normal for the whole sheet, turned by the model matrix along with the geometry. */
       normals[i * 3 + 2] = 1;
       /* Mid grey, and it never shows: a refracting draw replaces its own shading with what is
@@ -195,7 +203,40 @@ function pane(variant: Variant): MeshData {
     const roughness = new Float32Array(verts).fill(0.15);
     return { positions, normals, colors, emissive, channel, specular, roughness, indices };
   }
-  return { positions, normals, colors, emissive, channel, indices };
+  return mapped
+    ? { positions, normals, colors, emissive, channel, uvs, indices }
+    : { positions, normals, colors, emissive, channel, indices };
+}
+
+/**
+ * Ripples as a tangent-space normal map: the slope of `sin(4πu) sin(4πv)`, steep enough that the
+ * bend it adds is several bars wide at the page's strength.
+ */
+function ripples(): HTMLCanvasElement {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (context === null) throw new Error('refraction: no 2D context for the ripple map');
+  const image = context.createImageData(size, size);
+  const k = 4 * Math.PI;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x + 0.5) / size;
+      const v = (y + 0.5) / size;
+      const dx = 0.6 * Math.cos(k * u) * Math.sin(k * v);
+      const dy = 0.6 * Math.sin(k * u) * Math.cos(k * v);
+      const length = Math.hypot(dx, dy, 1);
+      const at = (y * size + x) * 4;
+      image.data[at] = Math.round((-dx / length) * 127.5 + 127.5);
+      image.data[at + 1] = Math.round((-dy / length) * 127.5 + 127.5);
+      image.data[at + 2] = Math.round((1 / length) * 127.5 + 127.5);
+      image.data[at + 3] = 255;
+    }
+  }
+  context.putImageData(image, 0, 0);
+  return canvas;
 }
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -219,7 +260,10 @@ async function main(): Promise<void> {
   const renderer: RendererApi = created.renderer;
 
   const bars = renderer.createMesh(backdrop());
-  const glass = variant === 'none' ? null : renderer.createMesh(pane(variant));
+  const mapped = asked.get('map') === '1';
+  const litBend = asked.get('lit') === '1';
+  const glass = variant === 'none' ? null : renderer.createMesh(pane(variant, mapped));
+  const rippled = mapped ? { normal: renderer.createSurfaceTexture(ripples()) } : null;
 
   const env = createEnvironment();
   env.ambient = [0.3, 0.3, 0.3];
@@ -415,6 +459,7 @@ async function main(): Promise<void> {
         variant === 'ramp' ||
         variant === 'nolane';
       const frost = FROST[variant];
+      renderer.setMaterial(rippled);
       if (frost !== undefined) {
         renderer.drawTranslucentMesh(glass, model, 1, {
           fog: false,
@@ -422,7 +467,7 @@ async function main(): Promise<void> {
         });
       } else {
         renderer.drawTranslucentMesh(glass, model, 1, {
-          lit: false,
+          lit: litBend,
           fog: false,
           refraction: strength,
           refractTint: absorbing ? GLASS : undefined,

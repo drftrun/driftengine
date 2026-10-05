@@ -3,19 +3,21 @@
  * that spread them. `skinBlur.ts` is what the blur computes and why; this is where it runs.
  *
  * **What the renderer hands it.** Each skin draw, recorded into the frame with its diffuse taken
- * out, is recorded a second time here with the diffuse alone. When the frame first draws something
- * blended — or ends, if nothing is — the renderer ends its pass and calls `drawDiffuse`, which
- * replays them into a half-float target against the frame's own depth; resolves the depth; and
- * calls `spread`, which blurs across into a second target and then down, adding into the frame.
+ * out, is recorded twice more here: with the diffuse's light alone, and with its colour alone.
+ * When the frame first draws something blended — or ends, if nothing is — the renderer ends its
+ * pass and calls `drawDiffuse`, which replays them into two half-float targets against the frame's
+ * own depth; resolves the depth; and calls `spread`, which blurs the light across into a third
+ * target and then down, multiplied by the colour, adding into the frame.
  *
  * **The draws are commands, not calls**, for the reason `LatePass` keeps its own pool: the frame
  * graph's is spent at every flush, and these are replayed after the flush that ends the frame's
  * pass. Each holds the per-draw ring slot its frame half used, and those stay valid until the
  * encoder is replaced, which is after this has run.
  *
- * **What it costs**: every skin draw twice; two half-float targets the size of the frame, and a
- * third multisampled one under multisampling; a depth resolve; and two full-screen passes that
- * leave at once wherever no skin was drawn.
+ * **What it costs**: every skin draw three times — the frame's half, the light alone, and the
+ * colour alone, which the spread light is multiplied by; three half-float targets the size of the
+ * frame, and two multisampled ones under multisampling; a depth resolve; and two full-screen passes
+ * that leave at once wherever no skin was drawn.
  */
 import { SKIN_PROFILES } from '../../skinBlur.ts';
 import { SKINBLUR_BINDINGS, SKIN_BLUR_FRAG_WGSL } from '../../shaders/generated/skinBlur.wgsl.ts';
@@ -42,14 +44,20 @@ export class SkinScatterPass {
   private readonly linear: GPUSampler;
   private readonly nearest: GPUSampler;
   private readonly commands: CommandPool = createCommandPool(16);
+  /** The same draws again, through the pipelines that write the skin's colour alone. */
+  private readonly albedoCommands: CommandPool = createCommandPool(16);
   /** Each profile's scatter distance per channel, in metres: four floats a profile. */
   private readonly profiles = new Float32Array(SKIN_PROFILES * 4);
   private diffuse: GPUTexture | null = null;
   private diffuseMsaa: GPUTexture | null = null;
   private across: GPUTexture | null = null;
+  private albedo: GPUTexture | null = null;
+  private albedoMsaa: GPUTexture | null = null;
   private diffuseView: GPUTextureView | null = null;
   private diffuseMsaaView: GPUTextureView | null = null;
   private acrossView: GPUTextureView | null = null;
+  private albedoView: GPUTextureView | null = null;
+  private albedoMsaaView: GPUTextureView | null = null;
   private groupAcross: GPUBindGroup | null = null;
   private groupDown: GPUBindGroup | null = null;
   private groupsDepth: GPUTextureView | null = null;
@@ -59,6 +67,7 @@ export class SkinScatterPass {
     this.layout = createPostStageLayout(device, BINDINGS.uniforms, BINDINGS.uniformSize, [
       { binding: BINDINGS.textures.uSkin },
       { binding: BINDINGS.textures.uDepth, filterable: false },
+      { binding: BINDINGS.textures.uAlbedo },
     ]);
     this.uniforms = device.createBuffer({
       label: 'skin.blurUniforms',
@@ -87,6 +96,11 @@ export class SkinScatterPass {
   /** A command for one skin draw's diffuse half, filled by the caller. */
   take(): DrawCommand {
     return this.commands.commands[takeCommand(this.commands)] as DrawCommand;
+  }
+
+  /** A command for the same draw's colour half, filled by the caller. */
+  takeAlbedo(): DrawCommand {
+    return this.albedoCommands.commands[takeCommand(this.albedoCommands)] as DrawCommand;
   }
 
   /** What one profile scatters, per channel, in metres: the last material to name it says. */
@@ -119,17 +133,21 @@ export class SkinScatterPass {
       });
     this.diffuse = make('skin.diffuse', 1);
     this.across = make('skin.across', 1);
+    this.albedo = make('skin.albedo', 1);
     this.diffuseMsaa = samples > 1 ? make('skin.diffuseMsaa', samples) : null;
+    this.albedoMsaa = samples > 1 ? make('skin.albedoMsaa', samples) : null;
     this.diffuseView = this.diffuse.createView();
     this.acrossView = this.across.createView();
+    this.albedoView = this.albedo.createView();
     this.diffuseMsaaView = this.diffuseMsaa?.createView() ?? null;
+    this.albedoMsaaView = this.albedoMsaa?.createView() ?? null;
     this.groupAcross = null;
     this.groupDown = null;
   }
 
   /**
-   * Every kept draw's diffuse into the target, against the frame's own depth, which it reads and
-   * does not write. Called with no pass open on `encoder`.
+   * Every kept draw's diffuse into the target, and its colour into the other, against the frame's
+   * own depth, which they read and do not write. Called with no pass open on `encoder`.
    */
   drawDiffuse(
     encoder: GPUCommandEncoder,
@@ -157,6 +175,26 @@ export class SkinScatterPass {
       issue(pass, this.commands.commands[i] as DrawCommand);
     }
     pass.end();
+
+    const colour = this.albedoView;
+    if (colour === null) return;
+    const albedoPass = encoder.beginRenderPass({
+      label: 'skin.albedo',
+      colorAttachments: [
+        {
+          view: this.albedoMsaaView ?? colour,
+          resolveTarget: this.albedoMsaaView === null ? undefined : colour,
+          clearValue: [0, 0, 0, 0],
+          loadOp: 'clear',
+          storeOp: this.albedoMsaaView === null ? 'store' : 'discard',
+        },
+      ],
+      depthStencilAttachment: { view: depth, depthLoadOp: 'load', depthStoreOp: 'store' },
+    });
+    for (let i = 0; i < this.albedoCommands.taken; i += 1) {
+      issue(albedoPass, this.albedoCommands.commands[i] as DrawCommand);
+    }
+    albedoPass.end();
   }
 
   /**
@@ -177,6 +215,7 @@ export class SkinScatterPass {
   ): void {
     const diffuse = this.diffuse;
     if (diffuse === null || this.diffuseView === null || this.acrossView === null) return;
+    if (this.albedoView === null) return;
     if (this.groupAcross === null || this.groupDown === null || this.groupsDepth !== depth) {
       this.groupAcross = this.group('skin.blurAcross', this.diffuseView, depth);
       this.groupDown = this.group('skin.blurDown', this.acrossView, depth);
@@ -244,6 +283,7 @@ export class SkinScatterPass {
   /** Spent at the frame's start: the kept draws were this frame's. */
   reset(): void {
     resetPool(this.commands);
+    resetPool(this.albedoCommands);
   }
 
   dispose(): void {
@@ -264,6 +304,8 @@ export class SkinScatterPass {
         { binding: BINDINGS.textures.uSkin.sampler, resource: this.linear },
         { binding: BINDINGS.textures.uDepth.texture, resource: depth },
         { binding: BINDINGS.textures.uDepth.sampler, resource: this.nearest },
+        { binding: BINDINGS.textures.uAlbedo.texture, resource: this.albedoView ?? skin },
+        { binding: BINDINGS.textures.uAlbedo.sampler, resource: this.nearest },
       ],
     });
   }
@@ -291,6 +333,8 @@ export class SkinScatterPass {
          too wherever a pixel is square. */
       f[base + fields.uFocal.offset / 4] = ((projection[5] as number) * height) / 2;
       f.set(this.profiles, base + fields.uProfiles.offset / 4);
+      /* The colour is applied once, on the axis that adds into the frame. */
+      f[base + fields.uApplyAlbedo.offset / 4] = axis;
     }
     this.device.queue.writeBuffer(this.uniforms, 0, f);
   }
@@ -299,11 +343,17 @@ export class SkinScatterPass {
     this.diffuse?.destroy();
     this.diffuseMsaa?.destroy();
     this.across?.destroy();
+    this.albedo?.destroy();
+    this.albedoMsaa?.destroy();
     this.diffuse = null;
     this.diffuseMsaa = null;
     this.across = null;
+    this.albedo = null;
+    this.albedoMsaa = null;
     this.diffuseView = null;
     this.diffuseMsaaView = null;
     this.acrossView = null;
+    this.albedoView = null;
+    this.albedoMsaaView = null;
   }
 }

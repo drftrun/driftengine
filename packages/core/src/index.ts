@@ -454,6 +454,12 @@ export type { ReflectionOptions, ReflectiveSample } from './render/gi/reflection
  */
 export { GRADE_PLACEHOLDER_SIZE, MAX_GRADE_SIZE, identityGradeLut } from './render/colourGrade.ts';
 export type { ColourGradeLut } from './render/colourGrade.ts';
+/**
+ * How bloom answers past its threshold — a ramp in place of the subtraction, and a tint for each
+ * of the pyramid's `BLOOM_LEVELS` octaves — the third argument of `setBloom`.
+ */
+export { BLOOM_LEVELS } from './render/bloomChain.ts';
+export type { BloomResponse } from './render/bloomChain.ts';
 export { probeDevice } from './render/backend/probe.ts';
 export type { ProbeVerdict } from './render/backend/probe.ts';
 /*
@@ -491,15 +497,28 @@ export type { ClothBindingData } from './render/clothBindingData.ts';
  * A frozen descriptor made by a factory and set as `SurfaceMaterial.model`; each is a pipeline of
  * its own, compiled the first time a draw asks.
  */
-export { anisotropicModel, eyeModel, hairModel, skinModel } from './render/surfaceModel.ts';
+export {
+  anisotropicModel,
+  eyeModel,
+  hairModel,
+  lightmapModel,
+  skinModel,
+} from './render/surfaceModel.ts';
 export type {
   AnisotropicModel,
   EyeModel,
   HairModel,
+  LightmapModel,
   SkinModel,
   SurfaceModel,
   SurfaceModelKind,
 } from './render/surfaceModel.ts';
+/*
+ * A baked lightmap: the page a consumer decoded, which `createLightmap` uploads as a lightmapped
+ * material's `modelMap`, and the region of it a material or an instance reads.
+ */
+export { WHOLE_PAGE } from './render/lightmap.ts';
+export type { LightmapPage, LightmapRegion } from './render/lightmap.ts';
 /*
  * A skinned cloth solved where the renderer can: compute on WebGPU, the CPU under WebGL2. A function
  * rather than a renderer method so only a game that imports it carries the solver.

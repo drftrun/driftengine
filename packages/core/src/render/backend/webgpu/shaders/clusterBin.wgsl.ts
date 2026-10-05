@@ -102,6 +102,41 @@ fn centreDistanceSq(light: u32, centre: vec3<f32>) -> f32 {
   return dot(d, d);
 }
 
+/**
+ * Whether a spot's cone misses this froxel: \`coneBoxGap\` in \`clusteredLights.ts\`, the same
+ * arithmetic in the same order — the froxel's bounding sphere against the infinite cone, its apex
+ * included, which can keep a light the shader would not draw and never drop one it would. A light
+ * with no cone carries a cosine of -2 and never reaches the test.
+ */
+fn outsideCone(light: u32, apex: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> bool {
+  let cosOuter = bitcast<f32>(lights[light * LIGHT_TEXELS + 3u].y);
+  if (cosOuter <= -1.0) {
+    return false;
+  }
+  let world = bitcast<vec3<f32>>(lights[light * LIGHT_TEXELS + 2u].yzw);
+  let a = (params.view * vec4<f32>(world, 0.0)).xyz;
+  let axis = vec3<f32>(a.x, a.y, -a.z);
+  let len = length(axis);
+  /* The shader measures the cone against the direction as given, so a long one is a wider cone. */
+  if (len <= 1e-6 || cosOuter / len <= -1.0) {
+    return false;
+  }
+  let cosA = cosOuter / len;
+  let sinA = sqrt(max(0.0, 1.0 - cosA * cosA));
+  let unit = axis / len;
+  let extent = (hi - lo) * 0.5;
+  let toCentre = (lo + hi) * 0.5 - apex;
+  let along = dot(toCentre, unit);
+  let lengthSq = dot(toCentre, toCentre);
+  let across = sqrt(max(lengthSq - along * along, 0.0));
+  let reach = sqrt(lengthSq);
+  var distance = cosA * across - along * sinA;
+  if (along < -sinA * reach) {
+    distance = reach;
+  }
+  return distance - length(extent) > 0.0;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let id = gid.x;
@@ -161,12 +196,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   /* Increasing light index, which is what makes the list sorted without a sort. */
   for (var light: u32 = 0u; light < params.lightCount; light = light + 1u) {
-    let radius = bitcast<f32>(lights[light * LIGHT_TEXELS].w);
+    /* A rectangle carries its reach negated, which is how the lit pass tells it from a lamp. */
+    let signedRadius = bitcast<f32>(lights[light * LIGHT_TEXELS].w);
+    let radius = abs(signedRadius);
     let v = viewOf(light);
     if (v.z + radius <= 0.0) {
       continue;
     }
     if (distanceSqToBounds(v, lo, hi) > radius * radius) {
+      continue;
+    }
+    if (signedRadius >= 0.0 && outsideCone(light, v, lo, hi)) {
       continue;
     }
 

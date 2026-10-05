@@ -9,6 +9,8 @@
  *     /emissive.html                  the four panels
  *     /emissive.html?emissivemap=0    every panel unmapped, which is the control
  *     /emissive.html?backend=webgpu   the other backend
+ *     /emissive.html?bloom=1&hdr=1&bloomthreshold=0.3&bloomramp=2&bloomtints=1,0.5,0.5
+ *                                     bloom, ramped in and its finest octave tinted red
  *
  *   - **Panel 1 — no map.** A uniform glow at the mesh's own `emissive`. Whatever the other three
  *     do, this is what they are doing it against.
@@ -44,7 +46,7 @@ import type {
   SurfaceTextureHandle,
   Vec3,
 } from '../../packages/core/src/index';
-import { DEV_RENDERER, askedQuality } from './askedQuality';
+import { DEV_RENDERER, askedBloomResponse, askedQuality } from './askedQuality';
 
 const BACKGROUND: Vec3 = [0.02, 0.025, 0.032];
 /**
@@ -102,6 +104,9 @@ async function main(): Promise<void> {
   const stats = document.getElementById('stats') as HTMLElement;
   const created = await createRenderer(canvas, askedQuality(), DEV_RENDERER);
   const renderer: RendererApi = created.renderer;
+  /* `?bloomramp=`, `?bloomtints=`: how bloom answers, the per-frame half of `?bloom=`. */
+  const response = askedBloomResponse();
+  if (response !== null) renderer.setBloom(1, undefined, response);
   const query = new URLSearchParams(location.search);
   const useMap = query.get('emissivemap') !== '0';
 

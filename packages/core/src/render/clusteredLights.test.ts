@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { MAX_POINT_LIGHTS, resolvePointLights } from './lightBudget.ts';
+import { createAreaLightBuffer } from './areaLights.ts';
 import {
   CLUSTER_COUNT,
   CLUSTER_TEXELS,
@@ -14,9 +15,11 @@ import {
   NO_SHADOW_SLOT,
   buildLightClusters,
   clusterBase,
+  clusteredLightTotal,
   LIGHT_RECORD,
   LIGHT_TEXELS,
   lightBase,
+  lightChannelsOf,
   NO_IES_PROFILE,
   POINT_LIGHT_COS_INNER,
   POINT_LIGHT_COS_OUTER,
@@ -424,6 +427,44 @@ describe('binning lights into froxels', () => {
     expect(rows.has(1), 'including the row the gate found missing').toBe(true);
   });
 
+  /*
+   * A spot at the centre of cluster (8, 4, 8) aimed along +x, its sphere ten metres: the sphere
+   * reaches all three froxels below, and the cone reaches one of them.
+   *
+   * At slice 8 (depth 10 to 13.3352) tile 12 spans x 5.132 to 8.554 and tile 4 spans -6.843 to
+   * -3.849, both in row 4 (y within 0.8555). Row 0 of tile 8 spans y -7.699 to -5.132.
+   *
+   * - (12, 4, 8): its centre is 6.073 m along the axis and 0.332 m off it, inside a 10° cone.
+   * - (4, 4, 8): its centre is 6.124 m behind the apex, and its bounding sphere 2.398 m: past
+   *   `A + 90°` from the axis, so the nearest point of the cone is the apex and the gap is 3.73.
+   * - (8, 0, 8): its centre is 6.42 m off the axis and 0.086 m along it, so 6.31 m from the cone
+   *   against a bounding sphere of 2.27.
+   */
+  it('A SPOT IS BINNED INTO THE FROXELS ITS CONE REACHES, NOT EVERY ONE ITS SPHERE TOUCHES', () => {
+    const at = (i: number, j: number, k: number): number => i + j * 16 + k * 16 * 9;
+    const point = lightSet([0.7698, 0, -12], [10]);
+    const spot: ClusterLightSet = {
+      ...point,
+      directions: new Float32Array([1, 0, 0]),
+      coneCos: new Float32Array([Math.cos((8 * Math.PI) / 180), Math.cos((10 * Math.PI) / 180)]),
+    };
+    const pointTable = createClusterTable();
+    bin(point, pointTable);
+    const lit = new Set(occupied(pointTable).map(([c]) => c));
+    for (const c of [at(8, 4, 8), at(12, 4, 8), at(4, 4, 8), at(8, 0, 8)]) {
+      expect(lit.has(c), `the sphere reaches ${c}`).toBe(true);
+    }
+
+    const spotTable = createClusterTable();
+    bin(spot, spotTable);
+    const coned = new Set(occupied(spotTable).map(([c]) => c));
+    expect(coned.has(at(8, 4, 8)), 'the froxel holding the apex').toBe(true);
+    expect(coned.has(at(12, 4, 8)), 'down the axis').toBe(true);
+    expect(coned.has(at(4, 4, 8)), 'behind the apex').toBe(false);
+    expect(coned.has(at(8, 0, 8)), 'beside the cone').toBe(false);
+    expect(coned.size).toBeLessThan(lit.size / 4);
+  });
+
   it('allocates nothing after the first call', () => {
     const table = createClusterTable();
     const set = lightSet([0.7698, 0, -12], [0.5]);
@@ -522,7 +563,29 @@ describe('the two-texel record', () => {
     expect(floatOf(record[LIGHT_RECORD.iesProfile] ?? 0)).toBe(NO_IES_PROFILE);
     expect(floatOf(record[LIGHT_RECORD.cookie] ?? 0)).toBe(NO_IES_PROFILE);
     expect(floatOf(record[LIGHT_RECORD.iesAxisZ] ?? 0)).toBe(0);
-    expect(record[19]).toBe(0);
+    /* Channel 1, which is what the shader takes for a plain light it does not read further. */
+    expect(floatOf(record[LIGHT_RECORD.channels] ?? 0)).toBe(1);
+  });
+
+  /*
+   * **A light on channels of its own is read to its fifth texel**, where its mask sits: a plain
+   * light is taken to be on channel 1 without being read, so a light anywhere else has to say so
+   * through the fixture flag, or the clustered arm would light every surface with it. A mask that
+   * is not a whole number from 1 to 255 is channel 1 on both arms.
+   */
+  it('A LIGHT ON CHANNELS OF ITS OWN CARRIES THEM, AND IS READ AS FAR AS THEY ARE', () => {
+    const record = new Uint32Array(LIGHT_TEXELS * 4);
+    writeLightRecord(oneLight({ channels: new Float32Array([2]) }), 0, 0, record, 0);
+    expect(floatOf(record[LIGHT_RECORD.channels] ?? 0)).toBe(2);
+    expect((record[LIGHT_RECORD.sizeAndWeight] ?? 0) & LIGHT_FIXTURE_FLAG).not.toBe(0);
+    expect(lightHasFixture(oneLight({ channels: new Float32Array([1]) }), 0, 0)).toBe(false);
+    expect(lightHasFixture(oneLight({ channels: new Float32Array([3]) }), 0, 0)).toBe(true);
+    for (const bad of [0, 256, 1.5, Number.NaN]) {
+      writeLightRecord(oneLight({ channels: new Float32Array([bad]) }), 0, 0, record, 0);
+      expect(floatOf(record[LIGHT_RECORD.channels] ?? 0), String(bad)).toBe(1);
+    }
+    expect(lightChannelsOf(7)).toBe(7);
+    expect(lightChannelsOf(undefined)).toBe(1);
   });
 
   it('flags a light with a shadow slot, a cone, a profile or a cookie, and nothing else', () => {
@@ -622,6 +685,7 @@ describe('the two-texel record', () => {
         iesProfiles: new Float32Array(0),
         iesAxes: new Float32Array(0),
         cookies: new Float32Array(0),
+        axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
         heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
         heldWeights: new Float32Array(MAX_POINT_LIGHTS),
       },
@@ -640,3 +704,71 @@ describe('the two-texel record', () => {
     expect(resolved.weights[0]).not.toBe(Math.fround(0.3));
   });
 });
+
+/*
+ * **A rectangle past the fixed arm's is a record in the table**, told from a lamp by its negative
+ * radius — its reach — with its axes and extents where a spot keeps its fixture, and binned into
+ * the froxels its reach touches without a cone test, whose cosine slot it holds a half-height in.
+ */
+describe('a rectangle in the froxel table', () => {
+  const floatOf = (bits: number): number =>
+    new Float32Array(new Uint32Array([bits]).buffer)[0] ?? 0;
+  function withAreas(count: number): ClusterLightSet {
+    const areas = createAreaLightBuffer(3);
+    areas.count = 3;
+    areas.positions.set([9, 9, 9, 0.7698, 0, -12, 1, 2, 3]);
+    areas.colors.set([0, 0, 0, 2, 1, 0.5, 0, 0, 0]);
+    areas.right.set([0, 0, 0, 1, 0, 0, 0, 0, 0]);
+    areas.up.set([0, 0, 0, 0, 0, 1, 0, 0, 0]);
+    areas.sizes.set([1, 1, 0.6, 0.4, 1, 1]);
+    areas.twoSided.set([0, 1, 0]);
+    areas.ranges?.set([1, 0.5, 1]);
+    return {
+      count,
+      positions: new Float32Array(count * 3),
+      colors: new Float32Array(count * 3),
+      radii: new Float32Array(count),
+      sourceRadii: new Float32Array(count),
+      weights: new Float32Array(count).fill(1),
+      areas,
+      areaFrom: 1,
+      areaCount: 1,
+    };
+  }
+
+  it('A RECTANGLE IS A RECORD WITH ITS REACH NEGATED AND ITS SHAPE IN THE FIXTURE TEXELS', () => {
+    const lights = withAreas(0);
+    expect(clusteredLightTotal(lights)).toBe(1);
+    expect(lightHasFixture(lights, 0, 0)).toBe(true);
+    const record = new Uint32Array(LIGHT_TEXELS * 4);
+    writeLightRecord(lights, 0, 0, record, 0);
+    expect(floatOf(record[LIGHT_RECORD.positionX] ?? 0)).toBeCloseTo(0.7698);
+    expect(floatOf(record[LIGHT_RECORD.radius] ?? 0)).toBe(-0.5);
+    expect(floatOf(record[LIGHT_RECORD.colorR] ?? 0)).toBe(2);
+    expect((record[LIGHT_RECORD.sizeAndWeight] ?? 0) & LIGHT_FIXTURE_FLAG).not.toBe(0);
+    expect(floatOf(record[LIGHT_RECORD.shadowSlot] ?? 0), 'two-sided').toBe(1);
+    expect(floatOf(record[LIGHT_RECORD.directionX] ?? 0), 'right').toBe(1);
+    expect(floatOf(record[LIGHT_RECORD.cosInner] ?? 0), 'half-width').toBeCloseTo(0.6);
+    expect(floatOf(record[LIGHT_RECORD.cosOuter] ?? 0), 'half-height').toBeCloseTo(0.4);
+    expect(floatOf(record[LIGHT_RECORD.iesAxisZ] ?? 0), 'up').toBe(1);
+    expect(clusteredMode(lights, 1, 0)).toBe(2);
+  });
+
+  /*
+   * At the centre of cluster (8, 4, 8), whose box is 0.77 m to its nearest face: a reach of half a
+   * metre stays inside it, and a half-height of 0.4 read as a cone's cosine would cull it from the
+   * very froxel it sits in.
+   */
+  it('is binned by its reach into the froxel it stands in, and no cone test drops it', () => {
+    const table = createClusterTable();
+    buildLightClusters(withAreas(0), VIEW_IDENTITY, 1, 1000, TAN_60, 16 / 9, table, 0);
+    const holding: number[] = [];
+    for (let cluster = 0; cluster < CLUSTER_COUNT; cluster++) {
+      if ((table[clusterBase(cluster)] ?? 0) > 0) holding.push(cluster);
+    }
+    expect(holding).toEqual([8 + 4 * 16 + 8 * 16 * 9]);
+  });
+});
+
+const VIEW_IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const TAN_60 = 0.5773502691896258;

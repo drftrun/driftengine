@@ -12,7 +12,7 @@
  * only ever reaches forward — to the next plane, and from the last to the repeat of the first — so
  * past its last row it meets the texture's edge and the clamp, never a cookie. A cookie's own
  * half-texel inset keeps it inside its band on both axes. The shader finds the bands from
- * `textureSize` and `uIesAtlasRows`, so the fold cost no uniform.
+ * `textureSize` and `uFixtureShape.x`, so the fold cost no uniform.
  *
  * **What it gives up**: every texel is four half floats where a profile needed one, a few kilobytes
  * a scene; and setting either table rebuilds the whole texture, which a consumer does once per set.

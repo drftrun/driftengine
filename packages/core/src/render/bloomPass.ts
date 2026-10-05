@@ -159,7 +159,14 @@ export class BloomPass {
    * `threshold` is in scene units, so it only separates a light from white paint on a target
    * that kept the range. The caller owns that decision and the warning that goes with it.
    */
-  run(scene: WebGLTexture, width: number, height: number, threshold: number): WebGLTexture | null {
+  run(
+    scene: WebGLTexture,
+    width: number,
+    height: number,
+    threshold: number,
+    /** The ramp, then each level's tint: `resolveBloomResponse`'s floats. */
+    response: Float32Array,
+  ): WebGLTexture | null {
     if (!this.ensureSize(width, height)) return null;
     const { gl } = this;
     const levels = this.levels;
@@ -182,6 +189,7 @@ export class BloomPass {
     gl.bindTexture(gl.TEXTURE_2D, scene);
     gl.uniform1i(this.prefilterUniforms['uSource'] ?? null, 0);
     gl.uniform1f(this.prefilterUniforms['uThreshold'] ?? null, threshold);
+    gl.uniform1f(this.prefilterUniforms['uRamp'] ?? null, response[0] ?? 0);
     this.uploadTexel(this.prefilterUniforms, width, height);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -204,8 +212,13 @@ export class BloomPass {
      * every octave at once. Additive blending rather than a second target to ping-pong through:
      * a level is only ever read while a *different* level is bound, so there is no feedback.
      */
+    /*
+     * Each level's tint rides the blend: the level being added onto is multiplied by its own as the
+     * octave below is added, and the deepest by `uScale` on the first draw, the only one reading it
+     * before anything has been added to it. White everywhere is `ONE, ONE` exactly.
+     */
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.blendFunc(gl.ONE, gl.CONSTANT_COLOR);
     gl.useProgram(this.upsampleProgram);
     gl.uniform1i(this.upsampleUniforms['uSource'] ?? null, 0);
     gl.uniform1f(this.upsampleUniforms['uRadius'] ?? null, BLOOM_FILTER_RADIUS_UV);
@@ -213,12 +226,23 @@ export class BloomPass {
       const target = levels[index - 1];
       const source = levels[index];
       if (target === undefined || source === undefined) break;
+      const deepest = index === levels.length - 1;
+      const into = 1 + (index - 1) * 3;
+      const from = 1 + index * 3;
+      gl.blendColor(response[into] ?? 1, response[into + 1] ?? 1, response[into + 2] ?? 1, 1);
+      gl.uniform3f(
+        this.upsampleUniforms['uScale'] ?? null,
+        deepest ? (response[from] ?? 1) : 1,
+        deepest ? (response[from + 1] ?? 1) : 1,
+        deepest ? (response[from + 2] ?? 1) : 1,
+      );
       gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
       gl.viewport(0, 0, target.width, target.height);
       gl.bindTexture(gl.TEXTURE_2D, source.texture);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
+    gl.blendColor(0, 0, 0, 0);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

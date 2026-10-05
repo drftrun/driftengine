@@ -766,7 +766,8 @@ const INSTANCE_ATTRIBUTES: GPUVertexAttribute[] = [
   { shaderLocation: 12, offset: 16, format: 'float32x4' },
   { shaderLocation: 13, offset: 32, format: 'float32x4' },
   { shaderLocation: 14, offset: 48, format: 'float32x4' },
-  { shaderLocation: 15, offset: 64, format: 'float32x3' },
+  /* The tint and, in w, the opacity. See `INSTANCE_FLOATS`. */
+  { shaderLocation: 15, offset: 64, format: 'float32x4' },
 ];
 
 /** The locations above, as the set the base layout must stand clear of on an instanced draw. */

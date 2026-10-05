@@ -400,7 +400,8 @@ export class Mesh {
       gl.vertexAttribDivisor(location, 1);
     }
     gl.enableVertexAttribArray(15);
-    gl.vertexAttribPointer(15, 3, gl.FLOAT, false, stride, 64);
+    /* The tint and, in w, the opacity: one attribute for both. See `INSTANCE_FLOATS`. */
+    gl.vertexAttribPointer(15, 4, gl.FLOAT, false, stride, 64);
     gl.vertexAttribDivisor(15, 1);
     gl.bindVertexArray(null);
     return vao;

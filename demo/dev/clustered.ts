@@ -11,6 +11,12 @@
  *
  * The two differ in one construction-time flag. Same lamps, same floor, same camera, same clock.
  *
+ *     /clustered.html?channels=1         every other column of lamps on lighting channel 2, which
+ *                                        the floor, on channel 1, does not take: half the lamps dark
+ *     /clustered.html?channels=1&floorchannels=3
+ *                                        the floor on both channels, so every lamp lights it again
+ *                                        and the frame is the one without channels, to the pixel
+ *
  * **Why forty and why apart.** The fixed path shades against the first `MAX_POINT_LIGHTS` entries
  * of the array, in order, so lamps 16 to 39 are simply absent from it; clustering bins all of them
  * and a fragment reads only the froxel it is in. Spacing them so their pools do not overlap makes
@@ -94,6 +100,13 @@ async function main(): Promise<void> {
   const radii = new Float32Array(LAMPS);
   const sourceRadii = new Float32Array(LAMPS);
   const weights = new Float32Array(LAMPS);
+  const asked = new URLSearchParams(location.search);
+  /* `?channels=1`: every other column on channel 2. See the header. */
+  const channels = new Float32Array(LAMPS).fill(1);
+  if (asked.get('channels') === '1') {
+    for (let n = 0; n < LAMPS; n++) if ((n % COLUMNS) % 2 === 0) channels[n] = 2;
+  }
+  const floorChannels = Number(asked.get('floorchannels') ?? 1);
   for (let n = 0; n < LAMPS; n++) {
     const [x, y, z] = lampAt(n);
     positions[n * 3] = x;
@@ -121,6 +134,7 @@ async function main(): Promise<void> {
     lightRadii: radii,
     lightSourceRadii: sourceRadii,
     lightWeights: weights,
+    lightChannels: channels,
   });
 
   const camera = new Camera();
@@ -154,7 +168,7 @@ async function main(): Promise<void> {
   function renderFrame(): void {
     renderer.beginFrame(BACKGROUND);
     renderer.bindMeshPass(camera, env);
-    renderer.setMaterial(null);
+    renderer.setMaterial(floorChannels === 1 ? null : { lightChannels: floorChannels });
     renderer.drawMesh(plane, model);
     renderer.endFrame();
   }

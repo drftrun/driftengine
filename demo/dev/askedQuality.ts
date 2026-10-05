@@ -21,6 +21,7 @@
  */
 import { identityGradeLut } from '../../packages/core/src/index';
 import type {
+  BloomResponse,
   ColourGradeLut,
   CreateRendererOptions,
   PhotometricProfile,
@@ -282,6 +283,22 @@ function positive(search: URLSearchParams, key: string): number | undefined {
   if (Number.isFinite(value) && value > 0) return value;
   console.warn(`${key}=${asked} is not a positive number, so it was ignored.`);
   return undefined;
+}
+
+/**
+ * How bloom answers, from `?bloomramp=` (scene units a colour comes in over, 0 the subtraction) and
+ * `?bloomtints=` (three numbers a level, finest first), or null where neither is asked: for a page
+ * to hand `setBloom`, which is where a response lives, being a frame's rather than a profile's.
+ */
+export function askedBloomResponse(search: string = location.search): BloomResponse | null {
+  const asked = new URLSearchParams(search);
+  const ramp = asked.get('bloomramp');
+  const tints = asked.get('bloomtints');
+  if (ramp === null && tints === null) return null;
+  return {
+    ...(ramp === null ? {} : { ramp: Number(ramp) }),
+    ...(tints === null ? {} : { tints: tints.split(',').map(Number) }),
+  };
 }
 
 /**

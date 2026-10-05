@@ -71,6 +71,11 @@ export function cullInstances(
     out.tints[kept * 3] = tints[i * 3] as number;
     out.tints[kept * 3 + 1] = tints[i * 3 + 1] as number;
     out.tints[kept * 3 + 2] = tints[i * 3 + 2] as number;
+    if (out.alphas !== undefined) out.alphas[kept] = data.alphas?.[i] ?? 1;
+    const regions = data.lightmapRegions;
+    if (regions !== undefined && out.lightmapRegions !== undefined) {
+      for (let k = 0; k < 4; k++) out.lightmapRegions[kept * 4 + k] = regions[i * 4 + k] as number;
+    }
     kept++;
   }
   out.count = kept;

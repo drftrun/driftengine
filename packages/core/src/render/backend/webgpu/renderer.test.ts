@@ -8,11 +8,11 @@ import { DEPTH_CUTOUT_VERT_FIELDS, DEPTH_VERT_FIELDS } from './depthPass.ts';
 import { flatFragmentBindings, flatVariant, flatVertexBindings } from './flatPass.ts';
 import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
-import { BLOOM_PREFILTER_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
+import { BLOOM_PREFILTER_FIELDS, BLOOM_UPSAMPLE_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
 import { SCATTER_DEPTH_FIELDS } from './scatterPass.ts';
 import { TEXT_VERT_FIELDS } from './textPass.ts';
 import { DEFAULT_TEXT_STYLE } from '../../textLayout.ts';
-import { bloomLevelSizes } from '../../bloomChain.ts';
+import { BLOOM_LEVELS, bloomLevelSizes } from '../../bloomChain.ts';
 import { MAX_POINT_LIGHTS } from '../../lightBudget.ts';
 import {
   resolveRenderQuality,
@@ -76,6 +76,7 @@ function stubSurface(limits: Record<string, number> = {}, features: string[] = [
     /* An inset points both of these at its rectangle and `endInset` puts them back. */
     setViewport: vi.fn(),
     setScissorRect: vi.fn(),
+    setBlendConstant: vi.fn(),
   };
   /* A compute pass records nothing but a pipeline, a bind group and a dispatch. */
   const computePass = {
@@ -1494,6 +1495,68 @@ describe('the webgpu renderer', () => {
     expect(threshold(), 'a scale alone leaves the threshold where it was').toBe(0.25);
   });
 
+  /*
+   * **A frame may say how bloom answers**: a ramp in place of the subtraction, and a tint a level.
+   * The ramp is the prefilter's; the deepest level's tint is the scale on the first draw up, and
+   * every other level's is the blend constant of the draw adding onto it. Asked for by a stage
+   * built for another engine's bloom, whose low threshold washed the frame white under the
+   * subtraction.
+   */
+  it('A FRAME MAY SAY HOW BLOOM ANSWERS: A RAMP, AND A TINT EACH LEVEL TAKES', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ bloom: 1, hdrScene: true, bloomThreshold: 0.1 }),
+    );
+    const block = (): Float32Array => {
+      const writes = stub.device.queue.writeBuffer.mock.calls.filter(
+        (call) => (call[0] as { label?: string }).label === 'post.bloomUniforms',
+      );
+      return new Float32Array(writes[writes.length - 1]?.[2] as ArrayBuffer);
+    };
+    const ramp = (BLOOM_PREFILTER_FIELDS['uRamp']?.offset ?? -1) / 4;
+    const scale = (BLOOM_UPSAMPLE_FIELDS['uScale']?.offset ?? -1) / 4;
+    const frame = (): void => {
+      stub.pass.setBlendConstant.mockClear();
+      stub.encoder.beginRenderPass.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.endFrame();
+    };
+    frame();
+    expect(block()[ramp], 'the subtraction, until a frame says otherwise').toBe(0);
+    expect(stub.pass.setBlendConstant.mock.calls.every(([c]) => (c as number[])[0] === 1)).toBe(
+      true,
+    );
+
+    const tints = [0.5, 0.5, 0.5, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0.25, 0.5, 2, 0, 0, 3];
+    renderer.setBloom(1, undefined, { ramp: 2, tints });
+    frame();
+    /* One draw down into every level past the first, so their count is the deepest level's index. */
+    const deepest = stub.encoder.beginRenderPass.mock.calls.filter(
+      ([d]) => String(d.label ?? '') === 'post.bloomDown',
+    ).length;
+    expect(deepest, 'a frame with room for a few levels').toBeGreaterThan(1);
+    expect(block()[ramp]).toBe(2);
+    /* Drawn up from the deepest: each constant is the tint of the level being added onto. */
+    const constants = stub.pass.setBlendConstant.mock.calls.map(([c]) =>
+      Array.from(c as number[]).slice(0, 3),
+    );
+    expect(constants.at(-1), 'level 0, the finest').toEqual([0.5, 0.5, 0.5]);
+    expect(constants.at(-2), 'level 1').toEqual([1, 0, 0]);
+    /* The deepest level the frame has, read by the first draw up, at the slot after the rest. */
+    const slot = ((BLOOM_LEVELS + 1) * 256) / 4;
+    expect(Array.from(block().subarray(slot + scale, slot + scale + 3))).toEqual(
+      tints.slice(deepest * 3, deepest * 3 + 3),
+    );
+    expect(
+      Array.from(
+        block()
+          .subarray((BLOOM_LEVELS * 256) / 4 + scale)
+          .slice(0, 3),
+      ),
+    ).toEqual([1, 1, 1]);
+  });
+
   /**
    * **A reconstruction's bloom is the resolved picture's, at the drawing buffer's size.** Read off
    * the scene target instead, it bloomed the jittered render: a lamp's bulb smaller than a render
@@ -2713,9 +2776,9 @@ describe('the webgpu renderer', () => {
     const off = (name: string): number => (fields[name]?.offset ?? -4) / 4;
 
     /* From the environment, not from a constant. */
-    expect(floats[off('uEmissiveGain')]).toBeCloseTo(0.25);
-    expect(floats[off('uNightFactor')]).toBeCloseTo(0.5);
-    expect(floats[off('uHighlightGain')]).toBeCloseTo(1.5);
+    expect(floats[off('uEmission')]).toBeCloseTo(0.25);
+    expect(floats[off('uEmission') + 1]).toBeCloseTo(0.5);
+    expect(floats[off('uHighlightMax') + 3], 'the gain, in the far corner').toBeCloseTo(1.5);
     expect([0, 1, 2].map((k) => floats[off('uHighlightMin') + k])).toEqual([
       expect.closeTo(0.1),
       expect.closeTo(0.2),
@@ -2724,7 +2787,7 @@ describe('the webgpu renderer', () => {
 
     /* Constants, matching `renderer.ts` — an unwritten uniform is 0 and 0 is wrong for both. */
     expect(floats[off('uGrain')]).toBe(1);
-    expect(floats[off('uReliefCycles')]).toBe(60);
+    expect(floats[off('uRelief') + 1]).toBe(60);
     expect(floats[off('uOpacity')]).toBe(1);
     expect(floats[off('uOutputExposure')]).toBe(1);
     expect(ints[off('uOutputTransform')]).toBe(0);
@@ -6299,13 +6362,14 @@ describe('a shading model', () => {
   });
 
   /*
-   * **Screen-space skin draws in two halves and is spread once, and only where the profile asked.**
-   * Under `skinScattering: 'screen-space'` a skin draw lands in the frame through its scene half,
-   * and its diffuse half is replayed when the frame first draws something blended: the frame's pass
-   * broken once for the diffuse, the blur's two axes, and the frame reopened. A skin drawn after
-   * that is the whole surface again, and a standard draw never splits. By default, none of it.
+   * **Screen-space skin draws in three halves and is spread once, and only where the profile
+   * asked.** Under `skinScattering: 'screen-space'` a skin draw lands in the frame through its
+   * scene half, and its diffuse's light and its colour are replayed when the frame first draws
+   * something blended: the frame's pass broken once for the light, once for the colour, the blur's
+   * two axes, and the frame reopened. A skin drawn after that is the whole surface again, and a
+   * standard draw never splits. By default, none of it.
    */
-  it('SCREEN-SPACE SKIN DRAWS TWO HALVES AND IS SPREAD ONCE, BEFORE THE FIRST BLENDED DRAW', () => {
+  it('SCREEN-SPACE SKIN DRAWS THREE HALVES AND IS SPREAD ONCE, BEFORE THE FIRST BLENDED DRAW', () => {
     for (const skinScattering of ['screen-space', 'pre-integrated'] as const) {
       const stub = stubSurface();
       const quality = resolveRenderQuality({ skinScattering });
@@ -6324,27 +6388,32 @@ describe('a shading model', () => {
       renderer.endFrame();
       const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
       const skinPasses = passes.filter((label) => label.startsWith('skin.'));
-      /* Each lit draw's model and halves, by their switches' ids: skin 7, scene 9, diffuse 10. */
+      /* Each lit draw's model and halves, by their switches' ids: skin 7, scene 9, diffuse 10,
+         colour 11. */
       const halves = stub.pass.setPipeline.mock.calls
         .map(([p]) => (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor)
         .map((d) => d?.fragment?.constants)
         .filter((c) => c !== undefined && c['7'] !== undefined)
-        .map((c) => `${c?.['7']}${c?.['9']}${c?.['10']}`);
+        .map((c) => `${c?.['7']}${c?.['9']}${c?.['10']}${c?.['11']}`);
       if (skinScattering === 'screen-space') {
         expect(skinPasses).toEqual([
           'skin.diffuse',
+          'skin.albedo',
           'skin.blurAcross',
           'skin.blurDown',
           'skin.scattered',
         ]);
-        expect(halves, "the first skin's frame half").toContain('110');
-        expect(halves, 'its diffuse half, replayed once').toContain('101');
-        expect(halves.filter((h) => h === '101')).toHaveLength(1);
-        expect(halves, 'the skin drawn after the spread, whole').toContain('100');
+        expect(halves, "the first skin's frame half").toContain('1100');
+        expect(halves, 'its diffuse half, replayed once').toContain('1010');
+        expect(halves.filter((h) => h === '1010')).toHaveLength(1);
+        expect(halves, 'its colour half, replayed once').toContain('1001');
+        expect(halves.filter((h) => h === '1001')).toHaveLength(1);
+        expect(halves, 'the skin drawn after the spread, whole').toContain('1000');
       } else {
         expect(skinPasses).toEqual([]);
-        expect(halves).not.toContain('110');
-        expect(halves).not.toContain('101');
+        expect(halves).not.toContain('1100');
+        expect(halves).not.toContain('1010');
+        expect(halves).not.toContain('1001');
       }
     }
     /* A skin drawn after the frame's first blended draw is the whole surface, skin before it or not. */
@@ -6378,6 +6447,7 @@ describe('a shading model', () => {
     const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
     expect(passes.filter((label) => label.startsWith('skin.'))).toEqual([
       'skin.diffuse',
+      'skin.albedo',
       'skin.blurAcross',
       'skin.blurDown',
       'skin.scattered',
@@ -8514,4 +8584,47 @@ describe('a mesh pass after the present', () => {
     }
     expect(r.temporalHistory.frameIndex, 'two frames, two temporal frames').toBe(2);
   });
+});
+
+/*
+ * **A pass's first material keeps its maps, frame after frame.** `setMaterial` skips the lookup
+ * when the maps it is given are the ones held, and opening a pass bound the blank group while
+ * holding the last pass's normal, ORM, emissive and model maps — so a pass whose first material
+ * was the last of the pass before drew with the stand-ins from the second frame on while its flags
+ * said the maps were bound. Any scene of one material: a metal read its roughness off a blank
+ * texel, a mirror blurred and a lit side took the sun as a dielectric's. WebGL2 never did.
+ */
+it('A PASS THAT OPENS ON THE MATERIAL THE LAST ONE CLOSED ON STILL BINDS ITS MAPS', () => {
+  const stub = stubSurface();
+  const renderer = freshRenderer(stub);
+  const { camera, env } = stubScene();
+  const mesh = stubMesh(renderer);
+  const orm = renderer.createSurfaceTexture(
+    { width: 1, height: 1 } as unknown as TexImageSource,
+    {},
+  );
+  const groupsNaming = (view: unknown) =>
+    new Set(
+      stub.device.createBindGroup.mock.results
+        .filter((_, k) =>
+          Array.from(stub.device.createBindGroup.mock.calls[k]?.[0].entries ?? []).some(
+            (entry) => entry.resource === view,
+          ),
+        )
+        .map((result) => result.value),
+    );
+  const drawnWith = (): unknown[] => stub.pass.setBindGroup.mock.calls.map(([, group]) => group);
+  for (let frame = 0; frame < 3; frame++) {
+    stub.pass.setBindGroup.mockClear();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ orm });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const withMap = groupsNaming(orm.view);
+    expect(
+      drawnWith().some((group) => withMap.has(group)),
+      `frame ${frame} draws with a group holding the map`,
+    ).toBe(true);
+  }
 });

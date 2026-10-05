@@ -26,13 +26,23 @@ const NAMES = [
   'uLightWeight[0]',
   'uLightDir[0]',
   'uLightCone[0]',
+  'uLightIesAxis[0]',
 ];
 
-function fakeGl(): { gl: WebGL2RenderingContext; seen: Map<string, number> } {
+function fakeGl(): {
+  gl: WebGL2RenderingContext;
+  seen: Map<string, number>;
+  values: Map<string, Float32Array>;
+} {
   const seen = new Map<string, number>();
+  const values = new Map<string, Float32Array>();
   const names = NAMES;
   const gl = {
     uniform1i: () => {},
+    uniform4fv: (location: unknown, value: Float32Array) => {
+      seen.set(String(location), value.length);
+      values.set(String(location), Float32Array.from(value));
+    },
     uniform3fv: (location: unknown, value: Float32Array) =>
       seen.set(String(location), value.length),
     uniform1fv: (location: unknown, value: Float32Array) =>
@@ -42,7 +52,7 @@ function fakeGl(): { gl: WebGL2RenderingContext; seen: Map<string, number> } {
   } as unknown as WebGL2RenderingContext;
   const uniforms: Record<string, WebGLUniformLocation> = {};
   for (const name of names) uniforms[name] = name as unknown as WebGLUniformLocation;
-  return { gl, seen: seen as Map<string, number> };
+  return { gl, seen: seen as Map<string, number>, values };
 }
 
 function uniforms(): Record<string, WebGLUniformLocation> {
@@ -74,6 +84,32 @@ test('every light array reaches its uniform at full length, whatever the caller 
    */
   expect(seen.get('uLightDir[0]')).toBe(MAX_POINT_LIGHTS * 3);
   expect(seen.get('uLightCone[0]')).toBe(MAX_POINT_LIGHTS * 2);
+  /* The azimuth with the channels in w, four a light. */
+  expect(seen.get('uLightIesAxis[0]')).toBe(MAX_POINT_LIGHTS * 4);
+});
+
+/*
+ * **The uniform path carries a light's channels beside its azimuth**, in the lane the axis leaves:
+ * channel 1 for every light unless one names others, and channel 1 again for a mask that is not one.
+ * Read off what reaches `uLightIesAxis`, which is where the fixed arm reads them.
+ */
+test("A LIGHT'S CHANNELS REACH THE UNIFORM PATH IN THE AXIS'S FOURTH LANE", () => {
+  const { gl, values } = fakeGl();
+  const channels = new Float32Array(MAX_POINT_LIGHTS).fill(1);
+  channels[0] = 2;
+  channels[1] = 300;
+  const axes = new Float32Array(MAX_POINT_LIGHTS * 3);
+  axes[1] = 1;
+  const env = createEnvironment({ lightCount: 3, lightChannels: channels, lightIesAxes: axes });
+  bindPointLights(gl, uniforms(), env, 'smooth');
+  const sent = values.get('uLightIesAxis[0]') ?? new Float32Array(0);
+  expect(Array.from(sent.subarray(0, 4)), 'the axis, then channel 2').toEqual([0, 1, 0, 2]);
+  expect(sent[7], 'a mask past 255 is channel 1').toBe(1);
+  expect(sent[11], 'and an unnamed light is on channel 1').toBe(1);
+
+  const { gl: plainGl, values: plain } = fakeGl();
+  bindPointLights(plainGl, uniforms(), createEnvironment({ lightCount: 1 }), 'smooth');
+  expect(plain.get('uLightIesAxis[0]')?.[3], 'an environment naming no channels').toBe(1);
 });
 
 test('a short array is replaced rather than passed on, and says so once', () => {

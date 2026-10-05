@@ -1,5 +1,6 @@
 import { FOG_GLSL } from './fog.ts';
 import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
+import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
 import { MAX_POINT_LIGHTS } from '../lightBudget.ts';
 
 /**
@@ -87,6 +88,11 @@ layout(location = 6) in float aAlpha;
 layout(location = 7) in float aAge;
 layout(location = 8) in float aSeed;
 layout(location = 9) in vec3 aVelocity;
+/**
+ * A sprite's flipbook frame and its half-height: \`ParticleInstances.frames\` and \`heights\`. The
+ * procedural materials read neither, and a height of 0 is a square, its height its width.
+ */
+layout(location = 10) in vec2 aSprite;
 
 uniform mat4 uViewProj;
 uniform vec3 uCameraPos;
@@ -126,6 +132,8 @@ uniform float uStretchSec;
  * from everywhere.
  */
 uniform float uCameraFacing;
+/** How far each particle is moved toward the eye, in metres: \`ParticleBatchOptions.cameraOffset\`. */
+uniform float uCameraOffset;
 
 out vec2 vUv;
 out vec3 vColor;
@@ -134,6 +142,9 @@ out float vAge;
 out float vSeed;
 out vec3 vWorldPos;
 out vec3 vNormal;
+/** The flipbook frame, for the sprite material; and the depth from the eye, for its fades. */
+out float vFrame;
+out float vViewDepth;
 
 void main() {
   float s = sin(aSpin);
@@ -150,7 +161,18 @@ void main() {
   vec3 across;
   vec3 up;
   float bladeGain;
-  if (uCameraFacing > 0.5) {
+  /*
+   * **Along its travel**, \`facing: 'velocity'\` (2): the quad's up is the velocity seen across
+   * the view, so a streak of light or a stretched spark lies along its motion and still faces the
+   * eye. A particle at rest has no such direction and faces the camera as the default does.
+   */
+  vec3 viewer = normalize(uCameraPos - aPos);
+  vec3 alongView = aVelocity - viewer * dot(aVelocity, viewer);
+  if (uCameraFacing > 1.5 && dot(alongView, alongView) > 1e-10) {
+    up = normalize(alongView);
+    across = cross(up, viewer);
+    bladeGain = aBlade < 0.5 ? 1.0 : 0.0;
+  } else if (uCameraFacing > 0.5) {
     vec3 toCamera = normalize(uCameraPos - aPos);
     /* Any reference not parallel to the view. World up serves everywhere except looking
        straight up or down it, where the two are the same line and the cross product
@@ -173,6 +195,16 @@ void main() {
     bladeGain = 1.0;
   }
   vec3 offset = (across * rolled.x + up * rolled.y) * aSize;
+  /*
+   * **A sprite of two sizes** — a half-width and a half-height — rolls as a rectangle: the corner
+   * is scaled first and turned after. Only where a height was given, so a square particle keeps
+   * the arithmetic it always had to the bit.
+   */
+  if (aSprite.y > 0.0) {
+    vec2 extent = vec2(aCorner.x * aSize, aCorner.y * aSprite.y);
+    vec2 turned = vec2(extent.x * c - extent.y * s, extent.x * s + extent.y * c);
+    offset = across * turned.x + up * turned.y;
+  }
 
   /*
    * Stretched along travel. Applied as an extra displacement on the component of
@@ -188,7 +220,10 @@ void main() {
   /* bladeGain applied here, after the stretch rather than before it, so a dropped blade
      is degenerate whatever the stretch added: all four of its corners land on aPos. */
   vec3 world = aPos + offset * bladeGain;
+  /* Toward the eye, so a sprite set into a surface is drawn in front of it. 0 moves nothing. */
+  world += viewer * uCameraOffset * bladeGain;
   vUv = aCorner;
+  vFrame = aSprite.x;
   vColor = aColor;
   vAlpha = aAlpha;
   vAge = aAge;
@@ -207,6 +242,8 @@ void main() {
   vNormal = dot(face, toEye) < 0.0 ? -face : face;
 
   gl_Position = uViewProj * vec4(world, 1.0);
+  /* A perspective projection's w is the depth from the eye, which is what the fades measure. */
+  vViewDepth = gl_Position.w;
 }
 `;
 
@@ -433,6 +470,102 @@ void main() {
    * A real alpha blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) rather than spark's energy-in-colour
    * trick: this point genuinely occludes what little is behind it instead of adding light to it.
    */
+  outColor = vec4(applyOutputTransform(color), alpha);
+}
+`;
+
+/**
+ * A textured sprite: an image a consumer supplies, a cell of it at a time, at the colour and opacity
+ * each particle carries — what another engine's sprite renderer draws, and the material the three
+ * procedural ones above cannot be. Unlit: the colour is the particle's times the image's.
+ *
+ * **A flipbook** of `uCells.x` by `uCells.y` cells, numbered across then down from the top-left,
+ * a particle's frame naming one; with `uCells.z` at 1 the frame's fraction blends toward the next,
+ * so a slow flipbook does not step.
+ *
+ * **Two fades, each 0 for off.** A soft edge where the sprite meets the scene, by how far in front
+ * of the opaque depth it is over `uFade.x` metres — the hard line a flat card draws where it cuts
+ * a floor — and a fade over `uFade.y` metres in front of the eye, so a card the camera passes
+ * through does not fill the screen and vanish. The first reads a copy of the frame's depth, which
+ * is `uFade.z` at 1; where no copy can be had it is 0 and the edge stays hard.
+ */
+export const PARTICLE_SPRITE_FRAG = `#version 300 es
+precision highp float;
+
+/* Every output of the vertex stage, in its order, read or not: the generated stages number their
+   locations in declaration order, so a fragment declaring a subset reads the wrong ones. */
+in vec2 vUv;
+in vec3 vColor;
+in float vAlpha;
+in float vAge;
+in float vSeed;
+in vec3 vWorldPos;
+in vec3 vNormal;
+in float vFrame;
+in float vViewDepth;
+
+/** The image, a surface texture: its first layer. */
+uniform mediump sampler2DArray uSprite;
+/** The frame's opaque depth, copied, for the soft edge. highp for the reason depth always is. */
+uniform highp sampler2D uDepth;
+/** Columns, rows, and 1 to blend between cells. */
+uniform vec4 uCells;
+/** The soft edge's distance, the eye fade's, and whether the depth copy is there to read. */
+uniform vec4 uFade;
+/** A depth sample to view-space metres, as the skin blur takes it. */
+uniform vec4 uDepthToViewZ;
+/** The target's size in pixels, so a fragment finds its own texel of the depth copy. */
+uniform vec2 uViewport;
+uniform vec3 uCameraPos;
+/** Whether the colour recedes into the medium: \`ParticleBatchOptions.fog\`. */
+uniform int uFogEnabled;
+${FOG_GLSL}
+
+out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
+
+/** Cell \`cell\` of the flipbook, at \`uv\` inside it. Integer arithmetic: see AGENTS.md. */
+vec2 cellUv(int cell, vec2 uv) {
+  int columns = max(int(uCells.x + 0.5), 1);
+  int rows = max(int(uCells.y + 0.5), 1);
+  int wrapped = cell % (columns * rows);
+  int column = wrapped % columns;
+  int row = wrapped / columns;
+  return (vec2(float(column), float(row)) + uv) / vec2(float(columns), float(rows));
+}
+
+float viewZ(float depth) {
+  float ndc = ${glslSceneDepthToNdc('depth')};
+  return (uDepthToViewZ.x * ndc + uDepthToViewZ.y) / (uDepthToViewZ.z * ndc + uDepthToViewZ.w);
+}
+
+void main() {
+  /* The corner's square to the image's: v runs down an image, and up a quad. */
+  vec2 uv = vec2(vUv.x * 0.5 + 0.5, 0.5 - vUv.y * 0.5);
+  float frame = max(vFrame, 0.0);
+  int first = int(floor(frame));
+  vec4 image = texture(uSprite, vec3(cellUv(first, uv), 0.0));
+  if (uCells.z > 0.5) {
+    vec4 next = texture(uSprite, vec3(cellUv(first + 1, uv), 0.0));
+    image = mix(image, next, fract(frame));
+  }
+
+  float fade = 1.0;
+  if (uFade.z > 0.5 && uFade.x > 0.0) {
+    float depth = textureLod(uDepth, gl_FragCoord.xy / uViewport, 0.0).r;
+    if (!(${glslIsFarDepth('depth')})) {
+      fade = clamp((abs(viewZ(depth)) - vViewDepth) / uFade.x, 0.0, 1.0);
+    }
+  }
+  if (uFade.y > 0.0) fade *= clamp(vViewDepth / uFade.y, 0.0, 1.0);
+
+  float alpha = vAlpha * image.a * fade;
+  if (alpha <= 0.001) discard;
+  vec3 color = vColor * image.rgb;
+  if (uFogEnabled != 0) {
+    float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
+    color = mix(color, mediumColor(), fog);
+  }
   outColor = vec4(applyOutputTransform(color), alpha);
 }
 `;

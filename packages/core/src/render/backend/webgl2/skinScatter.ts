@@ -5,14 +5,19 @@
  *
  * **Drawn as it goes, not kept**: this backend issues a draw when it is asked for, and the state a
  * skin draw reads — its joint palette, its uniforms — is rewritten by the draw after it. So the
- * renderer draws each skin twice in place, the frame's half and then at once its diffuse half into
- * this target, which shares the frame's depth and tests for equality against it.
+ * renderer draws each skin three times in place: the frame's half, then at once the diffuse's light
+ * alone into this target and its colour alone into the other, both sharing the frame's depth and
+ * testing for equality against it. The blur spreads the light and multiplies it by the colour.
  *
  * **The units it reads are its own** — `SKIN_BLUR_TEXTURE_UNIT` and the one after — past every
  * unit a lit program binds, because it runs in the middle of a frame and the draws after it must
  * find their textures where they left them.
  */
-import { SKIN_BLUR_DEPTH_UNIT, SKIN_BLUR_TEXTURE_UNIT } from '../../lightBudget.ts';
+import {
+  SKIN_BLUR_ALBEDO_UNIT,
+  SKIN_BLUR_DEPTH_UNIT,
+  SKIN_BLUR_TEXTURE_UNIT,
+} from '../../lightBudget.ts';
 import { blendKeeping } from '../../sceneCoverage.ts';
 import type { SceneTarget } from '../../sceneTarget.ts';
 import { compileProgram, uniformLocations } from '../../shader.ts';
@@ -33,9 +38,13 @@ export class GlSkinScatter {
   private readonly depthToViewZ = new Float32Array(4);
   private diffuse: WebGLTexture | null = null;
   private across: WebGLTexture | null = null;
+  private albedo: WebGLTexture | null = null;
   private multisampled: WebGLRenderbuffer | null = null;
+  private albedoMultisampled: WebGLRenderbuffer | null = null;
   private drawFramebuffer: WebGLFramebuffer | null = null;
   private resolveFramebuffer: WebGLFramebuffer | null = null;
+  private albedoFramebuffer: WebGLFramebuffer | null = null;
+  private albedoResolveFramebuffer: WebGLFramebuffer | null = null;
   private acrossFramebuffer: WebGLFramebuffer | null = null;
   private width = 0;
   private height = 0;
@@ -44,6 +53,7 @@ export class GlSkinScatter {
   /** Refused once and for good: a driver that will not render to half floats. */
   private unavailable = false;
   private cleared = false;
+  private albedoCleared = false;
   private drawn = false;
 
   constructor(gl: WebGL2RenderingContext) {
@@ -115,6 +125,17 @@ export class GlSkinScatter {
     this.drawn = true;
   }
 
+  /** Bind the target for the same skin's colour half, cleared the first time a frame does. */
+  beginAlbedo(): void {
+    const { gl } = this;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.albedoFramebuffer);
+    gl.viewport(0, 0, this.width, this.height);
+    if (!this.albedoCleared) {
+      gl.clearBufferfv(gl.COLOR, 0, CLEAR);
+      this.albedoCleared = true;
+    }
+  }
+
   /**
    * Across into the second target, then down and added into the frame, which `scene` binds. `depth`
    * is the frame's depth as a single-sampled texture, or null where none could be had — and then
@@ -129,20 +150,8 @@ export class GlSkinScatter {
   ): void {
     const { gl } = this;
     if (this.multisampled !== null) {
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.drawFramebuffer);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.resolveFramebuffer);
-      gl.blitFramebuffer(
-        0,
-        0,
-        this.width,
-        this.height,
-        0,
-        0,
-        this.width,
-        this.height,
-        gl.COLOR_BUFFER_BIT,
-        gl.NEAREST,
-      );
+      this.resolve(this.drawFramebuffer, this.resolveFramebuffer);
+      this.resolve(this.albedoFramebuffer, this.albedoResolveFramebuffer);
     }
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
@@ -153,6 +162,9 @@ export class GlSkinScatter {
     const u = this.uniforms;
     gl.uniform1i(u['uSkin'] ?? null, SKIN_BLUR_TEXTURE_UNIT);
     gl.uniform1i(u['uDepth'] ?? null, SKIN_BLUR_DEPTH_UNIT);
+    gl.uniform1i(u['uAlbedo'] ?? null, SKIN_BLUR_ALBEDO_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + SKIN_BLUR_ALBEDO_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.albedo ?? empty);
     /* The four terms that carry a depth back to view-space metres: the occlusion blur's own. */
     this.depthToViewZ[0] = (inverse[10] as number) ?? 0;
     this.depthToViewZ[1] = (inverse[14] as number) ?? 0;
@@ -175,6 +187,8 @@ export class GlSkinScatter {
     this.step[0] = 1 / this.width;
     this.step[1] = 0;
     gl.uniform2fv(u['uStep'] ?? null, this.step);
+    /* The light spreads on both axes; the colour is applied once, on the one adding into the frame. */
+    gl.uniform1f(u['uApplyAlbedo'] ?? null, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     scene.bind();
@@ -182,6 +196,7 @@ export class GlSkinScatter {
     this.step[0] = 0;
     this.step[1] = 1 / this.height;
     gl.uniform2fv(u['uStep'] ?? null, this.step);
+    gl.uniform1f(u['uApplyAlbedo'] ?? null, 1);
     /* Added: its colour onto the frame's, the frame's alpha kept. */
     gl.enable(gl.BLEND);
     gl.blendEquation(gl.FUNC_ADD);
@@ -199,7 +214,27 @@ export class GlSkinScatter {
   /** Spent at the frame's start: what was drawn into the target was last frame's. */
   reset(): void {
     this.cleared = false;
+    this.albedoCleared = false;
     this.drawn = false;
+  }
+
+  /** A multisampled target into its single-sampled texture. */
+  private resolve(from: WebGLFramebuffer | null, to: WebGLFramebuffer | null): void {
+    const { gl } = this;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, from);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, to);
+    gl.blitFramebuffer(
+      0,
+      0,
+      this.width,
+      this.height,
+      0,
+      0,
+      this.width,
+      this.height,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST,
+    );
   }
 
   dispose(): void {
@@ -226,19 +261,59 @@ export class GlSkinScatter {
     this.sharedDepth = depthRenderbuffer ?? depthTexture;
     this.diffuse = this.halfFloatTexture(width, height);
     this.across = this.halfFloatTexture(width, height);
+    this.albedo = this.halfFloatTexture(width, height);
 
-    this.drawFramebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.drawFramebuffer);
-    if (samples > 1 && depthRenderbuffer !== null) {
-      this.multisampled = gl.createRenderbuffer();
-      gl.bindRenderbuffer(gl.RENDERBUFFER, this.multisampled);
-      gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA16F, width, height);
-      gl.framebufferRenderbuffer(
-        gl.FRAMEBUFFER,
-        gl.COLOR_ATTACHMENT0,
+    const multisampled = samples > 1 && depthRenderbuffer !== null;
+    const diffuse = this.drawTarget(this.diffuse, multisampled, depthTexture, depthRenderbuffer);
+    this.drawFramebuffer = diffuse.framebuffer;
+    this.multisampled = diffuse.multisampled;
+    this.resolveFramebuffer = diffuse.resolve;
+    const albedo = this.drawTarget(this.albedo, multisampled, depthTexture, depthRenderbuffer);
+    this.albedoFramebuffer = albedo.framebuffer;
+    this.albedoMultisampled = albedo.multisampled;
+    this.albedoResolveFramebuffer = albedo.resolve;
+
+    this.acrossFramebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.acrossFramebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.across, 0);
+    const acrossReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    if (diffuse.ready && albedo.ready && acrossReady) return true;
+    this.release();
+    this.refuse();
+    return false;
+  }
+
+  /**
+   * A framebuffer a skin half draws into against the frame's depth: the texture itself, or a
+   * multisampled renderbuffer and the framebuffer that resolves it into the texture.
+   */
+  private drawTarget(
+    texture: WebGLTexture | null,
+    multisampled: boolean,
+    depthTexture: WebGLTexture | null,
+    depthRenderbuffer: WebGLRenderbuffer | null,
+  ): {
+    framebuffer: WebGLFramebuffer | null;
+    multisampled: WebGLRenderbuffer | null;
+    resolve: WebGLFramebuffer | null;
+    ready: boolean;
+  } {
+    const { gl } = this;
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    let samples: WebGLRenderbuffer | null = null;
+    if (multisampled && depthRenderbuffer !== null) {
+      samples = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, samples);
+      gl.renderbufferStorageMultisample(
         gl.RENDERBUFFER,
-        this.multisampled,
+        this.samples,
+        gl.RGBA16F,
+        this.width,
+        this.height,
       );
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, samples);
       gl.framebufferRenderbuffer(
         gl.FRAMEBUFFER,
         gl.DEPTH_ATTACHMENT,
@@ -246,25 +321,17 @@ export class GlSkinScatter {
         depthRenderbuffer,
       );
     } else {
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.diffuse, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTexture, 0);
     }
-    const drawReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-
-    if (this.multisampled !== null) {
-      this.resolveFramebuffer = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.resolveFramebuffer);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.diffuse, 0);
+    const ready = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    let resolve: WebGLFramebuffer | null = null;
+    if (samples !== null) {
+      resolve = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
     }
-    this.acrossFramebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.acrossFramebuffer);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.across, 0);
-    const acrossReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
-    if (drawReady && acrossReady) return true;
-    this.release();
-    this.refuse();
-    return false;
+    return { framebuffer, multisampled: samples, resolve, ready };
   }
 
   private refuse(): void {
@@ -294,16 +361,26 @@ export class GlSkinScatter {
     const { gl } = this;
     if (this.drawFramebuffer !== null) gl.deleteFramebuffer(this.drawFramebuffer);
     if (this.resolveFramebuffer !== null) gl.deleteFramebuffer(this.resolveFramebuffer);
+    if (this.albedoFramebuffer !== null) gl.deleteFramebuffer(this.albedoFramebuffer);
+    if (this.albedoResolveFramebuffer !== null) {
+      gl.deleteFramebuffer(this.albedoResolveFramebuffer);
+    }
     if (this.acrossFramebuffer !== null) gl.deleteFramebuffer(this.acrossFramebuffer);
     if (this.multisampled !== null) gl.deleteRenderbuffer(this.multisampled);
+    if (this.albedoMultisampled !== null) gl.deleteRenderbuffer(this.albedoMultisampled);
     if (this.diffuse !== null) gl.deleteTexture(this.diffuse);
     if (this.across !== null) gl.deleteTexture(this.across);
+    if (this.albedo !== null) gl.deleteTexture(this.albedo);
     this.drawFramebuffer = null;
     this.resolveFramebuffer = null;
+    this.albedoFramebuffer = null;
+    this.albedoResolveFramebuffer = null;
     this.acrossFramebuffer = null;
     this.multisampled = null;
+    this.albedoMultisampled = null;
     this.diffuse = null;
     this.across = null;
+    this.albedo = null;
     this.sharedDepth = null;
   }
 }

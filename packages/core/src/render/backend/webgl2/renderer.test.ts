@@ -1331,15 +1331,16 @@ test('EVERY PANE ON A RAY COUNTS, WHICHEVER WAY IT FACES: the sun s tint culls n
  * Counted by which programs each uniform was written into, walked off the recording.
  */
 test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears what its caller set', () => {
+  /* The reflectivity and gain share `uEnvironmentDials`, relief's two numbers `uRelief`, and the
+     emissive gain `uEmission`: one row each where each was a row of its own. */
   const names = [
-    'uReflectivity',
-    'uEnvironmentGain',
+    'uEnvironmentDials',
     'uGrain',
     'uRelief',
-    'uReliefCycles',
     'uTextureRelief',
-    'uEmissiveGain',
+    'uEmission',
     'uWriteMode',
+    'uAmbientSH[0]',
   ];
   const { canvas, calls } = recordingGl({ uniforms: names });
   const renderer = new Renderer(canvas, resolveRenderQuality({}));
@@ -1355,12 +1356,15 @@ test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears 
   renderer.setSurfaceTextureRelief(1.5);
   renderer.setEmissiveGain(3);
   renderer.setDitherFade(0.4);
+  renderer.setAmbientSH(new Array(27).fill(0.1));
 
   const programsBy = new Map<string, Set<unknown>>();
   let current: unknown = null;
   for (const call of calls) {
     if (call.name === 'useProgram') current = call.args[0];
-    if (call.name !== 'uniform1f' && call.name !== 'uniform2f') continue;
+    if (!['uniform1f', 'uniform2f', 'uniform2fv', 'uniform3fv', 'uniform4fv'].includes(call.name)) {
+      continue;
+    }
     const name = (call.args[0] as { name?: string } | null)?.name ?? '';
     const seen = programsBy.get(name) ?? new Set<unknown>();
     seen.add(current);
@@ -1695,13 +1699,14 @@ test("A MATERIAL'S MODEL CHOOSES THE PROGRAM, AND AN EYE'S AXIS IS EACH DRAW'S",
 });
 
 /*
- * **Screen-space skin draws in two halves, the second into a target of its own, and is spread once**
- * — the twin of the WebGPU test. Under `skinScattering: 'screen-space'` a skin draw is the frame's
- * half and then at once its diffuse half, with another framebuffer bound and the depth compared for
- * equality; the frame's end runs the blur's two axes and adds through the scene's kept share. Where
- * the driver will not render to half floats, or the profile did not ask, skin is one draw, whole.
+ * **Screen-space skin draws in three halves, the second and third each into a target of its own,
+ * and is spread once** — the twin of the WebGPU test. Under `skinScattering: 'screen-space'` a skin
+ * draw is the frame's half and then at once its diffuse's light and its colour, with other
+ * framebuffers bound and the depth compared for equality; the frame's end runs the blur's two axes
+ * and adds through the scene's kept share. Where the driver will not render to half floats, or the
+ * profile did not ask, skin is one draw, whole.
  */
-test('SCREEN-SPACE SKIN DRAWS TWO HALVES INTO TWO TARGETS AND IS SPREAD ONCE, AND ONLY WHERE IT CAN BE', () => {
+test('SCREEN-SPACE SKIN DRAWS THREE HALVES INTO THREE TARGETS AND IS SPREAD ONCE, AND ONLY WHERE IT CAN BE', () => {
   const cases = [
     ['screen-space', ['EXT_color_buffer_float'], true],
     ['screen-space', [], false],
@@ -1749,12 +1754,16 @@ test('SCREEN-SPACE SKIN DRAWS TWO HALVES INTO TWO TARGETS AND IS SPREAD ONCE, AN
       if (call.name === 'drawElements') {
         const half = fragment.includes('const bool SKIN_DIFFUSE = true;')
           ? 'diffuse'
-          : fragment.includes('const bool SKIN_SCREEN = true;')
-            ? 'scene'
-            : fragment.includes('const bool MODEL_SKIN = true;')
-              ? 'whole'
-              : 'standard';
-        draws.push(`${half}${half === 'diffuse' ? `:${String(depthFunc)}` : ''}`);
+          : fragment.includes('const bool SKIN_ALBEDO = true;')
+            ? 'albedo'
+            : fragment.includes('const bool SKIN_SCREEN = true;')
+              ? 'scene'
+              : fragment.includes('const bool MODEL_SKIN = true;')
+                ? 'whole'
+                : 'standard';
+        draws.push(
+          `${half}${half === 'diffuse' || half === 'albedo' ? `:${String(depthFunc)}` : ''}`,
+        );
         targets.push(framebuffer);
       }
       if (call.name === 'drawArrays' && fragment.includes('uProfiles')) blurs += 1;
@@ -1764,13 +1773,17 @@ test('SCREEN-SPACE SKIN DRAWS TWO HALVES INTO TWO TARGETS AND IS SPREAD ONCE, AN
       expect(halves, `${skinScattering} ${extensions.join()}`).toEqual([
         'scene',
         'diffuse',
+        'albedo',
         'standard',
       ]);
       expect(draws[1]?.split(':')[1], 'the diffuse half finds its depth by equality').toBe(
         String(gl.EQUAL),
       );
+      expect(draws[2]?.split(':')[1], 'and so does the colour half').toBe(String(gl.EQUAL));
       expect(targets[1], 'into a target of its own').not.toBe(targets[0]);
-      expect(targets[2], 'and the frame is the frame again after it').toBe(targets[0]);
+      expect(targets[2], 'the colour into another').not.toBe(targets[1]);
+      expect(targets[2], 'which is not the frame').not.toBe(targets[0]);
+      expect(targets[3], 'and the frame is the frame again after it').toBe(targets[0]);
       expect(blurs, 'across and down, once').toBe(2);
     } else {
       expect(halves, `${skinScattering} ${extensions.join()}`).toEqual(['whole', 'standard']);

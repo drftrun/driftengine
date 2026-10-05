@@ -169,10 +169,38 @@ uniform ivec4 uMaterialFlags;
  *
  * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
  * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
- * frame the dither's pattern is offset by, w spare. One vector rather than a float and two more,
- * because every loose scalar is a row of WebGL2's 224 that the light budget gives up.
+ * frame the dither's pattern is offset by, w the material's lighting channels — a mask a light
+ * shades it only where its own shares a bit with (\`SurfaceMaterial.lightChannels\`, 1 unless a
+ * material names others). One vector rather than a float and three more, because every loose
+ * scalar is a row of WebGL2's 224 that the light budget gives up.
  */
 uniform vec4 uCutout;
+/**
+ * A draw's own ambient, as nine spherical-harmonic coefficients of incoming radiance, red green blue
+ * in turn, twenty-seven floats, and in the last of the twenty-eight a 1 where they are on — 0 is the
+ * frame's own ambient, the sky's gradient or the probes'. \`ambientHarmonics.ts\` is the arithmetic
+ * and the basis, and its tests hold this to it. Seven rows of the material block, which is per draw
+ * as far as anything here is: \`setAmbientSH\` moves it between two draws as \`setMaterial\` does.
+ */
+uniform vec4 uAmbientSH[7];
+
+/** The ambient a surface facing \`n\` receives from \`uAmbientSH\`: \`ambientFromSH\`'s arithmetic. */
+vec3 ambientHarmonics(vec3 n) {
+  vec3 c0 = uAmbientSH[0].xyz;
+  vec3 c1 = vec3(uAmbientSH[0].w, uAmbientSH[1].xy);
+  vec3 c2 = vec3(uAmbientSH[1].zw, uAmbientSH[2].x);
+  vec3 c3 = uAmbientSH[2].yzw;
+  vec3 c4 = uAmbientSH[3].xyz;
+  vec3 c5 = vec3(uAmbientSH[3].w, uAmbientSH[4].xy);
+  vec3 c6 = vec3(uAmbientSH[4].zw, uAmbientSH[5].x);
+  vec3 c7 = uAmbientSH[5].yzw;
+  vec3 c8 = uAmbientSH[6].xyz;
+  /* The bands over pi after the cosine convolution: 1, 2/3 and 1/4. */
+  vec3 band1 = (0.488603 * 2.0 / 3.0) * (c1 * n.y + c2 * n.z + c3 * n.x);
+  vec3 band2 = 0.25 * (1.092548 * (c4 * n.x * n.y + c5 * n.y * n.z + c7 * n.x * n.z)
+    + 0.315392 * c6 * (3.0 * n.z * n.z - 1.0) + 0.546274 * c8 * (n.x * n.x - n.y * n.y));
+  return max(0.282095 * c0 + band1 + band2, vec3(0.0));
+}
 /**
  * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
  * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
@@ -233,8 +261,12 @@ uniform vec3 uOrmScale;
  *
  * A uniform rather than a permutation flag, following the ORM map's in \`uMaterialFlags\`: a fifth boolean doubles the
  * generated WGSL every consumer bundles as source, and this is a few multiply-adds.
+ *
+ * **x of \`uEnvironmentDials\`**, beside the two below: one row where three floats were three
+ * (\`uniformVectorBudget.ts\`). y is how much of the environment the material mirrors, z how
+ * bright what it mirrors is.
  */
-uniform float uEnvironmentPrefiltered;
+uniform vec3 uEnvironmentDials;
 
 /**
  * Where a surface glows, and in what colour.
@@ -338,8 +370,12 @@ uniform vec4 uClipPlane;
  * One row for all four, paid for by the flag the clip plane no longer needs.
  */
 uniform vec4 uSurfaceScene;
-uniform float uEmissiveGain;
-uniform float uNightFactor;
+/**
+ * What emission is multiplied by: x the gain (\`setEmissiveGain\`, the environment's own until a
+ * draw moves it), y the night factor emission is gated on. One row where two floats were two
+ * (\`uniformVectorBudget.ts\`).
+ */
+uniform vec2 uEmission;
 #if NIGHT_EMISSIVE
 /**
  * Emission that only shows where the dominant light does not reach. 0 is off and is the default.
@@ -468,10 +504,9 @@ uniform float uGrain;
  * Two numbers rather than one because they are what separates the surfaces this exists for.
  * Asphalt is coarse and deep, orange peel on paint is fine and shallow, cast concrete sits
  * between them, and the geometry carrying them is identical in all three cases. See
- * Renderer.setSurfaceRelief.
+ * Renderer.setSurfaceRelief. x is the strength and y the bumps to a metre, in one row.
  */
-uniform float uRelief;
-uniform float uReliefCycles;
+uniform vec2 uRelief;
 /**
  * How hard the bound surface texture's own luminance turns the shading normal, 0 for not at all.
  *
@@ -504,9 +539,8 @@ uniform float uTextureRelief;
  * how tight the lobe was made, because what makes a car body look wet is mostly the world
  * in it rather than the lights on it.
  *
- * Off by default, so every scene written before it is unchanged.
+ * Off by default, so every scene written before it is unchanged. **y of \`uEnvironmentDials\`.**
  */
-uniform float uReflectivity;
 /**
  * How bright the environment these surfaces reflect is, as a multiplier on it.
  *
@@ -526,9 +560,8 @@ uniform float uReflectivity;
  *
  * Applies to whatever the surface reflects, probe or hemispheric approximation alike, and to the
  * probe's own irradiance where a caller asked for that. **1 is the default and the identity**, so
- * every scene written before this is unchanged.
+ * every scene written before this is unchanged. **z of \`uEnvironmentDials\`.**
  */
-uniform float uEnvironmentGain;
 /**
  * The room itself, as a cubemap baked from one point, and whether one exists.
  *
@@ -628,10 +661,12 @@ uniform float uProbeGridAmbient;
  */
 uniform vec3 uProbeGridSets;
 #endif
-/** A world-space box that lights up regardless of time of day (run finished). */
+/**
+ * A world-space box that lights up regardless of time of day: its corners, and in the far corner's
+ * w the gain — one row where a loose float was another (\`uniformVectorBudget.ts\`).
+ */
 uniform vec3 uHighlightMin;
-uniform vec3 uHighlightMax;
-uniform float uHighlightGain;
+uniform vec4 uHighlightMax;
 
 /*
  * The froxel table, and the numbers needed to find a fragment's place in it.
@@ -775,8 +810,13 @@ uniform float uLightIesProfile[MAX_LIGHTS];
  * tangent to a sphere, so any reference built from the aim alone flips somewhere — and the obvious
  * constructions put that flip exactly where these fixtures point, \`cross(worldUp, dir)\` being
  * singular for a light aimed straight down.
+ *
+ * **w is the light's lighting channels**, a mask compared with the material's (\`uCutout.w\`): a
+ * light shades a surface only where the two share a bit. In the lane the axis left, because an
+ * array of its own would be a row a light of a budget with none to spare; the froxel record keeps
+ * it beside the axis too, in the slot that was spare there.
  */
-uniform vec3 uLightIesAxis[MAX_LIGHTS];
+uniform vec4 uLightIesAxis[MAX_LIGHTS];
 /**
  * Which tile of the cookie atlas each light projects, or a negative index for none.
  *
@@ -794,32 +834,29 @@ uniform float uLightCookie[MAX_LIGHTS];
  * single row of ones, the multiplicative identity, because a declared sampler needs a complete
  * texture whether or not the branch reads it and a row of zeros would switch off every light.
  */
-/** Rows of profile in the fixture atlas, below its cookies. At least 1. */
-uniform float uIesAtlasRows;
 /**
- * Horizontal planes each profile occupies, so a row is \`profile * planes + plane\`.
+ * The fixture atlas's shape, three numbers in one row — a row each would be three of a budget that
+ * has none to give (\`uniformVectorBudget.ts\`):
  *
- * **1 for an atlas with nothing asymmetric in it**, which is nearly every atlas, and the whole
- * plane path is branched away on that — see \`photometric\` in \`main.ts\`. One count for the atlas
- * rather than one per profile, because a per-profile count would need a second number in a light's
- * record to divide by, and a light's record is where space is expensive.
+ * - **x, rows of profile** below its cookies. At least 1.
+ * - **y, horizontal planes each profile occupies**, so a row is \`profile * planes + plane\`. 1 for
+ *   an atlas with nothing asymmetric in it, which is nearly every atlas, and the whole plane path is
+ *   branched away on that — see \`photometric\` in \`main.ts\`. One count for the atlas rather
+ *   than one per profile, because a per-profile count would need a second number in a light's
+ *   record to divide by, and a light's record is where space is expensive.
+ * - **z, cookie tiles**: one row of square tiles, one a fixture's mask. 0 when no consumer has
+ *   loaded one, and the whole projection is branched away on it — a uniform is provably uniform
+ *   control flow, so a scene with no cookie performs no arithmetic and no fetch. With none loaded
+ *   the atlas holds a single white texel, the multiplicative identity, because a declared sampler
+ *   needs a complete texture whether or not the branch reads it and a black stand-in would switch
+ *   off every light that reached it.
  */
-uniform float uIesPlaneCount;
-/**
- * Cookies: one row of square tiles, one tile a fixture's mask.
- *
- * **0 when no consumer has loaded one, and the whole projection is branched away on it** — a
- * \`uniform float\` is provably uniform control flow, so a scene with no cookie performs no
- * arithmetic and no fetch. With none loaded this holds a single white texel, the multiplicative
- * identity, because a declared sampler needs a complete texture whether or not the branch reads it
- * and a black stand-in would switch off every light that reached it.
- */
-uniform float uCookieTiles;
+uniform vec3 uFixtureShape;
 /**
  * Both tables in one texture: the cookies' row of tiles in the top band, the profiles' rows below.
  * One sampler for the two since 2026-09-30, because the lit stage bound fifteen of the sixteen
  * WebGL2 guarantees; see \`fixtureAtlas.ts\`. The bands are found from \`textureSize\` and
- * \`uIesAtlasRows\`, so the fold cost no uniform.
+ * \`uFixtureShape.x\`, so the fold cost no uniform.
  */
 uniform sampler2D uFixtureAtlas;
 /**

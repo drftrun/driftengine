@@ -7,6 +7,7 @@ import type { Renderer, TranslucentMeshOptions } from './webgl2/renderer.ts';
 import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
 import type { SurfaceSource } from '../compressedSource.ts';
+import type { LightmapPage } from '../lightmap.ts';
 import type { ClothBindingData } from '../clothBindingData.ts';
 import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
@@ -300,6 +301,7 @@ export type RendererApi = Omit<
   | 'disposeSdfText'
   | 'createSurfaceTexture'
   | 'createSurfaceTextureArray'
+  | 'createLightmap'
   | 'updateSurfaceTexture'
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
@@ -360,6 +362,15 @@ export type RendererApi = Omit<
     sources: readonly SurfaceSource[],
     options?: Parameters<Renderer['createSurfaceTexture']>[1],
   ): SurfaceTextureHandle;
+
+  /**
+   * A baked lightmap page on the device, as the texture a `lightmapModel` material takes for its
+   * `modelMap`: two layers of half floats, the irradiance and the direction, filtered linearly and
+   * clamped at its edges, with no mip chain. Disposed as any texture is, with
+   * `disposeSurfaceTexture`; `updateSurfaceTexture` refuses it, as it refuses any array. See
+   * `lightmap.ts` for what a surface does with it.
+   */
+  createLightmap(page: LightmapPage): SurfaceTextureHandle;
 
   /**
    * Replace a texture's pixels, keeping the GPU object and its sampler state.
@@ -708,8 +719,10 @@ export type RendererApi = Omit<
    */
   createParticles(
     capacity: number,
-    options: Omit<Parameters<Renderer['createParticles']>[1], 'reuse'> & {
+    options: Omit<Parameters<Renderer['createParticles']>[1], 'reuse' | 'texture'> & {
       readonly reuse?: ParticleHandle;
+      /** A `'sprite'`'s image. Re-typed to the handle for `reuse`'s reason. */
+      readonly texture?: SurfaceTextureHandle;
     },
   ): ParticleHandle;
 

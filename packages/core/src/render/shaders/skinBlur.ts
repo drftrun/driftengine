@@ -6,6 +6,11 @@
  * **One pass, run twice**: along x into a target of its own, keeping the profile in the alpha, then
  * along y blended additively into the frame — its colour added, the frame's alpha kept.
  *
+ * **What it spreads is light, and the colour is applied after**, from the skin's own colour half at
+ * this pixel. Light travels beneath skin; the pigment a brow, a lip line or a freckle is made of
+ * does not, so spreading the coloured diffuse — as this did until 4.8.6 — smeared every mark on a
+ * face into the skin around it, and the blur's taps laid faint copies of each mark beside it.
+ *
  * **Refuses what is not the same skin**: a neighbour that wrote no skin, or one further in depth
  * than four of the profile's widest distances, takes no weight, and what is kept is divided by
  * what was kept, so a cheek's light does not pull toward the black beside its silhouette. A tap
@@ -34,6 +39,12 @@ uniform vec4 uDepthToViewZ;
 uniform float uFocal;
 /** Each profile's scatter distance per channel, in metres. */
 uniform vec4 uProfiles[${SKIN_PROFILES}];
+/**
+ * The skin's colour, and its coverage in the alpha: what the spread light is multiplied by on the
+ * second axis, where \`uApplyAlbedo\` is 1. Read at this pixel alone, because pigment does not move.
+ */
+uniform sampler2D uAlbedo;
+uniform float uApplyAlbedo;
 
 out vec4 fragColor;
 
@@ -50,6 +61,17 @@ vec3 burleyMass(float x, vec3 d) {
   return 0.5 - (exp(-x / d) + 3.0 * exp(-x / (3.0 * d))) * 0.125;
 }
 
+/**
+ * The spread light times the skin's colour here, on the second axis; the light as it is on the
+ * first. The colour target holds colour times coverage over coverage, so dividing gives the skin's
+ * own colour at an edge, which the light — weighted for coverage already — is then multiplied by.
+ */
+vec3 withAlbedo(vec3 light) {
+  if (uApplyAlbedo < 0.5) return light;
+  vec4 albedo = textureLod(uAlbedo, vUv, 0.0);
+  return light * albedo.rgb / max(albedo.a, 1e-4);
+}
+
 void main() {
   vec4 own = textureLod(uSkin, vUv, 0.0);
   /*
@@ -63,7 +85,7 @@ void main() {
   }
   float depth = textureLod(uDepth, vUv, 0.0).r;
   if (${glslIsFarDepth('depth')}) {
-    fragColor = own;
+    fragColor = vec4(withAlbedo(own.rgb), own.a);
     return;
   }
   /* A part-covered pixel's code is its share of the whole: read it as the nearest, which is the
@@ -75,7 +97,7 @@ void main() {
   /* The widest distance in pixels here: under half of one, there is nothing to spread across. */
   float pixels = widest * uFocal / max(z, 1e-4);
   if (pixels < 0.5) {
-    fragColor = own;
+    fragColor = vec4(withAlbedo(own.rgb), own.a);
     return;
   }
   vec3 centre = 2.0 * burleyMass(EDGES[0] * widest, d);
@@ -100,6 +122,6 @@ void main() {
       weight += w * (cover * keep);
     }
   }
-  fragColor = vec4(sum / weight, own.a);
+  fragColor = vec4(withAlbedo(sum / weight), own.a);
 }
 `;

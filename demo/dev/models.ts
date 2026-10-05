@@ -17,13 +17,18 @@
  *                                     &radius= sets the scatter: at 0.0001 the blur spans under
  *                                     half a pixel, the control for the split adding back whole;
  *                                     &pane=1 draws a dark pane over the head after it, which must
- *                                     dim the spread skin as it dims the whole
+ *                                     dim the spread skin as it dims the whole; &marks=1 paints
+ *                                     dark bars and dots on the head, brows and freckles, which
+ *                                     the blur must spread the light under and leave sharp
  *     /models.html?view=eye           an eye at a person's scale, a painted iris under its cornea:
  *                                     &turn=30 turns it, &ior=1 takes the refraction away (the
  *                                     control), &standard=1 draws it unmodelled
  *     /models.html?view=cornea        a flat four-centimetre patch of cornea over a dot, seen at
  *                                     30° from +X: the dot moves toward the eye by the refracted
  *                                     crossing, 1.21 mm under 3 mm — &ior=1 is where it really is
+ *     /models.html?sh=hemi            every draw's ambient from setAmbientSH, as the scene's own
+ *                                     gradient written in harmonics: the frame must not move
+ *     /models.html?sh=key             the same with warm light from +X, which it must
  *
  * Five spheres with tangents, one material each, lit by a low sun from the front-left, a warm lamp
  * to the right and a cool lamp behind. Every model compiles its own pipeline the first time a draw
@@ -312,6 +317,56 @@ function dotTexture(): HTMLCanvasElement {
   return canvas;
 }
 
+/**
+ * Dark bars and dots on skin's colour, in the ellipsoid's longitude and latitude: what a brow, a
+ * lip line and freckles are to the blur. Detail in the albedo, which light spreading beneath the
+ * surface does not move.
+ */
+function marksTexture(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  if (ctx === null) return canvas;
+  ctx.fillStyle = 'rgb(255, 255, 255)';
+  ctx.fillRect(0, 0, 1024, 512);
+  ctx.fillStyle = 'rgb(40, 22, 14)';
+  /* Brows across the front, a thin lip line below, and a scatter of freckles between. */
+  ctx.fillRect(150, 196, 140, 10);
+  ctx.fillRect(310, 196, 140, 10);
+  ctx.fillRect(200, 300, 220, 4);
+  for (let n = 0; n < 40; n++) {
+    ctx.beginPath();
+    ctx.arc(180 + ((n * 37) % 260), 225 + ((n * 23) % 60), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return canvas;
+}
+
+/**
+ * `?sh=`: nine coefficients for `setAmbientSH`. `hemi` is the scene's own sky-and-ground gradient
+ * written as harmonics — `mix(ground, sky, y / 2 + 1 / 2)` is a constant and a first-band term in
+ * y, so the two must draw the same frame — and `key` is that plus a warm light from +X.
+ */
+function ambientHarmonicsAsked(sky: Vec3, ground: Vec3): number[] | null {
+  const asked = ASKED.get('sh');
+  if (asked !== 'hemi' && asked !== 'key') return null;
+  const out = new Array<number>(27).fill(0);
+  for (let c = 0; c < 3; c++) {
+    out[c] = ((sky[c] as number) + (ground[c] as number)) / 2 / 0.282095;
+    out[3 + c] = ((sky[c] as number) - (ground[c] as number)) / 2 / ((0.488603 * 2) / 3);
+  }
+  if (asked === 'key') {
+    /* Y1,1 is x: a warm push toward +X, and the constant raised so the far side stays lit. */
+    const warm: Vec3 = [0.2, 0.12, 0.05];
+    for (let c = 0; c < 3; c++) {
+      out[9 + c] = (warm[c] as number) / ((0.488603 * 2) / 3);
+      out[c] = (out[c] as number) + (warm[c] as number) / 0.282095;
+    }
+  }
+  return out;
+}
+
 /** A flat square `size` across facing +Z, texture coordinates across it, tangents along +X. */
 function patch(size: number): MeshData {
   const h = size / 2;
@@ -470,7 +525,16 @@ async function main(): Promise<void> {
             {
               label: standard ? 'head, standard' : 'head',
               color: [0.8, 0.57, 0.47],
-              material: { model: standard ? null : skinned },
+              material: {
+                model: standard ? null : skinned,
+                ...(ASKED.get('marks') === '1'
+                  ? {
+                      albedo: renderer.createSurfaceTexture(marksTexture(), {
+                        colorSpace: 'srgb',
+                      }),
+                    }
+                  : {}),
+              },
               mesh: ellipsoid([0.8, 0.57, 0.47], [0.09, 0.09, 0.09], 0.45),
               place: [-0.06, 0, 0],
             },
@@ -548,11 +612,14 @@ async function main(): Promise<void> {
     ),
   );
   const spin = ASKED.get('spin') === '1';
+  const harmonics = ambientHarmonicsAsked(env.ambient, env.ambientGround ?? env.ambient);
 
   let turn = 0;
   const draw = (): void => {
     renderer.beginFrame(BACKGROUND);
     renderer.bindMeshPass(camera, env);
+    /* `?sh=hemi`: the gradient as coefficients, the control; `?sh=key`: warm light from +X. */
+    if (harmonics !== null) renderer.setAmbientSH(harmonics);
     materials.forEach((m, k) => {
       renderer.setMaterial(m.material);
       const x = hair ? 0 : discs ? (k - 1) * 2.4 : (k - 2) * 2.1;

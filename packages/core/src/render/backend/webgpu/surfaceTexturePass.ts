@@ -1,6 +1,8 @@
 import type { SurfaceTextureOptions } from '../../surfaceTexture.ts';
 import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from '../../surfaceEffects.ts';
 import { toHalfFloats } from '../../halfFloat.ts';
+import { isLightmapTexels } from '../../lightmap.ts';
+import type { LightmapTexels } from '../../lightmap.ts';
 import { layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
 import { compressedLayers, planBlocks, refuseBlockUpdate } from '../../compressedSource.ts';
 import type {
@@ -193,17 +195,36 @@ export class GpuSurfaceTexture {
   constructor(
     private readonly device: GPUDevice,
     private readonly pipelines: PipelineCache,
-    source: SurfaceSource | readonly SurfaceSource[],
+    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels,
     options: SurfaceTextureOptions = {},
     compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    const listed = (Array.isArray(source) ? source : [source]) as readonly SurfaceSource[];
+    /* A lightmap's page: half floats, uploaded as they are. See `lightmap.ts`. */
+    const baked = isLightmapTexels(source) ? source : null;
+    const listed = (
+      baked !== null ? [] : Array.isArray(source) ? source : [source]
+    ) as readonly SurfaceSource[];
     const blocks = compressedLayers(listed);
     const srgb = (options.colorSpace ?? 'linear') === 'srgb';
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
        place it is correct — `surfaceTexture.ts` makes the argument in full. */
-    this.format = srgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
-    if (blocks !== null) {
+    this.format = baked !== null ? 'rgba16float' : srgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
+    if (baked !== null) {
+      /* No chain: a page is read at its own resolution, and a level of it would blend regions. */
+      this.layers = baked.layers;
+      this.blockFormat = null;
+      this.mipmapped = false;
+      this.width = baked.width;
+      this.height = baked.height;
+      this.levels = 1;
+      this.texture = this.allocate();
+      device.queue.writeTexture(
+        { texture: this.texture },
+        baked.texels,
+        { bytesPerRow: baked.width * 8, rowsPerImage: baked.height },
+        { width: baked.width, height: baked.height, depthOrArrayLayers: baked.layers },
+      );
+    } else if (blocks !== null) {
       /* Refused before anything is allocated; the stored chain, or level 0 alone where no chain
          was asked for. See `compressedUpload.ts`. */
       const plan = planBlocks(blocks, srgb, compressed);
@@ -261,7 +282,7 @@ export class GpuSurfaceTexture {
           : 1,
     });
 
-    if (blocks === null) this.upload(listed as readonly TexImageSource[]);
+    if (blocks === null && baked === null) this.upload(listed as readonly TexImageSource[]);
 
     /* Half floats, as `renderer.ts` uploads it: filterable, so the ordinary float layout takes it,
        and read by `textureLoad` alone, so the filter never runs. */

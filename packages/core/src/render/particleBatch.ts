@@ -3,6 +3,27 @@ import { particleShaders, type ParticleMaterial } from './particleMaterial.ts';
 import { PARTICLE_BLADES, PARTICLE_INDICES, PARTICLE_VERTS } from './shaders/particle.ts';
 import type { ParticleInstances } from './particlePool.ts';
 import { blendCovering, blendKeeping } from './sceneCoverage.ts';
+import type { SurfaceTexture } from './surfaceTexture.ts';
+import { PARTICLE_SPRITE_UNIT } from './lightBudget.ts';
+import { createParticleSort, sortBackToFront, type ParticleSort } from './particleSort.ts';
+
+/** The vertex stage's `uCameraFacing` for a facing: the cross 0, the camera 1, the travel 2. */
+export function facingCode(facing: ParticleFacing): number {
+  return facing === 'cross' ? 0 : facing === 'velocity' ? 2 : 1;
+}
+
+/**
+ * A sprite's frame and half-height, two floats a particle, into `out` — the stream the vertex
+ * stage reads at location 10. Shared by both backends, so the two read one layout.
+ */
+export function packSpriteStream(data: ParticleInstances, count: number, out: Float32Array): void {
+  const frames = data.frames;
+  const heights = data.heights;
+  for (let i = 0; i < count; i++) {
+    out[i * 2] = frames?.[i] ?? 0;
+    out[i * 2 + 1] = heights?.[i] ?? 0;
+  }
+}
 
 /**
  * One draw call for a live particle pool: one camera-facing quad per particle, or a
@@ -26,9 +47,11 @@ export type ParticleBlend = 'additive' | 'alpha';
  * `'camera'` is one quad facing the viewer, and the default. `'cross'` is the pair of
  * world-fixed blades this batch drew before the option existed — see `uCameraFacing` in
  * `shaders/particle.ts` for the artifact that made the default the other one, and for what
- * the cross still buys a caller who wants it back.
+ * the cross still buys a caller who wants it back. `'velocity'` faces the camera with its up along
+ * the particle's travel across the view — a streak, a spark stretched by its motion — and a
+ * particle at rest faces the camera as `'camera'` does.
  */
-export type ParticleFacing = 'camera' | 'cross';
+export type ParticleFacing = 'camera' | 'cross' | 'velocity';
 
 export interface ParticleBatchOptions {
   /**
@@ -79,6 +102,41 @@ export interface ParticleBatchOptions {
    */
   facing?: ParticleFacing;
   /**
+   * The image a `'sprite'` draws: a surface texture, its first layer. **Required by the sprite** and
+   * ignored by the procedural materials. Colour is the particle's times the image's, unlit.
+   */
+  texture?: SurfaceTexture;
+  /**
+   * A `'sprite'`'s flipbook: the image as `[columns, rows]` cells, numbered across then down from
+   * the top-left, a particle's `frames` naming one. `[1, 1]`, the default, is the whole image.
+   */
+  cells?: readonly [number, number];
+  /**
+   * Whether a `'sprite'` blends from a particle's cell toward the next by the fraction of its
+   * frame, so a slow flipbook moves rather than steps. Off by default: one cell, sampled once.
+   */
+  blendCells?: boolean;
+  /**
+   * Metres over which a `'sprite'` fades where it meets the opaque scene: the hard line a flat card
+   * draws where it cuts a floor or a body, softened. **0, the default, is a hard edge.** It reads a
+   * copy of the frame's depth, which needs `screenEffects`; without one the edge stays hard and
+   * the renderer says so once.
+   */
+  softDepth?: number;
+  /** Metres in front of the eye over which a `'sprite'` fades in. 0, the default, is no fade. */
+  cameraFade?: number;
+  /**
+   * Metres each particle is moved toward the eye before it is drawn, so a sprite born inside a
+   * surface is drawn in front of it. 0 by default. Every material reads it.
+   */
+  cameraOffset?: number;
+  /**
+   * Whether the live particles are drawn farthest first, the order an alpha blend assumes. Off
+   * by default, because sorting costs a pass over the particles on the CPU each frame and an
+   * additive blend is a sum that does not care. See `particleSort.ts`.
+   */
+  sort?: boolean;
+  /**
    * Another batch whose compiled program this one should reuse.
    *
    * Several pools legitimately share a *material* while needing their own buffers —
@@ -118,6 +176,17 @@ export class ParticleBatch {
   private readonly ageBuffer: WebGLBuffer;
   private readonly seedBuffer: WebGLBuffer;
   private readonly velocityBuffer: WebGLBuffer;
+  private readonly spriteBuffer: WebGLBuffer;
+  private readonly spriteStaging: Float32Array;
+  /** Room to draw farthest first, where the batch asked. See `ParticleBatchOptions.sort`. */
+  private readonly order: ParticleSort | null;
+  /** The sprite's own: its image, its flipbook and its fades. See `ParticleBatchOptions`. */
+  readonly texture: SurfaceTexture | null;
+  readonly cells: readonly [number, number];
+  readonly blendCells: boolean;
+  readonly softDepth: number;
+  readonly cameraFade: number;
+  readonly cameraOffset: number;
   private readonly blend: ParticleBlend;
   private readonly stretchSec: number;
   private readonly erosion: number;
@@ -152,6 +221,17 @@ export class ParticleBatch {
     this.coreGain = options.coreGain ?? 1;
     this.fog = options.fog ?? false;
     this.facing = options.facing ?? 'camera';
+    this.texture = options.texture ?? null;
+    this.cells = options.cells ?? [1, 1];
+    this.blendCells = options.blendCells === true;
+    this.softDepth = Math.max(0, options.softDepth ?? 0);
+    this.cameraFade = Math.max(0, options.cameraFade ?? 0);
+    this.cameraOffset = options.cameraOffset ?? 0;
+    this.order = options.sort === true ? createParticleSort(capacity) : null;
+    this.spriteStaging = new Float32Array(capacity * 2);
+    if (options.material === 'sprite' && this.texture === null) {
+      throw new Error("createParticles: a 'sprite' draws an image, and was given no `texture`");
+    }
 
     const corners = new Float32Array(PARTICLE_VERTS * 2);
     const blades = new Float32Array(PARTICLE_VERTS);
@@ -189,6 +269,7 @@ export class ParticleBatch {
     this.ageBuffer = this.attach(gl, 7, capacity, 1, 1, shaders.label);
     this.seedBuffer = this.attach(gl, 8, capacity, 1, 1, shaders.label);
     this.velocityBuffer = this.attach(gl, 9, capacity * 3, 3, 1, shaders.label);
+    this.spriteBuffer = this.attach(gl, 10, capacity * 2, 2, 1, shaders.label);
 
     const indexBuffer = gl.createBuffer();
     if (indexBuffer === null) throw new Error(`${shaders.label}: createBuffer failed`);
@@ -204,9 +285,12 @@ export class ParticleBatch {
    * Only the live prefix of each array, which is what the pool's compaction
    * exists for: a pool at a tenth of its capacity uploads a tenth of the bytes.
    */
-  upload(gl: WebGL2RenderingContext, data: ParticleInstances): void {
+  upload(gl: WebGL2RenderingContext, given: ParticleInstances, eye: ArrayLike<number>): void {
+    const data = this.order === null ? given : sortBackToFront(given, eye, this.order);
     const n = data.count;
     if (n === 0) return;
+    packSpriteStream(data, n, this.spriteStaging);
+    this.send(gl, this.spriteBuffer, this.spriteStaging, n * 2);
     this.send(gl, this.positionBuffer, data.positions, n * 3);
     this.send(gl, this.sizeBuffer, data.sizes, n);
     this.send(gl, this.spinBuffer, data.spins, n);
@@ -221,7 +305,14 @@ export class ParticleBatch {
   bindMaterial(gl: WebGL2RenderingContext): void {
     const u = this.uniforms;
     gl.uniform1f(u['uStretchSec'] ?? null, this.stretchSec);
-    gl.uniform1f(u['uCameraFacing'] ?? null, this.facing === 'camera' ? 1 : 0);
+    gl.uniform1f(u['uCameraFacing'] ?? null, facingCode(this.facing));
+    gl.uniform1f(u['uCameraOffset'] ?? null, this.cameraOffset);
+    /* The sprite's flipbook and its image; the fades are the renderer's, which owns the depth. */
+    if (this.texture !== null) {
+      gl.uniform4f(u['uCells'] ?? null, this.cells[0], this.cells[1], this.blendCells ? 1 : 0, 0);
+      this.texture.bind(gl, PARTICLE_SPRITE_UNIT);
+      gl.uniform1i(u['uSprite'] ?? null, PARTICLE_SPRITE_UNIT);
+    }
     gl.uniform1f(u['uErosion'] ?? null, this.erosion);
     gl.uniform1f(u['uCoreGain'] ?? null, this.coreGain);
     /* Only the mote program declares uFogEnabled, so this is a no-op — not a leak into the

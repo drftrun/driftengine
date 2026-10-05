@@ -35,6 +35,8 @@ const DIRECTORIES = [
   'packages/core/src/render/shaders/gpudriven',
   'packages/core/src/render/shaders/gi',
   'packages/core/src/render/shaders/recon',
+  /* The froxel binner, the instance cull and the cloth solve: compute with no twin, as these are. */
+  'packages/core/src/render/backend/webgpu/shaders',
 ];
 
 /** Every whole module the directories export, as `[label, source]`. */

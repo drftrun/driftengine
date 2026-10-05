@@ -331,8 +331,13 @@ export const REFLECTION_OVER_BLEND: GPUBlendState = {
   alpha: SCENE_ALPHA_KEEPS,
 };
 
-export const ADDITIVE_BLEND: GPUBlendState = {
-  color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+/**
+ * The bloom pyramid's way back up: an octave added onto a level that the blend multiplies by that
+ * level's tint first — the blend constant, which white makes `one, one` exactly. Into the pyramid's
+ * own levels, never the scene. See `BloomResponse`.
+ */
+export const TINTED_ADD_BLEND: GPUBlendState = {
+  color: { srcFactor: 'one', dstFactor: 'constant', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
 };
 

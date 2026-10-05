@@ -21,6 +21,8 @@ import { uploadCompressedArray } from './glCompressed.ts';
 import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from './surfaceEffects.ts';
 import type { SurfaceLayerEffect } from './surfaceEffects.ts';
 import type { CutoutMode } from './cutoutDither.ts';
+import { isLightmapTexels } from './lightmap.ts';
+import type { LightmapTexels } from './lightmap.ts';
 
 /**
  * How a texture behaves past its edges and between its texels.
@@ -110,6 +112,18 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * without culling, and a back face is lit as its front, with the normal turned to the viewer.
    */
   doubleSided?: boolean;
+  /**
+   * The lighting channels this surface takes light from, a mask: 1, 2, 3 … 255. **1 by default**,
+   * which is every light's default too, so a scene that names no channel is lit as it always was.
+   *
+   * A point or spot light shades this surface only where its `PointLightSet.lightChannels` and this
+   * share a bit — Unreal's lighting channels. A character's own key and rim lights on channel 2,
+   * and the character's materials on 3, light the character and leave the floor around it as the
+   * stage's lights alone have it. **What it does not reach**: the sun, the sky and the probes, area
+   * lights, DriftLight's volume and the GPU-driven pipeline light every surface whatever its mask.
+   * A number that is not a whole mask from 1 to 255 is channel 1.
+   */
+  lightChannels?: number;
   /**
    * How hard the normal map turns the shading normal.
    *
@@ -267,11 +281,15 @@ export class SurfaceTexture {
    */
   constructor(
     gl: WebGL2RenderingContext,
-    source: SurfaceSource | readonly SurfaceSource[],
+    source: SurfaceSource | readonly SurfaceSource[] | LightmapTexels,
     options: SurfaceTextureOptions = {},
     compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    const listed = (Array.isArray(source) ? source : [source]) as readonly SurfaceSource[];
+    /* A lightmap's page: half floats, uploaded as they are. See `lightmap.ts`. */
+    const baked = isLightmapTexels(source) ? source : null;
+    const listed = (
+      baked !== null ? [] : Array.isArray(source) ? source : [source]
+    ) as readonly SurfaceSource[];
     const blocks = compressedLayers(listed);
     this.srgb = (options.colorSpace ?? 'linear') === 'srgb';
     /* Refused before anything is allocated, so a refusal leaves no texture behind. */
@@ -282,7 +300,27 @@ export class SurfaceTexture {
     const wrap = (options.wrap ?? 'repeat') === 'repeat' ? gl.REPEAT : gl.CLAMP_TO_EDGE;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
 
-    if (blocks !== null && plan !== null) {
+    if (baked !== null) {
+      /* No chain: a page is read at its own resolution, and a level of it would blend regions. */
+      this.layers = baked.layers;
+      this.blockFormat = null;
+      this.mipmapped = false;
+      /* A typed array refuses either flag set, so both are put down here rather than assumed. */
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage3D(
+        gl.TEXTURE_2D_ARRAY,
+        0,
+        gl.RGBA16F,
+        baked.width,
+        baked.height,
+        baked.layers,
+        0,
+        gl.RGBA,
+        gl.HALF_FLOAT,
+        baked.texels,
+      );
+    } else if (blocks !== null && plan !== null) {
       /* The stored chain, or level 0 alone where no chain was asked for. Nothing is generated:
          `generateMipmap` cannot write a compressed format. */
       this.layers = blocks.length;

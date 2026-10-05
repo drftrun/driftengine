@@ -35,12 +35,19 @@ const bool MODEL_HAIR = false;  // wgsl:override
 const bool MODEL_SKIN = false;  // wgsl:override
 const bool MODEL_EYE = false;  // wgsl:override
 /*
- * Skin's screen-space scattering, as two halves of one surface: the scene pass without its diffuse,
- * and a pass that is nothing but it, which the blur spreads before it is added back. Both off but
- * where \`skinScattering\` is \`'screen-space'\`; see \`skinBlur.ts\`.
+ * Skin's screen-space scattering, as halves of one surface: the scene pass without its diffuse; a
+ * pass that is nothing but the light the diffuse is made of, which the blur spreads; and a pass that
+ * is nothing but the colour that light is multiplied by once it has spread. All off but where
+ * \`skinScattering\` is \`'screen-space'\`; see \`skinBlur.ts\`.
  */
 const bool SKIN_SCREEN = false;  // wgsl:override
 const bool SKIN_DIFFUSE = false;  // wgsl:override
+const bool SKIN_ALBEDO = false;  // wgsl:override
+/*
+ * Not a model of light but a page of it: the standard model, plus what a bake left (lightmap.ts).
+ * Declared after skin's halves so that every switch before it keeps the id it shipped with.
+ */
+const bool MODEL_LIGHTMAP = false;  // wgsl:override
 
 /*
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
@@ -63,6 +70,14 @@ bool modelOn() {
 bool modelDiffuseAlone() {
   if (MODEL_SKIN) {
     if (SKIN_DIFFUSE) return true;
+  }
+  return false;
+}
+
+/** Whether this pipeline draws skin's colour alone, which the spread light is multiplied by. */
+bool modelAlbedoAlone() {
+  if (MODEL_SKIN) {
+    if (SKIN_ALBEDO) return true;
   }
   return false;
 }
@@ -149,6 +164,15 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   mTangent = frame[0];
   mBitangent = frame[1];
   mAlbedo = albedo;
+  /*
+   * **The diffuse half is light, not colour.** The blur spreads what this half writes, and what
+   * spreads beneath skin is the light: a brow, a lip line and a freckle stay where they are drawn.
+   * So this half shades a white surface and the colour is applied after the spread, from a half of
+   * its own. Spreading the coloured diffuse smeared every mark on a face into the skin around it.
+   */
+  if (MODEL_SKIN) {
+    if (SKIN_DIFFUSE) mAlbedo = vec3(1.0);
+  }
   mSpecColor = mix(vec3(vSpecular), albedo, metal);
   mRoughness = roughness;
   mMetal = metal;
@@ -229,6 +253,25 @@ vec3 modelEnvironment(vec3 environment) {
   return environment;
 }
 
+/**
+ * What a baked page adds to this surface's diffuse: nothing in any pipeline but a lightmapped one,
+ * nor in one whose page is missing. The page's two layers at the surface's second coordinates, which
+ * ride the grain and relief lanes as \`-1 - uv\` (lightmap.ts) and are placed by the material's
+ * region: the irradiance, and the first-order harmonic its direction is, answered by the shading
+ * normal.
+ * **An explicit level**, because the page has one and nothing here needs a derivative.
+ */
+vec3 modelBaked(vec3 n, vec3 albedo, float metal) {
+  if (MODEL_LIGHTMAP) {
+    if (uModelParams[1].w <= 0.0) return vec3(0.0);
+    vec2 at = (vec2(-1.0) - vec2(vGrain, vRelief)) * uModelParams[0].xy + uModelParams[0].zw;
+    vec3 irradiance = textureLod(uModelMap, vec3(at, 0.0), 0.0).rgb;
+    vec4 d = textureLod(uModelMap, vec3(at, 1.0), 0.0) * 2.0 - 1.0;
+    return albedo * (1.0 - metal) * irradiance * max(dot(d.xyz, n) + d.w, 0.0);
+  }
+  return vec3(0.0);
+}
+
 /** Skin's diffuse as the diffuse pass writes it, from the lit total before emission, fogged. */
 vec3 modelDiffuseOut(vec3 diffuse, float fog) {
   return diffuse * (1.0 - fog);
@@ -258,21 +301,43 @@ export const MODELS_GLSL = [
 
 /**
  * Which half of a skin a lit pipeline draws under `skinScattering: 'screen-space'`: the whole
- * surface (every other pipeline), the frame's half without its diffuse, or the diffuse alone into
- * the blur's target — that last one depth-tested for equality against what the frame's half wrote
- * and writing none, since it is the same surface drawn again. See `skinBlur.ts`.
+ * surface (every other pipeline), the frame's half without its diffuse, the diffuse's light alone
+ * into the blur's target, or the colour that light is multiplied by after the blur into a target
+ * of its own — those last two depth-tested for equality against what the frame's half wrote and
+ * writing none, since they are the same surface drawn again. See `skinBlur.ts`.
  */
-export type SkinHalf = 'whole' | 'scene' | 'diffuse';
+export type SkinHalf = 'whole' | 'scene' | 'diffuse' | 'albedo';
+
+/** The constant each half of a skin turns on. See `SkinHalf`. */
+export const SKIN_HALF_SWITCH = {
+  scene: 'SKIN_SCREEN',
+  diffuse: 'SKIN_DIFFUSE',
+  albedo: 'SKIN_ALBEDO',
+} as const;
 
 /** A skin lit stage with one half's switch on, WebGL2's way: see `SkinHalf`. */
 export function skinHalfBound(source: string, half: SkinHalf): string {
   if (half === 'whole') return source;
-  const name = half === 'scene' ? 'SKIN_SCREEN' : 'SKIN_DIFFUSE';
+  const name = SKIN_HALF_SWITCH[half];
   const off = `const bool ${name} = false;`;
   if (!source.includes(off)) {
     throw new Error(`skinHalfBound: this lit stage declares no ${name} constant`);
   }
   return source.replace(off, `const bool ${name} = true;`);
+}
+
+/**
+ * An instanced vertex stage whose tint lane is a lightmap region: the same source, the constant
+ * flipped — WebGL2's way. Only the instanced stage declares it.
+ */
+export function lightmapRegionsBound(source: string): string {
+  const off = 'const bool LIGHTMAP_REGIONS = false;';
+  if (!source.includes(off)) {
+    throw new Error(
+      'lightmapRegionsBound: this vertex stage declares no LIGHTMAP_REGIONS constant',
+    );
+  }
+  return source.replace(off, 'const bool LIGHTMAP_REGIONS = true;');
 }
 
 /** A lit stage with one model's switch on: the same source, the constant flipped — WebGL2's way. */

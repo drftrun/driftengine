@@ -108,6 +108,18 @@ export interface MeshData {
    */
   relief?: Float32Array;
   /**
+   * A second set of texture coordinates, two floats a vertex, for a baked lightmap: where on its
+   * page a surface's baked light is, as a material made with `lightmapModel` reads it. Absent means
+   * a mesh nothing has baked light for.
+   *
+   * **It rides the grain and relief attributes**, which a lightmapped surface gives up: a
+   * renderer's vertex attributes and the stage's inter-stage values are spent to the last one, and
+   * baked stage geometry carries neither procedural grain nor relief. So a mesh with any grain or
+   * relief that is not zero is refused with these, rather than one of the two quietly lost; lanes
+   * of zeros, which a builder writes for every mesh, are what a surface without either carries.
+   */
+  lightmapUvs?: Float32Array;
+  /**
    * Which image of a texture array each vertex's face wears: one whole number a vertex, 0 the first
    * layer. Absent means layer 0, which is the only layer a plain texture has.
    *
@@ -269,6 +281,13 @@ export function validateMeshData(data: MeshData): void {
   check('roughness', data.roughness, 1);
   check('grain', data.grain, 1);
   check('relief', data.relief, 1);
+  check('lightmapUvs', data.lightmapUvs, 2);
+  if (data.lightmapUvs !== undefined && (anyNonZero(data.grain) || anyNonZero(data.relief))) {
+    throw new Error(
+      'Mesh: lightmapUvs and grain or relief together — the second texture coordinates ride the ' +
+        'grain and relief attributes, which a lightmapped surface gives up. Name one or the other.',
+    );
+  }
   check('channel', data.channel, 4);
   check('layers', data.layers, 1);
   if (data.layers !== undefined) {
@@ -374,4 +393,11 @@ export function validateMeshData(data: MeshData): void {
       );
     }
   }
+}
+
+/** Whether a lane holds anything but zeros: a builder writes zeros for a mesh that asked for none. */
+function anyNonZero(lane: Float32Array | undefined): boolean {
+  if (lane === undefined) return false;
+  for (let i = 0; i < lane.length; i++) if (lane[i] !== 0) return true;
+  return false;
 }

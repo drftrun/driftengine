@@ -1,6 +1,6 @@
 import { SURFACE_MODEL_SWITCH } from '../../surfaceModel.ts';
 import type { SurfaceModelKind } from '../../surfaceModel.ts';
-import type { SkinHalf } from '../../shaders/flat/models.ts';
+import { SKIN_HALF_SWITCH, type SkinHalf } from '../../shaders/flat/models.ts';
 import { DEPTH_COMPARE, DEPTH_FORMAT, depthOffsetForLayer } from '../../depthConvention.ts';
 import {
   FLAT_BINDINGS,
@@ -153,8 +153,8 @@ export function flatVertexBindings(
 const PLAIN_VERTEX = flatVertexBindings(false);
 
 /**
- * A vertex stage's constants, keyed by each override's **id** as the fragment's are: `SKIN_EIGHT` in
- * a skinned stage, nothing in any other. Every override a stage declares is set, and one this does
+ * A vertex stage's constants, keyed by each override's **id** as the fragment's are: `SKIN_EIGHT` and
+ * `CLOTH_BOUND` in a skinned stage, `LIGHTMAP_REGIONS` in an instanced one, nothing in any other. Every override a stage declares is set, and one this does
  * not know is refused here rather than defaulted. Shared with the shadow and glass-tint casters,
  * whose skinned stages declare the same switch.
  */
@@ -162,11 +162,14 @@ export function vertexConstants(
   bindings: StageBindings,
   skinEight: boolean,
   cloth = false,
+  /** Whether an instanced stage reads its tint lane as a lightmap region. See `lightmap.ts`. */
+  lightmapRegions = false,
 ): Record<string, number> {
   const constants: Record<string, number> = {};
   for (const [name, id] of Object.entries(bindings.overrides ?? {})) {
     if (name === 'SKIN_EIGHT') constants[String(id)] = skinEight ? 1 : 0;
     else if (name === 'CLOTH_BOUND') constants[String(id)] = cloth ? 1 : 0;
+    else if (name === 'LIGHTMAP_REGIONS') constants[String(id)] = lightmapRegions ? 1 : 0;
     else throw new Error(`flatPass: a vertex stage declares a switch "${name}" nothing sets`);
   }
   return constants;
@@ -263,13 +266,9 @@ function flatFragmentConstants(
       constants[String(id)] = name === modelSwitch ? 1 : 0;
       continue;
     }
-    /* Skin's two halves under the screen-space blur, set from the key as a model's switch is. */
-    if (name === 'SKIN_SCREEN' || name === 'SKIN_DIFFUSE') {
-      constants[String(id)] =
-        (name === 'SKIN_SCREEN' && skinPass === 'scene') ||
-        (name === 'SKIN_DIFFUSE' && skinPass === 'diffuse')
-          ? 1
-          : 0;
+    /* Skin's halves under the screen-space blur, set from the key as a model's switch is. */
+    if (name === 'SKIN_SCREEN' || name === 'SKIN_DIFFUSE' || name === 'SKIN_ALBEDO') {
+      constants[String(id)] = skinPass !== 'whole' && name === SKIN_HALF_SWITCH[skinPass] ? 1 : 0;
       continue;
     }
     if (!(name in cache.litSwitches)) {
@@ -608,7 +607,7 @@ export function flatPipeline(
   cloth = false,
   /** Which shading model its fragment stage shades by, null the standard. The key must carry it. */
   model: SurfaceModelKind | null = null,
-  /** Which half of a skin it draws. The key must carry it: `|ss` or `|sd`. See `SkinHalf`. */
+  /** Which half of a skin it draws. The key must carry it: `|ss`, `|sd` or `|sa`. See `SkinHalf`. */
   skinPass: SkinHalf = 'whole',
 ): GPURenderPipeline {
   return cache.get(
@@ -768,7 +767,8 @@ function flatDescriptor(
   skinPass: SkinHalf = 'whole',
 ): GPURenderPipelineDescriptor {
   const offset = depthOffsetForLayer(depthLayer);
-  const diffuseAlone = skinPass === 'diffuse';
+  /* The diffuse and colour halves are the same surface again, into the blur's targets. */
+  const diffuseAlone = skinPass === 'diffuse' || skinPass === 'albedo';
   return {
     label: key,
     layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
@@ -784,7 +784,12 @@ function flatDescriptor(
       }),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),
-      constants: vertexConstants(flatVertexBindings(skinned, morphed, instanced), skinEight, cloth),
+      constants: vertexConstants(
+        flatVertexBindings(skinned, morphed, instanced),
+        skinEight,
+        cloth,
+        model === 'lightmap',
+      ),
     },
     fragment: {
       module: shaderModule(device, {

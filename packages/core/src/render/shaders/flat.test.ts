@@ -106,7 +106,7 @@ test('a surface texture reaches every lighting term, not just the ambient one', 
  * one, which the lit stage's budget on a 256-row phone cannot spare.
  */
 test('a normal map with no z stored has it rebuilt from the two it has', () => {
-  const sample = source.indexOf('vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;');
+  const sample = source.indexOf('vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;');
   const rebuilt = source.indexOf(
     'mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));',
   );
@@ -177,7 +177,7 @@ test('a glowing surface is shadowed by lamps and by the sky', () => {
    * Losing either half puts a shadow back under a glowing surface.
    */
   expect(source).toContain(
-    'lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;',
+    'lit += emissiveTint * emissiveMapped * uEmission.x * vEmissive * uEmission.y * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;',
   );
 });
 
@@ -600,12 +600,12 @@ test('a perfect reflector is not asked to absorb', () => {
   });
 
   expect(source, 'the weight is the compensated energy').toContain(
-    'float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uReflectivity, metal), 0.0, 1.0);',
+    'float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uEnvironmentDials.y, metal), 0.0, 1.0);',
   );
   /* The exact expression it replaced. Named so that reintroducing it fails here rather than in a
      consumer's picture six weeks later, which is how it was found the first time. */
   expect(source, 'and never the bare single-scatter one').not.toContain(
-    'f0 * dfg.x + dfg.y) * max(uReflectivity',
+    'f0 * dfg.x + dfg.y) * max(uEnvironmentDials.y',
   );
   expect(source, 'the compensation is compiled in beside the fit').toContain(
     'float envSpecularEnergy(',
@@ -643,8 +643,8 @@ test('the environment sampler exists only when a probe was asked for', () => {
      bindings share one declaration now. The assertion is unchanged and so is its reason.
 
      **The sampler, not the prefix.** This read `not.toContain('uEnvironment')`, which is a
-     substring of every uniform whose name begins that way — `uEnvironmentGain` is a plain float
-     that every variant declares, and it tripped a guard that is about a texture binding. Naming
+     substring of every uniform whose name begins that way — the environment's gain was a plain
+     float that every variant declares, and it tripped a guard that is about a texture binding. Naming
      the declaration says what the test has always meant and cannot be fooled by a neighbour. */
   expect(without, 'no probe binding where nothing will fill one').not.toContain(
     'sampler2DArray uEnvironment',
@@ -687,7 +687,7 @@ test('the night-side term is cut out of the source unless a consumer asks for it
   /* The ordinary emissive line is untouched either way, which is what "added" means here. */
   for (const source of [off, on]) {
     expect(source).toContain(
-      'lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor',
+      'lit += emissiveTint * emissiveMapped * uEmission.x * vEmissive * uEmission.y',
     );
   }
 });
@@ -783,8 +783,9 @@ test('the tangent frame and its validity both reach the fragment stage', () => {
  * and the assertion would hold however wrong the order became.
  */
 test('a normal map perturbs the shading normal before either relief does', () => {
-  const applied = source.indexOf('mix(n, normalize(tbn * mapped)');
-  const relief = source.indexOf('float reliefAmount = uRelief * vRelief;');
+  /* The call site in main, not the function's body, which is concatenated before main. */
+  const applied = source.indexOf('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);');
+  const relief = source.indexOf('float reliefAmount = uRelief.x * max(vRelief, 0.0);');
   expect(applied, 'the map is applied to the shading normal').toBeGreaterThan(-1);
   expect(relief, 'and the procedural relief is still there').toBeGreaterThan(-1);
   expect(applied, 'the map comes first').toBeLessThan(relief);
@@ -803,12 +804,15 @@ test('a normal map perturbs the shading normal before either relief does', () =>
  * branches.
  */
 test('the frame is only built under a uniform gate', () => {
-  const gate = source.indexOf('if (uNormalStrength > 0.0)');
-  expect(gate, 'the block is gated on the uniform').toBeGreaterThan(-1);
-  expect(
-    source.indexOf('tangentFrame(n,', gate),
-    'and the frame is built inside it',
-  ).toBeGreaterThan(gate);
+  const body = source.indexOf('vec3 normalMapped(vec3 n, vec3 at) {');
+  expect(body, 'the map is read in one function').toBeGreaterThan(-1);
+  expect(source.indexOf('tangentFrame(n,', body), 'which builds the frame').toBeGreaterThan(body);
+  /* And every call of it is on a branch on uniforms: the lit block's, and an unlit refraction's. */
+  expect(source.split('normalMapped(').length - 1, 'the body and its two callers').toBe(3);
+  expect(source).toContain('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);');
+  expect(source).toContain(
+    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);',
+  );
 });
 
 test('the varying selects between two frames rather than branching on one', () => {
@@ -827,7 +831,8 @@ test('the varying selects between two frames rather than branching on one', () =
  * only on a material whose scale is not 1, which is most of them and none of the defaults.
  */
 test('the normal map reads the UVs the vertex stage already scaled', () => {
-  expect(source).toContain('texture(uNormalMap, surfaceAt)');
+  expect(source).toContain('texture(uNormalMap, at)');
+  expect(source, 'at the coordinate every map is read at').toContain('normalMapped(n, surfaceAt)');
   expect(source, 'read where every map is read').toContain(
     'vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));',
   );
@@ -887,8 +892,8 @@ test('every metal term collapses to its dielectric form at metal 0', () => {
   expect(source).toContain('mix(vec3(vSpecular), albedo, metal)');
   expect(source).toContain('mix(0.04, 1.0, metal)');
   expect(source).toContain('mix(vec3(1.0), albedo, metal)');
-  /* max(uReflectivity, 0.0) is uReflectivity, because both renderers clamp it non-negative. */
-  expect(source).toContain('max(uReflectivity, metal)');
+  /* max(reflectivity, 0.0) is the reflectivity, because both renderers clamp it non-negative. */
+  expect(source).toContain('max(uEnvironmentDials.y, metal)');
   /* And the diffuse, whose ambient half cancels — see the spec's 3.1. */
   expect(source).toContain('albedo * (ambient + sunColor * direct * (1.0 - metal))');
 });
@@ -1112,7 +1117,7 @@ test('the instanced variant takes its placement and tint from attributes', () =>
   const source = flatVert({ skinned: false, morphed: false, instanced: true });
   expect(source).toContain('layout(location = 11) in vec4 aInstanceModel0;');
   expect(source).toContain('layout(location = 14) in vec4 aInstanceModel3;');
-  expect(source).toContain('layout(location = 15) in vec3 aInstanceTint;');
+  expect(source).toContain('layout(location = 15) in vec4 aInstanceTint;');
   /* Cut out rather than left declared: an unwritten uniform is zero, and a zero model matrix
      collapses every instance of the batch onto the origin. */
   expect(source).not.toContain('uniform mat4 uModel;');
@@ -1213,7 +1218,8 @@ test('writes neutral lanes on the instanced path so the fragment stage reads one
   expect(source).toContain('out float vSkyDirect;');
   expect(source).toContain('out float vAlpha;');
   expect(source).toContain('vSkyDirect = 1.0;');
-  expect(source).toContain('vAlpha = 1.0;');
+  /* The opacity is the instance's own, which packing makes 1 where none was given. */
+  expect(source).toContain('vAlpha = aInstanceTint.w;');
 });
 
 /*
@@ -1544,13 +1550,36 @@ test("LAMPLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR, a lamp's and a rectangle
   expect(source).toContain(
     'glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;',
   );
-  expect(source).toContain('lampShadowed += areaDiffuse * areaOccl * areaGlass;');
-  expect(source).toContain('lampShadowed += areaHighlight * areaOccl * areaGlass;');
+  /* A rectangle's two terms are shaded in `areaLightAdd`, which every arm calls with its own pair. */
+  expect(source).toContain('lampShadowed += areaDiffuse * occl * glass;');
+  expect(source).toContain('lampShadowed += areaHighlight * occl * glass;');
+  expect(source).toContain(
+    'centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,',
+  );
   expect(source).toContain('glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;');
   /* The glass sits beside its light's layer, and the tint is a layer a light. */
   expect(source).toContain('uniform highp sampler2DArray uPointGlassTints;');
   expect(source).toContain('float glassLayer = layer + 1.0;');
   expect(source).toContain('float tintLayer = layer * 0.5;');
+});
+
+/*
+ * **A refracting draw bends by its shading normal, so a normal map shimmers what is seen through
+ * it.** It bent by the geometric normal until 4.8.6, and a distortion with a noise map drew as a
+ * smooth lens. The normal is taken before a back face turns it, so a pane bends the same way from
+ * either side as it did; an unlit draw shaded none, so it reads the map itself, through the one
+ * function the lit block calls and on a branch on uniforms alone.
+ */
+test('A REFRACTING DRAW BENDS BY ITS SHADING NORMAL, a normal map and all, lit or not', () => {
+  const kept = source.indexOf('shadingNormal = n; if (backFace) n = -n;');
+  expect(kept, 'the lit block hands over its normal before turning a back face').toBeGreaterThan(
+    source.indexOf('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);'),
+  );
+  expect(source).toContain('vec3 refractN = shadingNormal;');
+  expect(source).toContain(
+    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);',
+  );
+  expect(source).not.toContain('vec3 refractN = normalize(vNormal);');
 });
 
 /*

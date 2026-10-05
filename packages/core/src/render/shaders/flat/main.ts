@@ -148,6 +148,12 @@ export const MAIN_GLSL = `void main() {
   float glassTransmission = uSeeThrough.z;
   float glassFrost = uSeeThrough.w;
 
+  /*
+   * The normal a refracting draw bends by: the shading normal, a normal map's tilt and every relief
+   * in it, as the lit block leaves it before turning a back face — the geometric normal where
+   * nothing tilts it, which is what refraction bent by before 4.8.6. See the refraction below.
+   */
+  vec3 shadingNormal = normalize(vNormal);
   if (uLightingEnabled != 0) {
     vec3 n = normalize(vNormal);
     /*
@@ -181,20 +187,7 @@ export const MAIN_GLSL = `void main() {
      * right: a mipped colour image, sampled under uniform control flow, exactly as uAlbedo is
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
-    if (uNormalStrength > 0.0) {
-      vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
-      /*
-       * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
-       * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
-       * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
-       * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
-       * that has to say what format it holds, and continuous at the boundary, since a unit texel
-       * lying flat has its z near zero either way. A texel with z above zero is left as it was.
-       */
-      mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
-      mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
-      n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
-    }
+    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change
@@ -218,7 +211,8 @@ export const MAIN_GLSL = `void main() {
      * widening driven by fwidth was measured making that artefact three times worse, because that
      * derivative spikes at every hard crease. See docs/IMPROVEMENTS.md.
      */
-    float reliefAmount = uRelief * vRelief;
+    /* Never below zero: a lightmapped mesh's coordinates ride this lane below it. See lightmap.ts. */
+    float reliefAmount = uRelief.x * max(vRelief, 0.0);
     /* Grown with the relief, before anything reads it. See the comment above: a normal that
        wanders cannot hold a highlight narrower than the wander. */
     /*
@@ -259,11 +253,11 @@ export const MAIN_GLSL = `void main() {
      * variance is still roughness — a road that faded to smooth at distance would go glossy
      * instead of noisy, which is a worse artefact wearing better clothes.
      */
-    vec3 reliefPixel = fwidth(vWorldPos) * uReliefCycles;
+    vec3 reliefPixel = fwidth(vWorldPos) * uRelief.y;
     float reliefFootprint = max(max(reliefPixel.x, reliefPixel.y), reliefPixel.z);
     float reliefResolved = reliefAmount * (1.0 - smoothstep(0.5, 1.5, reliefFootprint));
     if (reliefResolved > 0.0) {
-      vec3 at = vWorldPos * uReliefCycles;
+      vec3 at = vWorldPos * uRelief.y;
       /* One cell of the noise, which is one bump: the gradient over any smaller step is the
          interpolant's own slope rather than the shape's. */
       float here = grain(at);
@@ -360,6 +354,7 @@ export const MAIN_GLSL = `void main() {
      * Turning only the interpolated normal would leave a normal map's tilt pointing the wrong way
      * across the fold of every curtain.
      */
+    shadingNormal = n;
     if (backFace) n = -n;
     /*
      * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
@@ -369,6 +364,14 @@ export const MAIN_GLSL = `void main() {
     bool modelled = modelOn();
     bool modelledBehind = modelSeesBehind();
     if (modelled) modelSurface(n, albedo, surfaceRoughness, metal, surfaceAt);
+    /*
+     * Skin's colour half leaves here, with the colour its spread light is multiplied by, and a whole
+     * alpha a multisampled edge resolves to its coverage. A branch on the switches alone, so uniform.
+     */
+    if (modelAlbedoAlone()) {
+      outColor = vec4(albedo, 1.0);
+      return;
+    }
 
     /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
@@ -468,6 +471,8 @@ export const MAIN_GLSL = `void main() {
     irradiance = mix(irradiance, ambient, probeGridOutside(surfaceN, vWorldPos));
     ambient = mix(ambient, irradiance, uProbeGridAmbient * uEnvironmentEnabled);
 #endif
+    /* A draw's own ambient, where one is set, in place of the frame's: \`setAmbientSH\`. */
+    if (uAmbientSH[6].w > 0.5) ambient = ambientHarmonics(n);
     /*
      * A metal keeps its ambient and loses its direct diffuse.
      *
@@ -495,6 +500,8 @@ export const MAIN_GLSL = `void main() {
     } else {
       lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
     }
+    /* A baked page's light, beside the sky's and the sun's: nothing but where a material has one. */
+    lit += modelBaked(n, albedo, metal);
 
     /*
      * A sun highlight, for the few surfaces that ask for one.
@@ -640,7 +647,7 @@ export const MAIN_GLSL = `void main() {
      */
     /* A model reflects its environment whatever the pass asked of the standard model: see
        modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
-    if (uReflectivity > 0.0 || uMaterialFlags.y != 0 || modelled) {
+    if (uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
       vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);
@@ -741,7 +748,7 @@ export const MAIN_GLSL = `void main() {
       float footprintRough = 0.5 * sqrt(min(swingRad, 1.0));
       float lobeRough = min(1.0, sqrt(surfaceRoughness * surfaceRoughness + footprintRough * footprintRough));
       float envLod = clamp(
-        mix(boxLod, lobeRough * uEnvironmentMaxLod, uEnvironmentPrefiltered),
+        mix(boxLod, lobeRough * uEnvironmentMaxLod, uEnvironmentDials.x),
         0.0,
         uEnvironmentMaxLod
       );
@@ -777,7 +784,7 @@ export const MAIN_GLSL = `void main() {
        * \`mix(1, gain, 0)\` is exactly 1, so a dielectric is arithmetically untouched however the
        * caller sets this.
        */
-      environment *= mix(1.0, uEnvironmentGain, metal);
+      environment *= mix(1.0, uEnvironmentDials.z, metal);
       float facing = 1.0 - max(dot(n, toEye), 0.0);
       /*
        * **A metal's Fresnel base is close to its albedo, not a dielectric's four percent.** Schlick
@@ -811,7 +818,7 @@ export const MAIN_GLSL = `void main() {
        * which is what the old \`max(uReflectivity, metal) * (1 - r)\` came to, and both renderers
        * clamp that uniform non-negative on upload.
        */
-      float reflectAmount = max(uReflectivity * (1.0 - surfaceRoughness), metal);
+      float reflectAmount = max(uEnvironmentDials.y * (1.0 - surfaceRoughness), metal);
       /*
        * **With a prefiltered environment, how much a surface returns is an integral rather than a
        * curve somebody chose**, and this is where the comment above said the thinning should go
@@ -881,7 +888,7 @@ export const MAIN_GLSL = `void main() {
        */
 #if ENVIRONMENT_PROBE
       vec2 dfg = envBrdfApprox(ndv, surfaceRoughness);
-      float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uReflectivity, metal), 0.0, 1.0);
+      float integrated = clamp(envSpecularEnergy(f0, dfg) * max(uEnvironmentDials.y, metal), 0.0, 1.0);
       /*
        * **The split sum only where a prefiltered chain is what is being sampled.** It is the
        * correct share of a *prefiltered* environment; over a box chain it asserts an integral that
@@ -893,7 +900,7 @@ export const MAIN_GLSL = `void main() {
       float weight = mix(
         clamp(fresnel * reflectAmount, 0.0, 1.0),
         integrated,
-        uEnvironmentEnabled * uEnvironmentPrefiltered
+        uEnvironmentEnabled * uEnvironmentDials.x
       );
 #else
       float weight = clamp(fresnel * reflectAmount, 0.0, 1.0);
@@ -1030,8 +1037,8 @@ export const MAIN_GLSL = `void main() {
     bool fixtureProfiles = false;
     bool fixtureShapes = false;
     if (LIGHT_FIXTURES) {
-      fixtureProfiles = uIesAtlasRows > 1.0;
-      fixtureShapes = uIesPlaneCount > 1.0 || uCookieTiles > 0.0;
+      fixtureProfiles = uFixtureShape.x > 1.0;
+      fixtureShapes = uFixtureShape.y > 1.0 || uFixtureShape.z > 0.0;
     }
 
     // Point lights. Inverse-square-ish falloff clipped to a finite radius, so a
@@ -1058,6 +1065,15 @@ export const MAIN_GLSL = `void main() {
       float iesProfile;
       vec3 iesAxis;
       float cookie;
+      /* The light's lighting channels, a mask: 1 unless it names others. See \`uLightIesAxis\`. */
+      float lightChannels = 1.0;
+      /*
+       * **A rectangle in the froxel table** — one past the fixed arm's \`maxAreaLights\` — which
+       * its record says with a negative radius, its reach negated. Its fields come out of the
+       * fixture texels: sidedness, the right axis, the half extents and the up axis.
+       */
+      bool clusteredArea = false;
+      float areaTwoSided = 0.0;
       if (clusteredArm) {
       if (slot >= clusterLights) break;
       /*
@@ -1076,6 +1092,8 @@ export const MAIN_GLSL = `void main() {
       lightPos = vec3(
         uintBitsToFloat(rec0.x), uintBitsToFloat(rec0.y), uintBitsToFloat(rec0.z));
       lightRadius = uintBitsToFloat(rec0.w);
+      clusteredArea = lightRadius < 0.0;
+      lightRadius = abs(lightRadius);
       /*
        * **Out of reach is decided on the first texel, before the rest of the record is read.**
        * A froxel holds every light whose sphere touches its box, so most of the lights a fragment
@@ -1120,7 +1138,8 @@ export const MAIN_GLSL = `void main() {
           uvec4 rec2 = clusterTexel(record + 2);
           uvec4 rec3 = clusterTexel(record + 3);
           uvec4 rec4 = clusterTexel(record + 4);
-          shadowSlot = int(uintBitsToFloat(rec2.x));
+          shadowSlot = clusteredArea ? -1 : int(uintBitsToFloat(rec2.x));
+          areaTwoSided = uintBitsToFloat(rec2.x);
           lightDir = vec3(
             uintBitsToFloat(rec2.y), uintBitsToFloat(rec2.z), uintBitsToFloat(rec2.w));
           lightCone = vec2(uintBitsToFloat(rec3.x), uintBitsToFloat(rec3.y));
@@ -1130,6 +1149,7 @@ export const MAIN_GLSL = `void main() {
              texel rather than being derived from the direction. */
           iesAxis = vec3(
             uintBitsToFloat(rec4.x), uintBitsToFloat(rec4.y), uintBitsToFloat(rec4.z));
+          lightChannels = uintBitsToFloat(rec4.w);
         }
       }
       } else {
@@ -1144,8 +1164,41 @@ export const MAIN_GLSL = `void main() {
       lightDir = uLightDir[i];
       lightCone = uLightCone[i];
       iesProfile = uLightIesProfile[i];
-      iesAxis = uLightIesAxis[i];
+      iesAxis = uLightIesAxis[i].xyz;
+      lightChannels = uLightIesAxis[i].w;
       cookie = uLightCookie[i];
+      }
+      /*
+       * **A light shades a surface only where their channels meet**: the light's mask against the
+       * material's. Both default to channel 1, so a scene naming none takes every light as before
+       * — and **zero reads as that default on both sides**, so a pass that never writes the lane
+       * loses no light: an unwritten uniform is zero, and zero here would be every lamp switched
+       * off. A branch on a value read from a texture in the clustered arm, as the reach test above
+       * is, and it skips only what the light would add; no derivative is taken past it.
+       */
+      int litChannels = int(lightChannels);
+      int surfaceChannels = int(uCutout.w);
+      if (((litChannels == 0 ? 1 : litChannels) & (surfaceChannels == 0 ? 1 : surfaceChannels)) == 0) {
+        continue;
+      }
+      /*
+       * **A clustered rectangle is shaded here and goes no further**: by the fixed loop's own body
+       * (\`areaLight.ts\`), unshadowed — its occlusion is the fixed arm's, which is why the first
+       * \`maxAreaLights\` stay there — and windowed to nothing at its reach, as a lamp is, so the
+       * froxel it is binned into has no edge in the picture.
+       */
+      if (clusteredArea) {
+        float areaForm = areaSignedForm(n, lightPos, lightDir, iesAxis, lightCone);
+        float areaWindow = clamp(1.0 - pow(length(lightPos - vWorldPos) / max(lightRadius, 1e-4), 4.0), 0.0, 1.0);
+        areaForm = mix(max(0.0, areaForm), abs(areaForm), areaTwoSided);
+        if (areaForm > 0.0) {
+          areaLightAdd(
+            lightPos, lightDir, iesAxis, lightCone, lightColor * (areaWindow * areaWindow), areaForm,
+            1.0, vec3(1.0), n, albedo, metal, specColor, surfaceRoughness, modelled,
+            lampOpen, lampShadowed
+          );
+        }
+        continue;
       }
       /* A DriftLight field's own light carries a negative weight, and is shaded exactly only for the
          share of this pixel the field does not stand in for. See \`driftLight.ts\`. */
@@ -1351,7 +1404,7 @@ export const MAIN_GLSL = `void main() {
        * and the result is selected afterwards with a \`mix\` on a compare — which is arithmetic
        * rather than control flow.
        *
-       * **And skipped outright where nothing loaded a profile**, behind \`uIesAtlasRows\`, which is
+       * **And skipped outright where nothing loaded a profile**, behind \`uFixtureShape.x\`, which is
        * one while the atlas holds only its row of ones. A uniform is provably uniform control
        * flow, so this branch is not the one the rule forbids. It was paid on every scene until a
        * 4K frame of 320 lamps and no shadows measured it at 0.7 ms of the main pass, rising to
@@ -1394,12 +1447,12 @@ export const MAIN_GLSL = `void main() {
         if (iesRefLen > 1e-5) {
           iesRef /= iesRefLen;
           vec3 iesBinormal = cross(lightDir, iesRef);
-          if (uIesPlaneCount > 1.0) {
+          if (uFixtureShape.y > 1.0) {
             /* \`atan\` answers -PI..PI and \`fract\` of a negative wraps forward, so this is 0..1
                across the whole turn without a branch on the sign. */
             iesTurns = fract(atan(dot(iesRay, iesBinormal), dot(iesRay, iesRef)) / TAU_IES);
           }
-          if (uCookieTiles > 0.0) {
+          if (uFixtureShape.z > 0.0) {
             /*
              * **A perspective projection onto the plane one unit down the aim**, which is what a
              * fixture actually throws: the mask grows with distance rather than being pasted on
@@ -1446,10 +1499,10 @@ export const MAIN_GLSL = `void main() {
        */
       float photometric = 1.0;
       if (fixtureProfiles) {
-        float iesBase = iesRow * (uIesPlaneCount + 1.0);
+        float iesBase = iesRow * (uFixtureShape.y + 1.0);
         /* The profiles are the atlas's bottom rows, below any cookies. */
-        float iesTop = fixtureSize.y - uIesAtlasRows;
-        float iesV = (iesTop + iesBase + iesTurns * uIesPlaneCount + 0.5) / fixtureSize.y;
+        float iesTop = fixtureSize.y - uFixtureShape.x;
+        float iesV = (iesTop + iesBase + iesTurns * uFixtureShape.y + 0.5) / fixtureSize.y;
         float iesGain = textureLod(uFixtureAtlas, vec2(iesU, iesV), 0.0).r;
         photometric = mix(1.0, iesGain, step(0.0, iesProfile));
       }
@@ -1586,22 +1639,8 @@ export const MAIN_GLSL = `void main() {
       vec3 up = uAreaLightUp[a];
       vec2 halfSize = uAreaLightSize[a];
 
-      /*
-       * **Wound so a surface on the emitting side sees them counter-clockwise**, which is what
-       * makes the form factor positive there. The natural order — minus, plus, plus, minus — winds
-       * the other way, and every one-sided light then clamped to zero and the frame was black.
-       */
-      vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
-      vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
-      vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
-      vec3 c3 = centre - right * halfSize.x - up * halfSize.y;
-
-      /*
-       * **The sign is the sidedness.** A one-sided rectangle takes the positive part and a
-       * two-sided one the magnitude — no facing test, because the sign already answers it exactly
-       * per fragment rather than once for the rectangle's centre.
-       */
-      float signedForm = quadFormFactor(n, vWorldPos, c0, c1, c2, c3);
+      /* The form factor and its sign, which is the sidedness: see \`areaSignedForm\`. */
+      float signedForm = areaSignedForm(n, centre, right, up, halfSize);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
       float backForm = glassTransmission > 0.0
@@ -1716,55 +1755,11 @@ export const MAIN_GLSL = `void main() {
 
       glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;
       if (form <= 0.0) continue;
-      /*
-       * A model answers a rectangle as it answers a lamp at its centre, carried at the rectangle's
-       * own energy: the diffuse by the exact form factor over the centre's cosine, the specular by
-       * the form factor. **An approximation, stated**: a model's lobe is not integrated over the
-       * rectangle as the standard lobe is, so a glossy model under a large softbox shows a lobe
-       * from its centre rather than its shape.
-       */
-      if (modelled) {
-        vec3 areaL = normalize(centre - vWorldPos);
-        modelLight(areaL, 0.0, 0.0);
-        vec3 areaModel = (mDiffuse * (form / max(dot(n, areaL), 1e-3)) + mSpecular * form)
-          * uAreaLightColor[a];
-        lampOpen += areaModel;
-        lampShadowed += areaModel * areaOccl * areaGlass;
-        continue;
-      }
-      /* Held back with the point lamps', and shadowed by the same term it always was. */
-      vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
-      lampOpen += areaDiffuse;
-      lampShadowed += areaDiffuse * areaOccl * areaGlass;
-
-      if (vSpecular > 0.0 || metal > 0.0) {
-        /*
-         * **The lobe integrated over the rectangle, rather than sampled at one point on it.**
-         *
-         * What stood here handed the closest point on the rectangle to \`sphereLobe\` and scaled it
-         * by \`form\`, the *diffuse* form factor. Measured against a brute-force integral by
-         * \`scripts/areaSpecular.mjs\`, that lost the reflection rather than blurring it: on
-         * polished metal facing a softbox it returned 0.000233 where the integral is 0.9207, and
-         * head-on on a rough surface it was 3.7 times too bright. Worst 287% either way; this is
-         * 40.1% where the light is what the surface reflects and 79.0% for one overhead.
-         *
-         * \`quadCoverage\` says what fraction of the specular lobe the rectangle covers and the
-         * environment BRDF says how much the surface returns, which is the same split the probe
-         * path uses. **\`dfg.x + dfg.y\` and not \`envSpecularEnergy\`**, deliberately and against
-         * the obvious argument: the compensation returns the multiply-scattered share, and every
-         * direct lobe in this shader is single-scattering, so adding it here returns energy the
-         * light never had. Measured at 211% against 40.1%.
-         */
-        vec3 toEyeArea = normalize(uCameraPos - vWorldPos);
-        float coverage = quadCoverage(n, vWorldPos, toEyeArea, surfaceRoughness, c0, c1, c2, c3);
-        if (coverage > 0.0) {
-          vec2 areaDfg = envBrdfApprox(max(dot(n, toEyeArea), 0.0), surfaceRoughness);
-          vec3 areaSpec = specColor * areaDfg.x + vec3(areaDfg.y);
-          vec3 areaHighlight = areaSpec * uAreaLightColor[a] * coverage;
-          lampOpen += areaHighlight;
-          lampShadowed += areaHighlight * areaOccl * areaGlass;
-        }
-      }
+      /* The diffuse, the model's answer or the lobe integrated over the rectangle: see areaLight.ts. */
+      areaLightAdd(
+        centre, right, up, halfSize, uAreaLightColor[a], form, areaOccl, areaGlass,
+        n, albedo, metal, specColor, surfaceRoughness, modelled, lampOpen, lampShadowed
+      );
     }
 
     /*
@@ -1906,10 +1901,10 @@ export const MAIN_GLSL = `void main() {
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
     float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
-    lit += emissiveTint * emissiveMapped * uEmissiveGain * vEmissive * uNightFactor
+    lit += emissiveTint * emissiveMapped * uEmission.x * vEmissive * uEmission.y
       * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
     /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
-    lit += windowGlow * uEmissiveGain;
+    lit += windowGlow * uEmission.x;
 
 #if NIGHT_EMISSIVE
     /*
@@ -1942,9 +1937,9 @@ export const MAIN_GLSL = `void main() {
     // Arrival glow: a world-space box lit independently of the clock, so
     // finishing a run reads the same at noon and at midnight. Costs one compare
     // per fragment and no extra draw call — the box is a uniform, not geometry.
-    if (uHighlightGain > 0.0) {
-      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax);
-      lit += albedo * uHighlightGain * inside.x * inside.y * inside.z;
+    if (uHighlightMax.w > 0.0) {
+      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
+      lit += albedo * uHighlightMax.w * inside.x * inside.y * inside.z;
     }
   }
 
@@ -2001,7 +1996,7 @@ export const MAIN_GLSL = `void main() {
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**
    *
-   * The offset is along the surface normal in screen space, which is the cheap approximation every
+   * The offset is along the shading normal in screen space, which is the cheap approximation every
    * real-time renderer ships rather than a ray traced through two interfaces of a solid. What it
    * cannot do is show anything the frame had not already drawn, so a pane at the edge of the frame
    * refracts what is beside it -- and the clamp below is what keeps that from being worse than
@@ -2036,7 +2031,14 @@ export const MAIN_GLSL = `void main() {
    * draw uses.
    */
   if (uSeeThrough.x > 0.0 || glassTransmission > 0.0) {
-    vec3 refractN = normalize(vNormal);
+    /*
+     * **Bent by the shading normal, so a normal map shimmers what is seen through it** — a heat
+     * haze, a distortion sphere, a rippled pane. Until 4.8.6 this was the geometric normal and a
+     * mapped surface refracted as a smooth lens. An unlit draw shaded no normal, so it reads the
+     * map here, on a branch on uniforms alone, which keeps its derivatives legal.
+     */
+    vec3 refractN = shadingNormal;
+    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);

@@ -18,6 +18,8 @@
  * the draw's model matrix and the eye's joint each draw, with `eyeAxisInWorld`.
  */
 import type { Vec3 } from '../math/color.ts';
+import { lightmapRegionOf } from './lightmap.ts';
+import type { LightmapRegion } from './lightmap.ts';
 
 /** Strands of brushed metal, satin or hair-like fibre: a highlight stretched across them. */
 export interface AnisotropicModel {
@@ -77,8 +79,19 @@ export interface EyeModel {
   readonly joint: number;
 }
 
+/**
+ * A surface whose static light was baked: the standard model, plus a lightmap page's light read at
+ * the mesh's second coordinates (`MeshData.lightmapUvs`). The material's `modelMap` is the page,
+ * from `createLightmap`; see `lightmap.ts` for what it adds and what it gives up.
+ */
+export interface LightmapModel {
+  readonly kind: 'lightmap';
+  /** Where this material's surfaces are on the page: `uv2 * scale + bias`. See `LightmapRegion`. */
+  readonly region: LightmapRegion;
+}
+
 /** Every model a material can name, by its `kind`: see `SurfaceMaterial.model`. */
-export type SurfaceModel = AnisotropicModel | HairModel | SkinModel | EyeModel;
+export type SurfaceModel = AnisotropicModel | HairModel | SkinModel | EyeModel | LightmapModel;
 /** A model's name, which also picks its pipeline switch: `SURFACE_MODEL_SWITCH`. */
 export type SurfaceModelKind = SurfaceModel['kind'];
 
@@ -88,6 +101,7 @@ export const SURFACE_MODEL_KINDS: readonly SurfaceModelKind[] = [
   'hair',
   'skin',
   'eye',
+  'lightmap',
 ];
 
 /** The lit stage's switch for each kind. */
@@ -96,6 +110,7 @@ export const SURFACE_MODEL_SWITCH: Readonly<Record<SurfaceModelKind, string>> = 
   hair: 'MODEL_HAIR',
   skin: 'MODEL_SKIN',
   eye: 'MODEL_EYE',
+  lightmap: 'MODEL_LIGHTMAP',
 };
 
 /** Floats a material's model takes: `uModelParams[2]`. */
@@ -189,6 +204,19 @@ export function eyeModel(
 }
 
 /**
+ * A baked surface, reading its region of a lightmap page: the whole page where none is named. An
+ * instanced batch's regions compose with this one, each instance's applied first: see
+ * `MeshInstances.lightmapRegions`.
+ */
+export function lightmapModel(options: { region?: LightmapRegion } = {}): LightmapModel {
+  const region = lightmapRegionOf(options.region);
+  return Object.freeze({
+    kind: 'lightmap',
+    region: Object.freeze([region[0], region[1], region[2], region[3]]) as LightmapRegion,
+  });
+}
+
+/**
  * A model's numbers into `out` — eight floats, `uModelParams[0]` then `[1]` — and whether a model
  * map is bound into the last. Zeros for the standard model. An eye's axis goes in with the
  * descriptor's own until the draw turns it: see `eyeAxisInWorld`.
@@ -197,6 +225,7 @@ export function eyeModel(
  * - hair: shift, scatter, backlit, − · −, −, −, map
  * - skin: the scatter colour, radius · transmission, profile, −, map
  * - eye: iris radius, iris depth, ior, cornea roughness · the axis, map
+ * - lightmap: the region's scale and bias · −, −, −, map
  */
 export function packModel(model: SurfaceModel | null, mapped: boolean, out: Float32Array): void {
   out.fill(0);
@@ -229,6 +258,12 @@ export function packModel(model: SurfaceModel | null, mapped: boolean, out: Floa
       out[4] = model.axis[0];
       out[5] = model.axis[1];
       out[6] = model.axis[2];
+      return;
+    case 'lightmap':
+      out[0] = model.region[0];
+      out[1] = model.region[1];
+      out[2] = model.region[2];
+      out[3] = model.region[3];
       return;
   }
 }

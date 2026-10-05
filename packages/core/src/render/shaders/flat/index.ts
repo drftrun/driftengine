@@ -15,6 +15,8 @@ import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
 import { MAIN_GLSL } from './main.ts';
 import { MODELS_GLSL } from './models.ts';
+import { AREA_LIGHT_GLSL } from './areaLight.ts';
+import { NORMAL_MAP_GLSL } from './normalMap.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
@@ -107,7 +109,17 @@ layout(location = 11) in vec4 aInstanceModel0;
 layout(location = 12) in vec4 aInstanceModel1;
 layout(location = 13) in vec4 aInstanceModel2;
 layout(location = 14) in vec4 aInstanceModel3;
-layout(location = 15) in vec3 aInstanceTint;
+/**
+ * The instance's tint, and its opacity in w: \`MeshInstances.alphas\`, 1 where none was given — or,
+ * in a lightmapped batch's pipeline, its region of the page (\`MeshInstances.lightmapRegions\`).
+ */
+layout(location = 15) in vec4 aInstanceTint;
+/*
+ * On in the pipeline a lightmapped material draws an instanced batch with, where the lane above is
+ * a region and not a tint: the second coordinates leave scaled and offset by it, under a tint and an
+ * opacity of one. See lightmap.ts.
+ */
+const bool LIGHTMAP_REGIONS = false; // wgsl:override
 #else
 uniform mat4 uModel;
 /**
@@ -233,7 +245,8 @@ void main() {
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
-  vec3 tint = aInstanceTint;
+  vec3 tint = aInstanceTint.rgb;
+  if (LIGHTMAP_REGIONS) tint = vec3(1.0);
 #else
   mat4 model = uModel;
   vec3 tint = uTint;
@@ -287,10 +300,19 @@ void main() {
   vRelief = aRelief;
   vTangent = vec4(worldTangent, aTangent.w);
 #if INSTANCED
-  /* No channel on this path; the neutral values are what every mesh read before it existed. */
+  /*
+   * No channel on this path; the neutral values are what every mesh read before it existed — but
+   * for the opacity, which an instance carries of its own, 1 where none was given.
+   */
   vSkyDirect = 1.0;
-  vAlpha = 1.0;
+  vAlpha = aInstanceTint.w;
   vThickness = 1.0;
+  if (LIGHTMAP_REGIONS) {
+    /* Out of the lane's \`-1 - uv\`, through the region, and back into it. See lightmap.ts. */
+    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + aInstanceTint.z);
+    vRelief = -1.0 - ((-1.0 - aRelief) * aInstanceTint.y + aInstanceTint.w);
+    vAlpha = 1.0;
+  }
 #else
   vSkyDirect = aChannel.y;
   vAlpha = aChannel.z;
@@ -563,6 +585,8 @@ export function flatFrag(options: FlatShaderOptions): string {
        * and `main` is unconditional by construction.
        */
       TANGENT_FRAME_GLSL,
+      /* After the frame it calls, unconditional for the same reason. See normalMap.ts. */
+      NORMAL_MAP_GLSL,
       /* Unconditional for the same reason, and called only where a cutoff was asked for. */
       CUTOUT_COVERAGE_GLSL,
       CUTOUT_DITHER_GLSL,
@@ -570,6 +594,8 @@ export function flatFrag(options: FlatShaderOptions): string {
       SURFACE_EFFECTS_GLSL,
       /* Depth zero and after the tangent frame and the lobes it calls; see models.ts. */
       MODELS_GLSL,
+      /* After the models, whose answer to a rectangle it asks for. See areaLight.ts. */
+      AREA_LIGHT_GLSL,
       MAIN_GLSL,
     ].join('\n'),
     {

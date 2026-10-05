@@ -1,6 +1,6 @@
 # Capabilities — what this engine does, what it does not, and what holds that true
 
-**True against engine 4.8.5**, container format 1.24, 916 test files and 8086 tests passing.
+**True against engine 4.8.6**, container format 1.24, 921 test files and 8121 tests passing.
 
 The single map. Anything else claiming to list what is missing is either older than this file or
 is a plan for closing one of its rows. Established by reading the tree rather than the release
@@ -1192,8 +1192,8 @@ for the arithmetic on both backends. The gate is a WebGL2 debt.
 
 **The frame-graph deferral has come due.** §2.5 quoted `renderer.ts` at 3,574 lines and deferred
 the decision about a pass graph to whatever the WebGPU work concluded about that file. What it
-concluded was a second hand-ordered renderer. `renderer.ts` is now **9433 lines** and
-`webgpu/renderer.ts` is **16,803**, for 26,236 lines of pass order held by hand across two files.
+concluded was a second hand-ordered renderer. `renderer.ts` is now **9690 lines** and
+`webgpu/renderer.ts` is **17,104**, for 26,794 lines of pass order held by hand across two files.
 The WebGPU figure is rising rather than falling because every verb now carries both paths: the
 recording the graph replays and the direct calls `?graph=0` still uses. Both exist until the
 switch stops being reversible, which is an open decision in the design rather than an oversight.

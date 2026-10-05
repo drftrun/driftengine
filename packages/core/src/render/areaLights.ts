@@ -88,7 +88,19 @@ export interface AreaLightSource {
    * every caster, not just the fixture.
    */
   shadowNear?: number;
+  /**
+   * How far the rectangle's light reaches, in metres from its centre: past it the light is zero,
+   * windowed down to it, so a clustered rectangle can be binned into the froxels it reaches and no
+   * others. **Read only where the rectangle is shaded through the froxel table** — the ones past
+   * `maxAreaLights` with `clusteredLights` on; the fixed four light everything they face, as they
+   * always have. Absent, it is where the rectangle's irradiance on its axis falls to a thousandth
+   * of a scene unit, and never inside the rectangle itself. Unreal's `AttenuationRadius`, in metres.
+   */
+  range?: number;
 }
+
+/** The irradiance a derived `range` ends at, in scene units. See `AreaLightSource.range`. */
+export const AREA_RANGE_CUTOFF = 1e-3;
 
 /** The five arrays the shader declares, filled once a frame from whatever a caller supplied. */
 export interface AreaLightBuffer {
@@ -99,6 +111,8 @@ export interface AreaLightBuffer {
   readonly up: Float32Array;
   readonly sizes: Float32Array;
   readonly twoSided: Float32Array;
+  /** One a rectangle: how far its light reaches. See `AreaLightSource.range`. */
+  readonly ranges?: Float32Array;
 }
 
 export function createAreaLightBuffer(capacity: number = MAX_AREA_LIGHTS): AreaLightBuffer {
@@ -110,7 +124,26 @@ export function createAreaLightBuffer(capacity: number = MAX_AREA_LIGHTS): AreaL
     up: new Float32Array(capacity * 3),
     sizes: new Float32Array(capacity * 2),
     twoSided: new Float32Array(capacity),
+    ranges: new Float32Array(capacity),
   };
+}
+
+/**
+ * How far a rectangle's light reaches when it names no range: where its irradiance on its own axis,
+ * `L · A / d²` for a rectangle of radiance `L` and area `A` seen from far, falls to
+ * `AREA_RANGE_CUTOFF`. Never less than the rectangle's own half-diagonal.
+ */
+export function areaRange(
+  r: number,
+  g: number,
+  b: number,
+  halfWidth: number,
+  halfHeight: number,
+): number {
+  const radiance = Math.max(r, g, b, 0);
+  const area = 4 * halfWidth * halfHeight;
+  const diagonal = Math.hypot(halfWidth, halfHeight);
+  return Math.max(Math.sqrt((radiance * area) / AREA_RANGE_CUTOFF), diagonal);
 }
 
 /**
@@ -188,6 +221,12 @@ export function selectAreaLights(
     out.sizes[slot * 2] = Math.max(1e-4, light.halfWidth);
     out.sizes[slot * 2 + 1] = Math.max(1e-4, light.halfHeight);
     out.twoSided[slot] = light.twoSided === true ? 1 : 0;
+    if (out.ranges !== undefined) {
+      out.ranges[slot] =
+        light.range !== undefined && light.range > 0
+          ? light.range
+          : areaRange(light.r, light.g, light.b, light.halfWidth, light.halfHeight);
+    }
   }
 
   return out;

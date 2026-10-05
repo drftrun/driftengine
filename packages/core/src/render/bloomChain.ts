@@ -81,6 +81,75 @@ export function bloomProfileWarning(quality: {
   return null;
 }
 
+/**
+ * How a frame's bloom answers the light it is given, beside the strength and threshold `setBloom`
+ * already takes. Absent, or a field absent, is the response every frame had before 4.8.6.
+ *
+ * **Why it exists: one band over the colour less the threshold washes a stage built for another
+ * engine.** Unreal's standard bloom keeps `saturate((L − threshold) / 2)` of a colour rather than
+ * the colour less the threshold, and spreads it over six bands, each in a tint of its own. A
+ * stage authored against that — a threshold of 0.1 and tints summing below one — came out white
+ * here, because subtracting so low a threshold keeps nearly every light in the frame at full
+ * strength. These are the two things that differ, as numbers.
+ */
+export interface BloomResponse {
+  /**
+   * Scene units over which a colour comes in, from none of it at the threshold to all of it this
+   * far past. **0, the default, subtracts instead**: a colour keeps what it has past the threshold,
+   * the response since bloom shipped. Unreal's is 2 after exposure, so a frame exposed by `e` that
+   * wants it passes `2 / e`, as it passes the threshold over the exposure.
+   *
+   * Brightness is still the largest channel rather than luminance, for the reason
+   * `shaders/bloom.ts` gives; on a neutral colour the two are equal.
+   */
+  readonly ramp?: number;
+  /**
+   * Each level's colour, three numbers a level, finest first: the halo at a few pixels first and
+   * at a twentieth of the frame last. **White, the default, is the identity**; a level not named
+   * takes white. Not clamped above one, which is how a tint carries a strength past the 0..1 the
+   * dial gives — a stage asking for twice the light names tints twice as bright.
+   *
+   * At most `BLOOM_LEVELS` levels. A frame too small for that many uses the first it has room for.
+   */
+  readonly tints?: ArrayLike<number>;
+}
+
+/** Floats `resolveBloomResponse` writes: the ramp, then a tint a level. */
+export const BLOOM_RESPONSE_FLOATS = 1 + BLOOM_LEVELS * 3;
+
+/**
+ * A response as both backends bind it, into a caller-owned `out` of `BLOOM_RESPONSE_FLOATS`: the
+ * ramp, then `BLOOM_LEVELS` tints, white where none was named. Refuses a tint list that is not
+ * whole colours or names more levels than the pyramid has, naming the length — a caller error with
+ * one correct outcome. A ramp that is not a positive number is the subtraction; a tint channel
+ * that is not a number or is below zero is zero.
+ */
+export function resolveBloomResponse(
+  response: BloomResponse | null | undefined,
+  out: Float32Array,
+): void {
+  const ramp = response?.ramp ?? 0;
+  out[0] = Number.isFinite(ramp) && ramp > 0 ? ramp : 0;
+  const tints = response?.tints;
+  if (tints !== undefined && (tints.length % 3 !== 0 || tints.length > BLOOM_LEVELS * 3)) {
+    throw new Error(
+      `setBloom: ${tints.length} tint values is not up to ${BLOOM_LEVELS} whole colours, three ` +
+        'numbers a level, finest first',
+    );
+  }
+  for (let i = 0; i < BLOOM_LEVELS * 3; i++) {
+    const value = tints !== undefined && i < tints.length ? (tints[i] as number) : 1;
+    out[1 + i] = Number.isFinite(value) && value > 0 ? value : 0;
+  }
+}
+
+/** The response every frame had before 4.8.6: the subtraction, every level white. */
+export function defaultBloomResponse(): Float32Array {
+  const out = new Float32Array(BLOOM_RESPONSE_FLOATS);
+  resolveBloomResponse(null, out);
+  return out;
+}
+
 /** One level of the pyramid: level 0 is half the frame and each one after it half again. */
 export interface BloomLevelSize {
   readonly width: number;

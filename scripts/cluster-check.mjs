@@ -57,6 +57,11 @@ check(
   `${result.recordMismatches} of ${result.recordsCompared} uints differ`,
 );
 check(
+  'the spots were binned by their cones, so the cone test was compared rather than skipped',
+  result.coneCulled > 0,
+  `${result.coneCulled} light-in-froxel pairs the sphere would bin and the cone does not`,
+);
+check(
   'no cluster disagrees for a reason a froxel boundary does not explain',
   result.real.length === 0,
   result.real.length === 0

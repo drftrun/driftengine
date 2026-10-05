@@ -17,11 +17,12 @@
  * behind both, still glows. The shadow map's depth at the receiver would separate the two, and the
  * lamp loop reads a visibility rather than a depth.
  *
- * **Under \`skinScattering: 'screen-space'\`** the surface is drawn in two halves: the frame's
- * without its diffuse, and the diffuse alone into the blur's target — Lambert's, with the shadow as
- * it is, because the blur that follows carries light across curvature and shadow edges in the
- * picture and the fit as well would count it twice — keeping the transmission, which the picture
- * cannot see. \`skinBlur.ts\` is the rest.
+ * **Under \`skinScattering: 'screen-space'\`** the surface is drawn in halves: the frame's without
+ * its diffuse; the diffuse's light alone into the blur's target, shaded on a white surface —
+ * Lambert's, with the shadow as it is, because the blur that follows carries light across curvature
+ * and shadow edges in the picture and the fit as well would count it twice — keeping the
+ * transmission, which the picture cannot see; and the colour alone, which the spread light is
+ * multiplied by. \`skinBlur.ts\` is the rest.
  *
  * **The highlight** is two GGX lobes — 0.85 at the material's roughness and 0.15 at 0.6 of it, for
  * the skin's oil — normalised, with Smith's masking and the Fresnel of index 1.4, in lamp units, so
