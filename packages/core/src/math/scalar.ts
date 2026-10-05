@@ -30,7 +30,7 @@ export function damp(a: number, b: number, lambda: number, dt: number): number {
    * **What a simulation wants instead**, if it ever wants exponential approach inside the fixed
    * step, is a per-tick factor computed once from `lambda` and the fixed `dt` and passed in as a
    * number: at a constant step the factor is a constant, so nothing has to call `exp` on a tick at
-   * all. `exactExp` in `math/exact.ts` is the other answer, and is the one to reach for when the
+   * all. `exactExp` in `@driftengine/physics`' `exact.ts` is the other answer, and is the one to reach for when the
    * rate itself varies.
    */
   // determinism: build-time — presentation smoothing; see the note above for a simulation

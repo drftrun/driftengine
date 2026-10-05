@@ -9,8 +9,10 @@ import {
   DEPTH_VERT_WGSL,
 } from '../../shaders/generated/depth.wgsl.ts';
 import { vertexBufferLayouts } from './buffers.ts';
+import { vertexConstants } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
+import type { ClothViews } from './clothTextures.ts';
 
 /**
  * The shadow pass: the world drawn from the light, into a depth map.
@@ -43,6 +45,12 @@ const FRAG_BINDING = DEPTH_BINDINGS.DEPTH_FRAG.uniforms;
 const PREVIOUS = DEPTH_BINDINGS.DEPTH_FRAG.textures.uPreviousShadowMap;
 /** Where the skinned vertex stage reads the joint palette. Generated, not chosen here. */
 export const DEPTH_PALETTE_BINDING = DEPTH_BINDINGS.DEPTH_SKINNED_VERT.textures.uJointPalette;
+/** And the cloth binding's three textures, which every skinned caster declares. */
+const CLOTH_TEXTURES = [
+  DEPTH_BINDINGS.DEPTH_SKINNED_VERT.textures.uClothBinding,
+  DEPTH_BINDINGS.DEPTH_SKINNED_VERT.textures.uClothParticles,
+  DEPTH_BINDINGS.DEPTH_SKINNED_VERT.textures.uClothRest,
+] as const;
 
 const VISIBILITY_VERTEX = 0x1;
 const VISIBILITY_FRAGMENT = 0x2;
@@ -82,13 +90,11 @@ export function createDepthBindGroupLayout(
          coordinate with nothing to filter, which is what `flatPass.ts` binds for the same
          palette. naga declares a sampler for it and nothing ever reads one. */
       ...(skinned
-        ? [
-            {
-              binding: DEPTH_PALETTE_BINDING.texture,
-              visibility: VISIBILITY_VERTEX,
-              texture: { sampleType: 'unfilterable-float' as GPUTextureSampleType },
-            },
-          ]
+        ? [DEPTH_PALETTE_BINDING, ...CLOTH_TEXTURES].map((binding) => ({
+            binding: binding.texture,
+            visibility: VISIBILITY_VERTEX,
+            texture: { sampleType: 'unfilterable-float' as GPUTextureSampleType },
+          }))
         : []),
       {
         binding: VERT_BINDING,
@@ -166,6 +172,8 @@ export function createDepthBindGroup(
   palette: GPUTextureView | null = null,
   /** The cutout map and its sampler, for a layout built with `cutout`. */
   cutout: { readonly view: GPUTextureView; readonly sampler: GPUSampler } | null = null,
+  /** A skinned group's cloth views: the caster's, or the stand-in where it has none. */
+  cloth: ClothViews | null = null,
 ): GPUBindGroup {
   return device.createBindGroup({
     label:
@@ -187,6 +195,13 @@ export function createDepthBindGroup(
       { binding: PREVIOUS.texture, resource: previous },
       { binding: PREVIOUS.sampler, resource: sampler },
       ...(palette !== null ? [{ binding: DEPTH_PALETTE_BINDING.texture, resource: palette }] : []),
+      ...(palette !== null
+        ? [
+            { binding: CLOTH_TEXTURES[0].texture, resource: clothOf(cloth).binding },
+            { binding: CLOTH_TEXTURES[1].texture, resource: clothOf(cloth).particles },
+            { binding: CLOTH_TEXTURES[2].texture, resource: clothOf(cloth).rest },
+          ]
+        : []),
       ...(cutout !== null
         ? [
             { binding: CUTOUT_MAP.texture, resource: cutout.view },
@@ -234,6 +249,13 @@ export function depthPipeline(
   instanced = false,
   /** Whether this pipeline casts a cutout: the variant that reads a map and discards by it. */
   cutout = false,
+  /**
+   * Whether a skinned caster reads its second four influences, as its visible draw does. The key
+   * must carry it, so the shadow parts from nothing the body does. See `skinning.ts`.
+   */
+  skinEight = false,
+  /** Whether a skinned caster is placed by a cloth binding, as its visible draw is. The key carries it. */
+  cloth = false,
 ): GPURenderPipeline {
   return cache.get(key, () => ({
     label: key,
@@ -253,6 +275,9 @@ export function depthPipeline(
       ),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),
+      ...(skinned && !instanced && !cutout
+        ? { constants: vertexConstants(DEPTH_BINDINGS.DEPTH_SKINNED_VERT, skinEight, cloth) }
+        : {}),
     },
     fragment: {
       module: shaderModule(
@@ -332,4 +357,11 @@ export function depthPipeline(
       depthBiasSlopeScale: 1.1,
     },
   }));
+}
+
+function clothOf(cloth: ClothViews | null): ClothViews {
+  if (cloth === null) {
+    throw new Error('depthPass: a skinned bind group needs cloth views, the stand-in at the least');
+  }
+  return cloth;
 }

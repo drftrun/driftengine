@@ -33,6 +33,8 @@ import {
   ATTR_WEIGHTS,
   ATTR_LAYERS,
   ATTR_CHANNEL,
+  ATTR_JOINTS2,
+  ATTR_WEIGHTS2,
   CHUNK_ENTRY_BYTES,
   CHUNK_HEAD,
   CHUNK_LODM,
@@ -324,6 +326,10 @@ export function readMesh(buffer: ArrayBuffer, chunk: DrftChunk): MeshData {
   const layers = (attributes & ATTR_LAYERS) !== 0 ? floats(vertices, 'layers') : undefined;
   /* Sway, sky and opacity, 1.23, four floats a vertex and last. See ATTR_CHANNEL. */
   const channel = (attributes & ATTR_CHANNEL) !== 0 ? floats(vertices * 4, 'channel') : undefined;
+  /* The fifth to eighth influences, 1.24, last. See ATTR_JOINTS2. */
+  const joints2 = (attributes & ATTR_JOINTS2) !== 0 ? floats(vertices * 4, 'joints2') : undefined;
+  const weights2 =
+    (attributes & ATTR_WEIGHTS2) !== 0 ? floats(vertices * 4, 'weights2') : undefined;
 
   const indexBytes = indexCount * 4;
   if (at + indexBytes > limit) {
@@ -348,6 +354,8 @@ export function readMesh(buffer: ArrayBuffer, chunk: DrftChunk): MeshData {
     ...(weights === undefined ? {} : { weights }),
     ...(layers === undefined ? {} : { layers }),
     ...(channel === undefined ? {} : { channel }),
+    ...(joints2 === undefined ? {} : { joints2 }),
+    ...(weights2 === undefined ? {} : { weights2 }),
   };
 
   /*

@@ -43,8 +43,8 @@
  * the obvious suspect and were almost entirely innocent:
  *
  * - `core-only` measures 645,522 against a floor of 645,523. The loop's tick argument, the savable
- *   generator and `math/exact.ts` cost a consumer of core **nothing**.
- * - `core-and-audio` is **byte-identical raw** with and without `math/exact.ts` exported from core's
+ *   generator and `exact.ts` cost a consumer of core **nothing**.
+ * - `core-and-audio` is **byte-identical raw** with and without `exact.ts` exported from core's
  *   barrel, so the ~530 bytes every `core-and-*` fixture drifted predate this branch.
  * - `core-and-script` grew 3,194, of which **435 is `exactAcos`** reaching the terrain binding,
  *   measured by removing that one import and re-bundling. The other 2,759 predate the branch, and
@@ -819,7 +819,22 @@ export const FLOORS = {
    * it. The other 11,123 had accumulated from 4.7.0 to that commit inside the 3% tolerance with no
    * note here, which is the failure this file's header describes; it is measured, not attributed.
    */
-  'core-only': 727581,
+  /*
+   * **Raised 2026-10-05 by +68,613, 9.4%, with every `core-*` entry by about as much: 4.8.4**, measured
+   * commit by commit on `core-only` from core and physics as each commit left them (4.8.3 measures
+   * 727,522). The dithered cutout 6,204, almost all of it the lit stage's tail paid in every
+   * permutation; eight skin influences 2,309; BC uploads 3,653; a dynamic mesh's own position and
+   * normal buffers 219; what a bound garment needs to draw — the cloth's vertex stage and its motion —
+   * 9,050; the tangent turned into the world 470. **The shading models are the rest, 46,580**: the
+   * mechanism and the anisotropic model 26,746, nearly all of it the hooks in the lit stage's `main`,
+   * which each of the sixteen permutations carries past gzip's window — asked once and handed through
+   * globals rather than out-parameters, which saved 2.7 KB of it; hair 2,766 and skin 2,568, both
+   * functions stored once; and screen-space skin with the eye 14,500, the scatter passes on both
+   * backends, the blur and the diffuse half's exit. **What would make it wrong** is a lit stage whose
+   * models live in a module of their own, which would take the hooks out of the standard sixteen; the
+   * permutation axes the models would then need are what stopped it here.
+   */
+  'core-only': 796194,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -836,7 +851,19 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-gizmo': 732521,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-gizmo': 800823,
+  /**
+   * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
+   *
+   * `createSkinnedCloth` carries both solvers — the device's compute, its WGSL and the packing, and
+   * `@driftengine/physics`' CPU solver beneath WebGL2 — and the shared schedule. It was renderer
+   * methods for one afternoon, and every core bundle grew by the same amount; as a barrel function
+   * behind `computeHost.ts`' door, `core-only` moved by 82 bytes. What a bound mesh needs to *draw*
+   * is in core either way: that is skinning's own cost and is in `core-only`.
+   */
+  /* Raised 2026-10-05 with `core-only`, 4.8.4; the cloth's own share is 14,638 over core. */
+  'core-and-cloth': 810832,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -853,7 +880,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-audio': 734105,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-audio': 802691,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -879,7 +907,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-animation': 733980,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-animation': 802263,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -918,7 +947,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-script': 768887,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-script': 836878,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1107,7 +1137,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-splats': 744914,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-splats': 813378,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1128,7 +1159,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-terrain': 729012,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-terrain': 797576,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1158,7 +1190,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-ui2d': 737948,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-ui2d': 806401,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1166,7 +1199,8 @@ export const FLOORS = {
    */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-and-assets': 751288,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-and-assets': 823121,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1181,7 +1215,8 @@ export const FLOORS = {
   /* Raised 2026-10-01 with `core-only`: 4.6.0's engine fixes. */
   /* Raised 2026-10-01 with `core-only`, 4.6.1. */
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
-  'core-audio-spatial': 736255,
+  /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
+  'core-audio-spatial': 804791,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

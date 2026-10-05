@@ -68,6 +68,13 @@ export const ABSENT_ATTRIBUTE: Readonly<Record<string, readonly number[]>> = {
   joints: [0, 0, 0, 0],
   weights: [1, 0, 0, 0],
   /**
+   * The second four influences, absent: all zero, so a four-influence mesh drawn through a pipeline
+   * built for eight adds nothing. **Not the first set's trap**: there a zero sum collapses the
+   * vertex, here the first set already sums to one and zero is exactly "no more influences".
+   */
+  joints2: [0, 0, 0, 0],
+  weights2: [0, 0, 0, 0],
+  /**
    * The four-lane channel: planted, fully sunlit, opaque, and a reserved lane.
    *
    * **Two of these are ones and that is load bearing.** Zero for `skyDirect` would take the

@@ -186,3 +186,18 @@ test('GLASS SHADOWS ARE ON BY DEFAULT, and a value that is not one of the three 
   expect(resolveRenderQuality({ glassShadows: 'half' }).glassShadows).toBe('half');
   expect(() => resolveRenderQuality({ glassShadows: 'quarter' as never })).toThrow(/glassShadows/);
 });
+
+/*
+ * Skin is pre-integrated unless the profile asks for the screen-space blur, which costs a second
+ * draw a skin and two half-float targets; a mode the renderers would not recognise is refused by
+ * name rather than drawn as the default.
+ */
+test('SKIN SCATTERING DEFAULTS TO PRE-INTEGRATED AND REFUSES A MODE IT DOES NOT HAVE', () => {
+  expect(resolveRenderQuality().skinScattering).toBe('pre-integrated');
+  expect(resolveRenderQuality({ skinScattering: 'screen-space' }).skinScattering).toBe(
+    'screen-space',
+  );
+  expect(() => resolveRenderQuality({ skinScattering: 'ray-traced' as never })).toThrow(
+    /skinScattering/,
+  );
+});

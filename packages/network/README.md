@@ -118,7 +118,7 @@ thing to ask for, and the two numbers do not have to be chosen together.
 A rewind is only as good as the simulation's reproducibility. `scripts/determinism.mjs` is the gate:
 the arithmetic a simulation may use is what IEEE 754 fixes exactly, and the twenty-two functions
 ECMAScript declines to specify are refused inside the declared simulation set. `packages/network` is
-in that set, and `packages/core/src/math/exact.ts` supplies the transcendentals it may still need.
+in that set, and `packages/physics/src/exact.ts` supplies the transcendentals it may still need.
 
 **`scripts/exactness-cross.mjs` is how a cross-machine claim becomes a measurement.** It prints what
 this machine computes — golden bits, a seeded stream, and both arms of the conformance fixture — in

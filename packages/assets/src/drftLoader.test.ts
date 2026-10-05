@@ -1,6 +1,9 @@
 import { expect, test, vi } from 'vitest';
 import { DEFAULT_UPLOAD_MS_PER_FRAME, isDocumentResponse, mayBeginMore } from './uploadBudget.ts';
 import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP, SDFV_WHOLE_FILE } from '@driftengine/drft';
+import { CODEC_BC, writeBcPayload } from '@driftengine/drft';
+import { decodeBc } from './bcDecode.ts';
+import { decodeBcImage } from './bcImage.ts';
 import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
 import type { DrftLoaderOptions } from './drftLoader.ts';
 import { writeDrft } from '@driftengine/drft';
@@ -595,6 +598,150 @@ test('every image decodes premultiplied and with no colour conversion, preview a
     /* And the one preview that has to shrink still asks to be small. */
     expect(asked.filter((options) => options?.resizeWidth === 2).length).toBe(1);
   } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+/*
+ * **A BC texture goes up as its blocks where the device takes them, and decoded where it does not.**
+ * One file, an 8x8 BC1 albedo with its whole chain, through a renderer offering BC1 in sRGB and one
+ * offering nothing, which is a phone. The albedo is read sRGB, so the first is handed the blocks,
+ * all four levels of them; the second — with no `Worker` here — decodes on the main thread to exactly
+ * the texels `decodeBc` gives, and says once that it did.
+ */
+test('A BC TEXTURE GOES UP AS ITS BLOCKS WHERE THE DEVICE TAKES THEM, AND DECODED WHERE NOT', async () => {
+  vi.stubGlobal(
+    'ImageData',
+    class {
+      constructor(
+        readonly data: Uint8ClampedArray,
+        readonly width: number,
+        readonly height: number,
+      ) {}
+    },
+  );
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const level0 = Uint8Array.from({ length: 32 }, (_, i) => (i * 53 + 7) & 0xff);
+    const levels = [level0, new Uint8Array(8), new Uint8Array(8), new Uint8Array(8)];
+    const drft = writeDrft({
+      head: { name: 'blocks' },
+      meshes: [triangle()],
+      materials: [material({ name: 'painted', albedo: 0 })],
+      textures: [
+        {
+          name: 'paint.dds',
+          codec: CODEC_BC,
+          width: 8,
+          height: 8,
+          bytes: writeBcPayload({ format: 'bc1', srgb: true, width: 8, height: 8, levels }),
+        },
+      ],
+    });
+    const handed = async (formats: string[]): Promise<[unknown, unknown][]> => {
+      const sources: [unknown, unknown][] = [];
+      const renderer = {
+        ...fakeRenderer(),
+        compressedFormats: formats,
+        createSurfaceTexture: (source: unknown, options: { colorSpace?: string }) => {
+          sources.push([source, options.colorSpace]);
+          return { id: sources.length };
+        },
+      } as unknown as RendererApi;
+      const loader = new DrftLoader(renderer);
+      await loader.consume(new Response(drft.slice(0)), { footprint: 1, height: 1, baseY: 0 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let frame = 0; frame < 8; frame++) loader.update(1 / 60);
+      return sources;
+    };
+
+    const desktop = await handed(['bc1-srgb']);
+    expect(desktop).toHaveLength(1);
+    const [blocks, space] = desktop[0] as [{ format: string; levels: Uint8Array[] }, string];
+    expect(space).toBe('srgb');
+    expect(blocks.format).toBe('bc1');
+    expect(blocks.levels.map((level) => level.length)).toEqual([32, 8, 8, 8]);
+    expect(warn, 'nothing to say where the blocks went up').not.toHaveBeenCalled();
+
+    const phone = await handed([]);
+    expect(phone).toHaveLength(1);
+    const [pixels] = phone[0] as [{ data: Uint8ClampedArray; width: number }, string];
+    expect(pixels.width).toBe(8);
+    expect(Array.from(pixels.data)).toEqual(Array.from(decodeBc('bc1', 8, 8, level0)));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/main thread: this runtime has no Worker/),
+    );
+  } finally {
+    warn.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+/*
+ * A consumer taking images through `onImage` builds textures of its own, from bitmaps, so a BC
+ * texture reaches it decoded — as an ordinary image, a BC5 normal with its z in blue — and nothing
+ * is uploaded, whatever the device could have taken.
+ */
+test('a consumer taking images gets a BC texture as a decoded bitmap, and nothing is uploaded', async () => {
+  vi.stubGlobal(
+    'ImageData',
+    class {
+      constructor(
+        readonly data: Uint8ClampedArray,
+        readonly width: number,
+        readonly height: number,
+      ) {}
+    },
+  );
+  const decoded: Uint8ClampedArray[] = [];
+  vi.stubGlobal(
+    'createImageBitmap',
+    vi.fn((source: { data: Uint8ClampedArray }) => {
+      decoded.push(source.data);
+      return Promise.resolve({ width: 4, height: 4, close: () => {} });
+    }),
+  );
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    let created = 0;
+    const renderer = {
+      ...fakeRenderer(),
+      compressedFormats: ['bc5'],
+      createSurfaceTexture: () => ({ id: ++created }),
+    } as unknown as RendererApi;
+    const taken: [string, boolean][] = [];
+    const loader = new DrftLoader(renderer, {
+      onImage: (name, image) => taken.push([name, image !== null]),
+    });
+    const blocks = Uint8Array.from({ length: 16 }, (_, i) => (i * 29 + 3) & 0xff);
+    const drft = writeDrft({
+      head: { name: 'arrays' },
+      meshes: [triangle()],
+      materials: [material({ name: 'painted', normalMap: 0 })],
+      textures: [
+        {
+          name: 'bumps.dds',
+          codec: CODEC_BC,
+          width: 4,
+          height: 4,
+          bytes: writeBcPayload({
+            format: 'bc5',
+            srgb: false,
+            width: 4,
+            height: 4,
+            levels: [blocks],
+          }),
+        },
+      ],
+    });
+    await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let frame = 0; frame < 8; frame++) loader.update(1 / 60);
+    expect(taken).toEqual([['bumps.dds', true]]);
+    expect(created).toBe(0);
+    expect(Array.from(decoded[0] ?? [])).toEqual(Array.from(decodeBcImage('bc5', 4, 4, blocks)));
+  } finally {
+    warn.mockRestore();
     vi.unstubAllGlobals();
   }
 });

@@ -6,6 +6,8 @@ import type { ProbeBakeOptions } from '../reflectionProbe.ts';
 import type { Renderer, TranslucentMeshOptions } from './webgl2/renderer.ts';
 import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
+import type { SurfaceSource } from '../compressedSource.ts';
+import type { ClothBindingData } from '../clothBindingData.ts';
 import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
 import type { SdfTextStyle } from '../sdfTextLayout.ts';
@@ -47,6 +49,21 @@ export interface MeshHandle {
    * consumer can ask without reaching past this surface for a backend-specific type.
    */
   readonly complete: boolean;
+}
+
+/**
+ * A mesh's cloth binding on the device, from `createClothBinding`: which simulation triangle each
+ * vertex follows. Opaque, for the reason `MeshHandle` gives.
+ */
+/* eslint-disable-next-line @typescript-eslint/no-empty-object-type -- opaque by design */
+export interface ClothBindingHandle {
+  /* Deliberately empty, for the weak-type reason `MeshHandle` explains. */
+}
+
+/** One character's cloth particles on the device, from `createClothParticles`. Opaque likewise. */
+/* eslint-disable-next-line @typescript-eslint/no-empty-object-type -- opaque by design */
+export interface ClothParticlesHandle {
+  /* Deliberately empty, for the weak-type reason `MeshHandle` explains. */
 }
 
 /** A mesh on its way to the device, and the iterator that gets it there. */
@@ -287,10 +304,42 @@ export type RendererApi = Omit<
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
   | 'setMaterial'
+  | 'createClothBinding'
+  | 'createClothParticles'
+  | 'updateClothParticles'
+  | 'setCloth'
+  | 'disposeClothBinding'
+  | 'disposeClothParticles'
 > & {
-  /** Upload a caller's image. See `SurfaceTextureHandle` for the boundary this guards. */
+  /**
+   * A mesh's cloth binding: which simulation triangle each of its vertices follows, where on it and
+   * by how much (`ClothBindingData`). The mesh must be skinned — a binding blends each vertex
+   * between its skinning and the cloth — and is checked against the binding by name.
+   */
+  createClothBinding(mesh: MeshHandle, data: ClothBindingData): ClothBindingHandle;
+  /** One character's particles, `count` of them, updated every frame with `updateClothParticles`. */
+  createClothParticles(count: number): ClothParticlesHandle;
+  /**
+   * This frame's particles, three floats each, world space — a simulation's output as it is.
+   * **Once a frame, before the character's draws**: a second update in one frame reaches every
+   * draw of it on WebGPU, whose texture writes land ahead of the frame's commands. Last frame's
+   * are kept for the motion a temporal resolve needs, and a frame with no update did not move.
+   */
+  updateClothParticles(particles: ClothParticlesHandle, positions: Float32Array): void;
+  /**
+   * Place the skinned draws that follow — lit and cast — by a cloth: the mesh's binding and the
+   * character's particles. Null for none, which every draw is until this is called; per-draw state,
+   * as `setSkinPalette` is.
+   */
+  setCloth(binding: ClothBindingHandle | null, particles?: ClothParticlesHandle | null): void;
+  disposeClothBinding(binding: ClothBindingHandle): void;
+  disposeClothParticles(particles: ClothParticlesHandle): void;
+  /**
+   * Upload a caller's image, or a BC image's blocks with their stored chain where
+   * `compressedFormats` has the format. See `SurfaceTextureHandle` for the boundary this guards.
+   */
   createSurfaceTexture(
-    source: TexImageSource,
+    source: SurfaceSource,
     options?: Parameters<Renderer['createSurfaceTexture']>[1],
   ): SurfaceTextureHandle;
 
@@ -308,7 +357,7 @@ export type RendererApi = Omit<
    * `updateSurfaceTexture` refuses an array.
    */
   createSurfaceTextureArray(
-    sources: readonly TexImageSource[],
+    sources: readonly SurfaceSource[],
     options?: Parameters<Renderer['createSurfaceTexture']>[1],
   ): SurfaceTextureHandle;
 

@@ -5,7 +5,8 @@ import { mat4, vec4 } from 'gl-matrix';
 import { maskOf, resourceBit } from '../../frame/index.ts';
 import { nodeCount } from '../../frame/arena.ts';
 import { DEPTH_CUTOUT_VERT_FIELDS, DEPTH_VERT_FIELDS } from './depthPass.ts';
-import { flatFragmentBindings, flatVariant } from './flatPass.ts';
+import { flatFragmentBindings, flatVariant, flatVertexBindings } from './flatPass.ts';
+import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
 import { BLOOM_PREFILTER_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
 import { SCATTER_DEPTH_FIELDS } from './scatterPass.ts';
@@ -3352,6 +3353,56 @@ describe('the webgpu renderer', () => {
  * from the game against the character replica and the display showcase, which are both of the places
  * it draws an inset.
  */
+/*
+ * **A dynamic mesh and a static one with the same attributes do not share a pipeline.** The dynamic
+ * one binds its positions and normals as buffers of their own, four buffers where the static one
+ * binds two, so its key says so and its pipelines read positions at a stride of twelve from buffer 0.
+ * Without the key the second mesh created would draw through the first one's pipeline, and the
+ * device would refuse every draw of one of them.
+ */
+describe('a dynamic mesh', () => {
+  it('IS KEYED APART FROM ITS STATIC TWIN, AND ITS PIPELINES READ FOUR BUFFERS', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const data = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const built = (): GPURenderPipelineDescriptor[] =>
+      stub.device.createRenderPipeline.mock.calls.map(([descriptor]) => descriptor);
+    const still = renderer.createMesh(data as never) as unknown as { key: string };
+    const before = built().length;
+    const moving = renderer.createMesh(data as never, { dynamic: true }) as unknown as {
+      key: string;
+    };
+    expect(moving.key).not.toBe(still.key);
+    expect(moving.key).toContain(':dynamic');
+    const flat = built()
+      .slice(before)
+      .filter((descriptor) => (descriptor.label ?? '').includes('|flat'));
+    expect(flat.length, 'the dynamic mesh warmed pipelines of its own').toBeGreaterThan(0);
+    for (const descriptor of flat) {
+      const buffers = [...(descriptor.vertex.buffers ?? [])];
+      expect(buffers).toHaveLength(4);
+      expect(buffers[0]?.arrayStride).toBe(12);
+    }
+
+    /* And a pass that recovers the layout from the key, as the shadow pass does, reads four too. */
+    const cast = built().length;
+    renderer.beginShadowPass(new Float32Array(16), 'static');
+    renderer.drawShadowCasters((sink) => sink.mesh(moving as never, new Float32Array(16)));
+    renderer.endShadowPass();
+    const depth = built()
+      .slice(cast)
+      .filter((descriptor) => (descriptor.label ?? '').includes(':dynamic'));
+    expect(depth.length, 'the shadow pass built a pipeline for it').toBeGreaterThan(0);
+    for (const descriptor of depth) expect([...(descriptor.vertex.buffers ?? [])]).toHaveLength(4);
+  });
+});
+
 describe('drawing after endFrame', () => {
   /**
    * **Every pipeline set in the reopened pass must match that pass, and the pass is the canvas.**
@@ -5977,6 +6028,360 @@ describe('the skin palette', () => {
     /* Two characters, two slots, three frames: a slot allocated per frame is an allocation in
        the frame loop, which `AGENTS.md` forbids of a per-frame path. */
     expect(paletteTextures(device)).toHaveLength(2);
+  });
+});
+
+/** A binding for `skinnedStubMesh`: every vertex wholly on particle `v` of three. */
+function stubClothBinding() {
+  return {
+    triangles: new Uint32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]),
+    coordinates: new Float32Array(6),
+    offsets: new Float32Array(3),
+    weights: new Float32Array([1, 1, 1]),
+    rest: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  };
+}
+
+/**
+ * Every skinned colour draw a frame replayed, in order: whether its pipeline places by the cloth,
+ * and every view held by the groups bound when it ran. Read off the pass in call order, because a
+ * frame records its draws and replays them at `endFrame`.
+ */
+function skinnedDraws(stub: ReturnType<typeof stubSurface>) {
+  const cloth = String(flatVertexBindings(true, false).overrides?.['CLOTH_BOUND']);
+  const groups = stub.device.createBindGroup.mock.results.map((result) => result.value);
+  type Call = { order: number; run: () => void };
+  const calls: Call[] = [];
+  let pipeline: GPURenderPipelineDescriptor | null = null;
+  const bound = new Map<number, unknown[]>();
+  const out: { cloth: boolean; views: unknown[] }[] = [];
+  stub.pass.setPipeline.mock.calls.forEach(([p], k) => {
+    calls.push({
+      order: stub.pass.setPipeline.mock.invocationCallOrder[k] as number,
+      run: () =>
+        (pipeline = (p as unknown as { descriptor: GPURenderPipelineDescriptor }).descriptor),
+    });
+  });
+  stub.pass.setBindGroup.mock.calls.forEach(([index, group], k) => {
+    calls.push({
+      order: stub.pass.setBindGroup.mock.invocationCallOrder[k] as number,
+      run: () => {
+        const descriptor = stub.device.createBindGroup.mock.calls[groups.indexOf(group)]?.[0];
+        bound.set(
+          index,
+          (descriptor?.entries ?? []).map((entry) => entry.resource),
+        );
+      },
+    });
+  });
+  stub.pass.drawIndexed.mock.calls.forEach((_, k) => {
+    calls.push({
+      order: stub.pass.drawIndexed.mock.invocationCallOrder[k] as number,
+      run: () => {
+        const constants = (pipeline as GPURenderPipelineDescriptor | null)?.vertex.constants;
+        if (constants?.[cloth] === undefined || pipeline?.fragment?.constants === undefined) return;
+        out.push({ cloth: constants[cloth] === 1, views: [...bound.values()].flat() });
+      },
+    });
+  });
+  calls.sort((a, b) => a.order - b.order);
+  for (const call of calls) call.run();
+  return out;
+}
+
+/** The two textures a character's particles swap between, and the views of each. */
+function particleViews(stub: ReturnType<typeof stubSurface>) {
+  return stub.device.createTexture.mock.results
+    .map((result) => result.value)
+    .filter((texture) => texture.label === 'cloth.particles')
+    .map((texture) => ({
+      texture,
+      views: texture.createView.mock.results.map((result: { value: unknown }) => result.value),
+    }));
+}
+
+/**
+ * **A garment's draw reads this frame's particles, through a pipeline built with the binding on,
+ * and the draw after it reads none.** Two frames, so the swap is watched: each update writes the
+ * texture the frame before did not, and the draw binds the one just written — the other holds the
+ * frame before, for a motion vector.
+ */
+describe('a cloth binding', () => {
+  it("A GARMENT DRAW READS THIS FRAME'S PARTICLES, AND THE DRAW AFTER IT NONE", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const { camera, env } = stubScene();
+    const mesh = skinnedStubMesh(renderer);
+    const binding = renderer.createClothBinding(mesh, stubClothBinding());
+    const particles = renderer.createClothParticles(3);
+    const [one, two] = particleViews(stub);
+    expect(one, 'two particle textures').toBeDefined();
+    expect(two, 'two particle textures').toBeDefined();
+    const written: unknown[] = [];
+
+    for (let frame = 0; frame < 2; frame++) {
+      stub.device.queue.writeTexture.mockClear();
+      renderer.updateClothParticles(particles, new Float32Array(9).fill(frame));
+      written.push(stub.device.queue.writeTexture.mock.calls.at(-1)?.[0].texture);
+      stub.pass.setPipeline.mockClear();
+      stub.pass.setBindGroup.mockClear();
+      stub.pass.drawIndexed.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setSkinPalette(onePalette(0));
+      renderer.setCloth(binding, particles);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setCloth(null);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const draws = skinnedDraws(stub);
+      expect(
+        draws.map((draw) => draw.cloth),
+        `frame ${frame}`,
+      ).toEqual([true, false]);
+      const [bound, loose] = draws as [(typeof draws)[0], (typeof draws)[0]];
+
+      const now = [one, two].find((entry) => entry?.texture === written[frame]);
+      expect(now, `frame ${frame}: the update wrote a particle texture`).toBeDefined();
+      expect(
+        bound.views.some((view) => now?.views.includes(view)),
+        `frame ${frame}: the garment binds the particles just written`,
+      ).toBe(true);
+      const anyParticles = [...(one?.views ?? []), ...(two?.views ?? [])];
+      expect(
+        loose.views.some((view) => anyParticles.includes(view)),
+        `frame ${frame}: the draw after it binds no particles`,
+      ).toBe(false);
+    }
+    expect(written[0], 'the second update writes the other texture').not.toBe(written[1]);
+  });
+
+  /*
+   * **A garment's motion is drawn from its particles' last place, even with no previous place
+   * named**, as a rewritten mesh's is: a coat swinging on a character standing still moves, and
+   * only the particles know it. Not on the first update, which has no past, and not on a frame
+   * that did not update them, which did not move them.
+   */
+  it("A GARMENT'S MOTION READS THIS FRAME'S PARTICLES AND LAST FRAME'S", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = skinnedStubMesh(renderer);
+    const binding = renderer.createClothBinding(mesh, stubClothBinding());
+    const particles = renderer.createClothParticles(3);
+    const viewOf = new Map(
+      particleViews(stub).map((entry) => [entry.texture, entry.views[0]] as const),
+    );
+    const bindingView = stub.device.createTexture.mock.results
+      .map((result) => result.value)
+      .find((texture) => texture.label === 'cloth.binding')?.createView.mock.results[0]?.value;
+
+    const frame = (update: boolean) => {
+      let written: unknown = null;
+      if (update) {
+        stub.device.queue.writeTexture.mockClear();
+        renderer.updateClothParticles(particles, new Float32Array(9));
+        written = viewOf.get(stub.device.queue.writeTexture.mock.calls.at(-1)?.[0].texture);
+      }
+      stub.pass.setPipeline.mockClear();
+      stub.pass.setBindGroup.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setSkinPalette(onePalette(0));
+      renderer.setCloth(binding, particles);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setCloth(null);
+      renderer.endFrame();
+      const pipelines = stub.pass.setPipeline.mock.calls.map(([p]) =>
+        String((p as { label?: string }).label ?? ''),
+      );
+      const groups = stub.device.createBindGroup.mock.results.map((result) => result.value);
+      const cloth = stub.pass.setBindGroup.mock.calls
+        .filter(([index, group]) => index === 2 && group?.label === 'recon.motion.cloth')
+        .map(
+          ([, group]) => stub.device.createBindGroup.mock.calls[groups.indexOf(group)]?.[0].entries,
+        )
+        .at(-1);
+      return {
+        written,
+        drawn: pipelines.some((label) => label.startsWith('recon.motion.cloth.')),
+        views: Array.from(cloth ?? [], (entry: GPUBindGroupEntry) => entry.resource),
+      };
+    };
+
+    expect(frame(true).drawn, 'a first update has no past').toBe(false);
+    const last = frame(true);
+    expect(last.drawn, 'a second update moved them').toBe(true);
+    const other = [...viewOf.values()].find((view) => view !== last.written);
+    /* By identity: two views of one label are deep-equal stubs, and the order is the point. */
+    const expected = [bindingView, last.written, other];
+    expect(last.views.map((view, k) => view === expected[k])).toEqual([true, true, true]);
+    expect(frame(false).drawn, 'a frame that did not update them did not move them').toBe(false);
+  });
+
+  it('refuses a binding for a rigid mesh, or particles it does not name', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    expect(() => renderer.createClothBinding(stubMesh(renderer), stubClothBinding())).toThrow(
+      /no rig/,
+    );
+    const binding = renderer.createClothBinding(skinnedStubMesh(renderer), stubClothBinding());
+    expect(() => renderer.setCloth(binding, renderer.createClothParticles(4))).toThrow(
+      /3 particles and these are 4/,
+    );
+  });
+});
+
+/** Whether `triple` stands in a ring upload at a field's offset in some slot (slots are 256 apart). */
+function holdsAt(floats: Float32Array, field: number, triple: number[]): boolean {
+  for (let p = field; p + 2 < floats.length; p += 64) {
+    if (triple.every((v, k) => Math.abs((floats[p + k] as number) - v) < 1e-6)) return true;
+  }
+  return false;
+}
+
+describe('a shading model', () => {
+  /*
+   * **A material's model chooses its pipeline, and the next material goes back to the standard
+   * one.** The model's switch is set from the draw's key, and only for the draw whose material
+   * named it; its numbers reach the block at `uModelParams` as `packModel` lays them.
+   */
+  it("A MATERIAL'S MODEL CHOOSES THE PIPELINE, AND ITS NUMBERS REACH THE BLOCK", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = freshRenderer(stub, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ model: hairModel({ shift: -0.125, scatter: 0.25, backlit: 2 }) });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial(null);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const hair = (p: unknown) =>
+      (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor?.fragment?.constants?.['6'];
+    const lit = stub.pass.setPipeline.mock.calls
+      .map(([p]) => hair(p))
+      .filter((c) => c !== undefined);
+    expect(lit).toEqual([1, 0]);
+    const field =
+      (flatFragmentBindings(variantFor(quality)).fields['uModelParams']?.offset ?? -4) / 4;
+    const floats = new Float32Array(ringUpload(stub.device, 'flat.fragRing'));
+    expect(holdsAt(floats, field, [-0.125, 0.25, 2])).toBe(true);
+  });
+
+  /*
+   * **An eye's axis is its draw's.** Turned a quarter about Y, the eye looking along +Z looks along
+   * +X; drawn again unturned, along +Z — in a slot of its own, or the first draw would read the
+   * second's axis.
+   */
+  it("AN EYE'S AXIS IS TURNED BY EACH DRAW, IN A SLOT OF ITS OWN", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = freshRenderer(stub, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ model: eyeModel() });
+    renderer.drawMesh(mesh, mat4.fromYRotation(mat4.create(), Math.PI / 2));
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const field =
+      (flatFragmentBindings(variantFor(quality)).fields['uModelParams']?.offset ?? -4) / 4;
+    const floats = new Float32Array(ringUpload(stub.device, 'flat.fragRing'));
+    expect(holdsAt(floats, field + 4, [1, 0, 0]), 'the turned draw').toBe(true);
+    expect(holdsAt(floats, field + 4, [0, 0, 1]), 'the unturned draw').toBe(true);
+  });
+
+  /*
+   * **Screen-space skin draws in two halves and is spread once, and only where the profile asked.**
+   * Under `skinScattering: 'screen-space'` a skin draw lands in the frame through its scene half,
+   * and its diffuse half is replayed when the frame first draws something blended: the frame's pass
+   * broken once for the diffuse, the blur's two axes, and the frame reopened. A skin drawn after
+   * that is the whole surface again, and a standard draw never splits. By default, none of it.
+   */
+  it('SCREEN-SPACE SKIN DRAWS TWO HALVES AND IS SPREAD ONCE, BEFORE THE FIRST BLENDED DRAW', () => {
+    for (const skinScattering of ['screen-space', 'pre-integrated'] as const) {
+      const stub = stubSurface();
+      const quality = resolveRenderQuality({ skinScattering });
+      const renderer = freshRenderer(stub, quality);
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setMaterial({ model: skinModel() });
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setMaterial(null);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+      renderer.setMaterial({ model: skinModel() });
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
+      const skinPasses = passes.filter((label) => label.startsWith('skin.'));
+      /* Each lit draw's model and halves, by their switches' ids: skin 7, scene 9, diffuse 10. */
+      const halves = stub.pass.setPipeline.mock.calls
+        .map(([p]) => (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor)
+        .map((d) => d?.fragment?.constants)
+        .filter((c) => c !== undefined && c['7'] !== undefined)
+        .map((c) => `${c?.['7']}${c?.['9']}${c?.['10']}`);
+      if (skinScattering === 'screen-space') {
+        expect(skinPasses).toEqual([
+          'skin.diffuse',
+          'skin.blurAcross',
+          'skin.blurDown',
+          'skin.scattered',
+        ]);
+        expect(halves, "the first skin's frame half").toContain('110');
+        expect(halves, 'its diffuse half, replayed once').toContain('101');
+        expect(halves.filter((h) => h === '101')).toHaveLength(1);
+        expect(halves, 'the skin drawn after the spread, whole').toContain('100');
+      } else {
+        expect(skinPasses).toEqual([]);
+        expect(halves).not.toContain('110');
+        expect(halves).not.toContain('101');
+      }
+    }
+    /* A skin drawn after the frame's first blended draw is the whole surface, skin before it or not. */
+    {
+      const stub = stubSurface();
+      const renderer = freshRenderer(
+        stub,
+        resolveRenderQuality({ skinScattering: 'screen-space' }),
+      );
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+      renderer.setMaterial({ model: skinModel() });
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
+      expect(passes.filter((label) => label.startsWith('skin.'))).toEqual([]);
+    }
+    /* And a frame with nothing blended in it spreads its skin before its end, all the same. */
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ skinScattering: 'screen-space' }));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ model: skinModel() });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
+    expect(passes.filter((label) => label.startsWith('skin.'))).toEqual([
+      'skin.diffuse',
+      'skin.blurAcross',
+      'skin.blurDown',
+      'skin.scattered',
+    ]);
   });
 });
 

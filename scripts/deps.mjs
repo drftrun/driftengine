@@ -27,7 +27,10 @@ export function importsIn(source) {
   const found = [];
   for (let i = 0; i < code.length; i++) {
     if (!/\b(?:from|import)\b/.test(code[i] ?? '')) continue;
-    for (const match of (raw[i] ?? '').matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+    /* A parenthesis only after `import`, for a dynamic import: `Array.from('…')` is a call. */
+    for (const match of (raw[i] ?? '').matchAll(
+      /(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"]+)['"]/g,
+    )) {
       found.push(match[1]);
     }
   }

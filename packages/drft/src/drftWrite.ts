@@ -27,6 +27,8 @@ import {
   ATTR_WEIGHTS,
   ATTR_LAYERS,
   ATTR_CHANNEL,
+  ATTR_JOINTS2,
+  ATTR_WEIGHTS2,
   CHUNK_ENTRY_BYTES,
   CHUNK_HEAD,
   CHUNK_ANIM,
@@ -523,6 +525,8 @@ function buildMesh(mesh: MeshData, code = CHUNK_MESH, flags = CHUNK_REQUIRED): P
   if (mesh.weights !== undefined) attributes |= ATTR_WEIGHTS;
   if (mesh.layers !== undefined) attributes |= ATTR_LAYERS;
   if (mesh.channel !== undefined) attributes |= ATTR_CHANNEL;
+  if (mesh.joints2 !== undefined) attributes |= ATTR_JOINTS2;
+  if (mesh.weights2 !== undefined) attributes |= ATTR_WEIGHTS2;
 
   /* Order is frozen: mandatory arrays, then optional ones by ascending bit. */
   const arrays: (Float32Array | Uint32Array)[] = [
@@ -546,6 +550,9 @@ function buildMesh(mesh: MeshData, code = CHUNK_MESH, flags = CHUNK_REQUIRED): P
   if (mesh.layers !== undefined) arrays.push(mesh.layers);
   /* And newer still, 1.23. See ATTR_CHANNEL. */
   if (mesh.channel !== undefined) arrays.push(mesh.channel);
+  /* And 1.24's second four influences, last. See ATTR_JOINTS2. */
+  if (mesh.joints2 !== undefined) arrays.push(mesh.joints2);
+  if (mesh.weights2 !== undefined) arrays.push(mesh.weights2);
   arrays.push(mesh.indices);
 
   const PREFIX = 16;

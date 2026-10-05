@@ -8,9 +8,19 @@
  * array samples exactly as a 2D texture does. A mesh names its layer per vertex (`MeshData.layers`),
  * so a merged block wearing forty facades is one draw.
  */
-import { isSourceList, layerSize, refuseArrayUpdate, sourceSize } from './textureSource.ts';
+import type { SurfaceModel } from './surfaceModel.ts';
+import { layerSize, refuseArrayUpdate, sourceSize } from './textureSource.ts';
+import { compressedLayers, planBlocks, refuseBlockUpdate } from './compressedSource.ts';
+import type {
+  BlockFormat,
+  CompressedTextureFormat,
+  CompressedTextureSource,
+  SurfaceSource,
+} from './compressedSource.ts';
+import { uploadCompressedArray } from './glCompressed.ts';
 import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from './surfaceEffects.ts';
 import type { SurfaceLayerEffect } from './surfaceEffects.ts';
+import type { CutoutMode } from './cutoutDither.ts';
 
 /**
  * How a texture behaves past its edges and between its texels.
@@ -81,8 +91,20 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    */
   uOffset?: number;
   vOffset?: number;
-  /** Alpha below which a fragment is discarded. See `uAlbedoCutout`. */
+  /** Alpha below which a fragment is discarded. See `uCutout`. */
   cutout?: number;
+  /**
+   * How the cutout's edge is drawn: `'hard'`, the default and every cutout before 4.8.4, or
+   * `'dithered'`, which keeps a pixel by the share of it the texture covers so a strand of hair, a
+   * lash or a fringe of leaves has a soft edge instead of a stair of pixels.
+   *
+   * **The frame decides how a dithered edge is resolved**, because the material cannot know: under a
+   * temporal resolve (TAA or DriftTR) the pattern moves every frame and the resolve averages it;
+   * multisampled, the share goes to the GPU as alpha-to-coverage; with neither, the test is hard,
+   * since a dither nothing averages is grain. A translucent draw tests hard whatever this says. See
+   * `cutoutDither.ts`.
+   */
+  cutoutMode?: CutoutMode;
   /**
    * Whether both faces are seen: glTF's `doubleSided`, what a curtain or a leaf card is. Drawn
    * without culling, and a back face is lit as its front, with the normal turned to the viewer.
@@ -123,6 +145,19 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * consumer who wants a bound map twice as bright asks here rather than rebuilding the mesh.
    */
   emissiveScale?: readonly [number, number, number];
+  /**
+   * How the surface answers light, when the standard model is not what it is made of: brushed
+   * metal, hair, skin, an eye — `anisotropicModel`, `hairModel`, `skinModel`, `eyeModel`. Null or
+   * absent is the standard model, exactly as before. **A pipeline of its own**, compiled the first
+   * time a draw asks, so a scene that names no model pays for none. See `surfaceModel.ts`.
+   */
+  model?: SurfaceModel | null;
+  /**
+   * The model's own channels, in the albedo's coordinates and layers; what each channel means is
+   * the model's to say. Absent, each model takes its own neutral. Sampled linear, like any map
+   * that is not a colour.
+   */
+  modelMap?: Texture | null;
 }
 
 export interface SurfaceTextureOptions {
@@ -222,79 +257,45 @@ export class SurfaceTexture {
   readonly layers: number;
   /** The per-layer effects table, or null for a texture given none. See `surfaceEffects.ts`. */
   private effectsTable: WebGLTexture | null = null;
+  /** The block format a compressed texture holds, or null for one uploaded from images. */
+  private readonly blockFormat: BlockFormat | null;
 
   /**
    * One image, or an array of images that must share one size (`layerSize` refuses otherwise).
-   * Uploaded unflipped either way; see the constructor body for why.
+   * Uploaded unflipped either way; see the constructor body for why. Or blocks, uploaded as they are
+   * where `compressed` — the formats this context samples — has theirs; see `compressedSource.ts`.
    */
   constructor(
     gl: WebGL2RenderingContext,
-    source: TexImageSource | readonly TexImageSource[],
+    source: SurfaceSource | readonly SurfaceSource[],
     options: SurfaceTextureOptions = {},
+    compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    const sources: readonly TexImageSource[] = isSourceList(source) ? source : [source];
-    const { width, height } = layerSize(sources);
-    this.layers = sources.length;
+    const listed = (Array.isArray(source) ? source : [source]) as readonly SurfaceSource[];
+    const blocks = compressedLayers(listed);
+    this.srgb = (options.colorSpace ?? 'linear') === 'srgb';
+    /* Refused before anything is allocated, so a refusal leaves no texture behind. */
+    const plan = blocks === null ? null : planBlocks(blocks, this.srgb, compressed);
     const texture = gl.createTexture();
     if (texture === null) throw new Error('SurfaceTexture: createTexture failed');
     this.texture = texture;
-    this.mipmapped = options.mipmap ?? true;
-    this.srgb = (options.colorSpace ?? 'linear') === 'srgb';
-
     const wrap = (options.wrap ?? 'repeat') === 'repeat' ? gl.REPEAT : gl.CLAMP_TO_EDGE;
-
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-    /*
-     * **Not flipped, and this used to be, which is the bug it is written down for.**
-     *
-     * The flip was here with a comment saying every source is a 2D drawing surface whose Y
-     * runs down from the top-left, so without it "every texture arrives mirrored". That is
-     * true of a canvas and **WebGL ignores `UNPACK_FLIP_Y_WEBGL` entirely for an
-     * `ImageBitmap`**, which carries its own orientation. So the two source types the same
-     * method accepts arrived the opposite way up from each other, and nothing caught it
-     * because every canvas-sourced texture in this repository was symmetric under a vertical
-     * flip: eroded noise, a radial halo, a sleeve blurred to 24 pixels and back. One consumer
-     * painted lettering to a canvas beside a sleeve decoded as a bitmap and the text was
-     * upside down.
-     *
-     * **Made to agree by dropping the flip rather than by extending it**, and the direction
-     * is a deliberate choice about blast radius rather than a coin toss: `drftLoader` builds
-     * every model texture from an `ImageBitmap`, so flipping bitmaps to match canvases would
-     * turn over every painted surface on every loaded model. Dropping it changes only
-     * canvas-sourced textures, and every one of those that exists today is symmetric.
-     *
-     * A caller that was mirroring its own canvas to cancel this must stop.
-     */
-    /* Allocated mutable rather than with texStorage3D, so `update` can hand a one-layer texture a
-       new size, as texImage2D always could. Each layer is then written in place. */
-    gl.texImage3D(
-      gl.TEXTURE_2D_ARRAY,
-      0,
-      this.srgb ? gl.SRGB8_ALPHA8 : gl.RGBA,
-      width,
-      height,
-      sources.length,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      null,
-    );
-    for (let layer = 0; layer < sources.length; layer++) {
-      gl.texSubImage3D(
-        gl.TEXTURE_2D_ARRAY,
-        0,
-        0,
-        0,
-        layer,
-        width,
-        height,
-        1,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        sources[layer] as TexImageSource,
-      );
-    }
 
+    if (blocks !== null && plan !== null) {
+      /* The stored chain, or level 0 alone where no chain was asked for. Nothing is generated:
+         `generateMipmap` cannot write a compressed format. */
+      this.layers = blocks.length;
+      this.blockFormat = (blocks[0] as CompressedTextureSource).format;
+      this.mipmapped = (options.mipmap ?? true) && plan.levels > 1;
+      uploadCompressedArray(gl, plan.name, blocks, this.mipmapped ? plan.levels : 1);
+    } else {
+      const sources = listed as readonly TexImageSource[];
+      this.layers = sources.length;
+      this.blockFormat = null;
+      this.mipmapped = options.mipmap ?? true;
+      uploadImages(gl, sources, this.srgb);
+    }
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, wrap);
     /* Nearest where the caller said their pixels are the subject; see `filter`. The mip chain is
@@ -314,7 +315,7 @@ export class SurfaceTexture {
           : gl.LINEAR,
     );
 
-    if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    if (this.mipmapped && this.blockFormat === null) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     applyAnisotropy(gl, options.anisotropy ?? DEFAULT_ANISOTROPY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
@@ -345,7 +346,6 @@ export class SurfaceTexture {
     }
   }
 
-  /** Bind the effects table to `unit`, or `fallback` for a texture given none. */
   /** Whether this texture carries an effects table, which the lit program reads only once one exists. */
   get hasEffects(): boolean {
     return this.effectsTable !== null;
@@ -370,6 +370,7 @@ export class SurfaceTexture {
   update(gl: WebGL2RenderingContext, source: TexImageSource): void {
     if (this.texture === null) return;
     refuseArrayUpdate(this.layers);
+    refuseBlockUpdate(this.blockFormat);
     const { width, height } = sourceSize(source);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
     /* Unflipped, matching the constructor. See it for why, and for what it cost. */
@@ -401,6 +402,65 @@ export class SurfaceTexture {
     this.texture = null;
     if (this.effectsTable !== null) gl.deleteTexture(this.effectsTable);
     this.effectsTable = null;
+  }
+}
+
+/** Images into the bound array, level 0 of each layer; the chain, if any, is generated after. */
+function uploadImages(
+  gl: WebGL2RenderingContext,
+  sources: readonly TexImageSource[],
+  srgb: boolean,
+): void {
+  const { width, height } = layerSize(sources);
+  /*
+   * **Not flipped, and this used to be, which is the bug it is written down for.**
+   *
+   * The flip was here with a comment saying every source is a 2D drawing surface whose Y
+   * runs down from the top-left, so without it "every texture arrives mirrored". That is
+   * true of a canvas and **WebGL ignores `UNPACK_FLIP_Y_WEBGL` entirely for an
+   * `ImageBitmap`**, which carries its own orientation. So the two source types the same
+   * method accepts arrived the opposite way up from each other, and nothing caught it
+   * because every canvas-sourced texture in this repository was symmetric under a vertical
+   * flip: eroded noise, a radial halo, a sleeve blurred to 24 pixels and back. One consumer
+   * painted lettering to a canvas beside a sleeve decoded as a bitmap and the text was
+   * upside down.
+   *
+   * **Made to agree by dropping the flip rather than by extending it**, and the direction
+   * is a deliberate choice about blast radius rather than a coin toss: `drftLoader` builds
+   * every model texture from an `ImageBitmap`, so flipping bitmaps to match canvases would
+   * turn over every painted surface on every loaded model. Dropping it changes only
+   * canvas-sourced textures, and every one of those that exists today is symmetric.
+   *
+   * A caller that was mirroring its own canvas to cancel this must stop.
+   */
+  /* Allocated mutable rather than with texStorage3D, so `update` can hand a one-layer texture a
+       new size, as texImage2D always could. Each layer is then written in place. */
+  gl.texImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    srgb ? gl.SRGB8_ALPHA8 : gl.RGBA,
+    width,
+    height,
+    sources.length,
+    0,
+    gl.RGBA,
+    gl.UNSIGNED_BYTE,
+    null,
+  );
+  for (let layer = 0; layer < sources.length; layer++) {
+    gl.texSubImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      0,
+      0,
+      0,
+      layer,
+      width,
+      height,
+      1,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      sources[layer] as TexImageSource,
+    );
   }
 }
 

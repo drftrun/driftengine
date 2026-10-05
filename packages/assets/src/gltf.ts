@@ -26,6 +26,7 @@ import { MAX_MORPH_TARGETS } from '@driftengine/core';
 import { accessorFloats } from './gltfAccessor.ts';
 import type { GltfSkin } from './gltfSkin.ts';
 import { readGltfSkins } from './gltfSkin.ts';
+import { writeInfluences } from './influences.ts';
 
 /* The subset of the schema this reads. Everything else is ignored or refused by name. */
 interface GltfAccessor {
@@ -1283,22 +1284,82 @@ function buildPrimitive(
 
   let joints: Float32Array | undefined;
   let weights: Float32Array | undefined;
-  const jointIndex = primitive.attributes['JOINTS_0'];
-  const weightIndex = primitive.attributes['WEIGHTS_0'];
-  if (skin !== undefined && jointIndex !== undefined && weightIndex !== undefined) {
-    joints = accessorFloats(doc, buffers, jointIndex, `${label} JOINTS_0`);
-    weights = accessorFloats(doc, buffers, weightIndex, `${label} WEIGHTS_0`);
-    for (let i = 0; i < joints.length; i++) {
-      const old = joints[i] as number;
-      const moved = skin.remap[old];
-      if (moved === undefined) {
-        throw new DrftError(
-          `gltf: ${label} weights a vertex to joint ${old}, and its skin has ${skin.remap.length}`,
+  let joints2: Float32Array | undefined;
+  let weights2: Float32Array | undefined;
+  if (skin !== undefined) {
+    /*
+     * Every `JOINTS_n`/`WEIGHTS_n` pair the primitive carries, remapped onto the sorted joints. One
+     * pair is what nearly every export writes and keeps the path it always had; more go through
+     * `writeInfluences`, which keeps the eight heaviest, heaviest first, across the two sets a mesh
+     * carries. See influences.ts.
+     */
+    const sets: { joints: Float32Array; weights: Float32Array }[] = [];
+    for (let n = 0; ; n++) {
+      const jointIndex = primitive.attributes[`JOINTS_${n}`];
+      const weightIndex = primitive.attributes[`WEIGHTS_${n}`];
+      if (jointIndex === undefined || weightIndex === undefined) break;
+      const set = {
+        joints: accessorFloats(doc, buffers, jointIndex, `${label} JOINTS_${n}`),
+        weights: accessorFloats(doc, buffers, weightIndex, `${label} WEIGHTS_${n}`),
+      };
+      for (let i = 0; i < set.joints.length; i++) {
+        const old = set.joints[i] as number;
+        const moved = skin.remap[old];
+        if (moved === undefined) {
+          throw new DrftError(
+            `gltf: ${label} weights a vertex to joint ${old}, and its skin has ${skin.remap.length}`,
+          );
+        }
+        set.joints[i] = moved;
+      }
+      sets.push(set);
+    }
+    const only = sets.length === 1 ? sets[0] : undefined;
+    if (only !== undefined) {
+      joints = only.joints;
+      weights = only.weights;
+      normaliseWeights(weights, label, warnings);
+    } else if (sets.length > 1) {
+      const vertices = (sets[0] as { joints: Float32Array }).joints.length / 4;
+      const out = {
+        joints: new Float32Array(vertices * 4),
+        weights: new Float32Array(vertices * 4),
+        joints2: new Float32Array(vertices * 4),
+        weights2: new Float32Array(vertices * 4),
+      };
+      let dropped = false;
+      let rescaled = false;
+      let second = false;
+      for (let v = 0; v < vertices; v++) {
+        const influences: { joint: number; weight: number }[] = [];
+        for (const set of sets) {
+          for (let k = 0; k < 4; k++) {
+            influences.push({
+              joint: set.joints[v * 4 + k] as number,
+              weight: set.weights[v * 4 + k] as number,
+            });
+          }
+        }
+        const report = writeInfluences(influences, out, v);
+        dropped ||= report.dropped;
+        rescaled ||= report.rescaled;
+        second ||= report.second;
+      }
+      joints = out.joints;
+      weights = out.weights;
+      if (second) {
+        joints2 = out.joints2;
+        weights2 = out.weights2;
+      }
+      if (dropped) {
+        warnings.push(
+          `${label}: a vertex is held by more than eight joints; the eight largest are kept`,
         );
       }
-      joints[i] = moved;
+      if (rescaled) {
+        warnings.push(`${label}: vertex weight sets did not sum to one and were rescaled`);
+      }
     }
-    normaliseWeights(weights, label, warnings);
   }
 
   return {
@@ -1314,6 +1375,7 @@ function buildPrimitive(
       ...(uvs === undefined ? {} : { uvs }),
       ...(tangents === undefined ? {} : { tangents }),
       ...(joints === undefined || weights === undefined ? {} : { joints, weights }),
+      ...(joints2 === undefined || weights2 === undefined ? {} : { joints2, weights2 }),
       ...(morphTargets === undefined || morphTargetCount === undefined
         ? {}
         : { morphTargets, morphTargetCount }),

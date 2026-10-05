@@ -85,9 +85,11 @@ export function objectMotion(
 }
 
 /**
- * A vertex through a skin palette: the four joints' matrices weighted and summed, then applied —
+ * A vertex through a skin palette: the joints' matrices weighted and summed, then applied —
  * `SKINNING_GLSL`'s `skinMatrix()` times the position, in model space, before the model matrix.
- * `palette` is sixteen floats a joint, column-major. Written into `out`, four values.
+ * `palette` is sixteen floats a joint, column-major. `joints` and `weights` hold four influences, or
+ * eight for a mesh with a second set (the first set then the second, as the shader reads them with
+ * `SKIN_EIGHT` on). Written into `out`, four values.
  */
 export function skinVertex(
   palette: ArrayLike<number>,
@@ -103,7 +105,8 @@ export function skinVertex(
   out[1] = 0;
   out[2] = 0;
   out[3] = 0;
-  for (let influence = 0; influence < 4; influence += 1) {
+  const influences = Math.min(joints.length, weights.length, 8);
+  for (let influence = 0; influence < influences; influence += 1) {
     const weight = weights[influence] as number;
     if (weight === 0) continue;
     const at = (joints[influence] as number) * 16;

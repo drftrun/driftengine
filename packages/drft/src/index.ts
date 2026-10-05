@@ -140,7 +140,18 @@ export { writeDrft } from './drftWrite.ts';
 export type { DrftSource, DrftTextureSource } from './drftWrite.ts';
 export { DrftError, DRFT_VERSION_MAJOR, DRFT_VERSION_MINOR } from './drftFormat.ts';
 /* A consumer decoding an embedded texture has to know which codec it is holding. */
-export { CODEC_PNG, CODEC_JPEG, CODEC_WEBP, CODEC_RAW, codecName } from './drftFormat.ts';
+export {
+  CODEC_PNG,
+  CODEC_JPEG,
+  CODEC_WEBP,
+  CODEC_RAW,
+  CODEC_BC,
+  BC_BLOCK_BYTES,
+  codecName,
+} from './drftFormat.ts';
+export type { BcFormat } from './drftFormat.ts';
+export { bcChainLength, bcLevelBytes, readBcPayload, writeBcPayload } from './drftBc.ts';
+export type { BcImage } from './drftBc.ts';
 export type { DrftHead, DrftMaterial, DrftSplatBlock, DrftSplats } from './drftFormat.ts';
 /* The order a capture is written in, so a baker outside this package can lay one out the same
    way — it is the whole reason a capture streams into a recognisable place. */

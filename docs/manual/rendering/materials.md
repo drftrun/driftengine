@@ -1,6 +1,6 @@
 ---
 title: Materials
-description: Physically based surfaces from per-vertex values or image maps, albedo, normal, ORM and emissive, how to upload textures, and the per-draw surface dials.
+description: Surfaces from per-vertex values or image maps, uploading images and BC blocks, shading models for brushed metal, hair, skin and eyes, and surface dials.
 packages: ['@driftengine/core']
 plain: ['TexImageSource']
 ---
@@ -47,6 +47,20 @@ as sRGB, its values bend toward zero and every surface looks like glass. The oth
 `updateSurfaceTexture` replaces the pixels and keeps the binding, and `disposeSurfaceTexture` frees
 one. `createSurfaceTextureArray` uploads several images of one size as one texture whose layer each
 face picks; see [Texture arrays](texture-arrays.md).
+
+## Compressed images
+
+`createSurfaceTexture` also takes BC blocks as they are: a `CompressedTextureSource` names its
+`format` (`'bc1'` to `'bc5'`, or `'bc7'`), its size and its `levels`, the stored mip chain from level 0. Uploaded as blocks, a BC7 image costs a byte a texel on the GPU and BC1 half of one, against four
+for the same image decoded, and keeps the chain its author built. `colorSpace` decides between a
+format and its sRGB twin, as it does for an image.
+
+Not every device samples BC: most phones have ASTC and ETC2 instead. `renderer.compressedFormats`
+says which this one takes, and `uploadsCompressed(source, formats, colorSpace)` answers for one
+source. A source the device cannot take is refused by name rather than decoded, because the engine
+ships no decoder; the model loader in `@driftengine/assets` asks first and decodes at load where the
+answer is no, so an imported model's BC images reach every device. A two-channel BC5 normal map
+keeps its two channels and the lit stage rebuilds the third.
 
 ## Metalness and roughness
 
@@ -160,7 +174,12 @@ The rest of the fields:
   quad draws any cell. A strip of four frames is `uScale: 0.25` with `uOffset: frame * 0.25`. A
   cutout's shadow is cut from the same cell.
 - `cutout` discards fragments whose albedo alpha is below it: leaves, grilles, fences. A cutout also
-  shapes the shadow the surface casts.
+  shapes the shadow the surface casts. `cutoutMode: 'dithered'` keeps a pixel by the share of it the
+  texture covers rather than by a line through it, so a strand of hair, a lash or a fringe of leaves
+  has a soft edge instead of a stair of pixels. The frame decides how the dither becomes coverage:
+  a temporal resolve averages it over time, a multisampled frame turns it into samples, and a frame
+  with neither tests hard, because a dither nothing averages is grain. A translucent draw tests hard
+  whatever this says.
 - `doubleSided` draws both faces, for a curtain or a leaf card.
 - `emissive` and `emissiveScale` shape where a mesh glows and in what colour. A map modulates the
   mesh's own emission and never creates it, glTF's rule: what is emitted is the mesh's emissive
@@ -206,6 +225,76 @@ render() {
 per-frame ring, and repeating one mesh many times under one material is what
 [instancing](instancing.md) is for.
 
+## Shading models
+
+Most surfaces are the standard model: a diffuse term and one highlight whose width the roughness
+sets. A few are made of something it cannot describe, and a material names one of four others with
+`model`, made by a factory that checks the numbers and freezes them. Leave `model` out, or pass
+`null`, for the standard model.
+
+- `anisotropicModel({ strength, rotation })`, for brushed metal, satin and grooved plastic: the
+  highlight stretched along the mesh's tangent by `strength`, 0 to 1, its direction turned by
+  `rotation` radians toward the bitangent. At strength 0 it is the standard highlight exactly. The
+  environment is reflected about a normal bent toward the stretch, so a brushed disc shows a streak
+  of sky.
+- `hairModel({ shift, scatter, backlit })`, for strands along the mesh's tangent, running from root
+  to tip: a white highlight shifted toward the root, a coloured second one toward the tip, a glow
+  when a light is behind (`backlit` scales it), and the light scattered through many strands
+  (`scatter`, 0 to 1). `shift` is the tilt of the strand's cuticle in radians, 3° by default. A card
+  authored tip to root swaps its two highlights' ends and takes a negative shift.
+- `skinModel({ scatterColor, radius, transmission, profile })`, for light that leaves skin a little
+  way from where it entered: a softer, redder terminator on curved parts, a red edge to a shadow,
+  and light through thin parts from a lamp behind them, as much as `transmission` lets through. Each
+  colour travels `radius` metres times its share of `scatterColor`, 1.2 cm for red by default.
+  Scale matters: at a person's size a cheek scatters; at a statue's ten times larger, almost nothing
+  does.
+- `eyeModel({ irisRadius, irisDepth, ior, corneaRoughness, axis, joint })`, for an iris seen
+  through a cornea: the cornea bends the eye's ray, so the iris moves under it as the eye turns and
+  reads less foreshortened than a painted one. The iris is lit as the shallow cone it is, light
+  pooling on the side away from the source, under the cornea's sharp highlight. `axis` is the eye's
+  forward direction in the mesh and `joint` the bone it turns with.
+
+`modelMap` is an image of a model's own channels, read at the albedo's coordinates and uploaded as
+`'linear'`:
+
+- anisotropic: red and green a direction in the surface, glTF's packing of −1 to 1, and blue a scale
+  on the strength.
+- hair: green varies each strand's tilt by up to half of it either way, and blue is occlusion.
+- skin: red is thickness, 1 being two centimetres, and green curvature, 1 being a radius of a
+  centimetre.
+- eye: red is the iris, 1 inside it, and green the cornea's height above it as a share of
+  `irisDepth`.
+
+Without a map each model has its own answer: the anisotropic stretch follows the tangent, skin reads
+its curvature from the screen and takes a part's thickness to be its curvature's diameter, and the
+iris is a disc of `irisRadius` about the texture's centre.
+
+Hair, skin and the eye ignore the per-vertex `specular` value: their highlights are physical, set by
+their own index of refraction, and their width is the material's roughness, or the cornea's.
+Anisotropic metal takes its colour and strength from the ORM map as any metal does.
+
+A model costs a pipeline of its own, compiled the first time a draw asks for it, so a scene that names
+none pays nothing. The models belong to the forward path; the [GPU-driven](gpu-driven.md)
+pipeline's materials have none.
+
+### Skin in the picture
+
+The skin model's scattering is a fit evaluated per pixel, and it cannot see past the pixel it is
+shading. `skinScattering: 'screen-space'`, a renderer quality option, adds Burley's blur in the
+picture as well. Each skin draw writes its diffuse light to a target of its own, which is spread
+across the pixels its scatter distance covers and added back before anything blended is drawn, so
+light crosses a shadow's edge and a nostril's rim on screen. Under it the fit steps back to Lambert's
+and the blur does the scattering; light through thin parts stays with the fit, because the picture
+cannot see the far side.
+
+What it costs: every skin draw is drawn twice, there are two half-float targets the size of the
+frame and a third under multisampling, and two full-screen passes run that leave at once wherever no
+skin was drawn. It needs the composite (`screenEffects`) and, on WebGL2, the `EXT_color_buffer_float`
+extension; without either, skin stays pre-integrated and the renderer says so once. `profile` picks
+which of eight scatter distances the blur uses, and the last material to name a profile sets it. A
+skin drawn after something blended in the same frame, or in an instanced batch, is drawn
+pre-integrated.
+
 ## Surface dials
 
 A few properties apply to the draws that follow, without a map:
@@ -232,7 +321,7 @@ A metal is only as convincing as what it reflects. With nothing else set up, it 
 ground gradient. [Reflections](reflections.md) covers baked
 probes, environment images, planar mirrors and screen-space reflections.
 
-## Three things that look wrong
+## Four things that look wrong
 
 - **A material that does nothing on a sphere.** `MeshBuilder` shapes carry no texture coordinates
   unless you ask with `planarUvs`, and without them every pixel samples the same texel.
@@ -240,3 +329,5 @@ probes, environment images, planar mirrors and screen-space reflections.
   `generateTangents`.
 - **Every surface looks like glass.** The ORM map was uploaded as sRGB, so its roughness collapsed
   toward zero.
+- **Hair whose bright highlight sits toward the tips.** The cards' tangents run tip to root. Pass
+  `hairModel` a negative `shift`.

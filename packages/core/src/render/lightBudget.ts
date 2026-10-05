@@ -239,6 +239,31 @@ export const POINT_GLASS_TINT_TEXTURE_UNIT = SUN_GLASS_TINT_TEXTURE_UNIT + 1;
 export const SURFACE_EFFECTS_TEXTURE_UNIT = POINT_GLASS_TINT_TEXTURE_UNIT + 1;
 
 /**
+ * A cloth binding's three vertex-stage textures — the binding, the particles now, the particles at
+ * rest (`clothBinding.ts`). Vertex samplers, so they count against the vertex stage's own sixteen
+ * beside the palette and the morph deltas, not the lit stage's; numbered past every fragment unit,
+ * inside the combined pool of thirty-two.
+ */
+export const CLOTH_BINDING_TEXTURE_UNIT = SURFACE_EFFECTS_TEXTURE_UNIT + 1;
+export const CLOTH_PARTICLES_TEXTURE_UNIT = CLOTH_BINDING_TEXTURE_UNIT + 1;
+export const CLOTH_REST_TEXTURE_UNIT = CLOTH_PARTICLES_TEXTURE_UNIT + 1;
+
+/**
+ * A shading model's own channels (`shaders/flat/models.ts`), the lit stage's **sixteenth** fragment
+ * sampler — exactly what WebGL2 guarantees a stage, which `textureUnitBudget.test.ts` counts from
+ * the source. Numbered past the cloth's vertex units, inside the combined pool of thirty-two.
+ */
+export const MODEL_MAP_TEXTURE_UNIT = CLOTH_REST_TEXTURE_UNIT + 1;
+
+/**
+ * The two units skin's screen-space blur reads on WebGL2 — its target and the frame's depth — past
+ * every unit a lit program binds, so spreading skin in the middle of a frame unbinds nothing the
+ * draws after it sample. WebGL2 guarantees thirty-two.
+ */
+export const SKIN_BLUR_TEXTURE_UNIT = MODEL_MAP_TEXTURE_UNIT + 1;
+export const SKIN_BLUR_DEPTH_UNIT = SKIN_BLUR_TEXTURE_UNIT + 1;
+
+/**
  * A cookie's tile, in texels a side.
  *
  * **128, which is what a gobo is.** A cookie is a soft mask — a window frame, a leaf canopy, a

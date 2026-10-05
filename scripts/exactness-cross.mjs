@@ -29,7 +29,7 @@ import {
   exactExp,
   exactLog,
   exactSin,
-} from '../packages/core/src/math/exact.ts';
+} from '../packages/physics/src/exact.ts';
 import { savableMulberry32 } from '../packages/core/src/core/rng.ts';
 import { World, createWorldSnapshot, defineComponent } from '../packages/entities/src/index.ts';
 import { fingerprintSnapshot } from '../packages/network/src/fingerprint.ts';

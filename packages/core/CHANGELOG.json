@@ -1,5 +1,76 @@
 [
   {
+    "version": "4.8.4",
+    "date": "2026-10-05",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "A material can name a shading model (anisotropic, hair, skin or eye) with `model`, and carry its own channels in a `modelMap`. A scene that names none compiles none of them.",
+        "text": "`SurfaceMaterial.model` takes a frozen descriptor from `anisotropicModel`, `hairModel`, `skinModel` or `eyeModel`, and `modelMap` an image of that model's own channels, read at the albedo's coordinates. Each model is a pipeline constant of its own, off in every pipeline but the ones a material asks for and compiled the first time a draw does, so the standard lit shader is the one it was: every published scene moves 0 pixels on WebGPU, and the lit shader's instruction count and registers hold on RADV. **`anisotropicModel`** is GGX stretched along the mesh's tangent by a strength and turned by a rotation, after `KHR_materials_anisotropy`, and is the standard highlight exactly at strength 0; the environment is reflected about a normal bent toward the stretch, so a brushed disc shows a streak of sky. Hair, skin and the eye ignore the per-vertex `specular`: their highlights are physical, set by their own index of refraction. The models belong to the forward path; a `GpuDrivenMaterial` names none. The manual's materials chapter says what each map channel means."
+      },
+      {
+        "kind": "added",
+        "short": "`hairModel` shades strands along the mesh's tangent: a white highlight toward the root, a coloured one toward the tip, a glow when lit from behind, and light scattered through the hair.",
+        "text": "`hairModel({ shift, scatter, backlit })` treats each strand as a rough dielectric cylinder along the tangent, running from root to tip, after Marschner et al. in the real-time form Karis gave: the reflection off the surface, white and shifted toward the root by twice the cuticle's tilt; the light through the strand, which is the glow of a backlit head and is nearly nothing with the light in front; and the light reflected once inside, the coloured second highlight. Each is a normalised longitudinal Gaussian times an azimuthal fit, so a lamp's size widens every lobe without brightening it, and a wrapped scatter term carries the light that has passed through many strands, deepening toward the fibre's hue in a penumbra. The sky and DriftLight reach it through that scatter, and the environment through the reflected lobe at the strand's own Fresnel. `shift` is the tilt in radians, 3° by default; a card whose tangents run tip to root takes it negative. Held by tests to the three lobes' tilted peaks, reciprocity, a white strand returning what it receives to within the fit, and finite answers where the geometry degenerates."
+      },
+      {
+        "kind": "added",
+        "short": "`skinModel` lights skin as light that leaves it a little way from where it entered: a softer, redder terminator on curved parts, a red edge to a shadow, light through thin parts.",
+        "text": "`skinModel({ scatterColor, radius, transmission, profile })` gives each colour its own scatter distance, `radius` times its share of `scatterColor`, and on a curved surface lights a point by its neighbours' angle to the light as well as its own: Burley's diffusion profile averaged around a ring of the surface's curvature, after Penner, evaluated as a closed-form fit rather than looked up, so it costs no texture. The fit splits the average into the cosine's first harmonic and a smoothed absolute value carrying the rest, is exactly Lambert on a flat surface, and stays within 0.0105 of the integral done numerically wherever it is used. The curvature is read from the screen or from the model map; light from behind a thin part comes through it, and a shadow's penumbra lets each colour in as far as it travels. The highlight is two normalised GGX lobes at skin's Fresnel. Measured at a person's scale: a lamp behind a six-millimetre fin moves it red by 99 levels and blue by 8, and the standard model by nothing."
+      },
+      {
+        "kind": "added",
+        "short": "`skinScattering: 'screen-space'` adds Burley's blur in the picture: skin's diffuse is spread across the pixels its scatter distance covers before anything blended is drawn.",
+        "text": "A renderer quality option. Each skin draw writes its specular to the frame and its diffuse to a half-float target of its own — drawn a second time to do it — which is spread along each screen axis by Burley's profile integrated across a line, every tap weighted by the profile's mass over its cell in closed form, refusing taps off the skin's depth and counting part-covered ones for their part, and added back before the frame's first blended draw. Under it the per-pixel fit steps back to Lambert's and the blur does the scattering, so light crosses a shadow's edge and a nostril's rim on screen; light through thin parts stays with the fit. The split adds back to the whole: with a blur narrower than half a pixel the two pictures differ only at silhouettes, on both backends, multisampled or not, and under a pane drawn over the skin. It needs the composite (`screenEffects`) and, on WebGL2, `EXT_color_buffer_float`; without either, skin is pre-integrated and the renderer says so once. What it costs: every skin draw twice, two half-float targets the size of the frame and a third under multisampling, and two full-screen passes that leave at once where no skin was drawn. `profile` picks one of eight scatter distances the blur uses."
+      },
+      {
+        "kind": "added",
+        "short": "`eyeModel` moves an iris under its cornea as the eye turns, lights it as the shallow cone it is, and puts the cornea's sharp highlight over the whole eye.",
+        "text": "`eyeModel({ irisRadius, irisDepth, ior, corneaRoughness, axis, joint })` refracts the eye's ray at the cornea and moves the iris's texture coordinate by how far that ray crosses the iris plane before any map is read, so colour, relief and the model's channels move as one. Measured on a flat cornea at 30°: the iris is seen across 1.21 mm of a 3 mm depth, where parallax alone would put it at 1.73, both as predicted. The iris is lit by the surface normal mirrored about the eye's axis, so light pools on the side away from it, the sclera by its own, and the cornea's highlight — normalised GGX at `corneaRoughness`, the Fresnel of index 1.336 — lies over both. `axis` and `joint` say which way the eye looks and which bone it turns with; the renderer turns the axis per draw."
+      },
+      {
+        "kind": "added",
+        "short": "`cutoutMode: 'dithered'` gives a cutout a soft edge for hair, lashes and leaves, resolved over time, as multisampled coverage, or as the hard test where neither can.",
+        "text": "A dithered cutout keeps a pixel by the share of it the texture covers rather than by a line through it. The material asks for the smooth edge and the frame decides how: under a temporal resolve (TAA or DriftTR) the threshold moves every frame and the resolve averages the pattern into coverage; multisampled, the share goes to the GPU as alpha-to-coverage; with neither, the test is hard, since a dither nothing averages is grain. Shadows and coloured glass shadows dither with a pattern that holds still, and a translucent draw tests hard whatever the material says. `'hard'` stays the default, and every cutout before this draws as it did. Measured on both backends: grain under TAA 11.7, DriftTR 13.1, and the hard test's edge unchanged to the pixel."
+      },
+      {
+        "kind": "added",
+        "short": "A vertex may follow up to eight bones: `joints2` and `weights2` carry the second four, the importers keep eight heaviest first, and the container writes them at 1.24.",
+        "text": "`MeshData.joints2` and `weights2` add a second four influences beside `joints` and `weights`. glTF's `JOINTS_1` and `WEIGHTS_1` are read, and FBX skins with more than four bones a vertex keep eight, sorted heaviest first and normalised across all eight. `.drft` 1.24 writes them after every array a 1.23 reader reads; a 1.23 reader refuses such a mesh rather than drawing it with its second four read as indices. A skinned draw with them takes the eight-influence vertex stage on both backends — lit, shadow-casting and DriftTR's motion — under a pipeline constant inside the existing skinned variant, so a four-influence mesh draws exactly as before and the generated shaders do not double."
+      },
+      {
+        "kind": "added",
+        "short": "BC1 to BC5 and BC7 textures upload as their blocks where the device samples them, a byte a texel for BC7 against four, and the asset loader decodes them in a worker where it cannot.",
+        "text": "`createSurfaceTexture` takes a `CompressedTextureSource` — format, size and the stored mip chain — and uploads it as it is where `renderer.compressedFormats` has the format: WebGPU asks for `texture-compression-bc` wherever the adapter offers it, and WebGL2 reads the four extensions BC is spread across. Core ships no decoder and refuses by name a source the device cannot take; `uploadsCompressed` is the question to ask first. The baker keeps a DDS as BC blocks in `.drft` 1.24's `CODEC_BC` payload (`--decode-dds` keeps PNG for an older reader), and `@driftengine/assets` uploads them as blocks or decodes level 0 in a module worker — on the main thread where no worker can be had — so every device gets the image. A two-channel BC5 normal map keeps two channels and the lit stage rebuilds the third, which also repairs every BC5 map baked to PNG before this release with its blue at zero. The decoders are checked against an independent one: BC7 to the byte across every partition."
+      },
+      {
+        "kind": "added",
+        "short": "Cloth on a character: a skinned cloth solved on the GPU (on the CPU under WebGL2), with a finer mesh bound to it in the vertex stage, colliders on bones, limits, wind and resets.",
+        "text": "`SkinnedCloth` in `@driftengine/physics` is XPBD over particles that carry up to eight bone influences: distance, dihedral bending and tether constraints in graph-colour batches, a max distance, a backstop and a frontstop measured from where skinning puts each particle, spheres and tapered capsules on joints, inertia that lets a free particle keep a share of the character's motion, and a teleport that resets, settles and blends back in — whole fixed steps, drawn on `alpha`, with `setWind` taking the frame's sample of the scene's one wind. `createSkinnedCloth(renderer, setup)` solves it as WebGPU compute, its particles never leaving the device, and as `SkinnedCloth` under WebGL2, one schedule over both. A skinned mesh bound to it with `createClothBinding` and `setCloth` is placed by the cloth in its vertex stage — lit, shadow and DriftTR's motion alike — so a garment uploads nothing a frame. On an RX 9070 XT, 4,500 particles and 40,000 bound vertices take 0.65 ms a frame on the device against 20 ms on the CPU. `examples/garment/` builds a cape by hand; the handbook maps a cooked garment onto the two arrays. Self-collision is accepted in a set-up and not simulated."
+      },
+      {
+        "kind": "changed",
+        "short": "`updateMesh` uploads the positions and normals it is given and nothing else on WebGPU: a dynamic mesh no longer keeps a copy of its whole vertex buffer to resend every frame.",
+        "text": "A dynamic mesh kept a CPU copy of its interleaved vertex buffer, patched the positions and normals into it and sent all of it, reported at 2.8 MB a frame for one character's garments. Positions and normals are buffers of their own now, an update is one write of each, and no copy is kept; last frame's positions, for DriftTR's motion, are copied on the device ahead of the write. The picture is identical to the pixel, plain and under DriftTR."
+      },
+      {
+        "kind": "fixed",
+        "short": "A turned, skinned or instanced mesh with tangents lit its normal map from the wrong side: the tangent now leaves the vertex stage in world space, as the normal does.",
+        "text": "The lit vertex stage handed the fragment its tangent in the mesh's own space and the tangent frame crossed it with the world-space normal, so any mesh with stored tangents that was not drawn unturned lit its normal map from a direction that turned with it. The tangent is now turned as the normal is: by the joints, the model or instance matrix, and a cloth. Measured on a mapped panel turned a quarter: 80.4 rms from the derived reference before, 14.8 now — what it is unturned — on both backends. Every published scene is unchanged on WebGPU."
+      },
+      {
+        "kind": "fixed",
+        "short": "On WebGL2 a draw no longer loses the material set before it when a lit shader is compiled in the middle of a frame, as when a feature turns on or a new kind of draw first appears.",
+        "text": "Feeding a lit program compiled mid-frame its pass state also reset the renderer's current material, so the draws after it — until the next `setMaterial` — drew with no maps. The pass's material is reset where the pass begins now, and a program compiled mid-frame is handed the material that is current."
+      },
+      {
+        "kind": "fixed",
+        "short": "The baker no longer bakes a DDS it finds elsewhere in a bundle, rather than beside the model, as a single white pixel.",
+        "text": "A texture the baker found by searching a bundle went through a path that knew PNG, JPEG and WEBP and nothing else, so a DDS there was refused as an image and baked white. Both paths share one now, and a DDS is kept as BC blocks or decoded like any other."
+      }
+    ]
+  },
+  {
     "version": "4.8.3",
     "date": "2026-10-04",
     "entries": [

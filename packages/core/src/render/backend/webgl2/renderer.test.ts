@@ -10,12 +10,14 @@ import { Camera } from '../../camera.ts';
 import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
 import {
+  CLOTH_PARTICLES_TEXTURE_UNIT,
   EMISSIVE_TEXTURE_UNIT,
   NORMAL_TEXTURE_UNIT,
   ORM_TEXTURE_UNIT,
   SURFACE_TEXTURE_UNIT,
 } from '../../lightBudget.ts';
 import { createMeshInstances } from '../../instances.ts';
+import { eyeModel, skinModel } from '../../surfaceModel.ts';
 
 /**
  * Whether order-independent transparency is on, asked the only way a caller can ask it.
@@ -1547,4 +1549,249 @@ test('reversed depth puts the view model at the top of the range', () => {
   const last = calls.filter((call) => call.name === 'depthRange').at(-1)?.args ?? [];
   expect(last[0]).toBeCloseTo(0.95, 6);
   expect(last[1]).toBe(1);
+});
+
+/**
+ * **A garment's draw is placed by its cloth and reads this frame's particles; the draw after it is
+ * skinned alone.** The twin of the WebGPU test of the same name. Two frames, so the swap is watched:
+ * the particle unit holds the texture the update just wrote, a different one each frame.
+ */
+test("A GARMENT DRAW READS THIS FRAME'S PARTICLES, AND THE DRAW AFTER IT NONE", () => {
+  const { gl, canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = new Mesh(gl, {
+    ...GEOMETRY,
+    joints: new Float32Array(12),
+    weights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+  });
+  const binding = renderer.createClothBinding(mesh, {
+    triangles: new Uint32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]),
+    coordinates: new Float32Array(6),
+    offsets: new Float32Array(3),
+    weights: new Float32Array([1, 1, 1]),
+    rest: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  });
+  const particles = renderer.createClothParticles(3);
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  const written: unknown[] = [];
+
+  for (let frame = 0; frame < 2; frame++) {
+    renderer.updateClothParticles(particles, new Float32Array(9).fill(frame));
+    written.push(calls.filter((call) => call.name === 'bindTexture').at(-2)?.args[1]);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, createEnvironment());
+    renderer.setSkinPalette(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    const start = calls.length;
+    renderer.setCloth(binding, particles);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setCloth(null);
+    renderer.drawMesh(mesh, mat4.create());
+
+    /* Each draw's program, by the vertex source attached to it, and the particle unit's texture. */
+    const vertexOf = new Map<unknown, string>();
+    const sourceOf = new Map<unknown, string>();
+    let program: unknown = null;
+    let unit = 0;
+    let particleUnit: unknown = null;
+    const draws: { cloth: boolean; particles: unknown }[] = [];
+    for (const [k, call] of calls.entries()) {
+      if (call.name === 'shaderSource') sourceOf.set(call.args[0], String(call.args[1]));
+      if (call.name === 'attachShader') {
+        const source = sourceOf.get(call.args[1]) ?? '';
+        if (!source.includes('gl_FragColor') && source.includes('gl_Position')) {
+          vertexOf.set(call.args[0], source);
+        }
+      }
+      if (k < start) continue;
+      if (call.name === 'useProgram') program = call.args[0];
+      if (call.name === 'activeTexture') unit = (call.args[0] as number) - gl.TEXTURE0;
+      if (call.name === 'bindTexture' && unit === CLOTH_PARTICLES_TEXTURE_UNIT) {
+        particleUnit = call.args[1];
+      }
+      if (call.name === 'drawElements') {
+        const vertex = vertexOf.get(program) ?? '';
+        draws.push({
+          cloth: vertex.includes('const bool CLOTH_BOUND = true;'),
+          particles: particleUnit,
+        });
+      }
+    }
+    expect(
+      draws.map((draw) => draw.cloth),
+      `frame ${frame}`,
+    ).toEqual([true, false]);
+    expect(draws[0]?.particles, `frame ${frame}: the particles just written`).toBe(written[frame]);
+    renderer.endFrame();
+  }
+  expect(written[0], 'the second update writes the other texture').not.toBe(written[1]);
+});
+
+/**
+ * **A material's model draws through that model's program, and the next material back through the
+ * standard one** — the twin of the WebGPU test of the same name. Read off the draw calls in order:
+ * each draw's program, by the fragment source attached to it, and the `uModelParams` it was handed.
+ */
+test("A MATERIAL'S MODEL CHOOSES THE PROGRAM, AND AN EYE'S AXIS IS EACH DRAW'S", () => {
+  const { gl, canvas, calls } = recordingGl({ uniforms: ['uModelParams'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, createEnvironment());
+
+  const fragmentOf = new Map<unknown, string>();
+  const sourceOf = new Map<unknown, string>();
+  let program: unknown = null;
+  let read = 0;
+  /*
+   * The draw's program and the numbers it was last handed, read **straight after the draw**: the
+   * renderer uploads from one scratch array, which the recording keeps by reference, so the next
+   * material's numbers would overwrite these if they were read at the end.
+   */
+  const lastDraw = (): { model: string; params: number[] } => {
+    let params: number[] = [];
+    let drawn = { model: 'none', params };
+    for (; read < calls.length; read++) {
+      const call = calls[read] as (typeof calls)[number];
+      if (call.name === 'shaderSource') sourceOf.set(call.args[0], String(call.args[1]));
+      if (call.name === 'attachShader') {
+        const source = sourceOf.get(call.args[1]) ?? '';
+        if (source.includes('outColor')) fragmentOf.set(call.args[0], source);
+      }
+      if (call.name === 'useProgram') program = call.args[0];
+      if (
+        call.name === 'uniform4fv' &&
+        (call.args[0] as { name?: string } | null)?.name === 'uModelParams'
+      ) {
+        params = Array.from(call.args[1] as Float32Array, (v) => Math.round(v * 1e6) / 1e6);
+      }
+      if (call.name === 'drawElements') {
+        const fragment = fragmentOf.get(program) ?? '';
+        const on = ['SKIN', 'EYE', 'HAIR', 'ANISOTROPIC'].find((m) =>
+          fragment.includes(`const bool MODEL_${m} = true;`),
+        );
+        drawn = { model: on ?? 'standard', params };
+      }
+    }
+    return drawn;
+  };
+  lastDraw();
+  renderer.setMaterial({ model: skinModel({ radius: 0.02 }) });
+  renderer.drawMesh(mesh, mat4.create());
+  const skin = lastDraw();
+  renderer.setMaterial({ model: eyeModel() });
+  renderer.drawMesh(mesh, mat4.fromYRotation(mat4.create(), Math.PI / 2));
+  const eye = lastDraw();
+  renderer.setMaterial(null);
+  renderer.drawMesh(mesh, mat4.create());
+  const plain = lastDraw();
+
+  expect([skin.model, eye.model, plain.model]).toEqual(['SKIN', 'EYE', 'standard']);
+  expect(skin.params.slice(0, 4)).toEqual([0.85, 0.35, 0.22, 0.02]);
+  /* A quarter turn about Y takes the eye's +Z to +X, written for that draw. */
+  expect(eye.params.slice(4, 7)).toEqual([1, 0, 0]);
+});
+
+/*
+ * **Screen-space skin draws in two halves, the second into a target of its own, and is spread once**
+ * — the twin of the WebGPU test. Under `skinScattering: 'screen-space'` a skin draw is the frame's
+ * half and then at once its diffuse half, with another framebuffer bound and the depth compared for
+ * equality; the frame's end runs the blur's two axes and adds through the scene's kept share. Where
+ * the driver will not render to half floats, or the profile did not ask, skin is one draw, whole.
+ */
+test('SCREEN-SPACE SKIN DRAWS TWO HALVES INTO TWO TARGETS AND IS SPREAD ONCE, AND ONLY WHERE IT CAN BE', () => {
+  const cases = [
+    ['screen-space', ['EXT_color_buffer_float'], true],
+    ['screen-space', [], false],
+    ['pre-integrated', ['EXT_color_buffer_float'], false],
+  ] as const;
+  for (const [skinScattering, extensions, splits] of cases) {
+    const { gl, canvas, calls } = recordingGl({ extensions });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const renderer = new Renderer(canvas, resolveRenderQuality({ skinScattering }));
+    const mesh = new Mesh(gl, GEOMETRY);
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, createEnvironment());
+    const start = calls.length;
+    renderer.setMaterial({ model: skinModel() });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial(null);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    warn.mockRestore();
+
+    const sourceOf = new Map<unknown, string>();
+    const fragmentOf = new Map<unknown, string>();
+    let program: unknown = null;
+    let framebuffer: unknown = null;
+    let depthFunc: unknown = null;
+    const draws: string[] = [];
+    const targets: unknown[] = [];
+    let blurs = 0;
+    for (const call of calls.slice(0)) {
+      if (call.name === 'shaderSource') sourceOf.set(call.args[0], String(call.args[1]));
+      if (call.name === 'attachShader') {
+        const source = sourceOf.get(call.args[1]) ?? '';
+        if (source.includes('out ') && !source.includes('gl_Position')) {
+          fragmentOf.set(call.args[0], source);
+        }
+      }
+    }
+    for (const call of calls.slice(start)) {
+      if (call.name === 'useProgram') program = call.args[0];
+      if (call.name === 'bindFramebuffer') framebuffer = call.args[1];
+      if (call.name === 'depthFunc') depthFunc = call.args[0];
+      const fragment = fragmentOf.get(program) ?? '';
+      if (call.name === 'drawElements') {
+        const half = fragment.includes('const bool SKIN_DIFFUSE = true;')
+          ? 'diffuse'
+          : fragment.includes('const bool SKIN_SCREEN = true;')
+            ? 'scene'
+            : fragment.includes('const bool MODEL_SKIN = true;')
+              ? 'whole'
+              : 'standard';
+        draws.push(`${half}${half === 'diffuse' ? `:${String(depthFunc)}` : ''}`);
+        targets.push(framebuffer);
+      }
+      if (call.name === 'drawArrays' && fragment.includes('uProfiles')) blurs += 1;
+    }
+    const halves = draws.map((d) => d.split(':')[0]);
+    if (splits) {
+      expect(halves, `${skinScattering} ${extensions.join()}`).toEqual([
+        'scene',
+        'diffuse',
+        'standard',
+      ]);
+      expect(draws[1]?.split(':')[1], 'the diffuse half finds its depth by equality').toBe(
+        String(gl.EQUAL),
+      );
+      expect(targets[1], 'into a target of its own').not.toBe(targets[0]);
+      expect(targets[2], 'and the frame is the frame again after it').toBe(targets[0]);
+      expect(blurs, 'across and down, once').toBe(2);
+    } else {
+      expect(halves, `${skinScattering} ${extensions.join()}`).toEqual(['whole', 'standard']);
+      expect(blurs).toBe(0);
+    }
+  }
+  /* A skin drawn after the frame's first blended draw is the whole surface, as on WebGPU. */
+  {
+    const { gl, canvas, calls } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+    const renderer = new Renderer(canvas, resolveRenderQuality({ skinScattering: 'screen-space' }));
+    const mesh = new Mesh(gl, GEOMETRY);
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, createEnvironment());
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+    const start = calls.length;
+    renderer.setMaterial({ model: skinModel() });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const draws = calls.slice(start).filter((call) => call.name === 'drawElements');
+    expect(draws, 'one draw, whole').toHaveLength(1);
+  }
 });

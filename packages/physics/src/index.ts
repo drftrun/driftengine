@@ -116,6 +116,38 @@ export {
 } from './stallEscape.ts';
 export type { ClothOptions } from './cloth.ts';
 export { ClothBody, makeClothGrid } from './cloth.ts';
+/*
+ * Cloth anchored to a skeleton rather than a world: a garment. The CPU solver is the reference and
+ * runs under WebGL2 and in Node; `@driftengine/core` runs the same kernels on WebGPU.
+ */
+export { SkinnedCloth } from './skinnedCloth.ts';
+/*
+ * The schedule both solvers share — poses, whole steps, resets and the blend — and the device
+ * interface the GPU solver implements, with what it reads: the targets' matrices and colliders,
+ * and the set-up checked and batched exactly as the CPU solver checks and batches it.
+ */
+export { ClothControl } from './clothControl.ts';
+export type { ClothDevice } from './clothControl.ts';
+export type { ClothTargets } from './clothTargets.ts';
+export { validateClothSetup } from './skinnedClothSetup.ts';
+/*
+ * Transcendentals that give the same bits on every engine. Here rather than in core since 4.8.4,
+ * because the simulation needs them and this package imports nothing; core re-exports them with
+ * the rest of physics.
+ */
+export { exactAcos, exactCos, exactExp, exactLog, exactSin } from './exact.ts';
+export { batchesOf, colourConstraints } from './clothBatches.ts';
+export type { ClothBatches } from './clothBatches.ts';
+export type {
+  BendingConstraints,
+  ClothCollider,
+  ClothLimits,
+  DistanceConstraints,
+  ResolvedClothParameters,
+  SkinnedClothParameters,
+  SkinnedClothSetup,
+  TetherConstraints,
+} from './skinnedClothSetup.ts';
 export type { Collider, ColliderBytes, ColliderGroup } from './colliderSet.ts';
 export { ColliderSet, boxCollider, colliderFromShape } from './colliderSet.ts';
 export { fingerprintBodies, fingerprintColliders } from './fingerprint.ts';

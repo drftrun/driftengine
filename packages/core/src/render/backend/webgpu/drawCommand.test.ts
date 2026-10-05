@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest';
+import { vertexBufferLayouts } from './buffers.ts';
 import { createCommandPool, resetPool, takeCommand } from './drawCommand.ts';
 
 test('a taken command is reused rather than replaced', () => {
@@ -33,8 +34,17 @@ test('a full frame taken twice allocates no new entries', () => {
   for (let i = 0; i < 32; i += 1) expect(pool.commands[i]).toBe(snapshot[i]);
 });
 
-test('a command carries four vertex buffer slots, which is one more than any verb uses', () => {
+/*
+ * **Room for the widest draw, within what WebGPU guarantees.** An instanced dynamic mesh binds five
+ * buffers — its positions, normals, rows and constants, then the batch's placements — read here off
+ * the layout function that builds its pipeline. This said four, "one more than any verb uses", while
+ * text and bolts already bound four.
+ */
+test('a command has a slot for every buffer the widest draw binds, within the eight guaranteed', () => {
   const pool = createCommandPool(1);
   const command = pool.commands[takeCommand(pool)];
-  expect(command?.vertexBuffers.length).toBe(4);
+  const widest = vertexBufferLayouts({ dynamic: true }, true).length;
+  expect(widest).toBe(5);
+  expect(command?.vertexBuffers.length).toBeGreaterThanOrEqual(widest);
+  expect(command?.vertexBuffers.length).toBeLessThanOrEqual(8);
 });

@@ -81,6 +81,16 @@ test('prose that mentions an import is prose', () => {
   assert.deepEqual(importsIn('const label = `the delta ${from.name} in the root`;'), []);
 });
 
+/*
+ * **A call named `from` is not an import.** The parenthesis is allowed after `import` for a dynamic
+ * import, and it was allowed after `from` too, so a test decoding a hex fixture with
+ * `Array.from('2bce…'.match(…))` was reported as importing a package called `2bce…`.
+ */
+test('a call to a method named from is code, not an import', () => {
+  assert.deepEqual(importsIn("const bytes = Array.from('2bce5016'.match(/../g) ?? []);"), []);
+  assert.deepEqual(importsIn("const b = Buffer.from('DDS ', 'ascii');"), []);
+});
+
 test('a specifier names the package it belongs to', () => {
   assert.equal(packageOf('gl-matrix'), 'gl-matrix');
   assert.equal(packageOf('driftscript/compiler'), 'driftscript');

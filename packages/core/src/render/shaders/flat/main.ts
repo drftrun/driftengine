@@ -21,6 +21,8 @@ export const MAIN_GLSL = `void main() {
     fxLoad(int(surfaceAt.z));
     surfaceAt = fxAnimate(surfaceAt);
   }
+  /* An eye's iris, moved by its cornea before any map reads it: models.ts. */
+  surfaceAt = modelSurfaceAt(surfaceAt);
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
@@ -56,18 +58,35 @@ export const MAIN_GLSL = `void main() {
    * rectangle of haze with a picture in it, rather than a picture.
    */
   float coverage = 1.0;
-  if (uAlbedoEnabled != 0) {
+  if (uMaterialFlags.x != 0) {
     vec4 texel = texture(uAlbedo, surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
-    if (uAlbedoCutout > 0.0) {
+    float kept = texel.a;
+    if (uCutout.x > 0.0) {
       float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
-      if (tested < uAlbedoCutout) discard;
+      if (uCutout.y == 0.0) {
+        if (tested < uCutout.x) discard;
+      } else {
+        /*
+         * A dithered edge: the pixel is kept by the share of it the texture covers. Under a
+         * temporal resolve the test is against noise that moves every frame, and a kept pixel is
+         * whole; multisampled, the share is the alpha the GPU turns into coverage. See
+         * cutoutDither.ts.
+         */
+        float share = cutoutShare(tested, uCutout.x);
+        if (uCutout.y == 1.0) {
+          if (!cutoutKeeps(share, gl_FragCoord.xy, uCutout.z)) discard;
+          kept = 1.0;
+        } else {
+          kept = share;
+        }
+      }
     }
     albedo *= texel.rgb;
-    coverage = texel.a;
+    coverage = kept;
   }
 
   /*
@@ -91,7 +110,7 @@ export const MAIN_GLSL = `void main() {
   float ormOcclusion = 1.0;
   float ormRoughness = vRoughness;
   float metal = 0.0;
-  if (uOrmEnabled != 0) {
+  if (uMaterialFlags.y != 0) {
     vec3 t = texture(uOrmMap, surfaceAt).rgb;
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
@@ -121,6 +140,8 @@ export const MAIN_GLSL = `void main() {
   }
 
   vec3 lit = albedo;
+  /* Skin's diffuse, held before emission for the screen-space blur's own pass: models.ts. */
+  vec3 diffuseAlone = vec3(0.0);
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
      over the see-through at the end. Stays zero for anything that is not glass. See glass.ts. */
   vec3 glassGlow = vec3(0.0);
@@ -143,7 +164,7 @@ export const MAIN_GLSL = `void main() {
      * Taken from the stored normal alone, a pane seen from behind glowed with the light on the
      * eye's side and not with the sun shining through it.
      */
-    bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;
+    bool backFace = (uMaterialFlags.w != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;
     /*
      * The authored normal, before either relief perturbs it.
      *
@@ -162,6 +183,15 @@ export const MAIN_GLSL = `void main() {
      */
     if (uNormalStrength > 0.0) {
       vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
+      /*
+       * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
+       * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
+       * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
+       * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
+       * that has to say what format it holds, and continuous at the boundary, since a unit texel
+       * lying flat has its z near zero either way. A texel with z above zero is left as it was.
+       */
+      mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
       mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
       n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
     }
@@ -268,7 +298,7 @@ export const MAIN_GLSL = `void main() {
      * and normalized: dividing the gradient by \`det\` instead would blow up on a fragment where
      * the surface is edge-on and the quad's footprint collapses.
      */
-    if (uAlbedoEnabled != 0 && uTextureRelief != 0.0) {
+    if (uMaterialFlags.x != 0 && uTextureRelief != 0.0) {
       /*
        * **A centred difference, not three.js's forward one, and that is what makes the two
        * backends agree.** WebGL2's framebuffer counts y upward and WebGPU's counts it downward,
@@ -331,6 +361,14 @@ export const MAIN_GLSL = `void main() {
      * across the fold of every curtain.
      */
     if (backFace) n = -n;
+    /*
+     * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
+     * there is one, asked once: every site below is a branch on these two, which a pipeline with no
+     * model folds away, and each extra call was a copy of its plumbing in all sixteen permutations.
+     */
+    bool modelled = modelOn();
+    bool modelledBehind = modelSeesBehind();
+    if (modelled) modelSurface(n, albedo, surfaceRoughness, metal, surfaceAt);
 
     /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
@@ -444,7 +482,19 @@ export const MAIN_GLSL = `void main() {
      * smallest change available in a shader with a documented history of shared subexpressions
      * rounding differently when their neighbours move. See the night-emissive term.
      */
-    lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
+    /*
+     * A model answers the sun itself, and is shadowed as it says (models.ts). The standard line
+     * stands as it was, so a pipeline with no model compiles to exactly the arithmetic before.
+     */
+    vec3 sunModelSpecular = vec3(0.0);
+    if (modelled) {
+      modelLight(uDirectionalDir, 0.0, 0.0);
+      float sunModelFacing = modelledBehind ? 1.0 : sunFacing;
+      lit = modelAmbient(ambient) + sunColor * mDiffuse * modelShade(sunShade) * sunModelFacing;
+      sunModelSpecular = mSpecular * sunColor * sunShade * sunModelFacing;
+    } else {
+      lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
+    }
 
     /*
      * A sun highlight, for the few surfaces that ask for one.
@@ -507,6 +557,7 @@ export const MAIN_GLSL = `void main() {
      */
     vec3 sunHighlight =
       sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
+    if (modelled) sunHighlight = sunModelSpecular;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
      * below dims it by exactly the reflectance it always dimmed it by. The metal's share is added
@@ -578,18 +629,20 @@ export const MAIN_GLSL = `void main() {
      * whole block was skipped for a fully metallic surface and max(uReflectivity, metal) inside it
      * was never reached. A chromed subject came out near black with a baked probe sitting unread.
      *
-     * **Gated on uOrmEnabled rather than on metal, and that is required rather than tidy.** The
+     * **Gated on the ORM flag rather than on metal, and that is required rather than tidy.** The
      * block takes fwidth of the mirror direction, and a derivative may only be taken under uniform
-     * control flow. uOrmEnabled is a uniform; metal is a texture fetch, so branching on it would
+     * control flow. The flag is a uniform; metal is a texture fetch, so branching on it would
      * put that derivative in non-uniform control flow and WGSL refuses the module outright. See
      * AGENTS.md, 2026-08-07. The per-texel decision still happens, one line down, in the amount.
      *
-     * At uOrmEnabled 0 this is uReflectivity > 0.0 exactly, so nothing that binds no map takes a
+     * With the flag at 0 this is uReflectivity > 0.0 exactly, so nothing that binds no map takes a
      * branch it did not take before.
      */
-    if (uReflectivity > 0.0 || uOrmEnabled != 0) {
+    /* A model reflects its environment whatever the pass asked of the standard model: see
+       modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
+    if (uReflectivity > 0.0 || uMaterialFlags.y != 0 || modelled) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
-      vec3 mirrored = reflect(-toEye, n);
+      vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);
 #if ENVIRONMENT_PROBE
       /*
@@ -845,6 +898,8 @@ export const MAIN_GLSL = `void main() {
 #else
       float weight = clamp(fresnel * reflectAmount, 0.0, 1.0);
 #endif
+      if (modelled) weight = modelReflectance(weight);
+      if (modelled) environment = modelEnvironment(environment);
       lit = mix(
         lit,
         environment * mix(vec3(1.0), albedo, metal),
@@ -1151,7 +1206,8 @@ export const MAIN_GLSL = `void main() {
        */
       float backNdl =
         glassTransmission > 0.0 ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
-      if (ndl <= 0.0 && backNdl <= 0.0) continue;
+      /* A model that sees light from behind keeps the lamps behind the surface. See models.ts. */
+      if (ndl <= 0.0 && backNdl <= 0.0 && !modelledBehind) continue;
 
       /*
        * Normal-offset bias.
@@ -1400,13 +1456,25 @@ export const MAIN_GLSL = `void main() {
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
       glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;
-      if (ndl <= 0.0) continue;
+      if (ndl <= 0.0 && !modelledBehind) continue;
       /*
        * The cookie tints rather than scales, because a mask may be coloured — a stained window is
        * the case that makes the difference — and a greyscale one is exactly a scale. Applied to
        * the light's colour rather than to \`shape\`, which is a scalar and could not carry it.
        */
       lightColor *= cookieTint;
+      /*
+       * A model's answer to this lamp, held back and shadowed exactly as the standard terms below
+       * are — the shadowed sum through \`modelShade\`, which is where skin's penumbra reddens.
+       */
+      if (modelled) {
+        modelLight(toLight / max(dist, 1e-4), lightSourceRadius, dist);
+        vec3 lampModelLight = lightColor * shape * lightWeight;
+        lampOpen += (mDiffuse + mSpecular) * lampModelLight;
+        lampShadowed += (mDiffuse * modelShade(shaded) + mSpecular * shaded) * lampModelLight * lampGlass;
+        lightShade = min(lightShade, mix(1.0, shaded, lightWeight));
+        continue;
+      }
       /*
        * **A metal has no diffuse term, and this lamp kept giving it one.**
        *
@@ -1648,6 +1716,22 @@ export const MAIN_GLSL = `void main() {
 
       glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;
       if (form <= 0.0) continue;
+      /*
+       * A model answers a rectangle as it answers a lamp at its centre, carried at the rectangle's
+       * own energy: the diffuse by the exact form factor over the centre's cosine, the specular by
+       * the form factor. **An approximation, stated**: a model's lobe is not integrated over the
+       * rectangle as the standard lobe is, so a glossy model under a large softbox shows a lobe
+       * from its centre rather than its shape.
+       */
+      if (modelled) {
+        vec3 areaL = normalize(centre - vWorldPos);
+        modelLight(areaL, 0.0, 0.0);
+        vec3 areaModel = (mDiffuse * (form / max(dot(n, areaL), 1e-3)) + mSpecular * form)
+          * uAreaLightColor[a];
+        lampOpen += areaModel;
+        lampShadowed += areaModel * areaOccl * areaGlass;
+        continue;
+      }
       /* Held back with the point lamps', and shadowed by the same term it always was. */
       vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
       lampOpen += areaDiffuse;
@@ -1741,7 +1825,12 @@ export const MAIN_GLSL = `void main() {
       if (glassTransmission > 0.0) {
         glassGlow += driftLightIrradiance(vWorldPos, -n) * (driftShare * uDriftLight.w);
       }
-      lit += albedo * driftLightIrradiance(vWorldPos, n) * (driftShare * uDriftLight.w) * (1.0 - metal);
+      /* The standard expression in its own order — albedo times the field, then the share — so a
+         pipeline with no model rounds exactly as it did; a model is handed the light alone. */
+      vec3 driftField = driftLightIrradiance(vWorldPos, n);
+      lit += modelled
+        ? modelIrradiance(driftField * (driftShare * uDriftLight.w))
+        : albedo * driftField * (driftShare * uDriftLight.w) * (1.0 - metal);
     }
 
     /*
@@ -1793,6 +1882,7 @@ export const MAIN_GLSL = `void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
+    diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*
      * Where the surface glows, from an image, or everywhere if it binds none.
@@ -1811,7 +1901,7 @@ export const MAIN_GLSL = `void main() {
      * explicit level — the 2026-08-07 rule is satisfied by the gate rather than by a \`textureLod\`.
      */
     vec3 emissiveMapped = vec3(1.0);
-    if (uEmissiveMapEnabled != 0) {
+    if (uMaterialFlags.z != 0) {
       emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
@@ -1890,7 +1980,13 @@ export const MAIN_GLSL = `void main() {
     // Water is a camera medium, not a property of individual objects.
     vec3 waterTransmission = vec3(0.42) + uUnderwaterColor * 2.0;
     lit = mix(lit, lit * waterTransmission, uUnderwaterFactor * 0.55);
+    diffuseAlone = mix(diffuseAlone, diffuseAlone * waterTransmission, uUnderwaterFactor * 0.55);
     fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
+  }
+  /* The diffuse pass leaves here, with skin's diffuse and the profile it is spread by. */
+  if (modelDiffuseAlone()) {
+    outColor = vec4(modelDiffuseOut(diffuseAlone * ormOcclusion, fog), skinProfileCode());
+    return;
   }
 
   /*

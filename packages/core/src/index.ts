@@ -6,7 +6,6 @@ export type { LoopHooks, FrameSource, LoopOptions } from './core/loop.ts';
 export { StepBudget } from './core/stepBudget.ts';
 export type { StepBudgetOptions } from './core/stepBudget.ts';
 export { hashToUnit, mulberry32, pickBySeed, savableMulberry32 } from './core/rng.ts';
-export { exactAcos, exactCos, exactExp, exactLog, exactSin } from './math/exact.ts';
 export type { SavableRandom } from './core/rng.ts';
 export { TickTrace } from './core/tickTrace.ts';
 export type { TickTraceLike } from './core/tickTrace.ts';
@@ -467,6 +466,8 @@ export type { ProbeVerdict } from './render/backend/probe.ts';
 export type {
   BoltHandle,
   CausticsHandle,
+  ClothBindingHandle,
+  ClothParticlesHandle,
   FlockHandle,
   IncrementalMeshHandle,
   LineHandle,
@@ -484,6 +485,27 @@ export type {
   WaterHandle,
   WindStreakHandle,
 } from './render/backend/api.ts';
+export type { ClothBindingData } from './render/clothBindingData.ts';
+/*
+ * A material's shading model, for what the standard one is not: brushed metal, hair, skin, an eye.
+ * A frozen descriptor made by a factory and set as `SurfaceMaterial.model`; each is a pipeline of
+ * its own, compiled the first time a draw asks.
+ */
+export { anisotropicModel, eyeModel, hairModel, skinModel } from './render/surfaceModel.ts';
+export type {
+  AnisotropicModel,
+  EyeModel,
+  HairModel,
+  SkinModel,
+  SurfaceModel,
+  SurfaceModelKind,
+} from './render/surfaceModel.ts';
+/*
+ * A skinned cloth solved where the renderer can: compute on WebGPU, the CPU under WebGL2. A function
+ * rather than a renderer method so only a game that imports it carries the solver.
+ */
+export { createSkinnedCloth } from './render/skinnedClothRun.ts';
+export type { SkinnedClothSolver } from './render/skinnedClothRun.ts';
 
 /**
  * What a frame asked of a backend, against the ceilings that backend imposes.
@@ -507,6 +529,7 @@ export type { FrameTimer } from './render/backend/timer.ts';
 export type {
   SceneCasterMaterial,
   SceneCasters,
+  ShadowCasterCloth,
   ShadowCasterSink,
   ShadowCasters,
 } from './render/shadowCasters.ts';
@@ -593,6 +616,7 @@ export type {
   RenderQuality,
   RenderQualityOptions,
   ShadowFilterTaps,
+  SkinScattering,
   WaterReflectionFilterTaps,
 } from './render/renderQuality.ts';
 export { MAX_POINT_LIGHTS, SURFACE_TEXTURE_UNIT } from './render/lightBudget.ts';
@@ -600,6 +624,21 @@ export { MAX_POINT_LIGHTS, SURFACE_TEXTURE_UNIT } from './render/lightBudget.ts'
 export { MAX_CLUSTERED_LIGHTS } from './render/clusteredLights.ts';
 export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
+/*
+ * BC compressed textures: the source `createSurfaceTexture` takes as blocks, and the one question to
+ * ask before handing one over — whether this device takes its format (`renderer.compressedFormats`).
+ */
+export {
+  compressedFormatName,
+  isCompressedSource,
+  uploadsCompressed,
+} from './render/compressedSource.ts';
+export type {
+  BlockFormat,
+  CompressedTextureFormat,
+  CompressedTextureSource,
+  SurfaceSource,
+} from './render/compressedSource.ts';
 export { DEFAULT_GOVERNOR_LIMITS, ResolutionGovernor } from './render/resolutionGovernor.ts';
 export type { GovernorLimits } from './render/resolutionGovernor.ts';
 export { isWeakGpuFamily } from './render/gpuCapability.ts';

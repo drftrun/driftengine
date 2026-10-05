@@ -15,7 +15,7 @@
  * `describeEmbedded` exactly as a `.glb`'s binary chunk does and is JSON a person can read.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -27,6 +27,7 @@ import { decodePng, encodePng, rgbaOf } from '../packages/core/scripts/png.mjs';
 
 const CODEC_PNG = 1;
 const CODEC_RAW = 4;
+const CODEC_BC = 5;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 /** A single-mip BC1 DDS of one flat colour, `width` by `height`. */
@@ -141,15 +142,18 @@ function readMaterialIndices(container) {
   assert.fail('no MATL chunk');
 }
 
-function bakeDocument(doc) {
+function bakeDocument(doc, extra = [], files = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'drft-bake-'));
   try {
     const model = path.join(dir, 'model.gltf');
     const out = path.join(dir, 'model.drft');
     writeFileSync(model, JSON.stringify(doc));
-    execFileSync('npx', ['tsx', '--conditions=drift-source', 'scripts/bake.ts', model, '-o', out], {
-      stdio: 'pipe',
-    });
+    for (const [name, bytes] of Object.entries(files)) writeFileSync(path.join(dir, name), bytes);
+    execFileSync(
+      'npx',
+      ['tsx', '--conditions=drift-source', 'scripts/bake.ts', model, '-o', out, ...extra],
+      { stdio: 'pipe' },
+    );
     return readFileSync(out);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -160,10 +164,12 @@ function bake(dds) {
   return bakeDocument(gltfWithEmbeddedTexture(dds));
 }
 
-test('a block-compressed texture is decoded and re-encoded, not embedded raw', () => {
+test('under --decode-dds a block-compressed texture is decoded and re-encoded, not embedded raw', () => {
   const width = 64;
   const height = 64;
-  const container = bake(flatBc1Dds(width, height));
+  const container = bakeDocument(gltfWithEmbeddedTexture(flatBc1Dds(width, height)), [
+    '--decode-dds',
+  ]);
   const textures = readTextures(container);
 
   assert.equal(textures.length, 1, 'one TEXS chunk');
@@ -178,7 +184,9 @@ test('a block-compressed texture is decoded and re-encoded, not embedded raw', (
 test('the re-encoded texture is far smaller than the RGBA it was decoded to', () => {
   const width = 64;
   const height = 64;
-  const [texture] = readTextures(bake(flatBc1Dds(width, height)));
+  const [texture] = readTextures(
+    bakeDocument(gltfWithEmbeddedTexture(flatBc1Dds(width, height)), ['--decode-dds']),
+  );
   const rgba = width * height * 4;
   assert.ok(
     texture.bytes.length < rgba / 10,
@@ -511,6 +519,176 @@ function blendedMaterial(container) {
   }
   assert.fail('no MATL chunk');
 }
+
+/**
+ * A block-compressed DDS of `levels`, back to back, behind a classic header naming `fourcc` or,
+ * with `dxgi`, a `DX10` one.
+ */
+function ddsChain({ width, height, fourcc, dxgi }, levels) {
+  const extension = dxgi === undefined ? 0 : 20;
+  const header = Buffer.alloc(128 + extension);
+  header.write('DDS ', 0, 'ascii');
+  header.writeUInt32LE(124, 4);
+  header.writeUInt32LE(0x21007, 8);
+  header.writeUInt32LE(height, 12);
+  header.writeUInt32LE(width, 16);
+  header.writeUInt32LE(levels.length, 28);
+  header.writeUInt32LE(32, 76);
+  header.writeUInt32LE(0x4, 80);
+  header.write(fourcc, 84, 'ascii');
+  if (dxgi !== undefined) {
+    header.writeUInt32LE(dxgi, 128);
+    header.writeUInt32LE(3, 132);
+    header.writeUInt32LE(1, 140);
+  }
+  return Buffer.concat([header, ...levels.map((level) => Buffer.from(level))]);
+}
+
+/** `n` bytes counting up from `from`, so each level is told apart from every other. */
+function run(n, from) {
+  return Uint8Array.from({ length: n }, (_, i) => (from + i) & 0xff);
+}
+
+/** A `CODEC_BC` payload by FORMAT.md §4.5: four words, then the levels back to back. */
+function bcPayload(texture) {
+  const words = [0, 4, 8, 12].map((at) => texture.bytes.readUInt32LE(at));
+  return { words, blocks: [...texture.bytes.subarray(16)] };
+}
+
+/*
+ * **A DDS is kept as its blocks and its chain, by default, since 4.8.4.** A 16x16 BC1 surface with
+ * three levels: 16x16 is sixteen blocks of eight bytes, 8x8 four, 4x4 one. The payload states BC1
+ * (1), linear (0), three levels and a reserved zero, then carries every byte the file stored.
+ */
+test('A BLOCK-COMPRESSED DDS IS KEPT AS ITS BLOCKS AND ITS WHOLE CHAIN, BYTE FOR BYTE', () => {
+  const levels = [run(128, 0), run(32, 128), run(8, 160)];
+  const dds = ddsChain({ width: 16, height: 16, fourcc: 'DXT1' }, levels);
+  const [texture] = readTextures(bake(dds));
+  assert.equal(texture.codec, CODEC_BC);
+  assert.deepEqual([texture.width, texture.height], [16, 16]);
+  const { words, blocks } = bcPayload(texture);
+  assert.deepEqual(words, [1, 0, 3, 0]);
+  assert.deepEqual(
+    blocks,
+    levels.flatMap((level) => [...level]),
+  );
+});
+
+/* A BC7 surface can only be named by a DX10 header; 99 says its author declared it sRGB. */
+test('a DX10 BC7 surface is kept with the colour space its author declared', () => {
+  const dds = ddsChain({ width: 4, height: 4, fourcc: 'DX10', dxgi: 99 }, [run(16, 9)]);
+  const { words } = bcPayload(readTextures(bake(dds))[0]);
+  assert.deepEqual(words, [7, 1, 1, 0]);
+});
+
+/** The baker over a folder holding `files`, which may name subfolders; the container it wrote. */
+function bakeFolder(files, extra = []) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'drft-bake-'));
+  try {
+    const root = path.join(dir, 'bundle');
+    for (const [name, bytes] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+      writeFileSync(path.join(root, name), bytes);
+    }
+    const out = path.join(dir, 'model.drft');
+    execFileSync(
+      'npx',
+      ['tsx', '--conditions=drift-source', 'scripts/bake.ts', root, '-o', out, ...extra],
+      { stdio: 'pipe' },
+    );
+    return readFileSync(out);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/*
+ * **A DDS found anywhere in a bundle is read as one found beside the model is.** The reader resolves
+ * a texture beside the model; one the baker then finds elsewhere in the folder it was given went
+ * through a path that knew PNG, JPEG and WEBP only, and a DDS there baked as a white pixel and the
+ * warning "an image starting 44 44 53 20 is not PNG, JPEG or WEBP" — which is `DDS `.
+ */
+test('A DDS FOUND ELSEWHERE IN A BUNDLE IS KEPT AS BLOCKS, NOT REPLACED BY A WHITE PIXEL', () => {
+  const dds = ddsChain({ width: 8, height: 8, fourcc: 'DXT5' }, [run(64, 0)]);
+  const obj =
+    'mtllib model.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl paint\nf 1/1 2/2 3/3\n';
+  const [texture] = readTextures(
+    bakeFolder({
+      'models/model.obj': obj,
+      'models/model.mtl': 'newmtl paint\nmap_Kd paint.dds\n',
+      'paint.dds': dds,
+    }),
+  );
+  assert.equal(texture.codec, CODEC_BC);
+  assert.deepEqual(bcPayload(texture).words, [3, 0, 1, 0]);
+});
+
+/*
+ * **A cap is met by dropping stored levels**, which is a smaller image the author already made.
+ * 16x16 under --max-texture 4 is level 2, one block; a chain that stops before the cap has nothing to
+ * drop to, so that one is decoded and shrunk like any other image and arrives as a PNG.
+ */
+test('UNDER --max-texture A BC CHAIN DROPS ITS TOP LEVELS, AND A SHORT ONE BECOMES A PNG', () => {
+  const levels = [run(128, 0), run(32, 128), run(8, 160)];
+  const dds = ddsChain({ width: 16, height: 16, fourcc: 'DXT1' }, levels);
+  const [kept] = readTextures(bakeDocument(gltfWithEmbeddedTexture(dds), ['--max-texture', '4']));
+  assert.equal(kept.codec, CODEC_BC);
+  assert.deepEqual([kept.width, kept.height], [4, 4]);
+  assert.deepEqual(bcPayload(kept), { words: [1, 0, 1, 0], blocks: [...levels[2]] });
+  const [short] = readTextures(bakeDocument(gltfWithEmbeddedTexture(dds), ['--max-texture', '2']));
+  assert.equal(short.codec, CODEC_PNG);
+  assert.deepEqual([short.width, short.height], [2, 2]);
+});
+
+/*
+ * **A DirectX BC5 normal map is turned over in its blocks and stays BC5.** One block: red 90 flat,
+ * green 200 flat — endpoints 200 and 200, every index 0, which is the four-value mode. Turned over,
+ * green's endpoints are 55 and 55 and every index is 1: sixteen three-bit ones, 0x249249 twice,
+ * least significant byte first. Red is not touched. A BC7 normal map has no such exact turn and
+ * leaves as a PNG with its green turned over.
+ */
+test('UNDER --normals-directx A BC5 NORMAL MAP IS TURNED OVER IN ITS BLOCKS', () => {
+  const red = [90, 90, 0, 0, 0, 0, 0, 0];
+  const green = [200, 200, 0, 0, 0, 0, 0, 0];
+  const bc5 = ddsChain({ width: 4, height: 4, fourcc: 'ATI2' }, [
+    Uint8Array.from([...red, ...green]),
+  ]);
+  const doc = gltfWithRoles(Buffer.alloc(0));
+  doc.images = doc.images.map((image) => ({
+    ...image,
+    uri: `data:image/vnd-ms-dds;base64,${bc5.toString('base64')}`,
+  }));
+  const [colour, normal] = readTextures(bakeDocument(doc, ['--normals-directx']));
+  assert.equal(normal.codec, CODEC_BC);
+  assert.deepEqual(bcPayload(normal).blocks, [
+    ...red,
+    ...[55, 55, 0x49, 0x92, 0x24, 0x49, 0x92, 0x24],
+  ]);
+  assert.deepEqual(bcPayload(colour).blocks, [...red, ...green], 'the colour map, as it came');
+
+  const bc7 = ddsChain({ width: 4, height: 4, fourcc: 'DX10', dxgi: 98 }, [run(16, 0x40)]);
+  const doc7 = gltfWithRoles(Buffer.alloc(0));
+  doc7.images = doc7.images.map((image) => ({
+    ...image,
+    uri: `data:image/vnd-ms-dds;base64,${bc7.toString('base64')}`,
+  }));
+  const [, normal7] = readTextures(bakeDocument(doc7, ['--normals-directx']));
+  assert.equal(normal7.codec, CODEC_PNG);
+});
+
+/*
+ * BC4 is one channel, which a GPU samples as red and no material slot reads alone, so a bake writes
+ * it as the grey image it is. a0 = 120 with every index 0 is 120 in all three channels.
+ */
+test('a BC4 DDS is baked as a grey PNG rather than kept as one red channel', () => {
+  const dds = ddsChain({ width: 4, height: 4, fourcc: 'ATI1' }, [
+    Uint8Array.from([120, 0, 0, 0, 0, 0, 0, 0]),
+  ]);
+  const [texture] = readTextures(bake(dds));
+  assert.equal(texture.codec, CODEC_PNG);
+  const { rgba } = rgbaOf(decodePng(Buffer.from(texture.bytes)));
+  assert.deepEqual([...rgba.subarray(0, 4)], [120, 120, 120, 255]);
+});
 
 test('A BLEND MATERIAL BAKES AS A BLEND, AND AS A CUTOUT AT 0.5 UNDER --blend-as-cutout', () => {
   const doc = gltfWithImage(flatPng(8, 8, [60, 120, 40, 255]), 'image/png');

@@ -422,6 +422,7 @@ served by `npm run examples`.
 | A character controller on bodies and ground surfaces     | `examples/character/`                                             |
 | A raycast vehicle and its tyre curves                    | `examples/vehicle/`                                               |
 | Ragdolls from a skeleton, and cloth                      | `examples/ragdoll/`                                               |
+| A garment: skinned cloth and the mesh bound to it        | `examples/garment/`                                               |
 | Skeletons, blend trees, clocks and two-bone IK           | `examples/animation/`                                             |
 | Routes over a graph, and a navigation mesh from geometry | `examples/navigation/`                                            |
 | Components, systems and prefabs in DriftScript; rewinds  | `examples/entities/`                                              |

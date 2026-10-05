@@ -3,8 +3,10 @@ import { MAX_LIGHTS_PER_CLUSTER } from './clusteredLights.ts';
 import { flatFrag } from './shaders/flat/index.ts';
 import * as budget from './lightBudget.ts';
 import {
+  CLOTH_REST_TEXTURE_UNIT,
   CLUSTER_TABLE_TEXTURE_UNIT,
   FIXTURE_ATLAS_TEXTURE_UNIT,
+  MODEL_MAP_TEXTURE_UNIT,
   REFRACT_SCENE_TEXTURE_UNIT,
   DIRECTIONAL_SHADOW_UNITS,
   EMISSIVE_TEXTURE_UNIT,
@@ -192,13 +194,15 @@ test('the refraction snapshot takes the second-to-last guaranteed unit', () => {
   expect(REFRACT_SCENE_TEXTURE_UNIT).toBeLessThan(GUARANTEED_UNITS);
 });
 
-test('THE LIT STAGE KEEPS ONE OF THE SIXTEEN GUARANTEED FRAGMENT SAMPLERS SPARE, glass tints and all', () => {
+test('THE LIT STAGE DECLARES EXACTLY THE SIXTEEN FRAGMENT SAMPLERS WEBGL2 GUARANTEES, the model map last', () => {
   /*
    * Counted from the widest lit shader itself rather than from unit numbers: a unit number is a
-   * place in the combined pool, where the vertex stage's palette and morph deltas also live, and
-   * `MAX_TEXTURE_IMAGE_UNITS` bounds how many samplers a *stage* declares. This is that count.
-   * The sun's three maps became one array to afford the glass tints, the sun's and the lamps'; the
-   * sixteenth stays free, and the next sampler has to fold into a binding rather than take it.
+   * place in the combined pool, where the vertex stage's palette, morph deltas and cloth also live,
+   * and `MAX_TEXTURE_IMAGE_UNITS` bounds how many samplers a *stage* declares. This is that count.
+   * The sun's three maps became one array to afford the glass tints, the cookie and photometric
+   * atlases one fixture atlas to afford the effects table, and the sixteenth went to a shading
+   * model's map in 4.8.4. **There is none left**: the next sampler has to fold into a binding that
+   * exists, as each of those did, rather than take one.
    */
   const source = flatFrag({
     pointShadows: true,
@@ -211,10 +215,11 @@ test('THE LIT STAGE KEEPS ONE OF THE SIXTEEN GUARANTEED FRAGMENT SAMPLERS SPARE,
   ].map((match) => match[1]);
   expect(samplers).toContain('uSunGlassTints');
   expect(samplers).toContain('uPointGlassTints');
-  /* The cookie and photometric atlases became one fixture atlas, the fold this test asks the next
-     sampler for, and the surface effects table took the sampler it freed: fifteen, one spare. */
   expect(samplers).toContain('uFixtureAtlas');
   expect(samplers).toContain('uSurfaceEffects');
-  expect(samplers).toHaveLength(15);
-  expect(GUARANTEED_UNITS - samplers.length).toBeGreaterThanOrEqual(1);
+  expect(samplers).toContain('uModelMap');
+  expect(samplers).toHaveLength(GUARANTEED_UNITS);
+  /* And its unit is past every other, inside the combined pool of thirty-two. */
+  expect(MODEL_MAP_TEXTURE_UNIT).toBe(CLOTH_REST_TEXTURE_UNIT + 1);
+  expect(MODEL_MAP_TEXTURE_UNIT).toBeLessThan(32);
 });

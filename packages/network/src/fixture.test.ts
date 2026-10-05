@@ -34,7 +34,7 @@ describe('the conformance fixture', () => {
   /**
    * **Measured on V8 / x86-64 on 2026-09-03.** Another machine must produce these.
    *
-   * `scripts/exactness-cross.mjs` prints them for pasting. A change to `math/exact.ts`, to
+   * `scripts/exactness-cross.mjs` prints them for pasting. A change to physics' `exact.ts`, to
    * `simNumber.ts`, or to the fixture itself moves them, which is what should fail a suite.
    */
   it('produces the committed digests', () => {

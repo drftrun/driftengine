@@ -32,7 +32,8 @@ import type { UpAxis } from './orient.ts';
 import { FALLBACK_MATERIAL, readMaterials } from './fbxMaterial.ts';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { AssetReference } from './assetPath.ts';
-import { bareName, indexObjects, readClips, readSkin, writeInfluences } from './fbxRig.ts';
+import { bareName, indexObjects, readClips, readSkin } from './fbxRig.ts';
+import { writeInfluences } from './influences.ts';
 import type { AnimationClip, DrftSkin } from '@driftengine/drft';
 
 /** One value repeated per vertex, for a material constant this format has nowhere else to put. */
@@ -688,6 +689,16 @@ export function fbxToMeshes(
       const outUvs: number[] | null = uvLayer === null ? null : [];
       const outJoints: number[] | null = skin === null ? null : [];
       const outWeights: number[] | null = skin === null ? null : [];
+      /* The fifth to eighth influences, kept only if some vertex needed them. See influences.ts. */
+      const outJoints2: number[] | null = skin === null ? null : [];
+      const outWeights2: number[] | null = skin === null ? null : [];
+      let secondInfluences = false;
+      const scratch = {
+        joints: new Float32Array(4),
+        weights: new Float32Array(4),
+        joints2: new Float32Array(4),
+        weights2: new Float32Array(4),
+      };
       const indices: number[] = [];
       /*
        * A mesh with no normals is not deduplicated, and that is the geometry speaking rather than
@@ -805,23 +816,25 @@ export function fbxToMeshes(
         outColors.push(r, g, b);
         if (outUvs !== null) outUvs.push(u, v);
 
-        if (outJoints !== null && outWeights !== null && skin !== null) {
-          outJoints.push(0, 0, 0, 0);
-          outWeights.push(0, 0, 0, 0);
-          const scratchJoints = new Float32Array(4);
-          const scratchWeights = new Float32Array(4);
-          const report = writeInfluences(
-            skin.influences.get(vertexIndex),
-            scratchJoints,
-            scratchWeights,
-            0,
-          );
-          for (let k = 0; k < 4; k++) {
-            outJoints[emitted * 4 + k] = scratchJoints[k] as number;
-            outWeights[emitted * 4 + k] = scratchWeights[k] as number;
-          }
+        if (
+          outJoints !== null &&
+          outWeights !== null &&
+          outJoints2 !== null &&
+          outWeights2 !== null &&
+          skin !== null
+        ) {
+          scratch.joints.fill(0);
+          scratch.weights.fill(0);
+          scratch.joints2.fill(0);
+          scratch.weights2.fill(0);
+          const report = writeInfluences(skin.influences.get(vertexIndex), scratch, 0);
+          outJoints.push(...scratch.joints);
+          outWeights.push(...scratch.weights);
+          outJoints2.push(...scratch.joints2);
+          outWeights2.push(...scratch.weights2);
           droppedInfluences ||= report.dropped;
           rescaledInfluences ||= report.rescaled;
+          secondInfluences ||= report.second;
         }
       }
 
@@ -834,8 +847,8 @@ export function fbxToMeshes(
       }
       if (droppedInfluences) {
         warnings.push(
-          `${name}: a vertex is held by more than four joints; the four largest are kept and ` +
-            `renormalised, because four is what the skinning palette reads.`,
+          `${name}: a vertex is held by more than eight joints; the eight largest are kept and ` +
+            `renormalised, because eight is what the skinning palette reads.`,
         );
       }
       if (rescaledInfluences) {
@@ -861,6 +874,9 @@ export function fbxToMeshes(
         ...(outJoints === null || outWeights === null
           ? {}
           : { joints: Float32Array.from(outJoints), weights: Float32Array.from(outWeights) }),
+        ...(outJoints2 === null || outWeights2 === null || !secondInfluences
+          ? {}
+          : { joints2: Float32Array.from(outJoints2), weights2: Float32Array.from(outWeights2) }),
       });
       perMesh.push(material);
     }

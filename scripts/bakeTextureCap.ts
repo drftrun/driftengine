@@ -9,13 +9,27 @@
  * lossless. What would make that wrong is a surface whose detail is in a subtle gradient JPEG bands,
  * which is what `--texture-codec` left unset is for.
  *
+ * **A BC texture is met without an encoder, where it can be**, because there is none here: a cap
+ * drops stored levels from the top, which is a smaller image its author already made, and a BC5
+ * normal map is turned over in its blocks. What cannot be met that way — a cap below the last
+ * stored level, a BC1, BC3 or BC7 normal map to turn over — is decoded and goes the way of every
+ * other image, as a PNG. JPEG is never asked of BC: it is compressed already, and smaller on the
+ * GPU than any JPEG is.
+ *
  * A texture this cannot decode is carried as it came, with a warning saying why, rather than
  * dropped. A bake that loses a map is worse than one over budget that says so.
  */
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { cappedSize, downscaleRgba } from '@driftengine/assets';
-import { CODEC_JPEG, CODEC_PNG } from '@driftengine/drft';
+import { cappedSize, decodeBcImage, downscaleRgba, flipBc5Green } from '@driftengine/assets';
+import {
+  CODEC_BC,
+  CODEC_JPEG,
+  CODEC_PNG,
+  codecName,
+  readBcPayload,
+  writeBcPayload,
+} from '@driftengine/drft';
 import type { DrftTextureSource } from '@driftengine/drft';
 import decodeJpeg, { init as initJpegDecode } from '@jsquash/jpeg/decode.js';
 import encodeJpeg, { init as initJpegEncode } from '@jsquash/jpeg/encode.js';
@@ -95,6 +109,13 @@ export async function processTextures(
       texture.codec === CODEC_PNG &&
       (options.jpeg === 'all' || !options.normalMaps.has(i));
     const flip = options.flipNormalGreen === true && options.normalMaps.has(i);
+    if (texture.codec === CODEC_BC && (shrinks || flip)) {
+      const kept = keptAsBlocks(texture, size.width, size.height, flip);
+      if (kept !== null) {
+        out.push(kept);
+        continue;
+      }
+    }
     if (!shrinks && !toJpeg && !flip) {
       out.push(texture);
       continue;
@@ -114,9 +135,47 @@ export async function processTextures(
   return out;
 }
 
+/**
+ * A BC texture capped to `width` by `height` and turned over if asked, still as blocks — or `null`
+ * where that needs an encoder: no stored level that small, or a normal map in a format other than
+ * BC5 to turn over.
+ */
+function keptAsBlocks(
+  texture: DrftTextureSource,
+  width: number,
+  height: number,
+  flip: boolean,
+): DrftTextureSource | null {
+  const image = readBcPayload(texture.width, texture.height, texture.bytes);
+  /* `cappedSize` halves as a mip chain does, so the capped size is a level's size. */
+  let drop = 0;
+  while (Math.max(1, texture.width >> drop) > width || Math.max(1, texture.height >> drop) > height)
+    drop++;
+  if (drop >= image.levels.length || (flip && image.format !== 'bc5')) return null;
+  const levels = image.levels.slice(drop).map((level) => (flip ? flipBc5Green(level) : level));
+  const bytes = writeBcPayload({ ...image, width, height, levels });
+  console.log(
+    `  texture ${texture.name} — ${image.format.toUpperCase()} ${texture.width}x${texture.height}` +
+      (drop > 0
+        ? ` to ${width}x${height}, ${drop} stored level${drop === 1 ? '' : 's'} dropped`
+        : '') +
+      (flip ? ', green turned over in its blocks' : ''),
+  );
+  return { ...texture, width, height, bytes };
+}
+
 async function decodeRgba(
   texture: DrftTextureSource,
 ): Promise<{ rgba: Uint8Array; width: number; height: number }> {
+  if (texture.codec === CODEC_BC) {
+    const image = readBcPayload(texture.width, texture.height, texture.bytes);
+    const level = image.levels[0] as Uint8Array;
+    return {
+      rgba: decodeBcImage(image.format, image.width, image.height, level),
+      width: image.width,
+      height: image.height,
+    };
+  }
   if (texture.codec === CODEC_PNG) {
     const decoded = rgbaOf(decodePng(Buffer.from(texture.bytes)));
     return { rgba: decoded.rgba, width: decoded.width, height: decoded.height };
@@ -176,7 +235,7 @@ async function reencode(
     bytes = new Uint8Array(encodePng(width, height, pixels));
   }
   console.log(
-    `  texture ${texture.name} — ${texture.width}x${texture.height} ${texture.codec === CODEC_PNG ? 'PNG' : 'JPEG'} ` +
+    `  texture ${texture.name} — ${texture.width}x${texture.height} ${codecName(texture.codec)} ` +
       `to ${width}x${height} ${jpeg ? 'JPEG' : 'PNG'}, ` +
       `${(texture.bytes.length / 1024).toFixed(0)} KB to ${(bytes.length / 1024).toFixed(0)} KB`,
   );

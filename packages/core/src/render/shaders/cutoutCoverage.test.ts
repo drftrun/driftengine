@@ -39,7 +39,7 @@ test('A BACK FACE OF A TWO-SIDED SURFACE IS LIT AS ITS FRONT, after its map and 
    * curtain from the wrong side.
    */
   expect(MAIN_GLSL).toContain(
-    'bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
+    'bool backFace = (uMaterialFlags.w != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
   );
   /* No gl_FrontFacing: it is a seventeenth fragment input, over WebGPU's sixteen. */
   expect(MAIN_GLSL).not.toContain('gl_FrontFacing');

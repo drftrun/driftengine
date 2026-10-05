@@ -164,6 +164,15 @@ import {
 import type { TextStyle } from '../../textLayout.ts';
 import { deviceSnappedCellSize, deviceSnappedOrigin } from '../../textLayout.ts';
 import { GpuSurfaceTexture } from './surfaceTexturePass.ts';
+import { gpuCompressedFormats } from './compressedUpload.ts';
+import { GpuClothBinding, GpuClothParticles, clothStandIn } from './clothTextures.ts';
+import type { ClothViews } from './clothTextures.ts';
+import type { ComputeHost } from './computeHost.ts';
+import { MODEL_PARAM_FLOATS, eyeAxisInWorld, packModel } from '../../surfaceModel.ts';
+import type { SurfaceModel } from '../../surfaceModel.ts';
+import { validateClothBinding } from '../../clothBindingData.ts';
+import type { ClothBindingData } from '../../clothBindingData.ts';
+import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
 import {
   createSdfTextBindGroup,
   createSdfTextBindGroupLayout,
@@ -383,6 +392,7 @@ import {
   depthPipeline,
 } from './depthPass.ts';
 import { PipelineCache, type LitSwitch } from './pipelineCache.ts';
+import { SKIN_TARGET_FORMAT, SkinScatterPass } from './skinScatterPass.ts';
 import {
   SKY_FIELDS,
   SKY_UNIFORM_SIZE,
@@ -583,6 +593,8 @@ import type { Arena, FlushSchedule, ScheduledPass } from '../../frame/index.ts';
 import { GpuInstancedBatch } from './instanced.ts';
 import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
+import { CUTOUT_RESOLVE_CODE, resolveCutout } from '../../cutoutDither.ts';
+import type { CutoutResolve } from '../../cutoutDither.ts';
 import type { CutoutCaster } from '../../cutoutCaster.ts';
 import { LightField } from '../../driftLight/lightField.ts';
 import type { LightFieldOptions, LightFieldSource } from '../../driftLight/lightField.ts';
@@ -1457,6 +1469,12 @@ export class WebGPURenderer implements RendererApi {
   private readonly skinnedGroupsBeside: (GPUBindGroup | null)[] = [];
   private readonly skinnedGroupsPalette: (GPUTextureView | null)[] = [];
   private readonly skinnedGroupsDeltas: (GPUTextureView | null)[] = [];
+  /** The cloth views each skinned twin was built with, compared by identity like the palette. */
+  private readonly skinnedGroupsCloth: (GPUTextureView | null)[] = [];
+  private readonly skinnedGroupsClothBinding: (GPUTextureView | null)[] = [];
+  /** The cloth the next skinned draws are placed by, or null. See `setCloth`. */
+  private cloth: { binding: GpuClothBinding; particles: GpuClothParticles } | null = null;
+  private clothStandCache: { texture: GPUTexture; views: ClothViews } | null = null;
   /**
    * Which palette slot the following draws skin by, or -1 for none.
    *
@@ -1872,6 +1890,16 @@ export class WebGPURenderer implements RendererApi {
   private refractSnapshotView: GPUTextureView | null = null;
   /** Whether this frame has taken it. One snapshot serves every refracting draw. */
   private refractSnapshotTaken = false;
+  /**
+   * Skin's screen-space scattering, made where the profile asks for it and has a composite to add
+   * into, and null otherwise — which is every profile by default. See `SkinScatterPass`.
+   */
+  private readonly skinScatter: SkinScatterPass | null;
+  /** The pipelines skin's diffuse half is built for: the blur target's format, the frame's samples. */
+  private readonly skinPipelines: PipelineCache | null;
+  /** Whether this frame has spread its skin: once, at its first blended draw or before its end. */
+  private skinScattered = false;
+  private readonly skinInverseProjection = mat4.create();
   private sceneColorView: GPUTextureView | null = null;
   /** The multisampled twin, when the profile asks for samples. Resolved into `sceneColor`. */
   private sceneColorMsaa: GPUTexture | null = null;
@@ -2052,6 +2080,17 @@ export class WebGPURenderer implements RendererApi {
   private temporalJitterX = 0;
   private temporalJitterY = 0;
   private temporalJittering = false;
+  /**
+   * The frame a dithered cutout's pattern is offset by, advanced at `beginFrame` and wrapped at 64.
+   * See `cutoutDither.ts`.
+   */
+  private cutoutFrame = 0;
+  /**
+   * How the current material's cutout edge is drawn this frame, decided when the material is staged
+   * — after `bindMeshPass` has settled whether the frame is temporal — and read by every draw: a
+   * coverage edge is pipeline state here (`|a2c`), and a blended draw tests hard.
+   */
+  private cutoutResolveStaged: CutoutResolve = 'hard';
   /**
    * Whether this frame is being reconstructed, settled once in `bindMeshPass`.
    *
@@ -2769,6 +2808,12 @@ export class WebGPURenderer implements RendererApi {
   private ormMap: GpuSurfaceTexture | null = null;
   /** The caller's emissive map, or null for the stand-in. See `setMaterial`. */
   private emissiveMap: GpuSurfaceTexture | null = null;
+  /** The material's model map, or null for the stand-in. See `setMaterial` and `surfaceModel.ts`. */
+  private modelMap: GpuSurfaceTexture | null = null;
+  /** The material's shading model, which picks the lit pipeline: null the standard. */
+  private materialModel: SurfaceModel | null = null;
+  /** Its numbers, `uModelParams`, packed by `packModel`. */
+  private readonly modelParams = new Float32Array(MODEL_PARAM_FLOATS);
   /**
    * The flat group for a material, keyed on **all four** of its maps.
    *
@@ -2799,7 +2844,10 @@ export class WebGPURenderer implements RendererApi {
     GpuSurfaceTexture | null,
     Map<
       GpuSurfaceTexture | null,
-      Map<GpuSurfaceTexture | null, Map<GpuSurfaceTexture | null, GPUBindGroup>>
+      Map<
+        GpuSurfaceTexture | null,
+        Map<GpuSurfaceTexture | null, Map<GpuSurfaceTexture | null, GPUBindGroup>>
+      >
     >
   >();
   /** The group holding the one-pixel stand-in, for every draw with no texture set. */
@@ -2819,18 +2867,42 @@ export class WebGPURenderer implements RendererApi {
   private materialHasMaps = false;
 
   createSurfaceTexture(
-    source: TexImageSource,
+    source: SurfaceSource,
     options: SurfaceTextureOptions = {},
   ): GpuSurfaceTexture {
-    return new GpuSurfaceTexture(this.surface.device, this.pipelines, source, options);
+    return new GpuSurfaceTexture(
+      this.surface.device,
+      this.pipelines,
+      source,
+      options,
+      this.compressedFormats,
+    );
+  }
+
+  private compressedCache: readonly CompressedTextureFormat[] | null = null;
+
+  /**
+   * The BC formats this device takes as blocks: every one where the device carries
+   * `texture-compression-bc`, which `select.ts` asks for wherever the adapter offers it, and none
+   * where it does not. See `Renderer.compressedFormats`.
+   */
+  get compressedFormats(): readonly CompressedTextureFormat[] {
+    this.compressedCache ??= gpuCompressedFormats(this.surface.device);
+    return this.compressedCache;
   }
 
   /** Several images of one size as an array's layers. See `RendererApi.createSurfaceTextureArray`. */
   createSurfaceTextureArray(
-    sources: readonly TexImageSource[],
+    sources: readonly SurfaceSource[],
     options: SurfaceTextureOptions = {},
   ): GpuSurfaceTexture {
-    return new GpuSurfaceTexture(this.surface.device, this.pipelines, sources, options);
+    return new GpuSurfaceTexture(
+      this.surface.device,
+      this.pipelines,
+      sources,
+      options,
+      this.compressedFormats,
+    );
   }
 
   /**
@@ -2878,6 +2950,7 @@ export class WebGPURenderer implements RendererApi {
     if (this.normalMap === texture) this.normalMap = null;
     if (this.ormMap === texture) this.ormMap = null;
     if (this.emissiveMap === texture) this.emissiveMap = null;
+    if (this.modelMap === texture) this.modelMap = null;
     this.forgetBindingsOf(texture);
     texture.dispose();
   }
@@ -2903,7 +2976,13 @@ export class WebGPURenderer implements RendererApi {
     this.albedo = null;
     this.blankAlbedoBindGroup = this.buildFlatBindGroup();
     this.albedo = held;
-    this.bindGroup = this.flatGroupForMaps(held, this.normalMap, this.ormMap, this.emissiveMap);
+    this.bindGroup = this.flatGroupForMaps(
+      held,
+      this.normalMap,
+      this.ormMap,
+      this.emissiveMap,
+      this.modelMap,
+    );
   }
 
   /**
@@ -2933,6 +3012,128 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * A mesh's cloth binding. See `RendererApi.createClothBinding`. The pipelines that draw it bound
+   * are warmed here, every way this mesh can be drawn, so none compiles inside the first frame
+   * that draws a garment.
+   */
+  createClothBinding(mesh: GpuMesh, data: ClothBindingData): GpuClothBinding {
+    if (!mesh.isSkinned) {
+      throw new Error(
+        'createClothBinding: this mesh has no rig, and a binding blends each vertex between its ' +
+          'skinning and the cloth',
+      );
+    }
+    validateClothBinding(data, mesh.vertexCount);
+    const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
+    const present = this.meshPresent.get(base);
+    if (present !== undefined) {
+      const skin = mesh.isSkinnedEight ? '|skin8' : '|skin';
+      for (const morphed of mesh.morph !== null ? [false, true] : [false]) {
+        for (const translucent of [false, true]) {
+          void flatPipelineAsync(
+            this.targetPipelines(),
+            this.surface.device,
+            this.flatLayoutFor(true, morphed),
+            this.variant,
+            `${base}${morphed ? '|morph' : ''}${skin}|cloth${translucent ? '|blend' : ''}`,
+            present,
+            translucent,
+            true,
+            morphed,
+            mesh.isSkinnedEight,
+            true,
+          );
+        }
+      }
+    }
+    return new GpuClothBinding(this.surface.device, data);
+  }
+
+  /** One character's particles. See `RendererApi.createClothParticles`. */
+  createClothParticles(count: number): GpuClothParticles {
+    return new GpuClothParticles(this.surface.device, count);
+  }
+
+  /**
+   * This frame's particles. **Once a frame, before the character's draws**: a texture write lands
+   * ahead of every draw of the frame, so a second update between two draws would reach both.
+   */
+  updateClothParticles(particles: GpuClothParticles, positions: Float32Array): void {
+    if (this.surface.lost) return;
+    /* A write between frames is the next frame's, as a rewritten mesh's is. See `changeFrames.ts`. */
+    particles.update(this.surface.device, positions, frameOfChange(this.moverFrame, this.inFrame));
+  }
+
+  /** Place the following skinned draws by a cloth, or by none. See `RendererApi.setCloth`. */
+  setCloth(binding: GpuClothBinding | null, particles: GpuClothParticles | null = null): void {
+    if (binding === null || particles === null) {
+      this.cloth = null;
+      return;
+    }
+    if (binding.particles !== particles.count) {
+      throw new Error(
+        `setCloth: the binding names ${binding.particles} particles and these are ${particles.count}`,
+      );
+    }
+    this.cloth = { binding, particles };
+  }
+
+  /** Retired rather than destroyed: a draw recorded earlier in this frame may still read them. */
+  disposeClothBinding(binding: GpuClothBinding): void {
+    this.retiredTextures.push(...binding.textures);
+  }
+
+  disposeClothParticles(particles: GpuClothParticles): void {
+    this.retiredTextures.push(...particles.textures);
+  }
+
+  /**
+   * The device and the frame's bookkeeping, for compute a consumer opts into by importing it —
+   * `createSkinnedCloth` — rather than for anything this renderer runs itself. See `computeHost.ts`.
+   */
+  computeHost(): ComputeHost {
+    return this.computeHostCache;
+  }
+
+  private readonly computeHostCache: ComputeHost = {
+    device: () => this.surface.device,
+    lost: () => this.surface.lost,
+    changeFrame: () => frameOfChange(this.moverFrame, this.inFrame),
+    retire: (textures) => {
+      this.retiredTextures.push(...textures);
+    },
+  };
+
+  /**
+   * An eye's axis in the world for this draw, into the open material's \`uModelParams\`, and a new
+   * material slot when it moved: the axis is per draw, and a slot already taken by an earlier draw
+   * of the same eye must not be written under it. See \`eyeAxisInWorld\`.
+   */
+  private writeEyeAxis(model: ArrayLike<number>, skinned: boolean): void {
+    const eye = this.materialModel;
+    if (eye?.kind !== 'eye') return;
+    const at = this.materialField('uModelParams') + 4;
+    const f = this.perFrameFloats;
+    const before0 = f[at];
+    const before1 = f[at + 1];
+    const before2 = f[at + 2];
+    eyeAxisInWorld(eye, model, skinned ? this.skinPaletteData : null, f, at);
+    if (f[at] !== before0 || f[at + 1] !== before1 || f[at + 2] !== before2) this.materials.dirty();
+  }
+
+  /** The views the draw's cloth binds, or the stand-in's where no cloth is set. */
+  private clothViews(): ClothViews {
+    const cloth = this.cloth;
+    return cloth === null ? this.clothStand() : clothViewsOf(cloth.binding, cloth.particles);
+  }
+
+  /** The one-texel stand-in a skinned group binds where there is no cloth, made on first need. */
+  private clothStand(): ClothViews {
+    this.clothStandCache ??= clothStandIn(this.surface.device);
+    return this.clothStandCache.views;
+  }
+
+  /**
    * Choose the morph weights the following `drawMesh` calls deform by, or null for none.
    *
    * The twin of the WebGL2 method: the weights are per draw and the deltas are per mesh, so two
@@ -2955,14 +3156,41 @@ export class WebGPURenderer implements RendererApi {
     const normal = (material?.normal ?? null) as GpuSurfaceTexture | null;
     const orm = (material?.orm ?? null) as GpuSurfaceTexture | null;
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
+    const modelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
+    this.materialModel = material?.model ?? null;
+    /* What the blur spreads this skin by: the last material to name a profile says. */
+    const model = material?.model;
+    if (model?.kind === 'skin' && this.skinScatter !== null) {
+      this.skinScatter.setProfile(
+        model.profile,
+        model.scatterColor[0] * model.radius,
+        model.scatterColor[1] * model.radius,
+        model.scatterColor[2] * model.radius,
+      );
+    }
     this.material((f, i) => {
-      i[this.materialField('uAlbedoEnabled')] = albedo === null ? 0 : 1;
-      f[this.materialField('uAlbedoCutout')] = material?.cutout ?? 0;
-      i[this.materialField('uDoubleSided')] = material?.doubleSided === true ? 1 : 0;
+      /* The material's four switches, one row: albedo, ORM map, emissive map, two-sided. */
+      const flags = this.materialField('uMaterialFlags');
+      i[flags] = albedo === null ? 0 : 1;
+      /* The cutoff, how this frame resolves a dithered edge, and the frame its pattern moves with. */
+      const cutoff = albedo === null ? 0 : (material?.cutout ?? 0);
+      this.cutoutResolveStaged =
+        cutoff > 0
+          ? resolveCutout(
+              material?.cutoutMode ?? 'hard',
+              this.reconstructing || this.temporalJittering,
+              this.samples,
+            )
+          : 'hard';
+      const cut = this.materialField('uCutout');
+      f[cut] = cutoff;
+      f[cut + 1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveStaged];
+      f[cut + 2] = this.cutoutFrame;
+      i[flags + 3] = material?.doubleSided === true ? 1 : 0;
       /* 0 is no map, and gates the whole block in the shader. See `uNormalStrength`. */
       f[this.materialField('uNormalStrength')] =
         normal === null ? 0 : (material?.normalStrength ?? 1);
-      i[this.materialField('uOrmEnabled')] = orm === null ? 0 : 1;
+      i[flags + 1] = orm === null ? 0 : 1;
       /*
        * Component-aligned with the map — r occlusion, g roughness, b metallic — so this order is
        * the channel order rather than the field order of `SurfaceMaterial`. Written component by
@@ -2973,7 +3201,7 @@ export class WebGPURenderer implements RendererApi {
       f[scale] = material?.occlusionStrength ?? 1;
       f[scale + 1] = material?.roughnessScale ?? 1;
       f[scale + 2] = material?.metallicScale ?? 1;
-      i[this.materialField('uEmissiveMapEnabled')] = emissiveMap === null ? 0 : 1;
+      i[flags + 2] = emissiveMap === null ? 0 : 1;
       /*
        * One rather than zero on every component, because this multiplies rather than adds: an
        * unwritten float is zero, and zero here would switch off every glow the mesh's own vertex
@@ -2984,6 +3212,9 @@ export class WebGPURenderer implements RendererApi {
       f[emissive] = asked?.[0] ?? 1;
       f[emissive + 1] = asked?.[1] ?? 1;
       f[emissive + 2] = asked?.[2] ?? 1;
+      /* The model's numbers and whether its map is bound. See `packModel`. */
+      packModel(material?.model ?? null, modelMap !== null, this.modelParams);
+      f.set(this.modelParams, this.materialField('uModelParams'));
     });
     /*
      * **One lookup for the whole material, and nothing thrown away.**
@@ -2998,7 +3229,8 @@ export class WebGPURenderer implements RendererApi {
       this.albedo === albedo &&
       this.normalMap === normal &&
       this.ormMap === orm &&
-      this.emissiveMap === emissiveMap
+      this.emissiveMap === emissiveMap &&
+      this.modelMap === modelMap
     ) {
       return;
     }
@@ -3006,7 +3238,8 @@ export class WebGPURenderer implements RendererApi {
     this.normalMap = normal;
     this.ormMap = orm;
     this.emissiveMap = emissiveMap;
-    this.bindGroup = this.flatGroupForMaps(albedo, normal, orm, emissiveMap);
+    this.modelMap = modelMap;
+    this.bindGroup = this.flatGroupForMaps(albedo, normal, orm, emissiveMap, modelMap);
   }
 
   /**
@@ -3035,8 +3268,16 @@ export class WebGPURenderer implements RendererApi {
     normal: GpuSurfaceTexture | null,
     orm: GpuSurfaceTexture | null,
     emissive: GpuSurfaceTexture | null,
+    /** The model map, a fifth level of the same cache. See `flatBindGroups`. */
+    modelMap: GpuSurfaceTexture | null,
   ): GPUBindGroup {
-    if (albedo === null && normal === null && orm === null && emissive === null) {
+    if (
+      albedo === null &&
+      normal === null &&
+      orm === null &&
+      emissive === null &&
+      modelMap === null
+    ) {
       return this.blankAlbedoBindGroup;
     }
     let byNormal = this.flatBindGroups.get(albedo);
@@ -3054,11 +3295,16 @@ export class WebGPURenderer implements RendererApi {
       byEmissive = new Map();
       byOrm.set(orm, byEmissive);
     }
-    const existing = byEmissive.get(emissive);
+    let byModel = byEmissive.get(emissive);
+    if (byModel === undefined) {
+      byModel = new Map();
+      byEmissive.set(emissive, byModel);
+    }
+    const existing = byModel.get(modelMap);
     if (existing !== undefined) return existing;
     const built = this.buildFlatBindGroup();
     this.bindGroupBudget.ask();
-    byEmissive.set(emissive, built);
+    byModel.set(modelMap, built);
     return built;
   }
 
@@ -5287,6 +5533,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly shadowSkinnedGroups: (GPUBindGroup | null)[] = [];
   private readonly shadowSkinnedGroupsBeside: (GPUBindGroup | null)[] = [];
   private readonly shadowSkinnedGroupsPalette: (GPUTextureView | null)[] = [];
+  private readonly shadowSkinnedGroupsCloth: (GPUTextureView | null)[] = [];
+  private readonly shadowSkinnedGroupsClothBinding: (GPUTextureView | null)[] = [];
   /** Held from construction so the skinned group can be rebuilt without them being threaded. */
   private shadowBlankView: GPUTextureView | null = null;
   private shadowBlankSampler: GPUSampler | null = null;
@@ -5425,6 +5673,7 @@ export class WebGPURenderer implements RendererApi {
     this.shadowDraws.writeFloat(slot, fields.uUvOffset.offset, cutout.uOffset);
     this.shadowDraws.writeFloat(slot, fields.uUvOffset.offset + 4, cutout.vOffset);
     this.shadowDraws.writeFloat(slot, fields.uAlphaCutout.offset, cutout.cutoff);
+    this.shadowDraws.writeFloat(slot, fields.uAlphaCutout.offset + 4, cutout.dithered);
   }
 
   private shadowGroup(): GPUBindGroup {
@@ -5440,12 +5689,14 @@ export class WebGPURenderer implements RendererApi {
    * second independently fading occluder can be recorded, and a character is not one — it is the
    * thing in front. Serving it would mean a second cached group for a case nothing produces.
    */
-  private shadowSkinnedGroup(palette: GPUTextureView, at: number): GPUBindGroup {
+  private shadowSkinnedGroup(palette: GPUTextureView, at: number, cloth: ClothViews): GPUBindGroup {
     const beside = this.shadowBindGroup;
     if (
       (this.shadowSkinnedGroups[at] ?? null) === null ||
       this.shadowSkinnedGroupsBeside[at] !== beside ||
-      this.shadowSkinnedGroupsPalette[at] !== palette
+      this.shadowSkinnedGroupsPalette[at] !== palette ||
+      this.shadowSkinnedGroupsCloth[at] !== cloth.particles ||
+      this.shadowSkinnedGroupsClothBinding[at] !== cloth.binding
     ) {
       this.shadowSkinnedGroups[at] = createDepthBindGroup(
         this.surface.device,
@@ -5455,9 +5706,13 @@ export class WebGPURenderer implements RendererApi {
         this.shadowBlankView as GPUTextureView,
         this.shadowBlankSampler as GPUSampler,
         palette,
+        null,
+        cloth,
       );
       this.shadowSkinnedGroupsBeside[at] = beside;
       this.shadowSkinnedGroupsPalette[at] = palette;
+      this.shadowSkinnedGroupsCloth[at] = cloth.particles;
+      this.shadowSkinnedGroupsClothBinding[at] = cloth.binding;
     }
     return this.shadowSkinnedGroups[at] as GPUBindGroup;
   }
@@ -5496,6 +5751,7 @@ export class WebGPURenderer implements RendererApi {
     void this.pipelines.enable(feature);
     if (this.overlayPipelines !== this.pipelines) void this.overlayPipelines.enable(feature);
     if (this.latePipelines !== this.pipelines) void this.latePipelines.enable(feature);
+    if (this.skinPipelines !== null) void this.skinPipelines.enable(feature);
   }
   /** One resolution every glass caster is read through, so recording one allocates nothing. */
   private readonly glassCasterScratch: ResolvedGlass = {
@@ -5617,7 +5873,7 @@ export class WebGPURenderer implements RendererApi {
       pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
       pass.drawIndexed(geometry.indexCount, count);
     },
-    skinnedMesh: (mesh, model, palette, material) => {
+    skinnedMesh: (mesh, model, palette, material, cloth) => {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordSkinned(mesh, model, palette, material, this.glassCasterScratch);
@@ -5649,18 +5905,30 @@ export class WebGPURenderer implements RendererApi {
 
       const geometry = mesh as GpuMesh & { key?: string };
       if (geometry.vertexBuffers === undefined || geometry.indexCount === 0) return;
+      /* A garment casts placed by its cloth, as it draws; `|cloth` keys the pipeline that does. */
+      const clothed = cloth !== undefined;
+      const clothViews = clothed
+        ? clothViewsOf(
+            cloth.binding as unknown as GpuClothBinding,
+            cloth.particles as unknown as GpuClothParticles,
+          )
+        : this.clothStand();
       pass.setPipeline(
         depthPipeline(
           this.pipelines,
           this.surface.device,
           this.shadowSkinnedLayout,
-          `depth-skinned|${this.depthCullMode}|${geometry.key ?? ''}`,
+          `${geometry.isSkinnedEight ? 'depth-skinned8' : 'depth-skinned'}${clothed ? '|cloth' : ''}|${this.depthCullMode}|${geometry.key ?? ''}`,
           this.presentOf(geometry),
           this.depthCullMode,
           true,
+          false,
+          false,
+          geometry.isSkinnedEight,
+          clothed,
         ),
       );
-      pass.setBindGroup(0, this.shadowSkinnedGroup(view, paletteSlot), [slot]);
+      pass.setBindGroup(0, this.shadowSkinnedGroup(view, paletteSlot, clothViews), [slot]);
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
@@ -6036,6 +6304,26 @@ export class WebGPURenderer implements RendererApi {
       this.pipelines.format === RECON_HISTORY_FORMAT && this.samples === 1
         ? this.pipelines
         : new PipelineCache(device, RECON_HISTORY_FORMAT, 1, glassShadows, quality.clusteredLights);
+    /*
+     * Screen-space skin needs the composite: linear light to add into, and the depth it resolves.
+     * Without one it is the pre-integrated fit alone, which is the default anyway, and said once.
+     */
+    const skinScreen = quality.skinScattering === 'screen-space' && quality.screenEffects;
+    if (quality.skinScattering === 'screen-space' && !quality.screenEffects) {
+      console.warn(
+        "WebGPU: skinScattering 'screen-space' needs screenEffects to add into; skin is pre-integrated",
+      );
+    }
+    this.skinScatter = skinScreen ? new SkinScatterPass(device) : null;
+    this.skinPipelines = skinScreen
+      ? new PipelineCache(
+          device,
+          SKIN_TARGET_FORMAT,
+          this.samples,
+          glassShadows,
+          quality.clusteredLights,
+        )
+      : null;
     this.issueBound = this.issueCommand.bind(this);
     this.pipelineTargets =
       this.overlayPipelines === this.pipelines
@@ -6105,7 +6393,7 @@ export class WebGPURenderer implements RendererApi {
     );
 
     /*
-     * A one-pixel stand-in for the albedo binding. `uAlbedoEnabled` is zero for untextured
+     * A one-pixel stand-in for the albedo binding. The albedo's flag is zero for untextured
      * geometry, which is nearly all of it, so the shader never samples this — but WebGPU
      * requires every declared binding to be filled. WebGL2 keeps an `emptyTexture2D` for
      * exactly the same reason.
@@ -6320,6 +6608,13 @@ export class WebGPURenderer implements RendererApi {
       /* The caller's emissive map, or the stand-in, for the reason `uNormalMap` gives above. */
       if (name === 'uEmissiveMap') {
         const map = this.emissiveMap;
+        return map === null
+          ? { view: blankSurfaceView, sampler: blankSampler }
+          : { view: map.view, sampler: map.sampler };
+      }
+      /* The material's model map, or the stand-in, for the reason `uNormalMap` gives above. */
+      if (name === 'uModelMap') {
+        const map = this.modelMap;
         return map === null
           ? { view: blankSurfaceView, sampler: blankSampler }
           : { view: map.view, sampler: map.sampler };
@@ -7231,6 +7526,8 @@ export class WebGPURenderer implements RendererApi {
     }
     /* Not a layout entry of its own — it widens `uvs` — so read from the key beside them. */
     present['layers'] = key.includes(':layers');
+    /* Nor is a dynamic mesh's split, which moves positions and normals into buffers of their own. */
+    present['dynamic'] = key.includes(':dynamic');
     return present;
   }
 
@@ -7244,6 +7541,7 @@ export class WebGPURenderer implements RendererApi {
    */
   beginFrame(clearColor: Vec3): void {
     this.cullFrame += 1;
+    this.cutoutFrame = (this.cutoutFrame + 1) % 64;
     /* Whatever an update replaced during the last frame; nothing recorded can read it now. */
     for (const texture of this.retiredTextures) texture.destroy();
     this.retiredTextures.length = 0;
@@ -7307,6 +7605,8 @@ export class WebGPURenderer implements RendererApi {
     this.volumeDepthTaken = false;
     /* Last frame's snapshot is last frame's scene. */
     this.refractSnapshotTaken = false;
+    this.skinScattered = false;
+    this.skinScatter?.reset();
     this.plumeVerts.reset();
     this.plumeFrags.reset();
     this.waterVerts.reset();
@@ -7489,7 +7789,7 @@ export class WebGPURenderer implements RendererApi {
    * neither the pipeline set nor the key depends on whether the geometry lands in one call or
    * over six frames.
    */
-  private warmFlatPipelines(data: MeshData): string {
+  private warmFlatPipelines(data: MeshData, dynamic: boolean): string {
     /*
      * **Every optional attribute, not the two that come to mind.** `present` decides where
      * each attribute sits in the interleaved buffer, and `createGpuMesh` decides the same
@@ -7514,6 +7814,15 @@ export class WebGPURenderer implements RendererApi {
     if (data.layers !== undefined) {
       present['layers'] = true;
       key += ':layers';
+    }
+    /*
+     * A dynamic mesh keeps its positions and normals in buffers of their own (`GpuMesh.update`), so
+     * it binds four buffers where a static one binds two: a different layout, and a key that says
+     * so, or the two would share a pipeline whose buffers one of them does not have.
+     */
+    if (dynamic) {
+      present['dynamic'] = true;
+      key += ':dynamic';
     }
     const fullKey = `${this.variant}|${key}`;
     /*
@@ -7585,11 +7894,13 @@ export class WebGPURenderer implements RendererApi {
        * guessing which the scene will use.
        */
       const skinnable = data.joints !== undefined;
+      /* An eight-influence rig takes its own skinned pipelines, keyed `|skin8`. See skinning.ts. */
+      const eight = skinnable && data.joints2 !== undefined;
       const morphable = data.morphTargets !== undefined;
       for (const wantSkin of skinnable ? [false, true] : [false]) {
         for (const wantMorph of morphable ? [false, true] : [false]) {
           if (!wantSkin && !wantMorph) continue;
-          const suffix = `${wantMorph ? '|morph' : ''}${wantSkin ? '|skin' : ''}`;
+          const suffix = `${wantMorph ? '|morph' : ''}${wantSkin ? (eight ? '|skin8' : '|skin') : ''}`;
           for (const translucent of [false, true]) {
             void flatPipelineAsync(
               pipelines,
@@ -7601,6 +7912,7 @@ export class WebGPURenderer implements RendererApi {
               translucent,
               wantSkin,
               wantMorph,
+              wantSkin && eight,
             );
           }
         }
@@ -7624,7 +7936,7 @@ export class WebGPURenderer implements RendererApi {
   }
 
   createMesh(data: MeshData, options: MeshOptions = {}): GpuMesh {
-    const fullKey = this.warmFlatPipelines(data);
+    const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
     return this.keyed(createGpuMesh(this.surface.device, data, options.dynamic === true), fullKey);
   }
 
@@ -7638,7 +7950,7 @@ export class WebGPURenderer implements RendererApi {
    * can do nothing about. Done with `complete` still false is the signal that it was abandoned.
    */
   createMeshIncremental(data: MeshData, options: MeshOptions = {}): IncrementalMeshHandle {
-    const fullKey = this.warmFlatPipelines(data);
+    const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
     const { mesh, upload } = createGpuMeshIncremental(
       this.surface.device,
       data,
@@ -7659,20 +7971,20 @@ export class WebGPURenderer implements RendererApi {
   /**
    * Rewrite a mesh's positions, and its normals where the caller has them.
    *
-   * Refused in words on a mesh that did not declare itself dynamic, because the thing that makes
-   * an update possible on this backend — the interleaved array the vertex data was built from —
-   * is only kept when a consumer asked for it. See `GpuMesh.update`.
+   * Refused in words on a mesh that did not declare itself dynamic, because what makes an update
+   * cheap on this backend — positions and normals in buffers of their own — is a layout chosen at
+   * creation. See `GpuMesh.update`.
    */
   updateMesh(mesh: GpuMesh, positions: Float32Array, normals?: Float32Array): void {
     if (mesh.update === null) {
       throw new Error(
-        'this mesh was not created with { dynamic: true }, so the interleaved vertex data it ' +
-          'would be patched from was not kept. Say so at `createMesh` — the flag is what decides ' +
-          'what is kept and what a buffer is hinted as.',
+        'this mesh was not created with { dynamic: true }, so its positions share one buffer with ' +
+          'every other attribute and cannot be rewritten alone. Say so at `createMesh` — the flag ' +
+          'decides the layout, and what a buffer is hinted as.',
       );
     }
     /*
-     * **The rows before this rewrite are last frame's**, kept only for a reconstruction and only
+     * **The positions before this rewrite are last frame's**, kept only for a reconstruction and only
      * on the first rewrite of a frame — a second must not replace where the vertices were last
      * frame with where they were a moment ago. A rewrite between frames is the next frame's. See
      * `changeFrames.ts`.
@@ -7806,7 +8118,11 @@ export class WebGPURenderer implements RendererApi {
     i[at('uLightingEnabled')] = 1;
     i[at('uFogEnabled')] = FOG_RECEDE;
     this.surfaceFog = FOG_RECEDE;
-    i[at('uAlbedoEnabled')] = 0;
+    /* Every material switch off — albedo, ORM map, emissive map, two-sided — as WebGL2 resets them. */
+    i.fill(0, at('uMaterialFlags'), at('uMaterialFlags') + 4);
+    f[at('uCutout')] = 0;
+    f[at('uCutout') + 1] = 0;
+    this.cutoutResolveStaged = 'hard';
     this.materialHasMaps = false;
 
     /*
@@ -7952,7 +8268,7 @@ export class WebGPURenderer implements RendererApi {
     /*
      * The ORM scales, whose base is 1 and not 0 — the value an unwritten uniform would hold.
      *
-     * `uOrmEnabled` needs no line here: an unwritten int is zero, and zero is exactly "no map".
+     * The ORM map's flag is zeroed with the others above, and zero is exactly "no map".
      * These three are the opposite case, the one this block's own header is about: a scale of
      * zero is a real and wrong value, so leaving them silent would not switch the map off, it
      * would read every channel as its floor the moment one was bound.
@@ -8582,10 +8898,18 @@ export class WebGPURenderer implements RendererApi {
      * before last. That is the defined state the two-backends rule asks for.
      */
     const refracting = this.bindSeeThrough(options);
+    /* A dithered cutout tests hard on a blended draw, which has nothing to average a pattern with;
+       put back below with the rest. See `cutoutDither.ts`. */
+    const ditheredBlend = blend && this.cutoutResolveStaged !== 'hard';
+    if (ditheredBlend) this.perFrameFloats[this.materialField('uCutout') + 1] = 0;
     /* Taken for itself when any of those differs from the pass, and put back below: the rule both
        backends count material changes by. See `materialChanges.ts`. */
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
+    const own =
+      ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog) || ditheredBlend;
     if (own) this.materials.dirty();
+    /* An eye's axis is the draw's, written into the open material. See `eyeAxisInWorld`. */
+    const modelKind = this.materialModel?.kind ?? null;
+    if (modelKind === 'eye') this.writeEyeAxis(model, this.skinPaletteSlot >= 0 && mesh.isSkinned);
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /*
      * A rigged mesh takes the skinned vertex variant, an unrigged one the plain variant, and the
@@ -8597,7 +8921,13 @@ export class WebGPURenderer implements RendererApi {
     const skinned = this.skinPaletteSlot >= 0 && mesh.isSkinned;
     const morphed = this.morphWeights !== null && mesh.morph !== null;
     const deltas = morphed && mesh.morph !== null ? mesh.morph.view() : null;
-    const keyed = `${base}${morphed ? '|morph' : ''}${skinned ? '|skin' : ''}`;
+    const eight = skinned && mesh.isSkinnedEight;
+    /* A cloth set and a skinned draw: the pipeline built with CLOTH_BOUND on, warmed when the
+       binding was made. See `createClothBinding`. */
+    const clothed = skinned && this.cloth !== null;
+    const keyed =
+      `${base}${morphed ? '|morph' : ''}${skinned ? (eight ? '|skin8' : '|skin') : ''}` +
+      `${clothed ? '|cloth' : ''}`;
     /*
      * Depth writing and the overlay layer are pipeline state on this backend, so they belong in
      * the key: two draws of one mesh differing only in these would otherwise share a cached
@@ -8612,6 +8942,9 @@ export class WebGPURenderer implements RendererApi {
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
     /* Added rather than blended over: its own blend state, so its own pipeline. */
     const adds = blend && options.additive === true;
+    const coverage = !blend && this.cutoutResolveStaged === 'coverage';
+    /* Skin under the screen-space blur draws its two halves; see `keepSkinDiffuse`. */
+    const splits = modelKind === 'skin' && !blend && this.skinSplits();
     const key =
       `${keyed}${blend ? (adds ? '|add' : '|blend') : ''}` +
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
@@ -8619,7 +8952,13 @@ export class WebGPURenderer implements RendererApi {
          one must never share a cached pipeline with the same mesh drawn into the other. */
       `${this.oitMode === 'none' ? '' : `|oit${this.oitMode}`}` +
       /* Culling is pipeline state here: a two-sided surface culls nothing. */
-      `${this.materialDoubleSided ? '|2s' : ''}`;
+      `${this.materialDoubleSided ? '|2s' : ''}` +
+      /* And so is alpha-to-coverage, for a dithered cutout in a multisampled frame. */
+      `${coverage ? '|a2c' : ''}` +
+      /* And the material's shading model, which is the fragment stage's own switch. */
+      `${modelKind === null ? '' : `|m:${modelKind}`}` +
+      /* And which half of a skin it draws, under the screen-space blur. */
+      `${splits ? '|ss' : ''}`;
 
     /*
      * The morph uniforms, written only for a morphed draw and read from the *morphed* variant's
@@ -8665,6 +9004,11 @@ export class WebGPURenderer implements RendererApi {
         false,
         this.oitMode,
         this.materialDoubleSided,
+        coverage,
+        eight,
+        clothed,
+        modelKind,
+        splits ? 'scene' : 'whole',
       );
     }
 
@@ -8718,6 +9062,21 @@ export class WebGPURenderer implements RendererApi {
         pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
         pass.drawIndexed(mesh.indexCount);
       }
+      if (splits) {
+        this.keepSkinDiffuse(
+          mesh,
+          key,
+          base,
+          skinned,
+          morphed,
+          deltas,
+          layer,
+          eight,
+          clothed,
+          slot,
+          material,
+        );
+      }
     }
     /* Back to the defaults for whatever is drawn next, exactly as `renderer.ts` restores them —
        unconditionally, because the scratch state above is shared by every draw after this one
@@ -8735,6 +9094,10 @@ export class WebGPURenderer implements RendererApi {
     if (refracting) this.releaseSeeThrough();
     if (!toneMapped) {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
+    }
+    if (ditheredBlend) {
+      this.perFrameFloats[this.materialField('uCutout') + 1] =
+        CUTOUT_RESOLVE_CODE[this.cutoutResolveStaged];
     }
     if (own) this.materials.dirty();
   }
@@ -8999,8 +9362,16 @@ export class WebGPURenderer implements RendererApi {
     const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
     /* A blended batch shows what is behind it — refraction or glass — as a single draw does. */
     const refracting = blend && this.bindSeeThrough(options);
-    const own = ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog);
+    /* As a single draw: a blended batch tests a dithered cutout hard, an opaque one in a
+       multisampled frame takes coverage. See `cutoutDither.ts`. */
+    const ditheredBlend = blend && this.cutoutResolveStaged !== 'hard';
+    if (ditheredBlend) this.perFrameFloats[this.materialField('uCutout') + 1] = 0;
+    const coverage = !blend && this.cutoutResolveStaged === 'coverage';
+    const own =
+      ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog) || ditheredBlend;
     if (own) this.materials.dirty();
+    /* A batch shades by its material's model too; an eye's axis is a placement's, not a batch's. */
+    const modelKind = this.materialModel?.kind ?? null;
     const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
        a third vertex buffer and a different vertex module, and sharing a cache entry with the
@@ -9009,7 +9380,8 @@ export class WebGPURenderer implements RendererApi {
     const key =
       `${base}|inst${blend ? (adds ? '|add' : '|blend') : ''}` +
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
-      `${this.materialDoubleSided ? '|2s' : ''}`;
+      `${this.materialDoubleSided ? '|2s' : ''}${coverage ? '|a2c' : ''}` +
+      `${modelKind === null ? '' : `|m:${modelKind}`}`;
 
     const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
     let pipeline = pipelines.peek(key);
@@ -9033,6 +9405,10 @@ export class WebGPURenderer implements RendererApi {
         true,
         'none',
         this.materialDoubleSided,
+        coverage,
+        false,
+        false,
+        modelKind,
       );
     }
 
@@ -9087,6 +9463,10 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
     }
     if (refracting) this.releaseSeeThrough();
+    if (ditheredBlend) {
+      this.perFrameFloats[this.materialField('uCutout') + 1] =
+        CUTOUT_RESOLVE_CODE[this.cutoutResolveStaged];
+    }
     if (own) this.materials.dirty();
   }
 
@@ -9324,12 +9704,19 @@ export class WebGPURenderer implements RendererApi {
       this.bindSceneCasterMaterial(material);
       this.drawMesh(mesh as GpuMesh, model);
     },
-    skinnedMesh: (mesh, model, palette, material) => {
+    skinnedMesh: (mesh, model, palette, material, cloth) => {
       this.bindSceneCasterMaterial(material);
       this.setSkinPalette(palette);
+      if (cloth !== undefined) {
+        this.setCloth(
+          cloth.binding as unknown as GpuClothBinding,
+          cloth.particles as unknown as GpuClothParticles,
+        );
+      }
       this.drawMesh(mesh as GpuMesh, model);
       /* Put back, or the next rigid draw in the replay skins by whatever this one left bound. */
       this.setSkinPalette(null);
+      this.setCloth(null);
     },
     instanced: (batch, data, material) => {
       this.bindSceneCasterMaterial(material);
@@ -10237,11 +10624,15 @@ export class WebGPURenderer implements RendererApi {
     /* Slot `k` caches at `k + 1`; index 0 is the morphed draw that is not skinned and has no
        slot of its own. See `skinnedGroups`. */
     const at = skinned ? this.skinPaletteSlot + 1 : 0;
+    /* A skinned group carries the cloth's views, or the stand-in's: see `clothViews`. */
+    const cloth = skinned ? this.clothViews() : null;
     if (
       (this.skinnedGroups[at] ?? null) === null ||
       this.skinnedGroupsBeside[at] !== this.bindGroup ||
       this.skinnedGroupsPalette[at] !== palette ||
-      this.skinnedGroupsDeltas[at] !== deltas
+      this.skinnedGroupsDeltas[at] !== deltas ||
+      this.skinnedGroupsCloth[at] !== (cloth?.particles ?? null) ||
+      this.skinnedGroupsClothBinding[at] !== (cloth?.binding ?? null)
     ) {
       this.skinnedGroups[at] = createFlatBindGroup(
         this.surface.device,
@@ -10252,10 +10643,13 @@ export class WebGPURenderer implements RendererApi {
         this.flatTextures,
         palette,
         deltas,
+        cloth,
       );
       this.skinnedGroupsBeside[at] = this.bindGroup;
       this.skinnedGroupsPalette[at] = palette;
       this.skinnedGroupsDeltas[at] = deltas;
+      this.skinnedGroupsCloth[at] = cloth?.particles ?? null;
+      this.skinnedGroupsClothBinding[at] = cloth?.binding ?? null;
     }
     return this.skinnedGroups[at] as GPUBindGroup;
   }
@@ -10324,21 +10718,25 @@ export class WebGPURenderer implements RendererApi {
     const normalMap = this.normalMap;
     const ormMap = this.ormMap;
     const emissiveMap = this.emissiveMap;
+    const modelMap = this.modelMap;
     this.albedo = null;
     this.normalMap = null;
     this.ormMap = null;
     this.emissiveMap = null;
+    this.modelMap = null;
     this.blankAlbedoBindGroup = this.buildFlatBindGroup();
     this.albedo = albedo;
     this.normalMap = normalMap;
     this.ormMap = ormMap;
     this.emissiveMap = emissiveMap;
+    this.modelMap = modelMap;
 
     this.bindGroup = this.flatGroupForMaps(
       this.albedo,
       this.normalMap,
       this.ormMap,
       this.emissiveMap,
+      this.modelMap,
     );
     /* The open material lives in a slot of a buffer that no longer exists. */
     this.materials.dirty();
@@ -10381,7 +10779,8 @@ export class WebGPURenderer implements RendererApi {
       this.albedo === null &&
       this.normalMap === null &&
       this.ormMap === null &&
-      this.emissiveMap === null
+      this.emissiveMap === null &&
+      this.modelMap === null
     ) {
       this.blankAlbedoBindGroup = this.buildFlatBindGroup();
       this.bindGroupBudget.ask();
@@ -10393,6 +10792,7 @@ export class WebGPURenderer implements RendererApi {
       this.normalMap,
       this.ormMap,
       this.emissiveMap,
+      this.modelMap,
     );
   }
 
@@ -11125,6 +11525,8 @@ export class WebGPURenderer implements RendererApi {
    * the only moment they can land; everything else keeps the path it has.
    */
   private recordBlended(reads: number, lands = this.drawsLate()): DrawCommand | null {
+    /* Skin is spread and added before anything blended lands over it. See `runSkinScatter`. */
+    if (this.skinScatter !== null && !this.skinScattered) this.runSkinScatter();
     const late = this.latePass;
     if (late !== null && lands) return late.take();
     return this.recordDraw(reads, this.currentTarget());
@@ -11212,6 +11614,16 @@ export class WebGPURenderer implements RendererApi {
     const dynamic = mesh.motion;
     const rows = dynamic?.previous ?? null;
     const rewritten = rows !== null && dynamic !== null && dynamic.changed === this.moverFrame;
+    const cloth = this.cloth;
+    if (
+      cloth !== null &&
+      this.skinPaletteSlot >= 0 &&
+      mesh.isSkinned &&
+      mesh.skinOffsets !== null
+    ) {
+      this.recordClothMotion(mesh, model, previous, cloth);
+      return;
+    }
     if (previous === null) {
       if (rewritten) this.motionPass?.recordDynamic(mesh, model, model, rows);
       return;
@@ -11256,6 +11668,58 @@ export class WebGPURenderer implements RendererApi {
     const was = slot === null ? null : this.skinPalettes.view(slot);
     if (now === null || was === null) return;
     this.motionPass?.recordSkinned(mesh, model, mover.previousModel, now, was);
+  }
+
+  /**
+   * A cloth-bound draw's motion. **Recorded even where the caller named no previous place**, as a
+   * rewritten mesh's is: the particles carry their own past, and a garment swinging on a character
+   * standing still is motion nobody else can see. Where the rig is a `Mover` its last pose is taken
+   * as a skinned mover's is; otherwise the rig is taken not to have moved.
+   */
+  private recordClothMotion(
+    mesh: GpuMesh,
+    model: ArrayLike<number>,
+    previous: ArrayLike<number> | Mover | null,
+    cloth: { binding: GpuClothBinding; particles: GpuClothParticles },
+  ): void {
+    const now = this.skinPalettes.view(this.skinPaletteSlot);
+    if (now === null) return;
+    let was: GPUTextureView | null = now;
+    let wasModel: ArrayLike<number> = model;
+    if (previous !== null && isMover(previous)) {
+      const verdict = advanceMover(
+        previous,
+        this.moverRenderer,
+        this.moverFrame,
+        model,
+        this.skinPaletteData,
+      );
+      if (verdict === MOVER_TWICE) {
+        this.warnMoverTwice();
+        return;
+      }
+      if (verdict === MOVER_MOTION) {
+        const slot = this.skinPalettes.take(this.surface.device, previous.previousPalette);
+        was = slot === null ? null : this.skinPalettes.view(slot);
+        wasModel = previous.previousModel;
+      }
+    } else if (previous !== null) {
+      wasModel = previous;
+    }
+    if (was === null) return;
+    const particlesWas = cloth.particles.previousAt(this.moverFrame);
+    /* Nothing said it moved and nothing did: the camera's motion, derived from depth, is the answer. */
+    if (previous === null && particlesWas === cloth.particles.current) return;
+    this.motionPass?.recordCloth(
+      mesh,
+      model,
+      wasModel,
+      now,
+      was,
+      cloth.binding.bindingView,
+      cloth.particles.current,
+      particlesWas,
+    );
   }
 
   private warnMoverTwice(): void {
@@ -12347,6 +12811,150 @@ export class WebGPURenderer implements RendererApi {
     return true;
   }
 
+  /**
+   * Whether a skin draw now draws its two halves: the profile asked, the frame has not spread its
+   * skin yet, and this is the frame's own picture — not a mirror's, a probe's, an overlay after
+   * the frame, or an order-independent set, none of which the spread reads.
+   */
+  private skinSplits(): boolean {
+    return (
+      this.skinScatter !== null &&
+      !this.skinScattered &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.framePresented &&
+      !this.overlayActive &&
+      this.oitMode === 'none'
+    );
+  }
+
+  /**
+   * A skin draw's diffuse half, kept for the spread: the frame's draw again, with the same slots,
+   * buffers and bind group, through the pipeline that writes the diffuse alone into the blur's
+   * target and tests for the depth its frame half wrote.
+   */
+  private keepSkinDiffuse(
+    mesh: GpuMesh,
+    frameKey: string,
+    base: string,
+    skinned: boolean,
+    morphed: boolean,
+    deltas: GPUTextureView | null,
+    layer: number,
+    eight: boolean,
+    clothed: boolean,
+    slot: number,
+    material: number,
+  ): void {
+    const skin = this.skinScatter;
+    const pipelines = this.skinPipelines;
+    const present = this.meshPresent.get(base);
+    if (skin === null || pipelines === null || present === undefined) return;
+    const key = `${frameKey}|sd`;
+    const pipeline =
+      pipelines.peek(key) ??
+      flatPipeline(
+        pipelines,
+        this.surface.device,
+        this.flatLayoutFor(skinned, morphed),
+        this.variant,
+        key,
+        present,
+        false,
+        skinned,
+        morphed,
+        true,
+        layer,
+        false,
+        'none',
+        this.materialDoubleSided,
+        false,
+        eight,
+        clothed,
+        'skin',
+        'diffuse',
+      );
+    const command = skin.take();
+    command.pipeline = pipeline;
+    command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
+    command.offsetA = slot;
+    command.offsetB = material;
+    command.offsetCount = 2;
+    for (let index = 0; index < mesh.vertexBuffers.length; index++) {
+      command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
+    }
+    command.vertexCount = mesh.vertexBuffers.length;
+    command.indexBuffer = mesh.indexBuffer;
+    command.indexed = true;
+    command.count = mesh.indexCount;
+    command.instances = 1;
+    command.indirect = null;
+  }
+
+  /**
+   * Spread the frame's skin and add it back: once, at the first blended draw or before the frame's
+   * last flush. **A fifth instance of the boundary `takeRefractSnapshot` describes** — flush, end
+   * the pass, work between passes, reopen with `loadOp: 'load'` — and refused where that one is,
+   * for its reasons. Between the passes: the kept diffuse halves into their target against the
+   * frame's depth, the depth resolved, and `SkinScatterPass.spread` across and then down into the
+   * frame's colour.
+   */
+  private runSkinScatter(): void {
+    const skin = this.skinScatter;
+    if (skin === null || this.skinScattered) return;
+    /* Latched whether or not skin was kept: a skin drawn after this point is the whole surface. */
+    this.skinScattered = true;
+    if (!skin.pending) return;
+    if (this.reflectionPassActive || this.probePassActive || this.oitReplaying) return;
+    const encoder = this.encoder;
+    const depth = this.depthView;
+    const resolved = this.resolvedDepthView;
+    const target = this.compositeTarget();
+    const projection = this.frameProjection;
+    if (encoder === null || depth === null || resolved === null) return;
+    if (target === null || projection === null) return;
+    if (this.pass === null && this.openPass() === null) return;
+    if (this.pass === null) return;
+    if (this.quality.frameGraph) this.flushGraph();
+
+    this.pass.end();
+    const size = this.sceneSize();
+    skin.size(size.width, size.height, this.samples);
+    skin.drawDiffuse(encoder, depth, this.issueBound, this.gpuTimer.writesFor());
+    this.resolveDepth(encoder);
+    mat4.invert(this.skinInverseProjection, projection);
+    const multisampled = this.compositeMsaa();
+    skin.spread(
+      encoder,
+      this.pipelines,
+      resolved,
+      multisampled ?? target,
+      multisampled === null ? null : target,
+      this.samples,
+      projection,
+      this.skinInverseProjection,
+      () => this.gpuTimer.writesFor(),
+    );
+    this.pass = encoder.beginRenderPass({
+      label: 'skin.scattered',
+      timestampWrites: this.gpuTimer.writesFor(),
+      colorAttachments: [
+        {
+          view: multisampled ?? target,
+          resolveTarget: multisampled !== null ? target : undefined,
+          /* Loaded, not cleared: the frame so far, with its skin added. */
+          loadOp: 'load',
+          storeOp: resolvedStoreOp(
+            multisampled !== null,
+            false,
+            this.quality.discardResolvedAttachments,
+          ),
+        },
+      ],
+      depthStencilAttachment: { view: depth, depthLoadOp: 'load', depthStoreOp: 'store' },
+    });
+  }
+
   private takeVolumeDepth(): boolean {
     /*
      * **Never while the mirror is open, and this is a correctness fix rather than a saving.**
@@ -12969,6 +13577,8 @@ export class WebGPURenderer implements RendererApi {
      * `beginFrame` resets it. Silent, and exactly the kind of loss the arena is designed
      * against everywhere else.
      */
+    /* Before the last flush, which may let the depth go that the spread still reads. */
+    this.runSkinScatter();
     this.flushGraph('boundary', this.liveOutFinalFlush());
     /*
      * `ensurePass` rather than a null check: the frame's pass is opened on demand now, so a
@@ -16141,6 +16751,7 @@ export class WebGPURenderer implements RendererApi {
    * the 2026-08-13 rule asks for — one decision, bound twice.
    */
   dispose(): void {
+    this.skinScatter?.dispose();
     this.motionPass?.dispose();
     this.motionPass = null;
     this.latePass?.dispose();
@@ -16180,4 +16791,13 @@ export class WebGPURenderer implements RendererApi {
     this.exposurePass = null;
     this.surface.dispose();
   }
+}
+
+/**
+ * The views a binding and a character's particles bind as, built once a pair and kept on the
+ * particles: a bind group is cached by its views' identity, so a fresh object a draw would rebuild
+ * the group every draw.
+ */
+function clothViewsOf(binding: GpuClothBinding, particles: GpuClothParticles): ClothViews {
+  return particles.viewsWith(binding);
 }

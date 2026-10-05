@@ -24,6 +24,7 @@ import { INSTANCE_STRIDE } from '../../instances.ts';
  * without one.
  */
 const USAGE = {
+  COPY_SRC: 0x0004,
   COPY_DST: 0x0008,
   INDEX: 0x0010,
   VERTEX: 0x0020,
@@ -100,6 +101,13 @@ export const VERTEX_LAYOUT: readonly VertexAttribute[] = [
    * three lanes and a spare live here instead of three attributes that do not fit.
    */
   { name: 'channel', shaderLocation: 13, format: 'float32x4', components: 4, optional: true },
+  /*
+   * The fifth to eighth influences, at the last two locations. Only a skinned variant reads them,
+   * and only with `SKIN_EIGHT` on; every other mesh is fed zeros by the constants buffer. An
+   * instanced pipeline reclaims 14 and 15 with the rest of 11 to 15, as `INSTANCE_LOCATIONS` says.
+   */
+  { name: 'joints2', shaderLocation: 14, format: 'float32x4', components: 4, optional: true },
+  { name: 'weights2', shaderLocation: 15, format: 'float32x4', components: 4, optional: true },
 ];
 
 /** Geometry on the device, with the buffers bound in layout order. */
@@ -131,14 +139,16 @@ export interface GpuMesh {
    *
    * **Two, and the first is interleaved** — every attribute this mesh actually supplied, woven
    * into one stride — while the second holds one value per *absent* optional attribute at a stride
-   * of zero. It is emphatically not one buffer per attribute, which this comment said until
+   * of zero. **A dynamic mesh has four**: its positions and its normals, each a buffer of its own so
+   * `update` writes them alone, then the interleaved rest and the constants. It is emphatically not one buffer per attribute, which this comment said until
    * 2026-09-17 and which cost the motion pass an afternoon: a pipeline built to that description
    * reads a position out of every twelve bytes of an interleaved vertex, draws geometry that is
    * not the mesh, and fails no validation at all.
    */
   readonly vertexBuffers: readonly GPUBuffer[];
   /**
-   * Bytes a vertex takes in the first of those buffers.
+   * Bytes a vertex takes in the first of those buffers: the interleaved stride, or twelve for a
+   * dynamic mesh, whose first buffer is its positions.
    *
    * Kept because it is a function of which *optional* attributes this mesh supplied, so it differs
    * between two meshes drawn by the same pipeline — and a pass that reads only the position still
@@ -151,8 +161,18 @@ export interface GpuMesh {
    * Byte offsets of the joint indices and weights in the interleaved vertex, or null for a mesh
    * that supplied neither. For a pass that skins through a shader of its own — the motion pass —
    * which has to find them without the `present` map the generated pipelines are keyed by.
+   *
+   * **Null on a dynamic mesh too**, whose first buffer holds positions alone: the motion pass reads
+   * joints from that buffer, so a dynamic skinned mesh's motion between rewrites is its model's
+   * rather than its pose's. A rewrite carries its own motion, from last frame's positions.
    */
-  readonly skinOffsets: { readonly joints: number; readonly weights: number } | null;
+  readonly skinOffsets: {
+    readonly joints: number;
+    readonly weights: number;
+    /** The second four influences' offsets, or -1 for a mesh with four. */
+    readonly joints2: number;
+    readonly weights2: number;
+  } | null;
   readonly indexBuffer: GPUBuffer;
   /**
    * How many indices the mesh draws. **Zero is a mesh with nothing to draw, and no pass draws it**:
@@ -200,6 +220,10 @@ export interface GpuMesh {
    * the key is built before the present map is consulted.
    */
   readonly isSkinned: boolean;
+  /** Whether its rig moves a vertex by eight influences, which keys a pipeline with `SKIN_EIGHT`. */
+  readonly isSkinnedEight: boolean;
+  /** How many vertices it has, which a cloth binding is checked against. */
+  readonly vertexCount: number;
   /** Whether it has texture coordinates, without which a material's maps read one texel. */
   readonly hasUvs: boolean;
   /**
@@ -221,12 +245,13 @@ export interface GpuMesh {
   /**
    * Rewrite this mesh's positions, and its normals where the caller has them.
    *
-   * Absent unless the mesh was created `dynamic`. **This backend interleaves every attribute into
-   * one buffer**, so a position is not contiguous with the next one — writing them individually
-   * would be one `writeBuffer` per vertex. So a dynamic mesh keeps the interleaved array it was
-   * built from, patches the two fields that move, and uploads the lot in one call. The cost is
-   * one CPU-side copy of the vertex data per dynamic mesh, which is why the flag exists rather
-   * than every mesh paying it.
+   * Absent unless the mesh was created `dynamic`. **A dynamic mesh's positions and normals are
+   * buffers of their own**, so this is one `writeBuffer` of the caller's positions and one of its
+   * normals, and nothing else moves. Until 4.8.4 every attribute was interleaved into one buffer,
+   * and a dynamic mesh kept a CPU copy of it to patch and upload whole — a garment's colours,
+   * coordinates, tangents and joints re-sent every frame for the twenty-four bytes a vertex that
+   * changed, reported at 2.8 MB a frame for one character. What the split costs is a pipeline per
+   * layout, keyed by `:dynamic`, and two more buffers bound per draw of such a mesh.
    */
   readonly update:
     | ((
@@ -237,9 +262,9 @@ export interface GpuMesh {
       ) => void)
     | null;
   /**
-   * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's interleaved
-   * rows, made the first time a reconstructing renderer rewrites the mesh, and the frame of the
-   * last rewrite. Null on a mesh created without `{ dynamic: true }`, which never moves a vertex.
+   * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's positions,
+   * made the first time a reconstructing renderer rewrites the mesh, and the frame of the last
+   * rewrite. Null on a mesh created without `{ dynamic: true }`, which never moves a vertex.
    */
   readonly motion: { previous: GPUBuffer | null; changed: number } | null;
   dispose(): void;
@@ -314,10 +339,13 @@ export function createGpuMeshIncremental(
   const vertexCount = data.positions.length / 3;
   const layered = data.layers !== undefined;
   const supplied = VERTEX_LAYOUT.filter(
-    (attribute) => !attribute.optional || data[attribute.name as keyof MeshData] !== undefined,
+    (attribute) =>
+      (!attribute.optional || data[attribute.name as keyof MeshData] !== undefined) &&
+      !(dynamic && isStreamed(attribute)),
   ).map((attribute) => laidOut(attribute, layered));
 
-  /* Interleaved: one stride holding every attribute the mesh actually supplied. */
+  /* Interleaved: one stride holding every attribute the mesh actually supplied — less a dynamic
+     mesh's positions and normals, which are buffers of their own. */
   const stride = supplied.reduce((sum, attribute) => sum + attribute.components * 4, 0);
   const step = stride / 4;
   const interleaved = new Float32Array(step * vertexCount);
@@ -381,26 +409,31 @@ export function createGpuMeshIncremental(
     usage: USAGE.INDEX | USAGE.COPY_DST,
   });
 
-  /*
-   * Where the position and normal fields sit inside one vertex, in floats. Found from the same
-   * `supplied` list the interleave walks, so the two cannot disagree — reading them off
-   * `VERTEX_LAYOUT` instead would be right until a mesh omits an optional attribute before them,
-   * which is the bug `present` already records once in this file.
-   */
-  let positionField = -1;
-  let normalField = -1;
-  let walked = 0;
-  for (const attribute of supplied) {
-    if (attribute.name === 'positions') positionField = walked;
-    if (attribute.name === 'normals') normalField = walked;
-    walked += attribute.components;
-  }
+  /* A dynamic mesh's two moving streams: copied from as well as written, for last frame's positions. */
+  const streamBytes = align4(vertexCount * 12);
+  const streams = dynamic
+    ? {
+        positions: device.createBuffer({
+          label: 'mesh.positions',
+          size: streamBytes,
+          usage: USAGE.VERTEX | USAGE.COPY_DST | USAGE.COPY_SRC,
+        }),
+        normals: device.createBuffer({
+          label: 'mesh.normals',
+          size: streamBytes,
+          usage: USAGE.VERTEX | USAGE.COPY_DST,
+        }),
+      }
+    : null;
 
   /*
    * The chunks, in whole vertices and whole indices: a step never writes half of either, so the
    * buffer never holds a torn one even for the frame between two steps.
    */
-  const verticesPerStep = Math.max(1, Math.floor(UPLOAD_BYTES_PER_STEP / stride));
+  const verticesPerStep = Math.max(
+    1,
+    Math.floor(UPLOAD_BYTES_PER_STEP / (stride + (dynamic ? 24 : 0))),
+  );
   const indexWidth = data.indices.BYTES_PER_ELEMENT;
   const indicesPerStep = Math.max(1, Math.floor(UPLOAD_BYTES_PER_STEP / indexWidth));
   const totalSteps =
@@ -420,15 +453,18 @@ export function createGpuMeshIncremental(
   const mesh = gpuMeshOf({
     vertices,
     constants,
+    streams,
     indexBuffer,
-    stride,
+    stride: streams === null ? stride : 12,
     indexCount: data.indices.length,
     bounds,
     progress,
     hasTangents: data.tangents !== undefined,
     isSkinned: data.joints !== undefined,
+    isSkinnedEight: data.joints !== undefined && data.joints2 !== undefined,
+    vertexCount,
     hasUvs: data.uvs !== undefined,
-    skinOffsets: skinOffsetsOf(supplied),
+    skinOffsets: streams === null ? skinOffsetsOf(supplied) : null,
     hasChannel: data.channel !== undefined,
     morph:
       data.morphTargets === undefined || data.morphTargetCount === undefined
@@ -439,9 +475,10 @@ export function createGpuMeshIncremental(
             data.positions.length / 3,
             data.morphTargetCount,
           ),
-    update: !dynamic
-      ? null
-      : dynamicUpdate(interleaved, vertices, bounds, vertexCount, step, positionField, normalField),
+    update:
+      streams === null
+        ? null
+        : streamUpdate(streams.positions, streams.normals, streamBytes, bounds, vertexCount),
   });
 
   const job: UploadJob = {
@@ -449,6 +486,7 @@ export function createGpuMeshIncremental(
     interleaved,
     device,
     supplied,
+    streams,
     vertices,
     indexBuffer,
     vertexCount,
@@ -471,6 +509,7 @@ interface UploadJob {
   interleaved: Float32Array | null;
   readonly device: GPUDevice;
   readonly supplied: readonly VertexAttribute[];
+  readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
   readonly vertices: GPUBuffer;
   readonly indexBuffer: GPUBuffer;
   readonly vertexCount: number;
@@ -510,6 +549,11 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
       fieldOffset += attribute.components;
     }
     device.queue.writeBuffer(vertices, from * stride, interleaved, from * step, (to - from) * step);
+    if (job.streams !== null) {
+      const count = (to - from) * 3;
+      device.queue.writeBuffer(job.streams.positions, from * 12, data.positions, from * 3, count);
+      device.queue.writeBuffer(job.streams.normals, from * 12, data.normals, from * 3, count);
+    }
     taken += 1;
     if (taken < job.totalSteps) yield;
   }
@@ -579,18 +623,26 @@ function skinOffsetsOf(supplied: readonly VertexAttribute[]): GpuMesh['skinOffse
   let floats = 0;
   let joints = -1;
   let weights = -1;
+  let joints2 = -1;
+  let weights2 = -1;
   for (const attribute of supplied) {
     if (attribute.name === 'joints') joints = floats * 4;
     if (attribute.name === 'weights') weights = floats * 4;
+    if (attribute.name === 'joints2') joints2 = floats * 4;
+    if (attribute.name === 'weights2') weights2 = floats * 4;
     floats += attribute.components;
   }
-  return joints >= 0 && weights >= 0 ? { joints, weights } : null;
+  if (joints < 0 || weights < 0) return null;
+  return joints2 >= 0 && weights2 >= 0
+    ? { joints, weights, joints2, weights2 }
+    : { joints, weights, joints2: -1, weights2: -1 };
 }
 
 /** The handle, made where it can see only what it hands out. */
 function gpuMeshOf(parts: {
   readonly vertices: GPUBuffer;
   readonly constants: GPUBuffer;
+  readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
   readonly indexBuffer: GPUBuffer;
   readonly stride: number;
   readonly indexCount: number;
@@ -598,6 +650,8 @@ function gpuMeshOf(parts: {
   readonly progress: { readonly uploaded: boolean };
   readonly hasTangents: boolean;
   readonly isSkinned: boolean;
+  readonly isSkinnedEight: boolean;
+  readonly vertexCount: number;
   readonly hasUvs: boolean;
   readonly skinOffsets: GpuMesh['skinOffsets'];
   readonly hasChannel: boolean;
@@ -605,9 +659,12 @@ function gpuMeshOf(parts: {
   readonly update: GpuMesh['update'];
 }): GpuMesh {
   const motion = parts.update === null ? null : { previous: null as GPUBuffer | null, changed: -1 };
-  const { vertices, constants, indexBuffer, progress } = parts;
+  const { vertices, constants, streams, indexBuffer, progress } = parts;
   return {
-    vertexBuffers: [vertices, constants],
+    vertexBuffers:
+      streams === null
+        ? [vertices, constants]
+        : [streams.positions, streams.normals, vertices, constants],
     vertexStride: parts.stride,
     skinOffsets: parts.skinOffsets,
     indexBuffer,
@@ -618,6 +675,8 @@ function gpuMeshOf(parts: {
     },
     hasTangents: parts.hasTangents,
     isSkinned: parts.isSkinned,
+    isSkinnedEight: parts.isSkinnedEight,
+    vertexCount: parts.vertexCount,
     hasUvs: parts.hasUvs,
     hasChannel: parts.hasChannel,
     morph: parts.morph,
@@ -625,6 +684,8 @@ function gpuMeshOf(parts: {
     motion,
     dispose(): void {
       motion?.previous?.destroy();
+      streams?.positions.destroy();
+      streams?.normals.destroy();
       vertices.destroy();
       constants.destroy();
       indexBuffer.destroy();
@@ -632,19 +693,23 @@ function gpuMeshOf(parts: {
   };
 }
 
+/** Whether an attribute is one a dynamic mesh keeps in a buffer of its own. */
+function isStreamed(attribute: VertexAttribute): boolean {
+  return attribute.name === 'positions' || attribute.name === 'normals';
+}
+
 /**
- * A dynamic mesh's `update`, which keeps the interleaved rows and nothing else: it rewrites the
- * positions and normals in them and uploads the whole buffer, so the other attributes it does not
- * receive have to still be there.
+ * A dynamic mesh's `update`: the caller's positions, and its normals where it has them, each
+ * written to its own buffer as it came. Last frame's positions, where a reconstruction wants them,
+ * are copied on the device before the write — a copy submitted ahead of a `writeBuffer` runs ahead
+ * of it on the queue — so no CPU copy of anything is kept.
  */
-function dynamicUpdate(
-  interleaved: Float32Array,
-  vertices: GPUBuffer,
+function streamUpdate(
+  positionsBuffer: GPUBuffer,
+  normalsBuffer: GPUBuffer,
+  streamBytes: number,
   bounds: Bounds,
   vertexCount: number,
-  step: number,
-  positionField: number,
-  normalField: number,
 ): NonNullable<GpuMesh['update']> {
   return (
     target: GPUDevice,
@@ -652,30 +717,27 @@ function dynamicUpdate(
     normals?: Float32Array,
     previous: GPUBuffer | null = null,
   ): void => {
-    if (positions.length !== vertexCount * 3) {
+    for (const [name, values] of [
+      ['update', positions],
+      ['normals', normals],
+    ] as const) {
+      if (values === undefined || values.length === vertexCount * 3) continue;
       throw new Error(
-        `this mesh has ${vertexCount} vertices and the update has ${positions.length / 3}. ` +
+        `this mesh has ${vertexCount} vertices and the ${name} has ${values.length / 3}. ` +
           "A mesh's vertex count is fixed at creation: the index buffer, the pipeline and " +
           'every other attribute are sized against it.',
       );
     }
-    /* The rows as they stand are last frame's, handed over before a position of them changes.
-       `writeBuffer` copies at the call, so patching the array afterwards cannot reach this copy. */
-    if (previous !== null) target.queue.writeBuffer(previous, 0, interleaved);
+    if (previous !== null) {
+      const encoder = target.createCommandEncoder({ label: 'mesh.previousPositions' });
+      encoder.copyBufferToBuffer(positionsBuffer, 0, previous, 0, streamBytes);
+      target.queue.submit([encoder.finish()]);
+    }
     /* Everything that decides whether this is on screen starts from the bounds, so a cloth
        that blew sideways out of its original box would be culled while still visible. */
     boundsOfPositions(positions, bounds);
-    for (let vertex = 0; vertex < vertexCount; vertex++) {
-      const at = vertex * step;
-      interleaved[at + positionField] = positions[vertex * 3] ?? 0;
-      interleaved[at + positionField + 1] = positions[vertex * 3 + 1] ?? 0;
-      interleaved[at + positionField + 2] = positions[vertex * 3 + 2] ?? 0;
-      if (normals === undefined) continue;
-      interleaved[at + normalField] = normals[vertex * 3] ?? 0;
-      interleaved[at + normalField + 1] = normals[vertex * 3 + 1] ?? 0;
-      interleaved[at + normalField + 2] = normals[vertex * 3 + 2] ?? 0;
-    }
-    target.queue.writeBuffer(vertices, 0, interleaved);
+    target.queue.writeBuffer(positionsBuffer, 0, positions);
+    if (normals !== undefined) target.queue.writeBuffer(normalsBuffer, 0, normals);
   };
 }
 
@@ -728,8 +790,20 @@ export function vertexBufferLayouts(
   let offset = 0;
 
   const layered = present['layers'] === true;
+  /* A dynamic mesh's positions and normals: buffers of their own, ahead of the rest. */
+  const dynamic = present['dynamic'] === true;
+  const layouts: GPUVertexBufferLayout[] = [];
   VERTEX_LAYOUT.forEach((declared, index) => {
     const attribute = laidOut(declared, layered);
+    if (dynamic && isStreamed(attribute)) {
+      layouts.push({
+        arrayStride: attribute.components * 4,
+        attributes: [
+          { shaderLocation: attribute.shaderLocation, offset: 0, format: attribute.format },
+        ],
+      });
+      return;
+    }
     /*
      * **The instanced pipeline reclaims the two skinning locations, and it is allowed to because
      * it cannot skin.** Locations 11 and 12 are the joint indices and weights; the INSTANCED
@@ -780,7 +854,7 @@ export function vertexBufferLayouts(
     });
   });
 
-  const layouts: GPUVertexBufferLayout[] = [{ arrayStride: offset, attributes: interleaved }];
+  layouts.push({ arrayStride: offset, attributes: interleaved });
   /*
    * The constants buffer is always bound, even with nothing in it: the pipeline layout has
    * to match the buffers a draw sets, and a mesh supplying every attribute would otherwise

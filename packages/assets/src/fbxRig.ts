@@ -30,9 +30,6 @@ import type { FbxNode } from './fbx.ts';
 /** One second, in the integer unit `KeyTime` counts. FBX's own constant. */
 const KTIME_PER_SECOND = 46186158000;
 
-/** The most influences a vertex may carry, which is what the palette shader reads. */
-const MAX_INFLUENCES = 4;
-
 const IDENTITY: readonly number[] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 function findChild(node: FbxNode, name: string): FbxNode | undefined {
@@ -330,44 +327,6 @@ export function readSkin(
   }
 
   return { joints, inverseBind, influences, modelOfJoint: order };
-}
-
-/**
- * One control point's four influences, largest first, normalised, written into a caller's arrays.
- *
- * **Four is the shader's number and the file's is unbounded.** A rig authored with six influences
- * on a shoulder is ordinary, so the four largest are kept and renormalised rather than the first
- * four taken: dropping by *order* would discard whichever the exporter happened to write last,
- * which on a shoulder is as likely to be the dominant one as not.
- *
- * Returns true where something was dropped or rescaled, so the caller can say so once for the mesh
- * rather than once per vertex.
- */
-export function writeInfluences(
-  influences: readonly { joint: number; weight: number }[] | undefined,
-  joints: Float32Array,
-  weights: Float32Array,
-  at: number,
-): { dropped: boolean; rescaled: boolean } {
-  if (influences === undefined || influences.length === 0)
-    return { dropped: false, rescaled: false };
-  const sorted = [...influences].sort((a, b) => b.weight - a.weight);
-  const kept = sorted.slice(0, MAX_INFLUENCES);
-  let sum = 0;
-  for (const influence of kept) sum += influence.weight;
-  if (sum <= 0) return { dropped: false, rescaled: false };
-  for (let i = 0; i < kept.length; i++) {
-    const influence = kept[i] as { joint: number; weight: number };
-    joints[at * MAX_INFLUENCES + i] = influence.joint;
-    weights[at * MAX_INFLUENCES + i] = influence.weight / sum;
-  }
-  let total = 0;
-  for (const influence of sorted) total += influence.weight;
-  return {
-    dropped: sorted.length > MAX_INFLUENCES,
-    /* A tenth of a per cent, which is wider than float noise and narrower than an authoring slip. */
-    rescaled: Math.abs(total - 1) > 1e-3,
-  };
 }
 
 /** Euler degrees in the file's default XYZ order, as a quaternion. */

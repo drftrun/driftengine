@@ -17,6 +17,8 @@ import type { SurfaceMaterial } from './surfaceTexture.ts';
 export interface CutoutCaster<Texture> {
   readonly albedo: Texture;
   readonly cutoff: number;
+  /** 1 for a dithered edge, which a caster draws with a pattern that does not move. */
+  readonly dithered: number;
   readonly u: number;
   readonly v: number;
   readonly uOffset: number;
@@ -26,6 +28,7 @@ export interface CutoutCaster<Texture> {
 const answer: {
   albedo: unknown;
   cutoff: number;
+  dithered: number;
   u: number;
   v: number;
   uOffset: number;
@@ -33,6 +36,7 @@ const answer: {
 } = {
   albedo: null,
   cutoff: 0,
+  dithered: 0,
   u: 1,
   v: 1,
   uOffset: 0,
@@ -49,6 +53,7 @@ export function cutoutOf<Texture>(
   if (albedo === null || !(cutoff > 0)) return null;
   answer.albedo = albedo;
   answer.cutoff = cutoff;
+  answer.dithered = material.cutoutMode === 'dithered' ? 1 : 0;
   answer.u = material.uScale ?? 1;
   answer.v = material.vScale ?? 1;
   answer.uOffset = material.uOffset ?? 0;

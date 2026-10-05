@@ -58,15 +58,21 @@ describe('countUniformVectors', () => {
      * **And two more since DriftLight**, 443 and 251: its two vectors, and no more, because the
      * eight-light rung is then 254 of this part's 256. A first cut at five vectors put that rung at
      * 258 and dropped the part to four lights, which is what this pin is here to catch.
+     *
+     * **And one fewer since the shading models**, 442 and 250. A model's numbers are two vectors,
+     * and the eight-light rung was already 255 at 4.8.3 — measured; the 254 above had gone stale
+     * with nothing pinning the rung itself — so they put it at 257 and the part at four lights,
+     * caught by the planner's tests on their first run. The material's four integer switches
+     * became one \`ivec4\`, three rows for one, and the rung is 254 with the models in it.
      */
-    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(443);
+    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(442);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,
       environmentProbe: false,
       nightEmissive: false,
     });
-    expect(countUniformVectors(withoutPointShadows)).toBe(251);
+    expect(countUniformVectors(withoutPointShadows)).toBe(250);
   });
 });
 
@@ -90,6 +96,15 @@ describe('the ladder', () => {
       expect(vectors).toBeLessThan(previous);
       previous = vectors;
     }
+  });
+
+  /*
+   * **An Adreno 740 keeps eight lights**: the rung a 256-vector part is planned onto, pinned on its
+   * own because a pin on the full budget let it drift to 255 unseen, and the next two vectors then
+   * cost the part half its lights.
+   */
+  it('KEEPS THE EIGHT-LIGHT RUNG INSIDE THE 256 VECTORS AN ADRENO 740 OFFERS', () => {
+    expect(countUniformVectors(lit({ maxLights: 8, maxAreaLights: 2 }))).toBeLessThanOrEqual(256);
   });
 
   it('starts at the budget the rest of the engine is written for', () => {
@@ -185,7 +200,7 @@ it('reports what the ceiling would have spent even when it could not have it', (
     builds++;
     return lit(budget);
   });
-  expect(plan.ceilingVectors).toBe(443);
+  expect(plan.ceilingVectors).toBe(442);
   expect(plan.vectors).toBeLessThan(plan.ceilingVectors);
   expect(builds, 'one build per rung tried and not one more').toBe(3);
 });

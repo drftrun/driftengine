@@ -23,7 +23,7 @@ export const DRFT_VERSION_MAJOR = 1;
  * Additive revisions within a generation: new optional chunks, new attribute bits, new
  * enum values with a defined fallback. Never a changed meaning.
  */
-export const DRFT_VERSION_MINOR = 23;
+export const DRFT_VERSION_MINOR = 24;
 
 /** Bytes before the chunk table. */
 export const HEADER_BYTES = 32;
@@ -448,6 +448,21 @@ export const ATTR_LAYERS = 1 << 9;
  */
 export const ATTR_CHANNEL = 1 << 10;
 
+/**
+ * Added in 1.24: a vertex's fifth to eighth influences, which joints and how much. See
+ * `MeshData.joints2`.
+ *
+ * Two bits for two arrays, both-or-neither like the first pair, and neither without the first pair.
+ * Appended after the channel, as every attribute since 1.20 has been, and that has a consequence
+ * worth stating rather than implying: indices follow the last array, so **a 1.23 reader does not
+ * skip these** — it reads their floats where it expects indices, finds indices far past the vertex
+ * count, and refuses the mesh by name. A loud refusal rather than a mesh drawn with four of its
+ * eight influences, which is the same answer `layers` and the channel give an older reader.
+ */
+export const ATTR_JOINTS2 = 1 << 11;
+/** How much each of `ATTR_JOINTS2`' four influences moves the vertex. */
+export const ATTR_WEIGHTS2 = 1 << 12;
+
 /** Everything this version defines, so a reader can spot bits from a later writer. */
 export const ATTR_KNOWN =
   ATTR_SPECULAR |
@@ -460,7 +475,9 @@ export const ATTR_KNOWN =
   ATTR_JOINTS |
   ATTR_WEIGHTS |
   ATTR_LAYERS |
-  ATTR_CHANNEL;
+  ATTR_CHANNEL |
+  ATTR_JOINTS2 |
+  ATTR_WEIGHTS2;
 
 /**
  * How a `TEXS` payload is encoded.
@@ -476,6 +493,38 @@ export const CODEC_JPEG = 2;
 export const CODEC_WEBP = 3;
 export const CODEC_RAW = 4;
 
+/**
+ * Added in 1.24: block-compressed images, kept as the blocks they were authored in.
+ *
+ * **Uploaded as they are where the device can sample them**, so a texture authored as BC7 costs a
+ * byte a texel on the GPU rather than four, and the mip chain the author built rather than one the
+ * engine generates. Where the device cannot — most phones, which sample ASTC and ETC2 instead — the
+ * loader decodes them to RGBA, which is the cost every texture paid before this. The payload — block
+ * format, colour space and the stored mip chain — is `drftBc.ts`'s.
+ */
+export const CODEC_BC = 5;
+
+/**
+ * The block formats a `CODEC_BC` payload may hold: what one 4x4 block of texels encodes.
+ *
+ * BC1 is colour with punch-through alpha in eight bytes; BC2 and BC3 colour with explicit and
+ * interpolated alpha in sixteen; BC4 one channel and BC5 two (a normal map) in eight and sixteen;
+ * BC7 colour and alpha in sixteen, with eight modes chosen per block. BC6H, signed BC4/BC5 and the
+ * other families are not among them: an HDR or signed texture is a different contract, refused by
+ * name rather than mis-decoded.
+ */
+export type BcFormat = 'bc1' | 'bc2' | 'bc3' | 'bc4' | 'bc5' | 'bc7';
+
+/** Bytes per 4x4 block of each format. */
+export const BC_BLOCK_BYTES: Readonly<Record<BcFormat, number>> = Object.freeze({
+  bc1: 8,
+  bc2: 16,
+  bc3: 16,
+  bc4: 8,
+  bc5: 16,
+  bc7: 16,
+});
+
 /** What a codec is called, for a message naming what was not understood. */
 export function codecName(codec: number): string {
   return codec === CODEC_PNG
@@ -486,7 +535,9 @@ export function codecName(codec: number): string {
         ? 'WEBP'
         : codec === CODEC_RAW
           ? 'RAW'
-          : `codec ${codec}`;
+          : codec === CODEC_BC
+            ? 'BC'
+            : `codec ${codec}`;
 }
 
 /**

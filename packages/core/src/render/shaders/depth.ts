@@ -1,7 +1,9 @@
 import { resolveConditionals } from './conditionals.ts';
 import { SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { CUTOUT_COVERAGE_GLSL } from './cutoutCoverage.ts';
+import { CUTOUT_DITHER_GLSL } from '../cutoutDither.ts';
 import { SKINNING_GLSL } from './skinning.ts';
+import { CLOTH_BINDING_GLSL } from './clothBinding.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from './vertexChannel.ts';
 
 /**
@@ -21,6 +23,11 @@ const DEPTH_VERT_SOURCE = `#version 300 es
 layout(location = 0) in vec3 aPosition;
 #if SKINNED
 ${SKINNING_GLSL}
+/* Not in the glass-tint caster: a garment is not glass, and its layout keeps its bindings. */
+#if GLASS
+#else
+${CLOTH_BINDING_GLSL}
+#endif
 #endif
 
 uniform mat4 uLightViewProj;
@@ -67,14 +74,15 @@ ${CHANNEL_BEND}
 layout(location = 5) in vec3 aUv;
 uniform vec2 uUvScale;
 uniform vec2 uUvOffset;
-uniform float uAlphaCutout;
+/* x the cutoff, y 1 for a dithered edge: see the cutout fragment stages below. */
+uniform vec2 uAlphaCutout;
 #endif
 
 out vec4 vLightPosition;
 #if CUTOUT
 /* The texture coordinate and, in z, the texture-array layer the face wears. */
 out vec3 vUv;
-flat out float vAlphaCutout;
+flat out vec2 vAlphaCutout;
 #endif
 #if GLASS
 /* Where on the pane this is, for the tint's own normal and its angle to the light. Last, so the
@@ -101,6 +109,18 @@ void main() {
   vec3 bent = world.xyz;
 #else
   vec3 bent = channelBend(world.xyz, aChannel.x);
+#endif
+#if SKINNED
+#if GLASS
+#else
+  /* Toward the cloth exactly as the colour pass moves it, or the shadow parts from the garment. */
+  if (CLOTH_BOUND) {
+    vec3 clothPosition;
+    mat3 turn;
+    float follow = clothPlace(clothPosition, turn);
+    bent = mix(bent, clothPosition, follow);
+  }
+#endif
 #endif
   vLightPosition = uLightViewProj * vec4(bent, world.w);
   gl_Position = vLightPosition;
@@ -199,12 +219,13 @@ export const DEPTH_CUTOUT_FRAG = `#version 300 es
 precision highp float;
 in vec4 vLightPosition;
 in vec3 vUv;
-flat in float vAlphaCutout;
+flat in vec2 vAlphaCutout;
 
 uniform highp sampler2DArray uPreviousShadowMap;
 uniform int uPeelShadowLayer;
 uniform highp sampler2DArray uCutoutMap;
 ${CUTOUT_COVERAGE_GLSL}
+${CUTOUT_DITHER_GLSL}
 void main() {
   /* Credited for its mip level as the surface's own test is, so a leaf casts the shape it draws. */
   vec3 at = vec3(vUv.xy, floor(vUv.z + 0.5));
@@ -215,7 +236,16 @@ void main() {
     float previousDepth = textureLod(uPreviousShadowMap, vec3(uv, ${SUN_STATIC_LAYER}.0), 0.0).r;
     if (gl_FragCoord.z <= previousDepth + 0.00001) discard;
   }
-  if (alpha < vAlphaCutout) discard;
+  /*
+   * A dithered edge casts the share it covers, with a pattern that does not move: a shadow map has
+   * no temporal resolve of its own and a static layer keeps whatever it was drawn with, so a moving
+   * pattern would shimmer there. The map's filter averages it into a soft edge.
+   */
+  if (vAlphaCutout.y > 0.5) {
+    if (!cutoutKeeps(cutoutShare(alpha, vAlphaCutout.x), gl_FragCoord.xy, 0.0)) discard;
+  } else if (alpha < vAlphaCutout.x) {
+    discard;
+  }
 }
 `;
 
@@ -293,13 +323,14 @@ export const GLASS_TINT_CUTOUT_FRAG = `#version 300 es
 precision highp float;
 in vec4 vLightPosition;
 in vec3 vUv;
-flat in float vAlphaCutout;
+flat in vec2 vAlphaCutout;
 in vec3 vGlassWorld;
 
 uniform vec4 uGlassPane;
 uniform vec4 uGlassLight;
 uniform highp sampler2DArray uCutoutMap;
 ${CUTOUT_COVERAGE_GLSL}
+${CUTOUT_DITHER_GLSL}
 out vec4 outTint;
 
 void main() {
@@ -307,6 +338,11 @@ void main() {
   vec3 at = vec3(vUv.xy, floor(vUv.z + 0.5));
   float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));
 ${GLASS_TINT_BODY}
-  if (alpha < vAlphaCutout) discard;
+  /* The depth cutout's own test, so the colour lands exactly where the depth does. */
+  if (vAlphaCutout.y > 0.5) {
+    if (!cutoutKeeps(cutoutShare(alpha, vAlphaCutout.x), gl_FragCoord.xy, 0.0)) discard;
+  } else if (alpha < vAlphaCutout.x) {
+    discard;
+  }
 }
 `;

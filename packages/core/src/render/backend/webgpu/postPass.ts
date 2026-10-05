@@ -365,8 +365,10 @@ export function postPipelineTargets(
   key: string,
   fragment: string,
   targets: GPUColorTargetState[],
+  /** For a pass drawn into the frame's own multisampled colour, which must match its count. */
+  sampleCount = 1,
 ): GPURenderPipeline {
-  return cache.get(key, () => describePost(device, layout, key, fragment, targets));
+  return cache.get(key, () => describePost(device, layout, key, fragment, targets, sampleCount));
 }
 
 function describePost(
@@ -375,8 +377,10 @@ function describePost(
   key: string,
   fragment: string,
   targets: GPUColorTargetState[],
+  sampleCount = 1,
 ): GPURenderPipelineDescriptor {
   return {
+    ...(sampleCount > 1 ? { multisample: { count: sampleCount } } : {}),
     label: key,
     layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
     vertex: {

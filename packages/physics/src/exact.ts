@@ -7,6 +7,10 @@
  * eighteen more, so two engines may differ by an ulp, and an ulp is enough to make two peers running
  * the same simulation disagree — first invisibly, then completely.
  *
+ * **In physics rather than core since 4.8.4**: a skinned cloth's damping needs `exp` and its bending
+ * `acos`, the simulation set may not call the platform's, and physics imports no other package. Core
+ * re-exports physics wholesale, so `exactExp` from `@driftengine/core` is the same function.
+ *
  * `scripts/determinism.mjs` is the gate that refuses the unspecified ones inside the simulation set
  * and names the twenty-two. Its header carries the other half of the argument: `+ - * /` are IEEE
  * 754 operations by specification, JavaScript permits no fused-multiply-add contraction, and

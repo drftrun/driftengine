@@ -2,7 +2,13 @@ import { expect, test, vi } from 'vitest';
 
 import { DEPTH_OFFSET_SIGN, OVERLAY_DEPTH_UNITS } from '../../depthConvention.ts';
 import { PipelineCache } from './pipelineCache.ts';
-import { flatPipeline, flatVertexBindings, flatVertexKey } from './flatPass.ts';
+import {
+  flatFragmentBindings,
+  flatPipeline,
+  flatVariant,
+  flatVertexBindings,
+  flatVertexKey,
+} from './flatPass.ts';
 import { FLAT_BINDINGS, FLAT_FRAG_WGSL } from '../../shaders/generated/flat.wgsl.ts';
 
 /**
@@ -160,12 +166,13 @@ test('every variant that can bend declares the wind, and the instanced one decla
 
 /*
  * **Every switch is in every variant.** The generated WGSL is one string for both values of each:
- * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — and a pipeline
- * sets each from its cache. Every variant declares all five, because a pipeline naming an override
+ * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — which a pipeline
+ * sets from its cache, and on the four shading models' and skin's two halves (`models.ts`), which it
+ * sets from its own key. Every variant declares all eleven, because a pipeline naming an override
  * its module lacks fails validation and drops the frame, the permutations without shadows included,
- * which read the glass switch nowhere.
+ * which read the glass switch nowhere. The models and halves are generated off, the lit features on.
  */
-test('EVERY LIT VARIANT DECLARES THE FIVE SWITCHES ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE ELEVEN SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
   const switches = [
@@ -175,10 +182,23 @@ test('EVERY LIT VARIANT DECLARES THE FIVE SWITCHES ITS PIPELINES SET', () => {
     'SURFACE_EFFECTS',
     'DRIFT_LIGHT',
   ] as const;
+  const models = [
+    'MODEL_ANISOTROPIC',
+    'MODEL_HAIR',
+    'MODEL_SKIN',
+    'MODEL_EYE',
+    'SKIN_SCREEN',
+    'SKIN_DIFFUSE',
+  ] as const;
   for (const [variant, wgsl] of variants) {
     switches.forEach((name, id) => {
       expect(wgsl, `${variant}: ${name}`).toMatch(
         new RegExp(`@id\\(${id}\\) override ${name}: bool = true;`),
+      );
+    });
+    models.forEach((name, k) => {
+      expect(wgsl, `${variant}: ${name}`).toMatch(
+        new RegExp(`@id\\(${5 + k}\\) override ${name}: bool = false;`),
       );
     });
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
@@ -188,6 +208,12 @@ test('EVERY LIT VARIANT DECLARES THE FIVE SWITCHES ITS PIPELINES SET', () => {
       LIGHT_FIXTURES: 2,
       SURFACE_EFFECTS: 3,
       DRIFT_LIGHT: 4,
+      MODEL_ANISOTROPIC: 5,
+      MODEL_HAIR: 6,
+      MODEL_SKIN: 7,
+      MODEL_EYE: 8,
+      SKIN_SCREEN: 9,
+      SKIN_DIFFUSE: 10,
     });
   }
 });
@@ -231,12 +257,144 @@ test('A LIT PIPELINE READS GLASS ONLY ONCE ITS CACHE IS TOLD THERE IS GLASS, and
  * then rebuilt on, beside whatever else is already on. The ids are the generator's declaration
  * order, which `litSwitchesGlsl` keeps after glass.
  */
-test('A LIT PIPELINE SETS ALL FIVE SWITCHES, clustering from the profile and the rest as they are used', async () => {
+test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the rest as they are used', async () => {
   const { device, descriptors } = fakeDevice();
   const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
   flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
-  expect(descriptors[0]?.fragment?.constants).toEqual({ '0': 0, '1': 1, '2': 0, '3': 0, '4': 0 });
+  const off = { '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0 };
+  expect(descriptors[0]?.fragment?.constants).toEqual({
+    '0': 0,
+    '1': 1,
+    '2': 0,
+    '3': 0,
+    '4': 0,
+    ...off,
+  });
 
   await cache.enable('DRIFT_LIGHT');
-  expect(descriptors[1]?.fragment?.constants).toEqual({ '0': 0, '1': 1, '2': 0, '3': 0, '4': 1 });
+  expect(descriptors[1]?.fragment?.constants).toEqual({
+    '0': 0,
+    '1': 1,
+    '2': 0,
+    '3': 0,
+    '4': 1,
+    ...off,
+  });
+});
+
+/*
+ * **A material's model is its pipeline's own switch**, set from the key it was built for and kept
+ * through a lit rebuild: a hair pipeline is hair whatever the cache turns on after it, and the
+ * standard pipeline beside it is none of them.
+ */
+test('A MODELLED PIPELINE TURNS ON ITS OWN MODEL AND NO OTHER, and keeps it through a rebuild', async () => {
+  const { device, descriptors } = fakeDevice();
+  const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
+  const layout = {} as unknown as GPUBindGroupLayout;
+  flatPipeline(
+    cache,
+    device,
+    layout,
+    'none',
+    'flat:s0:u0|m:hair',
+    {},
+    false,
+    false,
+    false,
+    true,
+    0,
+    false,
+    'none',
+    false,
+    false,
+    false,
+    false,
+    'hair',
+  );
+  flatPipeline(cache, device, layout, 'none', 'flat:s0:u0', {});
+  const models = (k: number) => {
+    const c = descriptors[k]?.fragment?.constants ?? {};
+    return [c['5'], c['6'], c['7'], c['8']];
+  };
+  expect(models(0)).toEqual([0, 1, 0, 0]);
+  expect(models(1)).toEqual([0, 0, 0, 0]);
+  await cache.enable('SURFACE_EFFECTS');
+  expect(models(2)).toEqual([0, 1, 0, 0]);
+  expect(descriptors[2]?.fragment?.constants?.['3']).toBe(1);
+});
+
+/*
+ * **Skin's two halves under the screen-space blur are two pipelines of their own.** The frame's half
+ * turns on `SKIN_SCREEN` and draws as any lit surface does; the diffuse half turns on `SKIN_DIFFUSE`
+ * and is the same surface drawn again, so it writes no depth, finds the depth its frame half wrote by
+ * equality, and never turns alpha into coverage — its alpha is the blur's profile, not a share. The
+ * whole surface turns on neither.
+ */
+test('A SKIN DRAWS ITS TWO HALVES THROUGH PIPELINES THAT SAY WHICH, the diffuse one finding the depth its frame half wrote', () => {
+  const { device, descriptors } = fakeDevice();
+  const cache = new PipelineCache(device, 'rgba16float', 4, true, false);
+  const layout = {} as unknown as GPUBindGroupLayout;
+  for (const half of ['whole', 'scene', 'diffuse'] as const) {
+    flatPipeline(
+      cache,
+      device,
+      layout,
+      'none',
+      `flat:s0:u0|m:skin|${half}`,
+      {},
+      false,
+      false,
+      false,
+      true,
+      0,
+      false,
+      'none',
+      false,
+      true,
+      false,
+      false,
+      'skin',
+      half,
+    );
+  }
+  const halves = (k: number) => {
+    const c = descriptors[k]?.fragment?.constants ?? {};
+    return [c['7'], c['9'], c['10']];
+  };
+  expect(halves(0)).toEqual([1, 0, 0]);
+  expect(halves(1)).toEqual([1, 1, 0]);
+  expect(halves(2)).toEqual([1, 0, 1]);
+  expect(descriptors[1]?.depthStencil?.depthWriteEnabled).toBe(true);
+  expect(descriptors[1]?.multisample?.alphaToCoverageEnabled).toBe(true);
+  expect(descriptors[2]?.depthStencil?.depthWriteEnabled).toBe(false);
+  expect(descriptors[2]?.depthStencil?.depthCompare).toBe('equal');
+  expect(descriptors[2]?.multisample?.alphaToCoverageEnabled).toBeUndefined();
+});
+
+/*
+ * **Every material field the renderer writes is in every layout it writes into.** `materialField`
+ * reads an absent name as offset 0, so a uniform renamed in the GLSL, or added there and bound here
+ * before `npm run wgsl` ran, writes over the first field of the block and the frame draws on with
+ * no error anywhere. Read off the renderer's own source, so a new field is covered the day it is
+ * written; checked against all sixteen permutations, because a field one leaves out is one that
+ * permutation writes over its neighbour.
+ */
+test('every material field the WebGPU renderer names exists in every fragment permutation', async () => {
+  /* Vite's `?raw` carries no type declaration; a variable path keeps TS quiet, as flat.test.ts does. */
+  const path = './renderer.ts?raw';
+  const source = (await import(/* @vite-ignore */ path)).default as string;
+  const names = [...new Set([...source.matchAll(/materialField\('(\w+)'\)/g)].map((m) => m[1]))];
+  expect(names, 'the renderer was read').toContain('uNormalStrength');
+  for (let bits = 0; bits < 16; bits++) {
+    const variant = flatVariant({
+      directionalShadows: (bits & 1) !== 0,
+      environmentProbe: (bits & 2) !== 0,
+      nightEmissive: (bits & 4) !== 0,
+      pointShadows: (bits & 8) !== 0,
+    });
+    const fields = flatFragmentBindings(variant).fields;
+    for (const name of names) {
+      expect(fields[name as string], `${name} in variant ${variant}`).toBeDefined();
+    }
+  }
 });

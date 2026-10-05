@@ -371,3 +371,98 @@ describe('morph targets on the mesh path', () => {
     expect(mesh?.morphTargetCount).toBeUndefined();
   });
 });
+
+describe('a primitive with eight influences', () => {
+  /**
+   * One triangle under a skin of eight joints, listed parents-first so the remap is the identity.
+   * Its first vertex spreads over six joints across JOINTS_0 and JOINTS_1; the other two are held
+   * by joint 0 alone.
+   */
+  function eightDoc(): { doc: GltfDocument; buffers: Uint8Array[] } {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const joints0 = new Uint8Array([1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const weights0 = new Float32Array([0.3, 0.1, 0.05, 0.05, 1, 0, 0, 0, 1, 0, 0, 0]);
+    const joints1 = new Uint8Array([5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const weights1 = new Float32Array([0.4, 0.1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const binds = identityMatrices(8);
+    const parts = [
+      new Uint8Array(positions.buffer),
+      joints0,
+      new Uint8Array(weights0.buffer),
+      joints1,
+      new Uint8Array(weights1.buffer),
+      binds,
+    ];
+    let at = 0;
+    const offsets = parts.map((part) => {
+      const start = at;
+      at += part.length;
+      return start;
+    });
+    const blob = new Uint8Array(at);
+    parts.forEach((part, i) => blob.set(part, offsets[i] as number));
+    return {
+      buffers: [blob],
+      doc: {
+        asset: { version: '2.0' },
+        scenes: [{ nodes: [0, 8] }],
+        nodes: [
+          { name: 'j0', children: [1, 2, 3, 4, 5, 6, 7] },
+          { name: 'j1' },
+          { name: 'j2' },
+          { name: 'j3' },
+          { name: 'j4' },
+          { name: 'j5' },
+          { name: 'j6' },
+          { name: 'j7' },
+          { name: 'body', mesh: 0, skin: 0 },
+        ],
+        skins: [{ joints: [0, 1, 2, 3, 4, 5, 6, 7], inverseBindMatrices: 5 }],
+        meshes: [
+          {
+            primitives: [
+              {
+                attributes: { POSITION: 0, JOINTS_0: 1, WEIGHTS_0: 2, JOINTS_1: 3, WEIGHTS_1: 4 },
+              },
+            ],
+          },
+        ],
+        accessors: [
+          { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+          { bufferView: 1, componentType: 5121, count: 3, type: 'VEC4' },
+          { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+          { bufferView: 3, componentType: 5121, count: 3, type: 'VEC4' },
+          { bufferView: 4, componentType: 5126, count: 3, type: 'VEC4' },
+          { bufferView: 5, componentType: 5126, count: 8, type: 'MAT4' },
+        ],
+        bufferViews: parts.map((part, i) => ({
+          buffer: 0,
+          byteOffset: offsets[i] as number,
+          byteLength: part.length,
+        })),
+        buffers: [{ byteLength: blob.length }],
+      } as GltfDocument,
+    };
+  }
+
+  /*
+   * **Six influences come out as six**, the four heaviest first. Hand-derived: sorted, the first
+   * vertex is joint 5 at 0.4, joint 1 at 0.3, then the two at 0.1 in the order they arrived (joint
+   * 2 from the first set before joint 6 from the second), then joints 3 and 4 at 0.05.
+   */
+  it('READS JOINTS_1 AND KEEPS ALL SIX, heaviest four first', () => {
+    const { doc, buffers } = eightDoc();
+    const mesh = gltfToMeshes(doc, buffers).meshes[0];
+    expect(Array.from(mesh?.joints?.subarray(0, 4) ?? [])).toEqual([5, 1, 2, 6]);
+    expect(Array.from(mesh?.weights?.subarray(0, 4) ?? []).map((w) => +w.toFixed(4))).toEqual([
+      0.4, 0.3, 0.1, 0.1,
+    ]);
+    expect(Array.from(mesh?.joints2?.subarray(0, 4) ?? [])).toEqual([3, 4, 0, 0]);
+    expect(Array.from(mesh?.weights2?.subarray(0, 4) ?? []).map((w) => +w.toFixed(4))).toEqual([
+      0.05, 0.05, 0, 0,
+    ]);
+    expect(Array.from(mesh?.weights?.subarray(4, 8) ?? []), 'a one-joint vertex').toEqual([
+      1, 0, 0, 0,
+    ]);
+  });
+});

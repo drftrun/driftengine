@@ -100,6 +100,25 @@ test('BC5 puts its two channels in red and green and fills blue', () => {
   expect(rgba[3]).toBe(255);
 });
 
+/*
+ * **A baked BC5 normal map carries its z, because nothing downstream rebuilds it.** The bake writes
+ * three channels and the lit shader reads three, so blue left at zero is a normal lying in the
+ * surface — a map that darkens and smears everything it is applied to. x = 204/255·2−1 = 0.6 and
+ * y = 191/255·2−1 = 0.498 give z = √(1 − 0.36 − 0.248) = 0.626, stored as (z + 1)/2 · 255 = 207.3.
+ * A flat texel stores 255; one already at full length stores 0 as 127.5, rounded to 128; and one
+ * past it — compression error at a grazing normal, x = y = 1 — is clamped to that 128 rather than
+ * reflected back to face the viewer.
+ */
+test('BC5 rebuilds blue as the z of a unit normal, for a bake that writes three channels', () => {
+  const flat = (value: number): number[] => [value, value, 0, 0, 0, 0, 0, 0];
+  const at = (red: number, green: number): number =>
+    ddsToRgba(withBlocks(4, 4, 'ATI2', [...flat(red), ...flat(green)])).rgba[2] as number;
+  expect(at(204, 191)).toBe(207);
+  expect(at(128, 128)).toBe(255);
+  expect(at(255, 128)).toBe(128);
+  expect(at(255, 255)).toBe(128);
+});
+
 test('a surface not a multiple of four decodes only the texels it has', () => {
   const block = [...le16(RED565), ...le16(BLUE565), 0, 0, 0, 0];
   const { width, height, rgba } = ddsToRgba(withBlocks(2, 2, 'DXT1', block));
@@ -251,10 +270,35 @@ test.each([
 
 test('refuses a DXGI format it does not decode, naming the number', () => {
   const blocks = new Array(16).fill(0);
-  /* 98 is `DXGI_FORMAT_BC7_UNORM`, which this reader has never decoded. */
-  expect(() => ddsToRgba(withDx10Blocks(4, 4, 98, blocks))).toThrow(/98/);
+  /* 95 is `DXGI_FORMAT_BC6H_UF16`, half floats: HDR, and a different contract from eight bits. */
+  expect(() => ddsToRgba(withDx10Blocks(4, 4, 95, blocks))).toThrow(/95/);
   /* 84 is `BC5_SNORM`: the same blocks, signed, so it would decode to wrong numbers not an error. */
   expect(() => ddsToRgba(withDx10Blocks(4, 4, 84, blocks))).toThrow(/84/);
+  /* And 81, `BC4_SNORM`, for the same reason. */
+  expect(() => ddsToRgba(withDx10Blocks(4, 4, 81, blocks))).toThrow(/81/);
+});
+
+/*
+ * **BC7 decodes, since 4.8.4, through the blocks the loader shares.** BC7 has no classic FourCC, so
+ * only a DX10 header can name it (98, `BC7_UNORM`). The block and its texels are a row of
+ * `bcDecode.test.ts`'s, decoded by an independent implementation: its first texel is 3a 3e 8e ff.
+ */
+test('a DX10 BC7 surface decodes to the texels an independent decoder gives', () => {
+  const block = Array.from('2bce5016f25e94e923915d9f881a83d9'.match(/../g) ?? [], (h) =>
+    parseInt(h, 16),
+  );
+  const { rgba } = ddsToRgba(withDx10Blocks(4, 4, 98, block));
+  expect(Array.from(rgba.subarray(0, 8))).toEqual([0x3a, 0x3e, 0x8e, 0xff, 0x2c, 0x2a, 0xa1, 0xff]);
+});
+
+/*
+ * **BC4 is one channel, and a one-channel image is grey** — the same rule this reader applies to a
+ * luminance surface. A GPU samples BC4 as red alone, which is the loader's business; a baked PNG is
+ * an ordinary image, so its one value fills all three. a0 = 200 with every index 0 is 200 throughout.
+ */
+test('BC4 decodes to grey, as every one-channel image here does', () => {
+  const { rgba } = ddsToRgba(withBlocks(4, 4, 'ATI1', [200, 10, 0, 0, 0, 0, 0, 0]));
+  expect(Array.from(rgba.subarray(0, 4))).toEqual([200, 200, 200, 255]);
 });
 
 /**

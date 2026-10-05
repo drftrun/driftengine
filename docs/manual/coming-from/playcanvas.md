@@ -155,22 +155,23 @@ single precision stays exact.
 
 ## What each thing is called
 
-| PlayCanvas                              | DriftEngine                                                               | Where                                                |
-| --------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `pc.createGraphicsDevice`, `pc.AppBase` | `createRenderer`, one renderer with two backends                          | [Backends](../concepts/backends.md)                  |
-| `pc.GraphNode`, `app.root`              | `SceneNode`, parented with `attachChild`                                  | [The scene graph](../concepts/scene-graph.md)        |
-| an entity and its components            | an entity in a `World`, with components declared in DriftScript           | [Entities](../simulation/entities.md)                |
-| a script class with `update(dt)`        | a DriftScript system over a query                                         | [DriftScript in a game](../scripting/driftscript.md) |
-| the render component                    | `MeshBuilder` and `renderer.createMesh`, drawn with `drawMesh`            | [Meshes](../rendering/meshes.md)                     |
-| `pc.StandardMaterial`                   | `renderer.setMaterial`, with colour, packed ORM, normal and emissive maps | [Materials](../rendering/materials.md)               |
-| the light component                     | the environment's sun, and point and spot lights                          | [Lights](../rendering/lights.md)                     |
-| a container asset from a glTF           | a `.drft` container baked ahead of time, or a model converted in a worker | [Importing models](../content/importing-models.md)   |
-| the anim component                      | clips, blend trees and IK                                                 | [Animation](../simulation/animation.md)              |
-| the rigidbody and collision components  | `PhysicsWorld`, the engine's own                                          | [Rigid bodies](../simulation/rigid-bodies.md)        |
-| `app.systems.rigidbody` ray casts       | rays and sweeps against the physics world                                 | [Queries](../simulation/queries.md)                  |
-| the sound component                     | a mix, placed sounds and rooms                                            | [Audio](../content/audio.md)                         |
-| screen and element components           | interface trees with layout, focus and themes                             | [Interface](../interface/interface.md)               |
-| the gsplat component                    | splat captures                                                            | [Splats](../worlds/splats.md)                        |
+| PlayCanvas                                          | DriftEngine                                                                | Where                                                |
+| --------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `pc.createGraphicsDevice`, `pc.AppBase`             | `createRenderer`, one renderer with two backends                           | [Backends](../concepts/backends.md)                  |
+| `pc.GraphNode`, `app.root`                          | `SceneNode`, parented with `attachChild`                                   | [The scene graph](../concepts/scene-graph.md)        |
+| an entity and its components                        | an entity in a `World`, with components declared in DriftScript            | [Entities](../simulation/entities.md)                |
+| a script class with `update(dt)`                    | a DriftScript system over a query                                          | [DriftScript in a game](../scripting/driftscript.md) |
+| the render component                                | `MeshBuilder` and `renderer.createMesh`, drawn with `drawMesh`             | [Meshes](../rendering/meshes.md)                     |
+| `pc.StandardMaterial`                               | `renderer.setMaterial`, with colour, packed ORM, normal and emissive maps  | [Materials](../rendering/materials.md)               |
+| `pc.StandardMaterial` anisotropy, `alphaToCoverage` | `anisotropicModel`, and `cutoutMode: 'dithered'`, which the frame resolves | [Materials](../rendering/materials.md)               |
+| the light component                                 | the environment's sun, and point and spot lights                           | [Lights](../rendering/lights.md)                     |
+| a container asset from a glTF                       | a `.drft` container baked ahead of time, or a model converted in a worker  | [Importing models](../content/importing-models.md)   |
+| the anim component                                  | clips, blend trees and IK                                                  | [Animation](../simulation/animation.md)              |
+| the rigidbody and collision components              | `PhysicsWorld`, the engine's own                                           | [Rigid bodies](../simulation/rigid-bodies.md)        |
+| `app.systems.rigidbody` ray casts                   | rays and sweeps against the physics world                                  | [Queries](../simulation/queries.md)                  |
+| the sound component                                 | a mix, placed sounds and rooms                                             | [Audio](../content/audio.md)                         |
+| screen and element components                       | interface trees with layout, focus and themes                              | [Interface](../interface/interface.md)               |
+| the gsplat component                                | splat captures                                                             | [Splats](../worlds/splats.md)                        |
 
 ## Behaviour
 

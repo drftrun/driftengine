@@ -43,6 +43,7 @@ step it took and every warning is printed.
 | `--max-texture px`            | Halve every picture until its longer side fits in `px`.                                                                                                                         |
 | `--texture-codec jpeg`        | Re-encode opaque PNGs as JPEG, normal maps excepted. `jpeg-all` takes the normal maps too.                                                                                      |
 | `--normals-directx`           | The normal maps point green down, as DirectX tools write them; turn each over on the way in.                                                                                    |
+| `--decode-dds`                | Decode each DDS to a PNG rather than keep its BC blocks and mip chain, for a reader older than container 1.24.                                                                  |
 | `--blend-as-cutout`           | Bake every blended material as a cutout at 0.5. Foliage is often exported blended; each conversion is printed so a pane of glass is caught.                                     |
 | `--simplify m`                | Reduce every mesh to the triangles its shape needs, the surface moving no more than `m` metres.                                                                                 |
 | `--sdf m`                     | Write a signed distance field over the static geometry at `m` metres a voxel, for [traced light](../rendering/driftray.md).                                                     |

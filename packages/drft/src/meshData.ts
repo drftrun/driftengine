@@ -164,9 +164,12 @@ export interface MeshData {
    * nothing and uploads nothing. Absent means unskinned, and an unskinned mesh takes exactly the
    * draw path it took before skinning existed.
    *
-   * **Four influences and not eight.** Four is what glTF's `JOINTS_0` carries, what every DCC tool
-   * exports without being asked, and what fits one attribute. Eight doubles the attribute cost of
-   * every skinned vertex to serve a case that rarely survives an export.
+   * **Four here, and four more in `joints2` for a mesh that has them.** Four is what glTF's
+   * `JOINTS_0` carries and what most exports write, and it fits one attribute; a character authored
+   * for eight — a face, a shoulder — loses the shape of its deformation when the four lightest are
+   * dropped, so 4.8.4 added a second set rather than widening this one. A mesh without it pays
+   * nothing for it, and importers sort heaviest first, so this set always holds the four that
+   * matter most.
    *
    * **`Float32Array` and not `Uint8Array`, which costs twelve bytes a vertex.** Every attribute in
    * this format is float32 and the absent-attribute mechanism depends on it: `mesh.ts` attaches
@@ -189,6 +192,19 @@ export interface MeshData {
    * is refused below rather than drawn.
    */
   weights?: Float32Array;
+  /**
+   * Four floats per vertex: the fifth to eighth joints that move this vertex, for a rig authored with
+   * eight influences. The same encoding as `joints`, and the same both-or-neither with `weights2`.
+   *
+   * **Present only with `joints`**, because the importers sort a vertex's influences heaviest first:
+   * the first set is always the four that matter most, and a second set alone would be four of the
+   * lightest with the heaviest missing. What it costs is thirty-two bytes a vertex on a mesh that
+   * carries it, and nothing on one that does not — a renderer draws such a mesh through a vertex
+   * variant that reads two more attributes, and every other mesh through the variant it always had.
+   */
+  joints2?: Float32Array;
+  /** Four floats per vertex: how much each of `joints2`' influences moves the vertex. */
+  weights2?: Float32Array;
   /**
    * Morph target position deltas: `morphTargetCount` targets, three floats a vertex each.
    *
@@ -281,6 +297,21 @@ export function validateMeshData(data: MeshData): void {
   check('tangents', data.tangents, 4);
   check('joints', data.joints, 4);
   check('weights', data.weights, 4);
+  check('joints2', data.joints2, 4);
+  check('weights2', data.weights2, 4);
+  if ((data.joints2 === undefined) !== (data.weights2 === undefined)) {
+    throw new Error(
+      data.joints2 === undefined
+        ? 'Mesh: weights2 without joints2 — the second four influences need both'
+        : 'Mesh: joints2 without weights2 — the second four influences need both',
+    );
+  }
+  if (data.joints2 !== undefined && data.joints === undefined) {
+    throw new Error(
+      'Mesh: a second set of influences without the first — importers put the four heaviest in ' +
+        '`joints`, so `joints2` alone would be the lightest four with the heaviest missing',
+    );
+  }
 
   /*
    * Both or neither. The shader multiplies four matrices by four weights, so a missing half means

@@ -84,12 +84,35 @@ test('a surface texture reaches every lighting term, not just the ambient one', 
    * sits before the branch that decides whether lighting runs *at all*, not merely before
    * the ambient term.
    */
-  expect(
-    source.indexOf('if (texel.a < uAlbedoCutout) discard;'),
-    'the cutout discards before lighting is even decided',
-  ).toBeLessThan(source.indexOf('if (uLightingEnabled != 0) {'));
+  /*
+   * Found first and then ordered. This asserted on a line that had not been in the shader since the
+   * test was written, and `indexOf`'s -1 is less than every position, so it passed whatever the
+   * cutout did. Now the line has to exist before its place counts.
+   */
+  const discards = source.indexOf('if (tested < uCutout.x) discard;');
+  expect(discards, 'the hard cutout test is in the shader').toBeGreaterThan(0);
+  expect(discards, 'the cutout discards before lighting is even decided').toBeLessThan(
+    source.indexOf('if (uLightingEnabled != 0) {'),
+  );
   expect(source.includes('lit += vColor'), 'no lighting term bypasses the texture').toBe(false);
   expect(source.includes('lit = vColor'), 'not even the first one').toBe(false);
+});
+
+/*
+ * **A normal map with no z stored has it rebuilt from the two it has.** BC5 holds x and y, and a
+ * device samples its blue as zero, which unpacks to -1: a normal pointing into the surface, which a
+ * tangent-space map never holds. So a stored z at or below zero is rebuilt as the rest of a unit
+ * length, and anything above zero is left exactly as it was — no flag, and no uniform row spent on
+ * one, which the lit stage's budget on a 256-row phone cannot spare.
+ */
+test('a normal map with no z stored has it rebuilt from the two it has', () => {
+  const sample = source.indexOf('vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;');
+  const rebuilt = source.indexOf(
+    'mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));',
+  );
+  expect(sample, 'the normal map is sampled').toBeGreaterThan(0);
+  expect(rebuilt, 'and z rebuilt right after, before the frame turns it').toBeGreaterThan(sample);
+  expect(rebuilt).toBeLessThan(source.indexOf('mat3 tbn = tangentFrame(', sample));
 });
 
 test('roughness sets the width of a highlight and not its strength', () => {
@@ -104,11 +127,19 @@ test('roughness sets the width of a highlight and not its strength', () => {
    * existed — every polished prop in the world — went from a soft highlight to a blown
    * white speck, with nothing in the API to say it would.
    */
-  expect(source, 'divided by its own peak').toContain('return (a2 * a2) / max(d * d, 1e-8);');
-  expect(
-    source.includes('3.14159265 * d * d'),
-    'and pi is gone, because a normalised lobe cancels it',
-  ).toBe(false);
+  /*
+   * **Read in the standard lobe's own body**, because the skin model's highlight is the normalised
+   * distribution on purpose — a physical lobe at skin's own Fresnel, `shaders/flat/skin.ts` — and
+   * the whole source carrying a π says nothing about this function.
+   */
+  const at = source.indexOf('float specularLobe(');
+  /* Whitespace is collapsed in `source`, so the body ends at the brace after its return. */
+  const lobe = source.slice(at, source.indexOf('}', source.indexOf('return', at)) + 1);
+  expect(at, 'the standard lobe is in the source').toBeGreaterThan(0);
+  expect(lobe, 'divided by its own peak').toContain('return (a2 * a2) / max(d * d, 1e-8);');
+  expect(lobe.includes('3.14159265'), 'and pi is gone, because a normalised lobe cancels it').toBe(
+    false,
+  );
 });
 
 test('a translucent draw is covered by its texture, not by its quad', () => {
@@ -121,7 +152,8 @@ test('a translucent draw is covered by its texture, not by its quad', () => {
    * Costs the opaque world nothing, which is why it can be unconditional: with blending
    * off the alpha channel is never read.
    */
-  expect(source, 'the sampled alpha is kept, not only tested').toContain('coverage = texel.a;');
+  expect(source, 'the sampled alpha is kept, not only tested').toContain('float kept = texel.a;');
+  expect(source).toContain('coverage = kept;');
   expect(source, 'and it scales the draw opacity at the output').toContain('uOpacity * coverage');
   expect(source, 'untextured geometry is fully covered').toContain('float coverage = 1.0;');
 });
@@ -485,8 +517,8 @@ test('every uniform the flat shader declares is uploaded somewhere', async () =>
     'uTint', // drawMesh
     'uOpacity', // drawMesh / bindMeshPass reset
     'uAlbedo', // setSurfaceTexture + bindMeshPass
-    'uAlbedoEnabled',
-    'uAlbedoCutout',
+    'uMaterialFlags',
+    'uCutout',
     'uUvScale',
     /*
      * The material's, written by `setMaterial` rather than by the mesh pass — the same category
@@ -497,7 +529,6 @@ test('every uniform the flat shader declares is uploaded somewhere', async () =>
     'uNormalMap',
     'uNormalStrength',
     'uOrmMap',
-    'uOrmEnabled',
     'uOrmScale',
   ]);
 
@@ -698,7 +729,7 @@ test('texture relief is centred, gated on the texture, and cannot turn a face in
    * translated until that was obeyed.
    */
   expect(source, 'both conditions are uniforms').toContain(
-    'if (uAlbedoEnabled != 0 && uTextureRelief != 0.0) {',
+    'if (uMaterialFlags.x != 0 && uTextureRelief != 0.0) {',
   );
 
   /*
@@ -810,7 +841,7 @@ test('the normal map reads the UVs the vertex stage already scaled', () => {
  * `texture()` legal here exactly as it is legal for `uAlbedo`.
  */
 test('the ORM map is sampled under a uniform branch, before lighting is decided', () => {
-  expect(source).toContain('if (uOrmEnabled != 0) {');
+  expect(source).toContain('if (uMaterialFlags.y != 0) {');
   expect(source).toContain('texture(uOrmMap, surfaceAt)');
   expect(source, 'not scaled twice — FLAT_VERT already scales aUv.xy by uUvScale').not.toContain(
     'vUv.xy * uUvScale',
@@ -1560,7 +1591,7 @@ test('A PANE SEEN FROM BEHIND IS LIT FROM THE EYE S SIDE, and glows with the lig
   /* Glass is two-sided whatever its material says: from behind, the side the eye sees is the one
      lit, and the light on its far side is what glows through — as the second pipeline draws it. */
   expect(source).toContain(
-    'bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
+    'bool backFace = (uMaterialFlags.w != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;',
   );
 });
 

@@ -1,3 +1,6 @@
+import { SURFACE_MODEL_SWITCH } from '../../surfaceModel.ts';
+import type { SurfaceModelKind } from '../../surfaceModel.ts';
+import type { SkinHalf } from '../../shaders/flat/models.ts';
 import { DEPTH_COMPARE, DEPTH_FORMAT, depthOffsetForLayer } from '../../depthConvention.ts';
 import {
   FLAT_BINDINGS,
@@ -6,6 +9,7 @@ import {
 } from '../../shaders/generated/flat.wgsl.ts';
 import { vertexBufferLayouts } from './buffers.ts';
 import type { LitSwitch, PipelineCache } from './pipelineCache.ts';
+import type { ClothViews } from './clothTextures.ts';
 import { shaderModule } from './shaderModules.ts';
 import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
 
@@ -15,6 +19,7 @@ const SURFACE_MAPS: ReadonlySet<string> = new Set([
   'uNormalMap',
   'uOrmMap',
   'uEmissiveMap',
+  'uModelMap',
 ]);
 
 /**
@@ -146,6 +151,38 @@ export function flatVertexBindings(
 }
 
 const PLAIN_VERTEX = flatVertexBindings(false);
+
+/**
+ * A vertex stage's constants, keyed by each override's **id** as the fragment's are: `SKIN_EIGHT` in
+ * a skinned stage, nothing in any other. Every override a stage declares is set, and one this does
+ * not know is refused here rather than defaulted. Shared with the shadow and glass-tint casters,
+ * whose skinned stages declare the same switch.
+ */
+export function vertexConstants(
+  bindings: StageBindings,
+  skinEight: boolean,
+  cloth = false,
+): Record<string, number> {
+  const constants: Record<string, number> = {};
+  for (const [name, id] of Object.entries(bindings.overrides ?? {})) {
+    if (name === 'SKIN_EIGHT') constants[String(id)] = skinEight ? 1 : 0;
+    else if (name === 'CLOTH_BOUND') constants[String(id)] = cloth ? 1 : 0;
+    else throw new Error(`flatPass: a vertex stage declares a switch "${name}" nothing sets`);
+  }
+  return constants;
+}
+/** Where a skinned stage declares the cloth binding's three textures: binding, particles, rest. */
+function clothBindings(skinned: boolean, morphed: boolean): [number, number, number] {
+  const textures = flatVertexBindings(skinned, morphed).textures;
+  const at = (name: string): number => {
+    const found = textures[name];
+    if (found === undefined)
+      throw new Error(`flatPass: the skinned vertex shader declares no ${name}`);
+    return found.texture;
+  };
+  return [at('uClothBinding'), at('uClothParticles'), at('uClothRest')];
+}
+
 /*
  * **A variant may drop a field; it may never move one.**
  *
@@ -208,13 +245,33 @@ export function flatFragmentBindings(variant: FlatVariant): StageBindings {
  * "GLASS_SHADOWS" not found*, and the frame drew nothing. Every override the variant declares is
  * set, so a switch added to the shader and not to the cache is refused here rather than defaulted.
  */
-function flatFragmentConstants(variant: FlatVariant, cache: PipelineCache): Record<string, number> {
+function flatFragmentConstants(
+  variant: FlatVariant,
+  cache: PipelineCache,
+  model: SurfaceModelKind | null,
+  skinPass: SkinHalf = 'whole',
+): Record<string, number> {
   const overrides = flatFragmentBindings(variant).overrides;
   if (overrides?.['GLASS_SHADOWS'] === undefined) {
     throw new Error(`flatPass: variant "${variant}" has no glass switch`);
   }
+  const modelSwitch = model === null ? null : SURFACE_MODEL_SWITCH[model];
   const constants: Record<string, number> = {};
   for (const [name, id] of Object.entries(overrides)) {
+    /* A model's switch is the pipeline's own, set from its key rather than from the cache. */
+    if (name.startsWith('MODEL_')) {
+      constants[String(id)] = name === modelSwitch ? 1 : 0;
+      continue;
+    }
+    /* Skin's two halves under the screen-space blur, set from the key as a model's switch is. */
+    if (name === 'SKIN_SCREEN' || name === 'SKIN_DIFFUSE') {
+      constants[String(id)] =
+        (name === 'SKIN_SCREEN' && skinPass === 'scene') ||
+        (name === 'SKIN_DIFFUSE' && skinPass === 'diffuse')
+          ? 1
+          : 0;
+      continue;
+    }
     if (!(name in cache.litSwitches)) {
       throw new Error(`flatPass: variant "${variant}" declares a switch "${name}" no cache sets`);
     }
@@ -395,6 +452,15 @@ export function createFlatBindGroupLayout(
       visibility: VISIBILITY_VERTEX,
       texture: { sampleType: 'unfilterable-float' },
     });
+    /* The cloth binding's three textures, declared by every skinned stage whether a draw sets a
+       cloth or not; see `clothBinding.ts`. */
+    for (const binding of clothBindings(skinned, morphed)) {
+      entries.push({
+        binding,
+        visibility: VISIBILITY_VERTEX,
+        texture: { sampleType: 'unfilterable-float' },
+      });
+    }
   }
 
   return device.createBindGroupLayout({
@@ -408,7 +474,7 @@ export function createFlatBindGroupLayout(
  *
  * `resolve` is asked for a view by the shader's own name for it, so a caller supplies the
  * shadow maps it has and a stand-in for the rest. **Every declared binding must be filled
- * even when the shader never samples it** — `uAlbedoEnabled` is zero for nearly all geometry
+ * even when the shader never samples it** — the albedo's flag is zero for nearly all geometry
  * and WebGPU still requires something there, which is why `renderer.ts` keeps an
  * `emptyTexture2D` for the same reason on the other side.
  */
@@ -423,6 +489,8 @@ export function createFlatBindGroup(
   palette: GPUTextureView | null = null,
   /** The delta view for a morphed bind group, or null for an unmorphed one. */
   deltas: GPUTextureView | null = null,
+  /** A skinned bind group's cloth views — the draw's, or the stand-in where it sets none. */
+  cloth: ClothViews | null = null,
 ): GPUBindGroup {
   const fragment = flatFragmentBindings(variant);
   const entries: GPUBindGroupEntry[] = [
@@ -458,6 +526,15 @@ export function createFlatBindGroup(
       throw new Error('flatPass: the skinned vertex shader declares no uJointPalette');
     }
     entries.push({ binding: binding.texture, resource: palette });
+    if (cloth === null) {
+      throw new Error(
+        'flatPass: a skinned bind group needs cloth views, the stand-in at the least',
+      );
+    }
+    const [bindingAt, particlesAt, restAt] = clothBindings(true, deltas !== null);
+    entries.push({ binding: bindingAt, resource: cloth.binding });
+    entries.push({ binding: particlesAt, resource: cloth.particles });
+    entries.push({ binding: restAt, resource: cloth.rest });
   }
 
   return device.createBindGroup({
@@ -517,6 +594,22 @@ export function flatPipeline(
   oit: OitTarget = 'none',
   /** Culls nothing, for a surface seen from both faces. The key must carry it: `|2s`. */
   doubleSided = false,
+  /**
+   * Turns the fragment's alpha into the pixel's samples, for a dithered cutout in a multisampled
+   * frame with no temporal resolve. The key must carry it: `|a2c`. See `cutoutDither.ts`.
+   */
+  alphaToCoverage = false,
+  /**
+   * Whether a skinned pipeline reads the second four influences: the vertex stage's `SKIN_EIGHT`.
+   * The key must carry it: `|s8`. See `skinning.ts`.
+   */
+  skinEight = false,
+  /** Whether its vertex stage places vertices by a cloth binding. See `clothBinding.ts`. */
+  cloth = false,
+  /** Which shading model its fragment stage shades by, null the standard. The key must carry it. */
+  model: SurfaceModelKind | null = null,
+  /** Which half of a skin it draws. The key must carry it: `|ss` or `|sd`. See `SkinHalf`. */
+  skinPass: SkinHalf = 'whole',
 ): GPURenderPipeline {
   return cache.get(
     key,
@@ -536,6 +629,11 @@ export function flatPipeline(
         instanced,
         oit,
         doubleSided,
+        alphaToCoverage,
+        skinEight,
+        cloth,
+        model,
+        skinPass,
       ),
     true,
   );
@@ -562,11 +660,36 @@ export function flatPipelineAsync(
   skinned = false,
   /** Whether this pipeline reads morph deltas. See `FlatVertexOptions`. */
   morphed = false,
+  /** Whether the skinned stage reads the second four influences. See `flatPipeline`. */
+  skinEight = false,
+  /** Whether its vertex stage places vertices by a cloth binding. See `clothBinding.ts`. */
+  cloth = false,
+  /** Which shading model its fragment stage shades by. See `flatPipeline`. */
+  model: SurfaceModelKind | null = null,
 ): Promise<GPURenderPipeline> {
   return cache.getAsync(
     key,
     () =>
-      flatDescriptor(cache, device, layout, variant, key, present, translucent, skinned, morphed),
+      flatDescriptor(
+        cache,
+        device,
+        layout,
+        variant,
+        key,
+        present,
+        translucent,
+        skinned,
+        morphed,
+        true,
+        0,
+        false,
+        'none',
+        false,
+        false,
+        skinEight,
+        cloth,
+        model,
+      ),
     true,
   );
 }
@@ -637,8 +760,15 @@ function flatDescriptor(
   oit: OitTarget = 'none',
   /** Culls nothing: a surface seen from both faces. */
   doubleSided = false,
+  alphaToCoverage = false,
+  skinEight = false,
+  /** Whether its vertex stage places vertices by a cloth binding. See `clothBinding.ts`. */
+  cloth = false,
+  model: SurfaceModelKind | null = null,
+  skinPass: SkinHalf = 'whole',
 ): GPURenderPipelineDescriptor {
   const offset = depthOffsetForLayer(depthLayer);
+  const diffuseAlone = skinPass === 'diffuse';
   return {
     label: key,
     layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
@@ -654,6 +784,7 @@ function flatDescriptor(
       }),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),
+      constants: vertexConstants(flatVertexBindings(skinned, morphed, instanced), skinEight, cloth),
     },
     fragment: {
       module: shaderModule(device, {
@@ -662,7 +793,7 @@ function flatDescriptor(
       }),
       entryPoint: 'main',
       /* Every variant declares it, so every lit pipeline may set it: see `PipelineCache`. */
-      constants: flatFragmentConstants(variant, cache),
+      constants: flatFragmentConstants(variant, cache, model, skinPass),
       targets: [
         oitTarget(oit) ??
           (translucent === 'additive'
@@ -689,7 +820,13 @@ function flatDescriptor(
       ],
     },
     primitive: { topology: 'triangle-list', cullMode: doubleSided ? 'none' : 'back' },
-    multisample: { count: cache.sampleCount },
+    /* Coverage only where a sample count can carry it: WebGPU refuses it at one sample. */
+    multisample: {
+      count: cache.sampleCount,
+      ...(alphaToCoverage && cache.sampleCount > 1 && !diffuseAlone
+        ? { alphaToCoverageEnabled: true }
+        : {}),
+    },
     /*
      * `less`, matching the WebGL2 path's `LESS` rather than `LEQUAL`, and for the reason
      * `drawMesh` documents there: under `LEQUAL` two coplanar surfaces do not merely tie,
@@ -697,8 +834,9 @@ function flatDescriptor(
      */
     depthStencil: {
       format: DEPTH_FORMAT,
-      depthWriteEnabled: depthWrite,
-      depthCompare: DEPTH_COMPARE,
+      /* The diffuse half is the same surface again: it finds the depth the frame's half wrote. */
+      depthWriteEnabled: depthWrite && !diffuseAlone,
+      depthCompare: diffuseAlone ? 'equal' : DEPTH_COMPARE,
       /*
        * Baked in, where the other backend toggles it around the draw. Both read
        * `depthOffsetForLayer`, so a layer is worth the same depth on either one, and a pipeline

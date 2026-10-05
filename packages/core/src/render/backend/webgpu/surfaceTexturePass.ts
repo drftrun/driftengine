@@ -1,7 +1,15 @@
 import type { SurfaceTextureOptions } from '../../surfaceTexture.ts';
 import { SURFACE_EFFECT_TEXELS, packSurfaceEffects } from '../../surfaceEffects.ts';
 import { toHalfFloats } from '../../halfFloat.ts';
-import { isSourceList, layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
+import { layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
+import { compressedLayers, planBlocks, refuseBlockUpdate } from '../../compressedSource.ts';
+import type {
+  BlockFormat,
+  CompressedTextureFormat,
+  CompressedTextureSource,
+  SurfaceSource,
+} from '../../compressedSource.ts';
+import { createCompressedTexture } from './compressedUpload.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
 
@@ -179,24 +187,45 @@ export class GpuSurfaceTexture {
   private effectsTable: GPUTexture | null = null;
   /** Its view, which the flat group binds beside this image when it is a material's albedo. */
   effectsView: GPUTextureView | null = null;
+  /** The block format a compressed texture holds, or null for one uploaded from images. */
+  private readonly blockFormat: BlockFormat | null;
 
   constructor(
     private readonly device: GPUDevice,
     private readonly pipelines: PipelineCache,
-    source: TexImageSource | readonly TexImageSource[],
+    source: SurfaceSource | readonly SurfaceSource[],
     options: SurfaceTextureOptions = {},
+    compressed: readonly CompressedTextureFormat[] = [],
   ) {
-    const sources: readonly TexImageSource[] = isSourceList(source) ? source : [source];
-    const { width, height } = layerSize(sources);
-    this.layers = sources.length;
-    this.mipmapped = options.mipmap ?? true;
+    const listed = (Array.isArray(source) ? source : [source]) as readonly SurfaceSource[];
+    const blocks = compressedLayers(listed);
+    const srgb = (options.colorSpace ?? 'linear') === 'srgb';
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
        place it is correct — `surfaceTexture.ts` makes the argument in full. */
-    this.format = (options.colorSpace ?? 'linear') === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
-    this.width = width;
-    this.height = height;
-    this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
-    this.texture = this.allocate();
+    this.format = srgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
+    if (blocks !== null) {
+      /* Refused before anything is allocated; the stored chain, or level 0 alone where no chain
+         was asked for. See `compressedUpload.ts`. */
+      const plan = planBlocks(blocks, srgb, compressed);
+      const first = blocks[0] as CompressedTextureSource;
+      this.layers = blocks.length;
+      this.blockFormat = first.format;
+      this.mipmapped = (options.mipmap ?? true) && plan.levels > 1;
+      this.width = first.width;
+      this.height = first.height;
+      this.levels = this.mipmapped ? plan.levels : 1;
+      this.texture = createCompressedTexture(device, plan.name, blocks, this.levels);
+    } else {
+      const sources = listed as readonly TexImageSource[];
+      const { width, height } = layerSize(sources);
+      this.layers = sources.length;
+      this.blockFormat = null;
+      this.mipmapped = options.mipmap ?? true;
+      this.width = width;
+      this.height = height;
+      this.levels = this.mipmapped ? mipLevelCount(width, height) : 1;
+      this.texture = this.allocate();
+    }
     this.current = this.arrayView(this.texture);
 
     const wrap: GPUAddressMode =
@@ -232,7 +261,7 @@ export class GpuSurfaceTexture {
           : 1,
     });
 
-    this.upload(sources);
+    if (blocks === null) this.upload(listed as readonly TexImageSource[]);
 
     /* Half floats, as `renderer.ts` uploads it: filterable, so the ordinary float layout takes it,
        and read by `textureLoad` alone, so the filter never runs. */
@@ -283,6 +312,7 @@ export class GpuSurfaceTexture {
     const replaced = this.texture;
     if (replaced === null) return null;
     refuseArrayUpdate(this.layers);
+    refuseBlockUpdate(this.blockFormat);
     const { width, height } = sourceSize(source);
     if (width === this.width && height === this.height) {
       this.upload([source]);

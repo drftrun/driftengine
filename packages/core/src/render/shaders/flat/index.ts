@@ -3,15 +3,18 @@ import { OCTAHEDRAL_GLSL } from '../octahedral.ts';
 import { PROBEGRID_GLSL } from './probeGrid.ts';
 import { TANGENT_FRAME_GLSL } from '../tangentFrame.ts';
 import { CUTOUT_COVERAGE_GLSL } from '../cutoutCoverage.ts';
+import { CUTOUT_DITHER_GLSL } from '../../cutoutDither.ts';
 import { preambleGlsl } from './preamble.ts';
 import { LOBES_GLSL } from './lobes.ts';
 import { POINTSHADOW_GLSL } from './pointShadow.ts';
 import { DIRECTIONALSHADOW_GLSL } from './directionalShadow.ts';
 import { glassTintGlsl, litSwitchesGlsl } from './glassTint.ts';
 import { MORPH_GLSL } from '../morph.ts';
+import { CLOTH_BINDING_GLSL } from '../clothBinding.ts';
 import { SKINNING_GLSL } from '../skinning.ts';
 import { SURFACE_GLSL } from './surface.ts';
 import { MAIN_GLSL } from './main.ts';
+import { MODELS_GLSL } from './models.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
@@ -145,6 +148,10 @@ ${CHANNEL_BEND}
 #if MORPHED
 ${MORPH_GLSL}
 #endif
+#if SKINNED
+/* Samplers and a constant alone, so no field of the vertex block moves. See clothBinding.ts. */
+${CLOTH_BINDING_GLSL}
+#endif
 
 out vec3 vNormal;
 out vec3 vColor;
@@ -218,9 +225,11 @@ void main() {
   mat4 skin = skinMatrix();
   vec4 local = skin * vec4(basePosition, 1.0);
   vec3 localNormal = mat3(skin) * aNormal;
+  vec3 localTangent = mat3(skin) * aTangent.xyz;
 #else
   vec4 local = vec4(basePosition, 1.0);
   vec3 localNormal = aNormal;
+  vec3 localTangent = aTangent.xyz;
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
@@ -241,9 +250,31 @@ void main() {
   vec3 bent = channelBend(world.xyz, aChannel.x);
 #endif
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+#if SKINNED
+  /*
+   * **Toward the cloth, after the skeleton and the bend.** The simulation already swings with the
+   * wind it was given, so the bend moves only the skinned part; the weight painted per vertex says
+   * how much of the cloth's place and turn the vertex takes. See clothBinding.ts.
+   */
+  if (CLOTH_BOUND) {
+    vec3 clothPosition;
+    mat3 turn;
+    float follow = clothPlace(clothPosition, turn);
+    world = vec4(mix(world.xyz, clothPosition, follow), world.w);
+    worldNormal = normalize(mix(worldNormal, turn * aNormal, follow));
+    worldTangent = mix(worldTangent, turn * aTangent.xyz, follow);
+  }
+#endif
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -254,7 +285,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
 #if INSTANCED
   /* No channel on this path; the neutral values are what every mesh read before it existed. */
   vSkyDirect = 1.0;
@@ -534,8 +565,11 @@ export function flatFrag(options: FlatShaderOptions): string {
       TANGENT_FRAME_GLSL,
       /* Unconditional for the same reason, and called only where a cutoff was asked for. */
       CUTOUT_COVERAGE_GLSL,
+      CUTOUT_DITHER_GLSL,
       DRIFT_LIGHT_GLSL,
       SURFACE_EFFECTS_GLSL,
+      /* Depth zero and after the tangent frame and the lobes it calls; see models.ts. */
+      MODELS_GLSL,
       MAIN_GLSL,
     ].join('\n'),
     {

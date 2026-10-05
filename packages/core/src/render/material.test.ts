@@ -80,9 +80,9 @@ test('a null material turns albedo off', () => {
   renderer.setMaterial(null);
 
   expect(
-    calls.filter((c) => c.name === 'uniform1i').length,
-    'uAlbedoEnabled goes back to zero',
-  ).toBeGreaterThan(0);
+    calls.some((c) => c.name === 'uniform4iv' && (c.args[1] as Int32Array)[0] === 0),
+    "the albedo's flag in uMaterialFlags goes back to zero",
+  ).toBe(true);
 });
 
 /*
@@ -186,13 +186,16 @@ test('a material with no ORM map disables it rather than inheriting one', () => 
   renderer.setMaterial({ albedo: fakeTexture() });
 
   /*
-   * On the value, because every location is null here. Nothing else in this sequence writes an int
-   * zero — the albedo is being *enabled*, and the two map samplers are written their unit numbers —
-   * so a `uniform1i(_, 0)` is `uOrmEnabled` being cleared and can be nothing else.
+   * On the value, because every location is null here: the four switches go up as one \`ivec4\`,
+   * and the ORM map's is its second component.
    */
+  const flags = calls
+    .filter((c) => c.name === 'uniform4iv')
+    .map((c) => Array.from(c.args[1] as Int32Array));
+  expect(flags.length, 'the switches were written').toBeGreaterThan(0);
   expect(
-    calls.some((c) => c.name === 'uniform1i' && c.args[1] === 0),
-    'uOrmEnabled is written back to 0 rather than left where the last material put it',
+    flags.every((f) => f[1] === 0),
+    "the ORM map's flag is written back to 0 rather than left where the last material put it",
   ).toBe(true);
 });
 

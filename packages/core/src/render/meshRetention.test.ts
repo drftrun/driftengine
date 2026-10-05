@@ -54,8 +54,6 @@ async function heldBytes(): Promise<number> {
 
 const VERTICES = 100_000;
 const MESHES = 8;
-/* Position, normal and colour at three floats, emissive at one: the rows the upload interleaves. */
-const ROW_BYTES = (3 + 3 + 3 + 1) * 4;
 const MB = 1024 * 1024;
 
 function source(): MeshData {
@@ -158,16 +156,19 @@ describe('a WebGPU mesh', () => {
     expect(meshes.length).toBe(MESHES);
   });
 
-  test('A DYNAMIC ONE KEEPS ITS INTERLEAVED ROWS AND NOTHING ELSE, because `update` rewrites them', async () => {
+  /*
+   * **A dynamic one keeps nothing either, since 4.8.4.** Its positions and normals have buffers of
+   * their own, so an update writes the caller's arrays as they are; it used to keep the interleaved
+   * rows to patch and upload whole, a CPU copy of every vertex for as long as the mesh lived.
+   */
+  test('A DYNAMIC ONE KEEPS NOTHING EITHER, because `update` writes the arrays it is given', async () => {
     const refs: WeakRef<object>[] = [];
     const before = await heldBytes();
     const meshes = build(MESHES, (data) => createGpuMesh(DEVICE, data, true), refs);
     const remaining = await collected(refs);
     const after = await heldBytes();
     expect(remaining, 'source arrays held by live meshes').toBe(0);
-    const rows = MESHES * VERTICES * ROW_BYTES;
-    expect(after - before).toBeGreaterThan(rows - MB);
-    expect(after - before).toBeLessThan(rows + MB);
+    expect(after - before).toBeLessThan(MB);
     expect(meshes.every((mesh) => mesh.update !== null)).toBe(true);
   });
 

@@ -129,6 +129,34 @@ test('a scene with no photometric profile reads no profile', () => {
   );
 });
 
+/*
+ * **The tangent leaves the vertex stage in world space, turned as the normal is** — by the joints,
+ * by the model or instance matrix, and toward a cloth's turn — because \`tangentFrame\` crosses it
+ * with the world-space normal. It left in the mesh's own space until 4.8.4, which is world space
+ * only for a mesh that is moved and never turned: measured on \`demo/dev/normal.html?turn=90\`, a
+ * mapped panel with tangents stood 80 rms from the same panel with a derived frame, against 15
+ * unturned.
+ */
+test('THE TANGENT IS TURNED BY EVERYTHING THAT TURNS THE NORMAL', () => {
+  for (const skinned of [false, true]) {
+    for (const instanced of skinned ? [false] : [false, true]) {
+      const source = flatVert({ skinned, morphed: false, instanced }).replace(/\s+/g, ' ');
+      const label = `skinned ${skinned}, instanced ${instanced}`;
+      expect(source, label).toContain('vec3 worldTangent = mat3(model) * localTangent;');
+      expect(source, label).toContain('vTangent = vec4(worldTangent, aTangent.w);');
+      expect(source, label).not.toContain('vTangent = aTangent;');
+      if (skinned) {
+        expect(source, label).toContain('vec3 localTangent = mat3(skin) * aTangent.xyz;');
+        expect(source, label).toContain(
+          'worldTangent = mix(worldTangent, turn * aTangent.xyz, follow);',
+        );
+      } else {
+        expect(source, label).toContain('vec3 localTangent = aTangent.xyz;');
+      }
+    }
+  }
+});
+
 test('the vertex source is stable', () => {
   for (const morphed of [false, true]) {
     for (const skinned of [false, true]) {

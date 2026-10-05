@@ -50,5 +50,12 @@ test('A CUT-OUT PANE CASTS ITS COLOUR ONLY WHERE IT CASTS ITS DEPTH', () => {
     'float alpha = cutoutAlpha(texture(uCutoutMap, at).a, vUv.xy * vec2(textureSize(uCutoutMap, 0).xy));';
   expect(depth).toContain(coverage);
   expect(tint).toContain(coverage);
-  expect(tint).toContain('if (alpha < vAlphaCutout) discard;');
+  /* The same test, hard or dithered, in both: the depth's own line is the tint's own line. */
+  for (const line of [
+    'if (!cutoutKeeps(cutoutShare(alpha, vAlphaCutout.x), gl_FragCoord.xy, 0.0)) discard;',
+    '} else if (alpha < vAlphaCutout.x) {',
+  ]) {
+    expect(depth).toContain(line);
+    expect(tint).toContain(line);
+  }
 });

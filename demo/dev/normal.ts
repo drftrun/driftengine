@@ -25,6 +25,8 @@
  *     /normal.html                  the default backend, which is WebGL2
  *     /normal.html?backend=webgpu   the other one
  *     /normal.html?strength=0       every panel unmapped, which is the control
+ *     /normal.html?turn=90          every panel turned about its own normal: the tangent frame
+ *                                   must turn with the model, so panel 2 still agrees with panel 3
  *
  * **What a failure looks like**, so it is recognised rather than rationalised:
  *
@@ -57,8 +59,11 @@ import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 const BACKGROUND: Vec3 = [0.043, 0.051, 0.063];
 
-function at(x: number, y: number, z: number): Float32Array {
-  return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
+/** Placed at (x, y, z) and turned `turn` degrees about z, which is each panel's own normal. */
+function at(x: number, y: number, z: number, turn = 0): Float32Array {
+  const c = Math.cos((turn * Math.PI) / 180);
+  const s = Math.sin((turn * Math.PI) / 180);
+  return new Float32Array([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
 }
 
 /** Near white, so what reaches the eye is the lighting rather than a tint over it. */
@@ -184,7 +189,13 @@ async function main(): Promise<void> {
     renderer.createMesh(buildPanel(false, false)),
     renderer.createMesh(buildPanel(true, true)),
   ];
-  const models = [at(-4.2, 0, 0), at(-1.4, 0, 0), at(1.4, 0, 0), at(4.2, 0, 0)];
+  /*
+   * **Turned, a panel's tangent frame has to turn with it**, and until 4.8.4 it did not: the vertex
+   * stage handed the fragment its tangent in the mesh's own space, which is world space only for a
+   * mesh that is merely moved. At 90 degrees panel 2 then lit its domes a quarter-turn off panel 3.
+   */
+  const turn = Number(new URLSearchParams(location.search).get('turn') ?? '0');
+  const models = [-4.2, -1.4, 1.4, 4.2].map((x) => at(x, 0, 0, Number.isFinite(turn) ? turn : 0));
 
   /*
    * `linear`, and it is the whole of §6 of the design in one argument. These bytes are a
@@ -219,7 +230,7 @@ async function main(): Promise<void> {
   renderFrame();
   stats.textContent =
     `${created.backend} · ${created.reason} · none | tangents | derived | mirrored u` +
-    ` · strength ${mapped}`;
+    ` · strength ${mapped} · turn ${turn}`;
 
   addEventListener('resize', () => {
     renderer.resize();

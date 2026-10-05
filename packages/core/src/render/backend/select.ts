@@ -247,6 +247,14 @@ async function acquireWebGpu(
     if (wantsGpuTiming && adapter.features?.has('timestamp-query') === true) {
       features.push('timestamp-query');
     }
+    /*
+     * BC compressed textures, on the same terms: asked for wherever the adapter offers it, because
+     * a device without it still draws — the loader decodes for it — and one with it samples a BC7
+     * texture at a byte a texel instead of four. See `compressedUpload.ts`.
+     */
+    if (adapter.features?.has('texture-compression-bc') === true) {
+      features.push('texture-compression-bc');
+    }
     const descriptor: GPUDeviceDescriptor = {};
     if (Object.keys(required).length > 0) descriptor.requiredLimits = required;
     if (features.length > 0) descriptor.requiredFeatures = features;

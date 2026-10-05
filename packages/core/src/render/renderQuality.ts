@@ -46,6 +46,9 @@ export type WaterReflectionFilterTaps = 1 | 5 | 9;
 /** How light through glass is coloured: see `RenderQuality.glassShadows`. */
 export type GlassShadows = 'full' | 'half' | 'off';
 
+/** How light scattered beneath skin is drawn: see `RenderQuality.skinScattering`. */
+export type SkinScattering = 'pre-integrated' | 'screen-space';
+
 export interface RenderQuality {
   /**
    * The transfer curve applied at the end of every shaded pass.
@@ -210,6 +213,24 @@ export interface RenderQuality {
    * lot of glass; that is what `'half'` is for. See `glassShadow.ts`.
    */
   readonly glassShadows: GlassShadows;
+  /**
+   * How light that scatters beneath skin is drawn, for a material whose model is `skinModel`.
+   *
+   * **`'pre-integrated'`, the default**: the lit stage's fit alone — a terminator softened and
+   * reddened by the surface's curvature, light through thin parts, a penumbra each channel crosses
+   * as far as it travels — at no cost beyond the skin pipeline itself. **`'screen-space'`** adds
+   * Burley's blur in the picture as well: a skin draw writes its diffuse to a target of its own (it
+   * is drawn twice to do so), which is spread across the pixels its scatter distance covers and
+   * added back before anything blended is drawn, so light crosses a shadow's edge and a nostril's
+   * rim in the picture rather than in a fit. See `skinBlur.ts`.
+   *
+   * Construction-time: two half-float targets the size of the frame, and a multisampled one under
+   * multisampling, made at the first skin draw. It needs the composite (`screenEffects`), which is
+   * where the frame is still linear light to add to; without one, skin is pre-integrated and the
+   * renderer says so once. What would make the default wrong is a close-up face that reads as wax
+   * at a shadow's edge — that is what the blur is for.
+   */
+  readonly skinScattering: SkinScattering;
   /** Horizontal world-space reach over which a directional shadow dissolves. */
   readonly directionalShadowMaxDistance: number;
   /** Maximum horizontal projection per vertical metre before low-angle shadows vanish. */
@@ -920,6 +941,7 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   lightVolumeSamples: 32,
   directionalShadowDepthLayers: 2,
   glassShadows: 'full',
+  skinScattering: 'pre-integrated',
   directionalShadowMaxDistance: 6,
   directionalShadowMaxSlope: 3,
   pointShadowRebakeDistance: 0.001,
@@ -1084,6 +1106,7 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     directionalShadowDepthLayers:
       options.directionalShadowDepthLayers ?? DEFAULT_RENDER_QUALITY.directionalShadowDepthLayers,
     glassShadows: options.glassShadows ?? DEFAULT_RENDER_QUALITY.glassShadows,
+    skinScattering: options.skinScattering ?? DEFAULT_RENDER_QUALITY.skinScattering,
     directionalShadowMaxDistance:
       options.directionalShadowMaxDistance ?? DEFAULT_RENDER_QUALITY.directionalShadowMaxDistance,
     directionalShadowMaxSlope:
@@ -1236,6 +1259,11 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
   ) {
     throw new Error(
       `RenderQuality.glassShadows must be 'full', 'half' or 'off', got ${String(quality.glassShadows)}`,
+    );
+  }
+  if (quality.skinScattering !== 'pre-integrated' && quality.skinScattering !== 'screen-space') {
+    throw new Error(
+      `RenderQuality.skinScattering must be 'pre-integrated' or 'screen-space', got ${String(quality.skinScattering)}`,
     );
   }
   if (quality.plumeNoiseOctaves > 3) {

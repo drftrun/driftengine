@@ -497,6 +497,27 @@ export class SceneTarget {
    * must reject it in the same place or the accumulation and the revealage cover different
    * fragments.
    */
+  /**
+   * The depth the frame draws against, for a second framebuffer to share: skin's diffuse half,
+   * which tests against it and writes none. The multisampled renderbuffer where the frame is
+   * multisampled, the texture otherwise, with the size and sample count a colour beside it needs.
+   */
+  sharedDepth(): {
+    texture: WebGLTexture | null;
+    renderbuffer: WebGLRenderbuffer | null;
+    samples: number;
+    width: number;
+    height: number;
+  } {
+    return {
+      texture: this.msaaDepth === null ? this.depth : null,
+      renderbuffer: this.msaaDepth,
+      samples: this.samples,
+      width: this.width,
+      height: this.height,
+    };
+  }
+
   depthAttachment(): WebGLTexture | null {
     return this.depth;
   }

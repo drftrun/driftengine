@@ -1,7 +1,7 @@
 /**
  * Fixed-point arithmetic, 48.16, for a simulation that wants determinism by construction.
  *
- * **Opt-in, and the gate is the default.** `scripts/determinism.mjs` plus `math/exact.ts` make a
+ * **Opt-in, and the gate is the default.** `scripts/determinism.mjs` plus physics' `exact.ts` make a
  * floating-point simulation reproducible across engines, and that is the recommended path: it costs
  * nothing, changes no stored replay, and is what every package in this repository already does.
  * This exists for a consumer who would rather not depend on an argument about IEEE 754 at all.

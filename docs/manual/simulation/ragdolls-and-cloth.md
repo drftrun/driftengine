@@ -1,7 +1,7 @@
 ---
 title: Ragdolls and cloth
 description: Ragdolls built from a skeleton's joints and driven toward an animated pose, and cloth that hangs, blows, drapes and pushes what it lands on.
-packages: ['@driftengine/physics']
+packages: ['@driftengine/physics', '@driftengine/core']
 ---
 
 # Ragdolls and cloth
@@ -209,3 +209,54 @@ A cloth's particles change every frame, so the mesh drawing it is created with `
 and rewritten with `updateMesh(mesh, positions, normals)`, which reuses the buffer instead of
 allocating one a frame. The example computes normals from each particle's neighbours, and draws
 both sides of every triangle.
+
+## Cloth on a character
+
+A cape, a skirt or the tails of a coat is cloth that also follows a skeleton: most of it moves with
+the body, some of it swings free, and none of it may pass through the legs. That is a skinned cloth,
+and it is two things a model carries for each garment: a coarse simulation, and the finer mesh drawn,
+each of whose vertices is told which simulation triangle to follow.
+
+The simulation is a `SkinnedClothSetup` from `@driftengine/physics`: particles in the bind pose and
+their inverse masses, 0 for one that follows its skinning exactly; up to eight bone influences a
+particle with the inverse binds; stretch and bending constraints, each with a compliance in metres
+per newton, the inverse of a stiffness; tethers to fixed particles; limits that keep a particle
+within a sphere of its skinned place, or behind or in front of one; spheres and tapered capsules on
+bones for it to collide with; and parameters, every one with a default. `validateClothSetup`
+refuses a malformed set-up by name. A garment with variations has a set-up for each.
+
+The mesh is an ordinary skinned mesh with a `ClothBindingData`: for every vertex, the triangle it
+follows, where on it, how far off it along its normal, and how much, from 0 for skinned to 1 for
+cloth. `renderer.createClothBinding(mesh, data)` checks it against the mesh.
+
+`createSkinnedCloth(renderer, setup)`, from `@driftengine/core`, builds the solver. On WebGPU it runs
+on the device, and under WebGL2 the CPU solver it is checked against runs instead; `runsOn` says
+which. Once a frame, before the draws:
+
+```ts sample=garment/main.ts#step
+advanceWindField(wind, profile, time, dt, 1);
+cloth.setWind(wind.velocityX, 0, wind.velocityZ);
+cloth.step(globals, model, dt);
+```
+
+`step` takes the joints' global matrices, not the palette, because a collider sits on a joint's own
+frame. It advances in whole fixed steps and draws on the remainder, as the rest of the simulation
+does. A jump past the set-up's teleport distance or angle resets the cloth by itself; a cut in a
+cinematic is `reset()`. The wind is the scene's one wind, sampled once and handed over.
+
+The draw places the mesh's vertices by the cloth in its vertex stage:
+
+```ts sample=garment/main.ts#draw
+renderer.setSkinPalette(palette);
+renderer.drawMesh(body, model);
+if (bound) renderer.setCloth(binding, cloth.particles);
+renderer.drawMesh(capeHandle, model);
+renderer.setCloth(null);
+renderer.setSkinPalette(null);
+```
+
+The shadow takes the same binding, through `sink.skinnedMesh(mesh, model, palette, material,
+{ binding, particles })`, or the garment casts the shadow of its skinning. Self-collision is accepted
+in a set-up and not simulated: a garment its colliders and backstops hold looks right without it.
+`examples/garment/` builds a cape by hand, and the handbook maps a garment cooked elsewhere onto
+these two arrays.

@@ -57,6 +57,9 @@ const ATTRIBUTES = {
   tangents: 4,
   joints: 4,
   weights: 4,
+  /* The fifth to eighth influences, which are per vertex like the first four. */
+  joints2: 4,
+  weights2: 4,
   /*
    * The four-lane per-vertex channel. It joins the key above as well as the copy below, which is
    * the behaviour that matters: two vertices at one position whose sway or sky exposure differ

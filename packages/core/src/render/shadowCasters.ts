@@ -2,6 +2,7 @@ import { resolveGlass, type GlassOptions, type ResolvedGlass } from './glass.ts'
 import type { ReadonlyMat4 } from 'gl-matrix';
 import type { InstanceData } from './instancedMesh.ts';
 import type { InstancedHandle, MeshHandle, ScatterHandle } from './backend/api.ts';
+import type { ClothBindingHandle, ClothParticlesHandle } from './backend/api.ts';
 import type { MeshInstances } from './instances.ts';
 import type { SurfaceMaterial } from './surfaceTexture.ts';
 import type { SurfaceTextureHandle } from './backend/api.ts';
@@ -70,6 +71,12 @@ export function glassOf(material: SceneCasterMaterial | undefined, out: Resolved
   return resolveGlass(material?.glass, out);
 }
 
+/** A skinned caster's cloth: the mesh's binding and the character's particles. See `setCloth`. */
+export interface ShadowCasterCloth {
+  readonly binding: ClothBindingHandle;
+  readonly particles: ClothParticlesHandle;
+}
+
 export interface ShadowCasterSink {
   /** A rigid mesh at a model transform: the world, a prop, a static piece of scenery. */
   mesh(mesh: MeshHandle, model: ReadonlyMat4, material?: SceneCasterMaterial): void;
@@ -88,6 +95,12 @@ export interface ShadowCasterSink {
     model: ReadonlyMat4,
     palette: Float32Array,
     material?: SceneCasterMaterial,
+    /**
+     * The cloth the visible draw places this mesh by, if any — for the reason the palette is not
+     * optional in spirit: a garment cast from its skinning alone throws a shadow that does not
+     * move as the cloth does.
+     */
+    cloth?: ShadowCasterCloth,
   ): void;
   /**
    * An instanced batch of rigid meshes, placed by the same matrices the visible draw uses.

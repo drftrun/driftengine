@@ -235,11 +235,16 @@ export type { Localised } from './localise.ts';
  */
 export { colliderBeside, levelsBeside } from './readModel.ts';
 /*
- * DDS block decoding, for the block-compressed textures a vehicle model carries. Baker work: RGBA
- * is larger than the source and nothing ships a block decoder into a frame.
+ * DDS for the baker: `ddsBlocks` keeps a block-compressed surface's blocks and stored chain for a
+ * `CODEC_BC` texture, and `ddsToRgba` decodes level 0 for what cannot be kept. `decodeBc` is the
+ * block decoder both share with the loader, which runs it on a device that cannot sample BC.
  */
 export { ddsToRgba, isDds } from './dds.ts';
 export type { DdsImage } from './dds.ts';
+export { ddsBlocks } from './ddsBlocks.ts';
+export { decodeBc } from './bcDecode.ts';
+export { decodeBcImage } from './bcImage.ts';
+export { flipBc5Green } from './bcFlip.ts';
 /*
  * **The offline half of the GPU-driven pipeline, which nothing outside this package could reach.**
  *

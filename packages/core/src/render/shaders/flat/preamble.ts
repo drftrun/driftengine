@@ -139,8 +139,22 @@ flat in int vHasTangents;
  * white shades identically to one with no texture at all.
  */
 uniform mediump sampler2DArray uAlbedo;
-/** 0 leaves every textured path unevaluated, for the majority of geometry with no image. */
-uniform int uAlbedoEnabled;
+/**
+ * **The material's four switches in one row**, because every loose scalar is a row of the 256 an
+ * Adreno 740 offers and the eight-light build had none to spare once a shading model asked for two
+ * (\`models.ts\`): four ints were four rows, and this is one.
+ *
+ * - **x, the albedo**: 0 leaves every textured path unevaluated, for the majority of geometry with
+ *   no image.
+ * - **y, the ORM map**: 1 when one is bound, gating its whole block. A uniform rather than a
+ *   permutation flag, because a fifth flag takes the sixteen permutations flatSource.test.ts sweeps
+ *   to thirty-two and roughly doubles the generated WGSL every consumer bundles.
+ * - **z, the emissive map**: 1 when one is bound, gating its sample, for the same reason.
+ * - **w, two-sided**: 1 for a surface seen from both faces — glTF's doubleSided, a curtain, a leaf
+ *   card. Its draw culls nothing, and a back face is lit as a front, with the shading normal turned
+ *   toward the viewer.
+ */
+uniform ivec4 uMaterialFlags;
 /**
  * Alpha below which a textured fragment is thrown away entirely, 0 to disable.
  *
@@ -152,8 +166,13 @@ uniform int uAlbedoEnabled;
  *
  * Zero by default, so a texture with no alpha to speak of costs one compare and nothing
  * else changes.
+ *
+ * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
+ * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
+ * frame the dither's pattern is offset by, w spare. One vector rather than a float and two more,
+ * because every loose scalar is a row of WebGL2's 224 that the light budget gives up.
  */
-uniform float uAlbedoCutout;
+uniform vec4 uCutout;
 /**
  * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
  * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
@@ -161,11 +180,6 @@ uniform float uAlbedoCutout;
  */
 uniform mediump sampler2D uSurfaceEffects;
 
-/**
- * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
- * nothing, and a back face is lit as a front, with the shading normal turned toward the viewer.
- */
-uniform int uDoubleSided;
 
 /**
  * A normal map, in the surface's own space.
@@ -181,7 +195,7 @@ uniform highp sampler2DArray uNormalMap;
 /**
  * How hard the map turns the shading normal. 0 is no map at all, and gates the whole block.
  *
- * A uniform rather than a permutation flag, following uAlbedoEnabled: a fifth boolean would take
+ * A uniform rather than a permutation flag, following the albedo's flag: a fifth boolean would take
  * the exhaustive permutation sweep from sixteen shaders to thirty-two, and the generated WGSL that
  * consumers bundle as source from 766 KB to about 1.5 MB. A permutation is the right tool for the
  * shadow samplers, where a profile with shadows off should declare none of them; it is the wrong
@@ -201,16 +215,6 @@ uniform float uNormalStrength;
  */
 uniform highp sampler2DArray uOrmMap;
 /**
- * 1 when a map is bound. Gates the whole block, following uAlbedoEnabled.
- *
- * A uniform rather than a fifth permutation flag: FlatShaderOptions has four booleans and
- * flatSource.test.ts sweeps all sixteen exhaustively, so a fifth takes that to thirty-two and
- * roughly doubles the generated WGSL that consumers bundle as source, this engine having no build
- * step. A permutation is the right tool for the shadow samplers, where a profile with shadows off
- * should declare none of them. It is the wrong tool for one more image.
- */
-uniform int uOrmEnabled;
-/**
  * What each channel is scaled by, component-aligned with the map: r occlusion, g roughness,
  * b metallic. The alignment is the documentation.
  *
@@ -227,7 +231,7 @@ uniform vec3 uOrmScale;
  * wants a roughness combined in quadrature. Likewise the weight: the split sum is the correct share
  * of a *prefiltered* environment and asserts an integral that was never performed over a box chain.
  *
- * A uniform rather than a permutation flag, following \`uOrmEnabled\`: a fifth boolean doubles the
+ * A uniform rather than a permutation flag, following the ORM map's in \`uMaterialFlags\`: a fifth boolean doubles the
  * generated WGSL every consumer bundles as source, and this is a few multiply-adds.
  */
 uniform float uEnvironmentPrefiltered;
@@ -241,13 +245,11 @@ uniform float uEnvironmentPrefiltered;
  * where it should be saturated — but it is silent, because a glow that is too dim reads as a
  * material choice rather than as a decode.
  *
- * A uniform gate rather than a permutation flag, for exactly the reasons \`uOrmEnabled\` gives
+ * A uniform gate rather than a permutation flag, for exactly the reasons \`uMaterialFlags\` gives
  * above, and now with a number behind them: a fifth flag was built and measured at 49% of the
  * bundle. See \`ARCHITECTURE.md\` §1.
  */
 uniform highp sampler2DArray uEmissiveMap;
-/** 1 when a map is bound. Gates the sample, following uOrmEnabled. */
-uniform int uEmissiveMapEnabled;
 /**
  * What the map is scaled by, per channel. 1 is the identity and the default.
  *
@@ -423,7 +425,7 @@ bool ditherKeeps(float amount) {
  * block member the shader does not already carry the size of; it is one \`int\` beside
  * \`uOpacity\`, read once. And the branch it drives is on a value that is the same for every
  * fragment in one draw call, which is exactly the guarantee \`uReflectivity\` and
- * \`uAlbedoEnabled\` already lean on above: a compiler asked to predicate a whole wavefront on
+ * \`uMaterialFlags\` already lean on above: a compiler asked to predicate a whole wavefront on
  * one uniform skips the untaken side rather than computing both and discarding one, which is
  * only true because nothing here reads it through a *varying*-dependent branch.
  */

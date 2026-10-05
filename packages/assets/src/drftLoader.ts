@@ -10,6 +10,12 @@ import { placeFields } from './fieldPlacement.ts';
 import type { DrftFieldPlacement } from './fieldPlacement.ts';
 import type { DrftTexture } from '@driftengine/drft';
 import { TextureSet, textureColorSpaces } from './drftTextures.ts';
+import { bcPlan, createBcDecoder } from './bcLoad.ts';
+import type { BcDecoder } from './bcLoad.ts';
+import { decodeBc } from './bcDecode.ts';
+import { isCompressedSource, uploadsCompressed } from '@driftengine/core';
+import { CODEC_BC, codecName, readBcPayload } from '@driftengine/drft';
+import type { BcImage } from '@driftengine/drft';
 import { drawKeyOf, resolveDrawGrouping } from './drawKey.ts';
 import type { DrawGrouping, DrawSurfaceOverride } from './drawKey.ts';
 import {
@@ -323,7 +329,10 @@ export class DrftLoader {
   private readonly bound: boolean[] = [];
   private boundCount = 0;
   private readonly singles: MeshHandle[] = [];
-  private readonly images: (ImageBitmap | null)[] = [];
+  private readonly images: (LoadedImage | null)[] = [];
+  /** Started at the first BC texture that has to be decoded, and only then. See `bcLoad.ts`. */
+  private bcDecoder: BcDecoder | null = null;
+  private warnedBc = false;
   private readonly chunks: DrftTexture[] = [];
   private materials: readonly DrftMaterial[] = [];
   /**
@@ -812,6 +821,10 @@ export class DrftLoader {
            * visibly wrong, which a consumer's loading bar reported to a person as finished.
            */
           this.set({ phase: 'textures' });
+          if (texture.codec === CODEC_BC) {
+            this.acceptBc(texture, ordinal);
+            return;
+          }
           /*
            * Decoded through the browser's own image path, so the engine ships no decoder, and
            * **each one fails on its own**: a texture is the part of an asset most likely to be
@@ -969,7 +982,7 @@ export class DrftLoader {
       if (ordinal !== undefined) {
         const take = this.options.onImage;
         if (take === undefined) this.rebuildTextures(ordinal);
-        else take(this.chunks[ordinal]?.name ?? '', this.images[ordinal] ?? null);
+        else take(this.chunks[ordinal]?.name ?? '', bitmapOf(this.images[ordinal] ?? null));
         /*
          * Counted here, once, and only for the image itself.
          *
@@ -1047,6 +1060,8 @@ export class DrftLoader {
     if (this.disposed) return;
     this.disposed = true;
     this.regionStore.dispose();
+    this.bcDecoder?.dispose();
+    this.bcDecoder = null;
     /*
      * Everything this class ever made, each disposed once.
      *
@@ -1444,7 +1459,8 @@ export class DrftLoader {
      */
     const existing = previous?.at(ordinal) ?? null;
     const arrived = this.images[ordinal] ?? null;
-    if (existing !== null && arrived !== null) {
+    /* Blocks never arrive as a replacement: a BC texture has no preview to replace. */
+    if (existing !== null && arrived !== null && !isCompressedSource(arrived)) {
       this.renderer.updateSurfaceTexture(existing, arrived);
       return;
     }
@@ -1458,16 +1474,88 @@ export class DrftLoader {
     this.textureSet = TextureSet.from(this.chunks, (_, at) => {
       const held = previous?.at(at) ?? null;
       if (held !== null) return held;
-      const bitmap = this.images[at] ?? null;
-      if (bitmap === null) return null;
+      const image = this.images[at] ?? null;
+      if (image === null) return null;
       const anisotropy = this.options.anisotropy;
       const wrap = this.options.textureWrap;
-      return this.renderer.createSurfaceTexture(bitmap, {
+      const colorSpace = spaces[at] ?? 'linear';
+      return this.renderer.createSurfaceTexture(this.uploadable(image, colorSpace === 'srgb'), {
         ...(anisotropy === undefined ? {} : { anisotropy }),
         ...(wrap === undefined ? {} : { wrap }),
-        colorSpace: spaces[at] ?? 'linear',
+        colorSpace,
       });
     });
+  }
+
+  /**
+   * A BC texture: its blocks kept, to go up as they are where this device samples them, or decoded
+   * off the main thread where it does not — which on a phone is every one. See `bcLoad.ts`.
+   *
+   * **A consumer taking images through `onImage` gets a decoded image either way**, as an ordinary
+   * picture: what it builds from them is its own, and a texture array of bitmaps cannot hold blocks.
+   * Like every image, a BC texture fails on its own and its surfaces draw untextured.
+   */
+  private acceptBc(texture: DrftTexture, ordinal: number): void {
+    const done = (image: LoadedImage | null): void => {
+      if (this.disposed) return;
+      this.images[ordinal] = image;
+      this.sharp[ordinal] = true;
+      this.imageQueue.push(ordinal);
+    };
+    const failed = (error: unknown): void => {
+      console.warn(
+        `DrftLoader: image ${ordinal} did not decode; its surfaces stay untextured` +
+          ` (codec BC, ${texture.bytes.length} bytes, ${texture.width}x${texture.height})`,
+        error,
+      );
+      done(null);
+    };
+    let image: BcImage;
+    try {
+      image = readBcPayload(texture.width, texture.height, texture.bytes);
+    } catch (error) {
+      failed(error);
+      return;
+    }
+    const asImage = this.options.onImage !== undefined;
+    const srgb = textureColorSpaces(this.materials, ordinal + 1)[ordinal] === 'srgb';
+    if (!asImage && bcPlan(image, srgb, this.renderer.compressedFormats) === 'blocks') {
+      done(image);
+      return;
+    }
+    if (this.bcDecoder === null) this.bcDecoder = createBcDecoder();
+    const decoder = this.bcDecoder;
+    decoder
+      .decode(image, asImage)
+      .then(async (rgba) => {
+        /* Said once, where a worker could not be had or failed: a slower load nobody could
+           otherwise attribute. */
+        if (decoder.reason !== '' && !this.warnedBc) {
+          this.warnedBc = true;
+          console.warn(`DrftLoader: ${decoder.reason}`);
+        }
+        const pixels = imageDataOf(rgba, image.width, image.height);
+        done(asImage ? await createImageBitmap(pixels, AS_AUTHORED) : pixels);
+      })
+      .catch(failed);
+  }
+
+  /**
+   * What goes to `createSurfaceTexture`: the image as it is, unless it is blocks this device cannot
+   * take in the colour space the slot reads — a material read after its texture arrived can change
+   * that — in which case they are decoded here, on the spot.
+   */
+  private uploadable(image: LoadedImage, srgb: boolean): ImageBitmap | ImageData | BcImage {
+    if (!isCompressedSource(image)) return image;
+    const { format, width, height } = image;
+    if (uploadsCompressed(format, srgb, width, height, this.renderer.compressedFormats)) {
+      return image;
+    }
+    return imageDataOf(
+      decodeBc(format, width, height, image.levels[0] as Uint8Array),
+      width,
+      height,
+    );
   }
 
   /** One place that writes the progress, so every field stays consistent with the phase. */
@@ -1554,6 +1642,23 @@ const AS_AUTHORED = {
   colorSpaceConversion: 'none',
 } as const satisfies ImageBitmapOptions;
 
+/** What the loader holds for an image: decoded, or blocks to upload as they are. */
+type LoadedImage = ImageBitmap | ImageData | BcImage;
+
+/** RGBA as an `ImageData`, which every upload path takes as it takes a bitmap. */
+function imageDataOf(rgba: Uint8Array, width: number, height: number): ImageData {
+  return new ImageData(
+    new Uint8ClampedArray(rgba.buffer as ArrayBuffer, rgba.byteOffset, rgba.length),
+    width,
+    height,
+  );
+}
+
+/** The bitmap `onImage` is handed. Only bitmaps reach that path, BC decoded to one on the way. */
+function bitmapOf(image: LoadedImage | null): ImageBitmap | null {
+  return image === null || isCompressedSource(image) || 'data' in image ? null : image;
+}
+
 async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<ImageBitmap> {
   /*
    * **A raw texture has no decoder, because it is already decoded.**
@@ -1589,8 +1694,9 @@ async function decodeImage(texture: DrftTexture, longestSide?: number): Promise<
   const type = imageTypeFor(texture.codec);
   if (type === null) {
     throw new DrftError(
-      `texture codec ${texture.codec} is not one this loader can decode; bake it again with a ` +
-        'current baker',
+      `texture codec ${codecName(texture.codec)} is not one this loader reads: a newer baker ` +
+        'wrote it, or the file is damaged. Update @driftengine/assets, or bake with the baker ' +
+        'that matches it',
     );
   }
   const blob = new Blob([texture.bytes.slice()], { type });

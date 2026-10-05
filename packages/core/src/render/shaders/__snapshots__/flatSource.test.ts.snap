@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "5cfc5f8a:202680",
-  "directionalShadows+environmentProbe": "a622e699:228693",
-  "directionalShadows+environmentProbe+nightEmissive": "fdab25bf:231179",
-  "directionalShadows+nightEmissive": "86dbdbae:205166",
-  "environmentProbe": "b129c078:208730",
-  "environmentProbe+nightEmissive": "60916c76:211216",
-  "nightEmissive": "964af919:185203",
-  "none": "ece25891:182717",
-  "pointShadows": "85b57351:221925",
-  "pointShadows+directionalShadows": "7f57be3a:241888",
-  "pointShadows+directionalShadows+environmentProbe": "b558c2d1:267901",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "a415224f:270387",
-  "pointShadows+directionalShadows+nightEmissive": "f0b18cbe:244374",
-  "pointShadows+environmentProbe": "9b063d08:247938",
-  "pointShadows+environmentProbe+nightEmissive": "d6e8c23e:250424",
-  "pointShadows+nightEmissive": "f7b8bb89:224411",
+  "directionalShadows": "8aa71a4b:227839",
+  "directionalShadows+environmentProbe": "ad788adc:253852",
+  "directionalShadows+environmentProbe+nightEmissive": "d8c3b178:256338",
+  "directionalShadows+nightEmissive": "31394df1:230325",
+  "environmentProbe": "2295d047:233889",
+  "environmentProbe+nightEmissive": "8547cd9f:236375",
+  "nightEmissive": "8f08c9dc:210362",
+  "none": "67d45a66:207876",
+  "pointShadows": "1100c3b8:247084",
+  "pointShadows+directionalShadows": "80d5d7f9:267047",
+  "pointShadows+directionalShadows+environmentProbe": "12e35706:293060",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "6528937a:295546",
+  "pointShadows+directionalShadows+nightEmissive": "a924c847:269533",
+  "pointShadows+environmentProbe": "ce1300bd:273097",
+  "pointShadows+environmentProbe+nightEmissive": "1f92a2bd:275583",
+  "pointShadows+nightEmissive": "7f943426:249570",
 }
 `;
 
@@ -123,8 +123,22 @@ flat in int vHasTangents;
  * white shades identically to one with no texture at all.
  */
 uniform mediump sampler2DArray uAlbedo;
-/** 0 leaves every textured path unevaluated, for the majority of geometry with no image. */
-uniform int uAlbedoEnabled;
+/**
+ * **The material's four switches in one row**, because every loose scalar is a row of the 256 an
+ * Adreno 740 offers and the eight-light build had none to spare once a shading model asked for two
+ * (\`models.ts\`): four ints were four rows, and this is one.
+ *
+ * - **x, the albedo**: 0 leaves every textured path unevaluated, for the majority of geometry with
+ *   no image.
+ * - **y, the ORM map**: 1 when one is bound, gating its whole block. A uniform rather than a
+ *   permutation flag, because a fifth flag takes the sixteen permutations flatSource.test.ts sweeps
+ *   to thirty-two and roughly doubles the generated WGSL every consumer bundles.
+ * - **z, the emissive map**: 1 when one is bound, gating its sample, for the same reason.
+ * - **w, two-sided**: 1 for a surface seen from both faces — glTF's doubleSided, a curtain, a leaf
+ *   card. Its draw culls nothing, and a back face is lit as a front, with the shading normal turned
+ *   toward the viewer.
+ */
+uniform ivec4 uMaterialFlags;
 /**
  * Alpha below which a textured fragment is thrown away entirely, 0 to disable.
  *
@@ -136,8 +150,13 @@ uniform int uAlbedoEnabled;
  *
  * Zero by default, so a texture with no alpha to speak of costs one compare and nothing
  * else changes.
+ *
+ * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
+ * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
+ * frame the dither's pattern is offset by, w spare. One vector rather than a float and two more,
+ * because every loose scalar is a row of WebGL2's 224 that the light budget gives up.
  */
-uniform float uAlbedoCutout;
+uniform vec4 uCutout;
 /**
  * The albedo array's per-layer effects table: six texels a layer, read with \`texelFetch\` at the
  * layer a vertex carries. A 1×1 stand-in where the array has none, which the size test below reads
@@ -145,11 +164,6 @@ uniform float uAlbedoCutout;
  */
 uniform mediump sampler2D uSurfaceEffects;
 
-/**
- * 1 for a surface seen from both faces: glTF's doubleSided, a curtain or a leaf card. Its draw culls
- * nothing, and a back face is lit as a front, with the shading normal turned toward the viewer.
- */
-uniform int uDoubleSided;
 
 /**
  * A normal map, in the surface's own space.
@@ -165,7 +179,7 @@ uniform highp sampler2DArray uNormalMap;
 /**
  * How hard the map turns the shading normal. 0 is no map at all, and gates the whole block.
  *
- * A uniform rather than a permutation flag, following uAlbedoEnabled: a fifth boolean would take
+ * A uniform rather than a permutation flag, following the albedo's flag: a fifth boolean would take
  * the exhaustive permutation sweep from sixteen shaders to thirty-two, and the generated WGSL that
  * consumers bundle as source from 766 KB to about 1.5 MB. A permutation is the right tool for the
  * shadow samplers, where a profile with shadows off should declare none of them; it is the wrong
@@ -185,16 +199,6 @@ uniform float uNormalStrength;
  */
 uniform highp sampler2DArray uOrmMap;
 /**
- * 1 when a map is bound. Gates the whole block, following uAlbedoEnabled.
- *
- * A uniform rather than a fifth permutation flag: FlatShaderOptions has four booleans and
- * flatSource.test.ts sweeps all sixteen exhaustively, so a fifth takes that to thirty-two and
- * roughly doubles the generated WGSL that consumers bundle as source, this engine having no build
- * step. A permutation is the right tool for the shadow samplers, where a profile with shadows off
- * should declare none of them. It is the wrong tool for one more image.
- */
-uniform int uOrmEnabled;
-/**
  * What each channel is scaled by, component-aligned with the map: r occlusion, g roughness,
  * b metallic. The alignment is the documentation.
  *
@@ -211,7 +215,7 @@ uniform vec3 uOrmScale;
  * wants a roughness combined in quadrature. Likewise the weight: the split sum is the correct share
  * of a *prefiltered* environment and asserts an integral that was never performed over a box chain.
  *
- * A uniform rather than a permutation flag, following \`uOrmEnabled\`: a fifth boolean doubles the
+ * A uniform rather than a permutation flag, following the ORM map's in \`uMaterialFlags\`: a fifth boolean doubles the
  * generated WGSL every consumer bundles as source, and this is a few multiply-adds.
  */
 uniform float uEnvironmentPrefiltered;
@@ -225,13 +229,11 @@ uniform float uEnvironmentPrefiltered;
  * where it should be saturated — but it is silent, because a glow that is too dim reads as a
  * material choice rather than as a decode.
  *
- * A uniform gate rather than a permutation flag, for exactly the reasons \`uOrmEnabled\` gives
+ * A uniform gate rather than a permutation flag, for exactly the reasons \`uMaterialFlags\` gives
  * above, and now with a number behind them: a fifth flag was built and measured at 49% of the
  * bundle. See \`ARCHITECTURE.md\` §1.
  */
 uniform highp sampler2DArray uEmissiveMap;
-/** 1 when a map is bound. Gates the sample, following uOrmEnabled. */
-uniform int uEmissiveMapEnabled;
 /**
  * What the map is scaled by, per channel. 1 is the identity and the default.
  *
@@ -464,7 +466,7 @@ bool ditherKeeps(float amount) {
  * block member the shader does not already carry the size of; it is one \`int\` beside
  * \`uOpacity\`, read once. And the branch it drives is on a value that is the same for every
  * fragment in one draw call, which is exactly the guarantee \`uReflectivity\` and
- * \`uAlbedoEnabled\` already lean on above: a compiler asked to predicate a whole wavefront on
+ * \`uMaterialFlags\` already lean on above: a compiler asked to predicate a whole wavefront on
  * one uniform skips the untaken side rather than computing both and discarding one, which is
  * only true because nothing here reads it through a *varying*-dependent branch.
  */
@@ -2786,6 +2788,18 @@ float cutoutAlpha(float alpha, vec2 texels) {
 }
 
 
+float cutoutShare(float alpha, float cutoff) {
+  float band = max(2.0 * min(cutoff, 1.0 - cutoff), 1e-4);
+  return clamp((alpha - cutoff) / band + 0.5, 0.0, 1.0);
+}
+
+bool cutoutKeeps(float share, vec2 pixel, float frame) {
+  vec2 p = pixel + vec2(5.588238 * frame);
+  float noise = fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+  return share > noise;
+}
+
+
 /** x how much of the summed light is in the frame (0 off), y the radius, z the band, w the scale. */
 uniform vec4 uDriftLight;
 /** xyz the first sample; w metres between samples — a third of a brick, or negated for a dense volume. */
@@ -2985,6 +2999,500 @@ vec4 fxWindows(vec3 at, vec2 dx, vec2 dy, float mask) {
   return vec4(glow * (lit * fx1.w * glass), glass);
 }
 
+
+/* Which model a pipeline shades by. Each off but where a material asks for it: see models.ts. */
+const bool MODEL_ANISOTROPIC = false;  // wgsl:override
+const bool MODEL_HAIR = false;  // wgsl:override
+const bool MODEL_SKIN = false;  // wgsl:override
+const bool MODEL_EYE = false;  // wgsl:override
+/*
+ * Skin's screen-space scattering, as two halves of one surface: the scene pass without its diffuse,
+ * and a pass that is nothing but it, which the blur spreads before it is added back. Both off but
+ * where \`skinScattering\` is \`'screen-space'\`; see \`skinBlur.ts\`.
+ */
+const bool SKIN_SCREEN = false;  // wgsl:override
+const bool SKIN_DIFFUSE = false;  // wgsl:override
+
+/*
+ * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
+ * (surfaceModel.ts) — and whether a model map is bound, in the last component.
+ */
+uniform vec4 uModelParams[2];
+/* The model's own channels, in the albedo's layout: what each means is each model's to say. */
+uniform highp sampler2DArray uModelMap;
+
+/** Whether this pipeline shades by any model but the standard one. */
+bool modelOn() {
+  if (MODEL_ANISOTROPIC) return true;
+  if (MODEL_HAIR) return true;
+  if (MODEL_SKIN) return true;
+  if (MODEL_EYE) return true;
+  return false;
+}
+
+/** Whether this pipeline draws skin's diffuse alone, for the screen-space blur. */
+bool modelDiffuseAlone() {
+  if (MODEL_SKIN) {
+    if (SKIN_DIFFUSE) return true;
+  }
+  return false;
+}
+
+/** Whether light from behind the surface reaches the eye through it: hair, and skin's thin parts. */
+bool modelSeesBehind() {
+  if (MODEL_HAIR) return true;
+  if (MODEL_SKIN) return true;
+  return false;
+}
+
+/* The surface a model shades, gathered once in main before any light reaches it. */
+vec3 mNormal;
+vec3 mToEye;
+vec3 mTangent;
+vec3 mBitangent;
+vec3 mAlbedo;
+vec3 mSpecColor;
+float mRoughness;
+float mMetal;
+vec4 mMap;
+/*
+ * What \`modelLight\` leaves: the diffuse weighted by its angle and the lobe, neither shadowed.
+ * Globals rather than out parameters, because every parameter a call passes is a local, a store and
+ * a pointer at each call site in \`main\` — sixteen copies of it, one a permutation.
+ */
+vec3 mDiffuse;
+vec3 mSpecular;
+
+/**
+ * Normalised GGX — the distribution itself, not the engine's peak-normalised look — for the models
+ * whose highlight is physical: skin's and the cornea's.
+ */
+float ggxLobe(float ndh, float alpha) {
+  float a2 = alpha * alpha;
+  float d = ndh * ndh * (a2 - 1.0) + 1.0;
+  return a2 / (3.14159265 * d * d);
+}
+
+/** Smith's height-correlated masking with the BRDF's 1 / 4 N·L N·V folded in, for the same. */
+float smithMasking(float ndl, float ndv, float alpha) {
+  float a2 = alpha * alpha;
+  return 0.5 / max(
+    ndl * sqrt(ndv * ndv * (1.0 - a2) + a2) + ndv * sqrt(ndl * ndl * (1.0 - a2) + a2),
+    1e-5
+  );
+}
+
+/** The standard model's answer to one light, which a model falls back to for what it does not change. */
+void standardLight(vec3 l, float sourceRadius, float dist) {
+  float ndl = max(dot(mNormal, l), 0.0);
+  vec3 h = normalize(l + mToEye);
+  float ndh = max(dot(mNormal, h), 0.0);
+  float lobe = sourceRadius > 0.0
+    ? sphereLobe(ndh, mRoughness, sourceRadius, dist)
+    : specularLobe(ndh, mRoughness);
+  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
+  mSpecular = ndl > 0.0 ? tint * lobe : vec3(0.0);
+}
+
+
+
+/* The stretch's frame and strength, gathered once with the surface. */
+vec3 aAlong;
+vec3 aAcross;
+float aStrength;
+
+void anisotropicSurface() {
+  vec2 direction = vec2(1.0, 0.0);
+  float strength = uModelParams[0].x;
+  if (uModelParams[1].w > 0.0) {
+    vec2 mapped = mMap.rg * 2.0 - 1.0;
+    direction = dot(mapped, mapped) > 1e-8 ? normalize(mapped) : direction;
+    strength *= mMap.b;
+  }
+  vec2 turned = vec2(
+    direction.x * uModelParams[0].y - direction.y * uModelParams[0].z,
+    direction.x * uModelParams[0].z + direction.y * uModelParams[0].y
+  );
+  aAlong = normalize(mTangent * turned.x + mBitangent * turned.y);
+  aAcross = cross(mNormal, aAlong);
+  aStrength = strength;
+}
+
+/** The stretched lobe at a half vector, 1 at the mirror direction: anisotropicLobe.ts. */
+float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
+  float alpha = max(mRoughness * mRoughness, MIN_LOBE_ALPHA);
+  float alongWidth = alpha + (1.0 - alpha) * aStrength * aStrength;
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float alongWide = clamp(alongWidth + grow, alongWidth, 1.0);
+  float acrossWide = clamp(alpha + grow, alpha, 1.0);
+  float energy = (alongWidth / alongWide) * (alpha / acrossWide);
+  float x = dot(aAlong, h) / alongWide;
+  float y = dot(aAcross, h) / acrossWide;
+  float z = dot(mNormal, h);
+  float d = x * x + y * y + z * z;
+  return energy / max(d * d, 1e-8);
+}
+
+void anisotropicLight(vec3 l, float sourceRadius, float dist) {
+  float ndl = max(dot(mNormal, l), 0.0);
+  vec3 h = normalize(l + mToEye);
+  vec3 tint = mix(mSpecColor, vec3(1.0), pow(1.0 - max(dot(mToEye, h), 0.0), 5.0) * mMetal);
+  mDiffuse = mAlbedo * ndl * (1.0 - mMetal);
+  mSpecular = ndl > 0.0 ? tint * anisotropicLobe(h, sourceRadius, dist) : vec3(0.0);
+}
+
+/* The environment's normal, bent toward the stretch by its strength and the surface's roughness. */
+vec3 anisotropicReflectNormal(vec3 n) {
+  vec3 across = cross(aAcross, mToEye);
+  vec3 bent = cross(across, aAcross);
+  float bend = aStrength * clamp(5.0 * mRoughness, 0.0, 1.0);
+  return normalize(mix(n, bent, bend));
+}
+
+
+const float HAIR_F0 = 0.046520569;
+const float HAIR_MIN_BETA = 0.050;
+const float HAIR_SCATTER_SPHERE = 1.330;
+
+/* This texel's tilt, gathered once with the surface. */
+float hShift;
+
+void hairSurface() {
+  hShift = uModelParams[0].x * (0.5 + mMap.g);
+}
+
+/** A longitudinal lobe: a normalised Gaussian of width \`beta\` at \`x\` from its centre. */
+float hairLongitudinal(float beta, float x) {
+  return exp(-0.5 * x * x / (beta * beta)) / (2.5066283 * beta);
+}
+
+float hairFresnel(float cosine) {
+  float c = 1.0 - clamp(cosine, 0.0, 1.0);
+  return HAIR_F0 + (1.0 - HAIR_F0) * c * c * c * c * c;
+}
+
+/** The normal turned toward the eye across the strand: the scatter's and the environment's. */
+vec3 hairAcross() {
+  vec3 across = mToEye - mTangent * dot(mTangent, mToEye);
+  float length2 = dot(across, across);
+  return length2 > 1e-8 ? across * inversesqrt(length2) : mNormal;
+}
+
+void hairLight(vec3 l, float sourceRadius, float dist) {
+  vec3 t = mTangent;
+  float sinI = clamp(dot(t, l), -1.0, 1.0);
+  float sinO = clamp(dot(t, mToEye), -1.0, 1.0);
+  /* Floored for the half angle's limit, whose single-precision cosine is negative: hairLobes.ts. */
+  float cosD = max(cos(0.5 * abs(asin(sinO) - asin(sinI))), 1e-3);
+  vec3 lp = l - sinI * t;
+  vec3 vp = mToEye - sinO * t;
+  float cosPhi = dot(lp, vp) * inversesqrt(dot(lp, lp) * dot(vp, vp) + 1e-4);
+  float cosHalfPhi = sqrt(clamp(0.5 + 0.5 * cosPhi, 0.0, 1.0));
+  float beta = max(mRoughness * mRoughness, HAIR_MIN_BETA);
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float x = sinI + sinO;
+
+  float r = hairLongitudinal(beta + grow, x + 2.0 * hShift) * 0.25 * cosHalfPhi
+    * hairFresnel(sqrt(clamp(0.5 + 0.5 * dot(l, mToEye), 0.0, 1.0)));
+
+  float a = 1.0 / (1.19 / cosD + 0.36 * cosD);
+  float h = cosHalfPhi * (1.0 + a * (0.6 - 0.8 * cosPhi));
+  float fTT = hairFresnel(cosD * sqrt(clamp(1.0 - h * h, 0.0, 1.0)));
+  float tt = hairLongitudinal(0.5 * beta + grow, x - hShift) * exp(-3.65 * cosPhi - 3.98)
+    * (1.0 - fTT) * (1.0 - fTT) * uModelParams[0].z;
+  float ttPower = 0.5 * sqrt(clamp(1.0 - h * h * a * a, 0.0, 1.0)) / cosD;
+
+  float fTRT = hairFresnel(0.5 * cosD);
+  float trt = hairLongitudinal(2.0 * beta + grow, x - 3.0 * hShift) * exp(17.0 * cosPhi - 16.78)
+    * (1.0 - fTRT) * (1.0 - fTRT) * fTRT;
+
+  /* Above zero, so pow never takes the logarithm of nothing: hairLobes.ts. */
+  vec3 fibre = max(mAlbedo, vec3(1e-4));
+  /* π: the published lobes are per unit irradiance, and a lamp here is π of that. */
+  mSpecular = 3.14159265 * (vec3(r) + tt * pow(fibre, vec3(ttPower)) + trt * pow(fibre, vec3(0.8 / cosD)));
+  float wrapped = clamp((dot(hairAcross(), l) + 1.0) * 0.25, 0.0, 1.0);
+  mDiffuse = sqrt(mAlbedo) * uModelParams[0].y * mix(wrapped, 1.0 - abs(sinI), 0.33);
+}
+
+/**
+ * A shadow on the scatter: light that reaches a strand in another's shadow has passed through
+ * hair to get there, so a penumbra deepens toward the fibre's own hue.
+ */
+vec3 hairShade(float shadow) {
+  vec3 hue = mAlbedo / max(dot(mAlbedo, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  return shadow * pow(max(hue, vec3(1e-4)), vec3(1.0 - shadow));
+}
+
+/** Light from every side, through the scatter term: \`HAIR_SCATTER_SPHERE\` says why that number. */
+vec3 hairAround(vec3 light) {
+  return sqrt(mAlbedo) * (uModelParams[0].y * HAIR_SCATTER_SPHERE * mMap.b) * light;
+}
+
+/** The reflected lobe's share of the environment: its Fresnel, which is what it integrates to. */
+float hairReflectance() {
+  return hairFresnel(dot(hairAcross(), mToEye)) * mMap.b;
+}
+
+
+const float SKIN_F0 = 0.027777778;
+const float SKIN_PENUMBRA_WIDTH = 0.020;
+
+/* What the surface gives every light: the fit's four terms per channel, squared where they are used so. */
+vec3 sDistance;
+vec3 sKappa;
+vec3 sSpread;
+vec3 sSoften2;
+vec3 sFloor;
+float sThickness;
+/* What the last light left, for modelShade: the part lit from the front, and the part through. */
+vec3 sFront;
+vec3 sThrough;
+
+void skinSurface() {
+  sDistance = max(uModelParams[0].xyz * uModelParams[0].w, vec3(1e-6));
+  /* The screen's curvature, taken here, where control flow is uniform, whether a map replaces it. */
+  float screen = length(fwidth(normalize(vNormal))) / max(length(fwidth(vWorldPos)), 1e-6);
+  float curvature = uModelParams[1].w > 0.0 ? mMap.g * 100.0 : screen;
+  sThickness = uModelParams[1].w > 0.0 ? mMap.r * 0.02 : 2.0 / max(curvature, 1e-3);
+  vec3 k = min(sDistance * curvature, vec3(10.0000));
+  /*
+   * Under the screen-space blur the diffuse half is Lambert's, k at 0: the blur spreads the light
+   * across the picture, curvature and all, and the fit as well would count that light twice.
+   */
+  if (SKIN_DIFFUSE) k = vec3(0.0);
+  vec3 k2 = k * k;
+  sKappa = pow(1.0 + 22.6772 * k2 + 101.349 * k2 * k, vec3(-1.0 / 6.0));
+  sSpread = pow(1.0 + 838.870 * k2 * k, vec3(-1.0 / 6.0));
+  vec3 soften = 1.30810 * k / (1.0 + 3.65743 * k);
+  sSoften2 = soften * soften;
+  vec3 given = 1.0 - sSpread;
+  sFloor = given * (0.508537 + 0.129496 * given);
+}
+
+void skinLight(vec3 l, float sourceRadius, float dist) {
+  float c = dot(mNormal, l);
+  vec3 ring = 0.5 * (sKappa * c + sSpread * sqrt(c * c + sSoften2) + sFloor);
+  vec3 through = uModelParams[1].x * exp(-sThickness / sDistance) * max(-c, 0.0);
+  sFront = mAlbedo * ring * (1.0 - mMetal);
+  sThrough = mAlbedo * through * (1.0 - mMetal);
+  mDiffuse = sFront + sThrough;
+
+  float ndl = max(c, 0.0);
+  vec3 h = normalize(l + mToEye);
+  float ndh = max(dot(mNormal, h), 0.0);
+  float ndv = max(dot(mNormal, mToEye), 1e-4);
+  /* A lamp's size widens both lobes; a normalised lobe keeps its energy as it widens. */
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float alpha = min(max(mRoughness * mRoughness, MIN_LOBE_ALPHA) + grow, 1.0);
+  float oil = min(max(0.36 * mRoughness * mRoughness, MIN_LOBE_ALPHA) + grow, 1.0);
+  float f = SKIN_F0 + (1.0 - SKIN_F0) * pow(1.0 - max(dot(mToEye, h), 0.0), 5.0);
+  float masking = smithMasking(ndl, ndv, alpha);
+  float lobe = 0.85 * ggxLobe(ndh, alpha) + 0.15 * ggxLobe(ndh, oil);
+  /* π: a lamp here is π of unit irradiance, as hair's are. */
+  mSpecular = vec3(3.14159265 * f * masking * lobe * ndl);
+  /* Under the screen-space blur each pass keeps its half: models.ts. */
+  if (SKIN_SCREEN) mDiffuse = vec3(0.0);
+  if (SKIN_DIFFUSE) mSpecular = vec3(0.0);
+}
+
+/** Which profile the blur spreads this skin by, as the diffuse pass's alpha: (index + 1) / 8. */
+float skinProfileCode() {
+  return (uModelParams[1].y + 1.0) / 8.0;
+}
+
+/** The front-lit part through the penumbra, each channel by how far it travels; the part through, whole. */
+vec3 skinShade(float shadow) {
+  /* The blur carries light across a shadow's edge itself, so its half takes the shadow as it is. */
+  if (SKIN_DIFFUSE) return (sFront * max(shadow, 0.0) + sThrough) / max(mDiffuse, vec3(1e-6));
+  vec3 penumbra = pow(vec3(max(shadow, 0.0)), 1.0 / (1.0 + sDistance / SKIN_PENUMBRA_WIDTH));
+  return (sFront * penumbra + sThrough) / max(mDiffuse, vec3(1e-6));
+}
+
+/** The environment at the highlight's Fresnel, by the split sum's share. */
+float skinReflectance() {
+  vec2 dfg = envBrdfApprox(max(dot(mNormal, mToEye), 0.0), mRoughness);
+  return SKIN_F0 * dfg.x + dfg.y;
+}
+
+
+const float CORNEA_F0 = 0.020688685;
+const float EYE_MIN_DESCENT = 0.0010;
+
+/* How much of this texel is iris, gathered with the surface. */
+float eIris;
+
+/** Where the iris is without a map: a disc of the model's radius about the centre, a soft limbus. */
+float eyeIrisDisc(vec2 uv) {
+  float r = length(uv - 0.5);
+  return 1.0 - smoothstep(uModelParams[0].x - 0.01, uModelParams[0].x + 0.01, r);
+}
+
+/** The iris's texture coordinate, moved by the cornea: \`eyeRefraction.ts\`. Before any map is read. */
+vec3 eyeRefract(vec3 at) {
+  vec3 n = normalize(vNormal);
+  vec3 axis = uModelParams[1].xyz;
+  vec4 map = texture(uModelMap, at);
+  bool mapped = uModelParams[1].w > 0.0;
+  float iris = mapped ? map.r : eyeIrisDisc(at.xy);
+  float height = uModelParams[0].y * (mapped ? map.g : 1.0);
+  vec3 ray = refract(-normalize(uCameraPos - vWorldPos), n, 1.0 / uModelParams[0].z);
+  float descent = max(-dot(ray, axis), EYE_MIN_DESCENT);
+  vec3 travel = ray * (height / descent);
+  vec3 across = travel - axis * dot(travel, axis);
+  mat3 frame = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
+  /* How many texture coordinates a metre spans here, from the screen's two derivatives. */
+  float perMetre = length(fwidth(vUv.xy)) / max(length(fwidth(vWorldPos)), 1e-9);
+  vec2 shift = vec2(dot(across, frame[0]), dot(across, frame[1])) * (perMetre * iris);
+  return vec3(at.xy + shift, at.z);
+}
+
+void eyeSurface(vec3 at) {
+  eIris = uModelParams[1].w > 0.0 ? mMap.r : eyeIrisDisc(at.xy);
+  mRoughness = uModelParams[0].w;
+}
+
+void eyeLight(vec3 l, float sourceRadius, float dist) {
+  vec3 axis = uModelParams[1].xyz;
+  /* The iris is concave where the cornea over it is convex: the surface's normal mirrored about the axis. */
+  vec3 irisNormal = normalize(2.0 * dot(mNormal, axis) * axis - mNormal);
+  vec3 lit = normalize(mix(mNormal, irisNormal, eIris));
+  mDiffuse = mAlbedo * max(dot(lit, l), 0.0) * (1.0 - mMetal);
+
+  float ndl = max(dot(mNormal, l), 0.0);
+  vec3 h = normalize(l + mToEye);
+  float ndh = max(dot(mNormal, h), 0.0);
+  float ndv = max(dot(mNormal, mToEye), 1e-4);
+  float grow = sourceRadius / max(2.0 * dist, 1e-3);
+  float alpha = min(max(mRoughness * mRoughness, MIN_LOBE_ALPHA) + grow, 1.0);
+  float f = CORNEA_F0 + (1.0 - CORNEA_F0) * pow(1.0 - max(dot(mToEye, h), 0.0), 5.0);
+  mSpecular = vec3(3.14159265 * f * smithMasking(ndl, ndv, alpha) * ggxLobe(ndh, alpha) * ndl);
+}
+
+/** The environment at the cornea's Fresnel, by the split sum's share at its own roughness. */
+float eyeReflectance() {
+  vec2 dfg = envBrdfApprox(max(dot(mNormal, mToEye), 0.0), uModelParams[0].w);
+  return CORNEA_F0 * dfg.x + dfg.y;
+}
+
+
+/**
+ * Where the material's maps are read: the surface's own coordinate, but for an eye, whose iris is
+ * seen through its cornea and moved by it (\`eyeRefraction.ts\`). Before any map is read, and on a
+ * branch on the switches alone, so its derivatives are in uniform control flow.
+ */
+vec3 modelSurfaceAt(vec3 at) {
+  if (MODEL_EYE) return eyeRefract(at);
+  return at;
+}
+
+/**
+ * Gather the surface. The frame and the map read derivatives, so this is called under a branch on
+ * the switches alone, which is uniform control flow by construction.
+ */
+void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
+  mNormal = n;
+  mToEye = normalize(uCameraPos - vWorldPos);
+  mat3 frame = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
+  mTangent = frame[0];
+  mBitangent = frame[1];
+  mAlbedo = albedo;
+  mSpecColor = mix(vec3(vSpecular), albedo, metal);
+  mRoughness = roughness;
+  mMetal = metal;
+  mMap = vec4(0.5, 0.5, 1.0, 1.0);
+  if (uModelParams[1].w > 0.0) mMap = texture(uModelMap, at);
+  if (MODEL_ANISOTROPIC) anisotropicSurface();
+  if (MODEL_HAIR) hairSurface();
+  if (MODEL_SKIN) skinSurface();
+  if (MODEL_EYE) eyeSurface(at);
+}
+
+/**
+ * One light, arriving along \`l\` (unit, toward the light), from a source \`sourceRadius\` across at
+ * \`dist\` — 0 for the sun. Into \`mDiffuse\`, weighted by its angle, and \`mSpecular\`, in lobe
+ * units, neither shadowed.
+ */
+void modelLight(vec3 l, float sourceRadius, float dist) {
+  if (MODEL_ANISOTROPIC) {
+    anisotropicLight(l, sourceRadius, dist);
+    return;
+  }
+  if (MODEL_HAIR) {
+    hairLight(l, sourceRadius, dist);
+    return;
+  }
+  if (MODEL_SKIN) {
+    skinLight(l, sourceRadius, dist);
+    return;
+  }
+  if (MODEL_EYE) {
+    eyeLight(l, sourceRadius, dist);
+    return;
+  }
+  standardLight(l, sourceRadius, dist);
+}
+
+/** How a shadow of \`shadow\` darkens this model's diffuse: the identity, but for hair and skin. */
+vec3 modelShade(float shadow) {
+  if (MODEL_HAIR) return hairShade(shadow);
+  if (MODEL_SKIN) return skinShade(shadow);
+  return vec3(shadow);
+}
+
+/** The sky's or the probe's light on this surface, before any reflection. */
+vec3 modelAmbient(vec3 ambient) {
+  if (MODEL_HAIR) return hairAround(ambient);
+  if (MODEL_SKIN) {
+    if (SKIN_SCREEN) return vec3(0.0);
+  }
+  return mAlbedo * ambient;
+}
+
+/** Light arriving from every side at once — DriftLight's — as this surface returns it. */
+vec3 modelIrradiance(vec3 irradiance) {
+  if (MODEL_HAIR) return hairAround(irradiance);
+  if (MODEL_SKIN) {
+    if (SKIN_SCREEN) return vec3(0.0);
+  }
+  return mAlbedo * irradiance * (1.0 - mMetal);
+}
+
+/** The normal the environment is reflected about: the surface's own, but for a stretched lobe. */
+vec3 modelReflectNormal(vec3 n) {
+  if (MODEL_ANISOTROPIC) return anisotropicReflectNormal(n);
+  if (MODEL_HAIR) return hairAcross();
+  return n;
+}
+
+/**
+ * The environment the reflection blends toward: black in skin's diffuse pass, so the blend dims
+ * the light before it by the reflection's share — as the whole surface's does, and only that light,
+ * the lamps arriving after it — and adds none of the reflection, which is the scene pass's half.
+ */
+vec3 modelEnvironment(vec3 environment) {
+  if (MODEL_SKIN) {
+    if (SKIN_DIFFUSE) return vec3(0.0);
+  }
+  return environment;
+}
+
+/** Skin's diffuse as the diffuse pass writes it, from the lit total before emission, fogged. */
+vec3 modelDiffuseOut(vec3 diffuse, float fog) {
+  return diffuse * (1.0 - fog);
+}
+
+/**
+ * How much of the environment the surface reflects — the blend's weight, Fresnel and all — from
+ * what the standard model would.
+ */
+float modelReflectance(float standard) {
+  if (MODEL_HAIR) return hairReflectance();
+  if (MODEL_SKIN) return skinReflectance();
+  if (MODEL_EYE) return eyeReflectance();
+  return standard;
+}
+
 void main() {
   /*
    * Where every material map is read: the texture coordinate, and the layer of the array the face
@@ -3006,6 +3514,8 @@ void main() {
     fxLoad(int(surfaceAt.z));
     surfaceAt = fxAnimate(surfaceAt);
   }
+  /* An eye's iris, moved by its cornea before any map reads it: models.ts. */
+  surfaceAt = modelSurfaceAt(surfaceAt);
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
@@ -3041,18 +3551,35 @@ void main() {
    * rectangle of haze with a picture in it, rather than a picture.
    */
   float coverage = 1.0;
-  if (uAlbedoEnabled != 0) {
+  if (uMaterialFlags.x != 0) {
     vec4 texel = texture(uAlbedo, surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
-    if (uAlbedoCutout > 0.0) {
+    float kept = texel.a;
+    if (uCutout.x > 0.0) {
       float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
-      if (tested < uAlbedoCutout) discard;
+      if (uCutout.y == 0.0) {
+        if (tested < uCutout.x) discard;
+      } else {
+        /*
+         * A dithered edge: the pixel is kept by the share of it the texture covers. Under a
+         * temporal resolve the test is against noise that moves every frame, and a kept pixel is
+         * whole; multisampled, the share is the alpha the GPU turns into coverage. See
+         * cutoutDither.ts.
+         */
+        float share = cutoutShare(tested, uCutout.x);
+        if (uCutout.y == 1.0) {
+          if (!cutoutKeeps(share, gl_FragCoord.xy, uCutout.z)) discard;
+          kept = 1.0;
+        } else {
+          kept = share;
+        }
+      }
     }
     albedo *= texel.rgb;
-    coverage = texel.a;
+    coverage = kept;
   }
 
   /*
@@ -3076,7 +3603,7 @@ void main() {
   float ormOcclusion = 1.0;
   float ormRoughness = vRoughness;
   float metal = 0.0;
-  if (uOrmEnabled != 0) {
+  if (uMaterialFlags.y != 0) {
     vec3 t = texture(uOrmMap, surfaceAt).rgb;
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
@@ -3106,6 +3633,8 @@ void main() {
   }
 
   vec3 lit = albedo;
+  /* Skin's diffuse, held before emission for the screen-space blur's own pass: models.ts. */
+  vec3 diffuseAlone = vec3(0.0);
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
      over the see-through at the end. Stays zero for anything that is not glass. See glass.ts. */
   vec3 glassGlow = vec3(0.0);
@@ -3128,7 +3657,7 @@ void main() {
      * Taken from the stored normal alone, a pane seen from behind glowed with the light on the
      * eye's side and not with the sun shining through it.
      */
-    bool backFace = (uDoubleSided != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;
+    bool backFace = (uMaterialFlags.w != 0 || glassTransmission > 0.0) && dot(n, uCameraPos - vWorldPos) < 0.0;
     /*
      * The authored normal, before either relief perturbs it.
      *
@@ -3147,6 +3676,15 @@ void main() {
      */
     if (uNormalStrength > 0.0) {
       vec3 mapped = texture(uNormalMap, surfaceAt).xyz * 2.0 - 1.0;
+      /*
+       * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
+       * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
+       * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
+       * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
+       * that has to say what format it holds, and continuous at the boundary, since a unit texel
+       * lying flat has its z near zero either way. A texel with z above zero is left as it was.
+       */
+      mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
       mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
       n = normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
     }
@@ -3253,7 +3791,7 @@ void main() {
      * and normalized: dividing the gradient by \`det\` instead would blow up on a fragment where
      * the surface is edge-on and the quad's footprint collapses.
      */
-    if (uAlbedoEnabled != 0 && uTextureRelief != 0.0) {
+    if (uMaterialFlags.x != 0 && uTextureRelief != 0.0) {
       /*
        * **A centred difference, not three.js's forward one, and that is what makes the two
        * backends agree.** WebGL2's framebuffer counts y upward and WebGPU's counts it downward,
@@ -3316,6 +3854,14 @@ void main() {
      * across the fold of every curtain.
      */
     if (backFace) n = -n;
+    /*
+     * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
+     * there is one, asked once: every site below is a branch on these two, which a pipeline with no
+     * model folds away, and each extra call was a copy of its plumbing in all sixteen permutations.
+     */
+    bool modelled = modelOn();
+    bool modelledBehind = modelSeesBehind();
+    if (modelled) modelSurface(n, albedo, surfaceRoughness, metal, surfaceAt);
 
     /*
      * One dot product, used twice: ndl is the lit side and its negative is the night side below.
@@ -3422,7 +3968,19 @@ void main() {
      * smallest change available in a shader with a documented history of shared subexpressions
      * rounding differently when their neighbours move. See the night-emissive term.
      */
-    lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
+    /*
+     * A model answers the sun itself, and is shadowed as it says (models.ts). The standard line
+     * stands as it was, so a pipeline with no model compiles to exactly the arithmetic before.
+     */
+    vec3 sunModelSpecular = vec3(0.0);
+    if (modelled) {
+      modelLight(uDirectionalDir, 0.0, 0.0);
+      float sunModelFacing = modelledBehind ? 1.0 : sunFacing;
+      lit = modelAmbient(ambient) + sunColor * mDiffuse * modelShade(sunShade) * sunModelFacing;
+      sunModelSpecular = mSpecular * sunColor * sunShade * sunModelFacing;
+    } else {
+      lit = albedo * (ambient + sunColor * direct * (1.0 - metal));
+    }
 
     /*
      * A sun highlight, for the few surfaces that ask for one.
@@ -3485,6 +4043,7 @@ void main() {
      */
     vec3 sunHighlight =
       sunColor * specularLobe(max(dot(n, halfway), 0.0), surfaceRoughness) * sunSpec * sunShade * sunFacing;
+    if (modelled) sunHighlight = sunModelSpecular;
     /*
      * The dielectric's share goes in here, where it has always gone, so the environment blend
      * below dims it by exactly the reflectance it always dimmed it by. The metal's share is added
@@ -3556,18 +4115,20 @@ void main() {
      * whole block was skipped for a fully metallic surface and max(uReflectivity, metal) inside it
      * was never reached. A chromed subject came out near black with a baked probe sitting unread.
      *
-     * **Gated on uOrmEnabled rather than on metal, and that is required rather than tidy.** The
+     * **Gated on the ORM flag rather than on metal, and that is required rather than tidy.** The
      * block takes fwidth of the mirror direction, and a derivative may only be taken under uniform
-     * control flow. uOrmEnabled is a uniform; metal is a texture fetch, so branching on it would
+     * control flow. The flag is a uniform; metal is a texture fetch, so branching on it would
      * put that derivative in non-uniform control flow and WGSL refuses the module outright. See
      * AGENTS.md, 2026-08-07. The per-texel decision still happens, one line down, in the amount.
      *
-     * At uOrmEnabled 0 this is uReflectivity > 0.0 exactly, so nothing that binds no map takes a
+     * With the flag at 0 this is uReflectivity > 0.0 exactly, so nothing that binds no map takes a
      * branch it did not take before.
      */
-    if (uReflectivity > 0.0 || uOrmEnabled != 0) {
+    /* A model reflects its environment whatever the pass asked of the standard model: see
+       modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
+    if (uReflectivity > 0.0 || uMaterialFlags.y != 0 || modelled) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
-      vec3 mirrored = reflect(-toEye, n);
+      vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);
       /*
        * Rougher surfaces read a blurrier level, which is what separates satin from lacquer, and
@@ -3817,6 +4378,8 @@ void main() {
         integrated,
         uEnvironmentEnabled * uEnvironmentPrefiltered
       );
+      if (modelled) weight = modelReflectance(weight);
+      if (modelled) environment = modelEnvironment(environment);
       lit = mix(
         lit,
         environment * mix(vec3(1.0), albedo, metal),
@@ -4123,7 +4686,8 @@ void main() {
        */
       float backNdl =
         glassTransmission > 0.0 ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
-      if (ndl <= 0.0 && backNdl <= 0.0) continue;
+      /* A model that sees light from behind keeps the lamps behind the surface. See models.ts. */
+      if (ndl <= 0.0 && backNdl <= 0.0 && !modelledBehind) continue;
 
       /*
        * Normal-offset bias.
@@ -4367,13 +4931,25 @@ void main() {
 
       float shape = (uLightFalloff == 1 ? falloff : falloff * falloff) * coneFalloff * photometric;
       glassGlow += lightColor * backNdl * shape * lightWeight * shaded * lampGlass;
-      if (ndl <= 0.0) continue;
+      if (ndl <= 0.0 && !modelledBehind) continue;
       /*
        * The cookie tints rather than scales, because a mask may be coloured — a stained window is
        * the case that makes the difference — and a greyscale one is exactly a scale. Applied to
        * the light's colour rather than to \`shape\`, which is a scalar and could not carry it.
        */
       lightColor *= cookieTint;
+      /*
+       * A model's answer to this lamp, held back and shadowed exactly as the standard terms below
+       * are — the shadowed sum through \`modelShade\`, which is where skin's penumbra reddens.
+       */
+      if (modelled) {
+        modelLight(toLight / max(dist, 1e-4), lightSourceRadius, dist);
+        vec3 lampModelLight = lightColor * shape * lightWeight;
+        lampOpen += (mDiffuse + mSpecular) * lampModelLight;
+        lampShadowed += (mDiffuse * modelShade(shaded) + mSpecular * shaded) * lampModelLight * lampGlass;
+        lightShade = min(lightShade, mix(1.0, shaded, lightWeight));
+        continue;
+      }
       /*
        * **A metal has no diffuse term, and this lamp kept giving it one.**
        *
@@ -4613,6 +5189,22 @@ void main() {
 
       glassGlow += uAreaLightColor[a] * backForm * areaOccl * areaGlass;
       if (form <= 0.0) continue;
+      /*
+       * A model answers a rectangle as it answers a lamp at its centre, carried at the rectangle's
+       * own energy: the diffuse by the exact form factor over the centre's cosine, the specular by
+       * the form factor. **An approximation, stated**: a model's lobe is not integrated over the
+       * rectangle as the standard lobe is, so a glossy model under a large softbox shows a lobe
+       * from its centre rather than its shape.
+       */
+      if (modelled) {
+        vec3 areaL = normalize(centre - vWorldPos);
+        modelLight(areaL, 0.0, 0.0);
+        vec3 areaModel = (mDiffuse * (form / max(dot(n, areaL), 1e-3)) + mSpecular * form)
+          * uAreaLightColor[a];
+        lampOpen += areaModel;
+        lampShadowed += areaModel * areaOccl * areaGlass;
+        continue;
+      }
       /* Held back with the point lamps', and shadowed by the same term it always was. */
       vec3 areaDiffuse = albedo * uAreaLightColor[a] * form * (1.0 - metal);
       lampOpen += areaDiffuse;
@@ -4704,7 +5296,12 @@ void main() {
       if (glassTransmission > 0.0) {
         glassGlow += driftLightIrradiance(vWorldPos, -n) * (driftShare * uDriftLight.w);
       }
-      lit += albedo * driftLightIrradiance(vWorldPos, n) * (driftShare * uDriftLight.w) * (1.0 - metal);
+      /* The standard expression in its own order — albedo times the field, then the share — so a
+         pipeline with no model rounds exactly as it did; a model is handed the light alone. */
+      vec3 driftField = driftLightIrradiance(vWorldPos, n);
+      lit += modelled
+        ? modelIrradiance(driftField * (driftShare * uDriftLight.w))
+        : albedo * driftField * (driftShare * uDriftLight.w) * (1.0 - metal);
     }
 
     /*
@@ -4756,6 +5353,7 @@ void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
+    diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*
      * Where the surface glows, from an image, or everywhere if it binds none.
@@ -4774,7 +5372,7 @@ void main() {
      * explicit level — the 2026-08-07 rule is satisfied by the gate rather than by a \`textureLod\`.
      */
     vec3 emissiveMapped = vec3(1.0);
-    if (uEmissiveMapEnabled != 0) {
+    if (uMaterialFlags.z != 0) {
       emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
@@ -4851,7 +5449,13 @@ void main() {
     // Water is a camera medium, not a property of individual objects.
     vec3 waterTransmission = vec3(0.42) + uUnderwaterColor * 2.0;
     lit = mix(lit, lit * waterTransmission, uUnderwaterFactor * 0.55);
+    diffuseAlone = mix(diffuseAlone, diffuseAlone * waterTransmission, uUnderwaterFactor * 0.55);
     fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
+  }
+  /* The diffuse pass leaves here, with skin's diffuse and the profile it is spread by. */
+  if (modelDiffuseAlone()) {
+    outColor = vec4(modelDiffuseOut(diffuseAlone * ormOcclusion, fog), skinProfileCode());
+    return;
   }
 
   /*
@@ -5116,6 +5720,7 @@ void main() {
   vec3 basePosition = aPosition;
   vec4 local = vec4(basePosition, 1.0);
   vec3 localNormal = aNormal;
+  vec3 localTangent = aTangent.xyz;
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
   vec3 tint = aInstanceTint;
   vec4 world = model * local;
@@ -5126,9 +5731,16 @@ void main() {
    */
   vec3 bent = world.xyz;
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -5139,7 +5751,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
   /* No channel on this path; the neutral values are what every mesh read before it existed. */
   vSkyDirect = 1.0;
   vAlpha = 1.0;
@@ -5330,6 +5942,7 @@ void main() {
   vec3 basePosition = aPosition;
   vec4 local = vec4(basePosition, 1.0);
   vec3 localNormal = aNormal;
+  vec3 localTangent = aTangent.xyz;
   mat4 model = uModel;
   vec3 tint = uTint;
   vec4 world = model * local;
@@ -5340,9 +5953,16 @@ void main() {
    */
   vec3 bent = channelBend(world.xyz, aChannel.x);
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -5353,7 +5973,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
   vSkyDirect = aChannel.y;
   vAlpha = aChannel.z;
   vThickness = aChannel.w;
@@ -5403,6 +6023,18 @@ uniform highp sampler2D uJointPalette;
 
 layout(location = 11) in vec4 aJoints;
 layout(location = 12) in vec4 aWeights;
+/*
+ * **The fifth to eighth influences, read only by a pipeline built for a mesh that has them.**
+ *
+ * Declared in every skinned variant at the last two locations WebGL2 guarantees — 13 is the channel,
+ * and an instanced draw, which takes 11 to 15, cannot skin — and fed zeros by the absent-attribute
+ * constants for a mesh with four. \`SKIN_EIGHT\` is a pipeline constant rather than a permutation,
+ * so the generated vertex stages do not double: off, the device compiles the second sum away and a
+ * four-influence mesh pays nothing; on, it is four more palette reads a vertex.
+ */
+const bool SKIN_EIGHT = false;  // wgsl:override
+layout(location = 14) in vec4 aJoints2;
+layout(location = 15) in vec4 aWeights2;
 
 /** One joint's matrix, read as four consecutive texels of row 0. */
 mat4 jointMatrix(int index) {
@@ -5423,11 +6055,19 @@ mat4 jointMatrix(int index) {
  * by hand with unnormalised weights, which shades slightly dark or bright rather than breaking.
  */
 mat4 skinMatrix() {
-  return jointMatrix(int(aJoints.x)) * aWeights.x
-       + jointMatrix(int(aJoints.y)) * aWeights.y
-       + jointMatrix(int(aJoints.z)) * aWeights.z
-       + jointMatrix(int(aJoints.w)) * aWeights.w;
+  mat4 m = jointMatrix(int(aJoints.x)) * aWeights.x
+         + jointMatrix(int(aJoints.y)) * aWeights.y
+         + jointMatrix(int(aJoints.z)) * aWeights.z
+         + jointMatrix(int(aJoints.w)) * aWeights.w;
+  if (SKIN_EIGHT) {
+    m += jointMatrix(int(aJoints2.x)) * aWeights2.x
+       + jointMatrix(int(aJoints2.y)) * aWeights2.y
+       + jointMatrix(int(aJoints2.z)) * aWeights2.z
+       + jointMatrix(int(aJoints2.w)) * aWeights2.w;
+  }
+  return m;
 }
+
 
 
 uniform mat4 uViewProj;
@@ -5529,6 +6169,60 @@ vec3 channelBend(vec3 worldPos, float sway) {
  * Declared last, every shared field keeps the offset it had and all four vertex variants agree
  * about the block they share.
  */
+/* Samplers and a constant alone, so no field of the vertex block moves. See clothBinding.ts. */
+
+/** Whether this pipeline places vertices by a cloth binding. */
+const bool CLOTH_BOUND = false; // wgsl:override
+uniform highp sampler2D uClothBinding;
+uniform highp sampler2D uClothParticles;
+uniform highp sampler2D uClothRest;
+
+/** Texel i of a texture wrapped onto rows of the given width. */
+ivec2 clothTexel(int i, int width) {
+  return ivec2(i % width, i / width);
+}
+
+/** A triangle's frame: its first edge, the normal crossed with it, and its normal. */
+mat3 clothFrame(vec3 a, vec3 b, vec3 c) {
+  vec3 edge = b - a;
+  vec3 n = normalize(cross(edge, c - a));
+  vec3 t = normalize(edge);
+  return mat3(t, cross(n, t), n);
+}
+
+/**
+ * Where this vertex's triangle puts it, the turn its normal takes, and how far it follows (the
+ * painted weight: 0 skinned, 1 cloth). One particle named three times is a vertex bound to that
+ * particle alone: on it, with no turn.
+ */
+float clothPlace(out vec3 position, out mat3 turn) {
+  int bindingWidth = textureSize(uClothBinding, 0).x;
+  int particleWidth = textureSize(uClothParticles, 0).x;
+  int restWidth = textureSize(uClothRest, 0).x;
+  vec4 indices = texelFetch(uClothBinding, clothTexel(gl_VertexID * 2, bindingWidth), 0);
+  vec4 at = texelFetch(uClothBinding, clothTexel(gl_VertexID * 2 + 1, bindingWidth), 0);
+  int a = int(indices.x);
+  int b = int(indices.y);
+  int c = int(indices.z);
+  vec3 pa = texelFetch(uClothParticles, clothTexel(a, particleWidth), 0).xyz;
+  if (a == b && b == c) {
+    position = pa;
+    turn = mat3(1.0);
+    return indices.w;
+  }
+  vec3 pb = texelFetch(uClothParticles, clothTexel(b, particleWidth), 0).xyz;
+  vec3 pc = texelFetch(uClothParticles, clothTexel(c, particleWidth), 0).xyz;
+  mat3 now = clothFrame(pa, pb, pc);
+  mat3 rest = clothFrame(
+    texelFetch(uClothRest, clothTexel(a, restWidth), 0).xyz,
+    texelFetch(uClothRest, clothTexel(b, restWidth), 0).xyz,
+    texelFetch(uClothRest, clothTexel(c, restWidth), 0).xyz
+  );
+  position = pa * (1.0 - at.x - at.y) + pb * at.x + pc * at.y + now[2] * at.z;
+  turn = now * transpose(rest);
+  return indices.w;
+}
+
 
 out vec3 vNormal;
 out vec3 vColor;
@@ -5597,6 +6291,7 @@ void main() {
   mat4 skin = skinMatrix();
   vec4 local = skin * vec4(basePosition, 1.0);
   vec3 localNormal = mat3(skin) * aNormal;
+  vec3 localTangent = mat3(skin) * aTangent.xyz;
   mat4 model = uModel;
   vec3 tint = uTint;
   vec4 world = model * local;
@@ -5607,9 +6302,29 @@ void main() {
    */
   vec3 bent = channelBend(world.xyz, aChannel.x);
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+  /*
+   * **Toward the cloth, after the skeleton and the bend.** The simulation already swings with the
+   * wind it was given, so the bend moves only the skinned part; the weight painted per vertex says
+   * how much of the cloth's place and turn the vertex takes. See clothBinding.ts.
+   */
+  if (CLOTH_BOUND) {
+    vec3 clothPosition;
+    mat3 turn;
+    float follow = clothPlace(clothPosition, turn);
+    world = vec4(mix(world.xyz, clothPosition, follow), world.w);
+    worldNormal = normalize(mix(worldNormal, turn * aNormal, follow));
+    worldTangent = mix(worldTangent, turn * aTangent.xyz, follow);
+  }
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -5620,7 +6335,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
   vSkyDirect = aChannel.y;
   vAlpha = aChannel.z;
   vThickness = aChannel.w;
@@ -5845,6 +6560,7 @@ void main() {
   vec3 basePosition = aPosition + morphOffset();
   vec4 local = vec4(basePosition, 1.0);
   vec3 localNormal = aNormal;
+  vec3 localTangent = aTangent.xyz;
   mat4 model = uModel;
   vec3 tint = uTint;
   vec4 world = model * local;
@@ -5855,9 +6571,16 @@ void main() {
    */
   vec3 bent = channelBend(world.xyz, aChannel.x);
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -5868,7 +6591,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
   vSkyDirect = aChannel.y;
   vAlpha = aChannel.z;
   vThickness = aChannel.w;
@@ -5918,6 +6641,18 @@ uniform highp sampler2D uJointPalette;
 
 layout(location = 11) in vec4 aJoints;
 layout(location = 12) in vec4 aWeights;
+/*
+ * **The fifth to eighth influences, read only by a pipeline built for a mesh that has them.**
+ *
+ * Declared in every skinned variant at the last two locations WebGL2 guarantees — 13 is the channel,
+ * and an instanced draw, which takes 11 to 15, cannot skin — and fed zeros by the absent-attribute
+ * constants for a mesh with four. \`SKIN_EIGHT\` is a pipeline constant rather than a permutation,
+ * so the generated vertex stages do not double: off, the device compiles the second sum away and a
+ * four-influence mesh pays nothing; on, it is four more palette reads a vertex.
+ */
+const bool SKIN_EIGHT = false;  // wgsl:override
+layout(location = 14) in vec4 aJoints2;
+layout(location = 15) in vec4 aWeights2;
 
 /** One joint's matrix, read as four consecutive texels of row 0. */
 mat4 jointMatrix(int index) {
@@ -5938,11 +6673,19 @@ mat4 jointMatrix(int index) {
  * by hand with unnormalised weights, which shades slightly dark or bright rather than breaking.
  */
 mat4 skinMatrix() {
-  return jointMatrix(int(aJoints.x)) * aWeights.x
-       + jointMatrix(int(aJoints.y)) * aWeights.y
-       + jointMatrix(int(aJoints.z)) * aWeights.z
-       + jointMatrix(int(aJoints.w)) * aWeights.w;
+  mat4 m = jointMatrix(int(aJoints.x)) * aWeights.x
+         + jointMatrix(int(aJoints.y)) * aWeights.y
+         + jointMatrix(int(aJoints.z)) * aWeights.z
+         + jointMatrix(int(aJoints.w)) * aWeights.w;
+  if (SKIN_EIGHT) {
+    m += jointMatrix(int(aJoints2.x)) * aWeights2.x
+       + jointMatrix(int(aJoints2.y)) * aWeights2.y
+       + jointMatrix(int(aJoints2.z)) * aWeights2.z
+       + jointMatrix(int(aJoints2.w)) * aWeights2.w;
+  }
+  return m;
 }
+
 
 
 uniform mat4 uViewProj;
@@ -6079,6 +6822,60 @@ vec3 morphOffset() {
   return offset;
 }
 
+/* Samplers and a constant alone, so no field of the vertex block moves. See clothBinding.ts. */
+
+/** Whether this pipeline places vertices by a cloth binding. */
+const bool CLOTH_BOUND = false; // wgsl:override
+uniform highp sampler2D uClothBinding;
+uniform highp sampler2D uClothParticles;
+uniform highp sampler2D uClothRest;
+
+/** Texel i of a texture wrapped onto rows of the given width. */
+ivec2 clothTexel(int i, int width) {
+  return ivec2(i % width, i / width);
+}
+
+/** A triangle's frame: its first edge, the normal crossed with it, and its normal. */
+mat3 clothFrame(vec3 a, vec3 b, vec3 c) {
+  vec3 edge = b - a;
+  vec3 n = normalize(cross(edge, c - a));
+  vec3 t = normalize(edge);
+  return mat3(t, cross(n, t), n);
+}
+
+/**
+ * Where this vertex's triangle puts it, the turn its normal takes, and how far it follows (the
+ * painted weight: 0 skinned, 1 cloth). One particle named three times is a vertex bound to that
+ * particle alone: on it, with no turn.
+ */
+float clothPlace(out vec3 position, out mat3 turn) {
+  int bindingWidth = textureSize(uClothBinding, 0).x;
+  int particleWidth = textureSize(uClothParticles, 0).x;
+  int restWidth = textureSize(uClothRest, 0).x;
+  vec4 indices = texelFetch(uClothBinding, clothTexel(gl_VertexID * 2, bindingWidth), 0);
+  vec4 at = texelFetch(uClothBinding, clothTexel(gl_VertexID * 2 + 1, bindingWidth), 0);
+  int a = int(indices.x);
+  int b = int(indices.y);
+  int c = int(indices.z);
+  vec3 pa = texelFetch(uClothParticles, clothTexel(a, particleWidth), 0).xyz;
+  if (a == b && b == c) {
+    position = pa;
+    turn = mat3(1.0);
+    return indices.w;
+  }
+  vec3 pb = texelFetch(uClothParticles, clothTexel(b, particleWidth), 0).xyz;
+  vec3 pc = texelFetch(uClothParticles, clothTexel(c, particleWidth), 0).xyz;
+  mat3 now = clothFrame(pa, pb, pc);
+  mat3 rest = clothFrame(
+    texelFetch(uClothRest, clothTexel(a, restWidth), 0).xyz,
+    texelFetch(uClothRest, clothTexel(b, restWidth), 0).xyz,
+    texelFetch(uClothRest, clothTexel(c, restWidth), 0).xyz
+  );
+  position = pa * (1.0 - at.x - at.y) + pb * at.x + pc * at.y + now[2] * at.z;
+  turn = now * transpose(rest);
+  return indices.w;
+}
+
 
 out vec3 vNormal;
 out vec3 vColor;
@@ -6147,6 +6944,7 @@ void main() {
   mat4 skin = skinMatrix();
   vec4 local = skin * vec4(basePosition, 1.0);
   vec3 localNormal = mat3(skin) * aNormal;
+  vec3 localTangent = mat3(skin) * aTangent.xyz;
   mat4 model = uModel;
   vec3 tint = uTint;
   vec4 world = model * local;
@@ -6157,9 +6955,29 @@ void main() {
    */
   vec3 bent = channelBend(world.xyz, aChannel.x);
   world = vec4(bent, world.w);
-  vWorldPos = world.xyz;
   // Rotation/translation-only models (our case): mat3 is a valid normal matrix.
   vec3 worldNormal = mat3(model) * localNormal;
+  /*
+   * **The tangent turns as the normal does**, because the fragment stage crosses it with the
+   * world-space normal to build its frame. It went out in the mesh's own space until 4.8.4, which
+   * is world space only for a mesh that is moved and never turned: a turned or skinned mesh lit its
+   * normal map, and anything reading a direction along its surface, from the wrong side.
+   */
+  vec3 worldTangent = mat3(model) * localTangent;
+  /*
+   * **Toward the cloth, after the skeleton and the bend.** The simulation already swings with the
+   * wind it was given, so the bend moves only the skinned part; the weight painted per vertex says
+   * how much of the cloth's place and turn the vertex takes. See clothBinding.ts.
+   */
+  if (CLOTH_BOUND) {
+    vec3 clothPosition;
+    mat3 turn;
+    float follow = clothPlace(clothPosition, turn);
+    world = vec4(mix(world.xyz, clothPosition, follow), world.w);
+    worldNormal = normalize(mix(worldNormal, turn * aNormal, follow));
+    worldTangent = mix(worldTangent, turn * aTangent.xyz, follow);
+  }
+  vWorldPos = world.xyz;
   vNormal = worldNormal;
   vLightPos = uLightViewProj * world;
   vColor = aColor * tint;
@@ -6170,7 +6988,7 @@ void main() {
   vRoughness = aRoughness;
   vGrain = aGrain;
   vRelief = aRelief;
-  vTangent = aTangent;
+  vTangent = vec4(worldTangent, aTangent.w);
   vSkyDirect = aChannel.y;
   vAlpha = aChannel.z;
   vThickness = aChannel.w;

@@ -57,6 +57,12 @@ const ATTR_JOINTS = 11;
 const ATTR_CHANNEL = 13;
 
 const ATTR_WEIGHTS = 12;
+/*
+ * The second four influences, at the last two locations: a skinned draw spends 11, 12 and 13 and an
+ * instanced one cannot skin, so 14 and 15 are free exactly where they are read. See skinning.ts.
+ */
+const ATTR_JOINTS2 = 14;
+const ATTR_WEIGHTS2 = 15;
 
 /**
  * One absent attribute's constant, at the width the table gave it.
@@ -136,8 +142,15 @@ export class Mesh {
   readonly bounds: Bounds = createBounds();
   /** Whether this mesh carries a rig, which decides which flat program draws it. */
   readonly isSkinned: boolean;
+  /**
+   * Whether its rig moves a vertex by eight influences rather than four, which decides whether the
+   * skinned program it takes is built with `SKIN_EIGHT` on. See `skinning.ts`.
+   */
+  readonly isSkinnedEight: boolean;
   /** Whether it has texture coordinates, without which a material's maps read one texel. */
   readonly hasUvs: boolean;
+  /** How many vertices it has, which a cloth binding is checked against. */
+  readonly vertexCount: number;
 
   /**
    * This mesh's morph deltas, or null for geometry that does not deform.
@@ -276,6 +289,7 @@ export class Mesh {
      * takes; see `WebGL2Renderer.drawMesh`.
      */
     this.isSkinned = data.joints !== undefined;
+    this.vertexCount = data.positions.length / 3;
     this.morph =
       data.morphTargets === undefined || data.morphTargetCount === undefined
         ? null
@@ -286,6 +300,15 @@ export class Mesh {
     } else {
       this.attachAttribute(gl, ATTR_JOINTS, data.joints, 4);
       this.attachAttribute(gl, ATTR_WEIGHTS, data.weights, 4);
+    }
+    /* The fifth to eighth influences, or zeros, which add nothing. See `isSkinnedEight`. */
+    this.isSkinnedEight = this.isSkinned && data.joints2 !== undefined;
+    if (data.joints2 === undefined || data.weights2 === undefined) {
+      this.constants.push({ location: ATTR_JOINTS2, value: ABSENT_ATTRIBUTE['joints2'] });
+      this.constants.push({ location: ATTR_WEIGHTS2, value: ABSENT_ATTRIBUTE['weights2'] });
+    } else {
+      this.attachAttribute(gl, ATTR_JOINTS2, data.joints2, 4);
+      this.attachAttribute(gl, ATTR_WEIGHTS2, data.weights2, 4);
     }
 
     this.hasTangents = data.tangents !== undefined;

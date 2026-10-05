@@ -69,7 +69,10 @@ failed to load. `loader.placement` reports what was decided either way.
 `npm run bake -- <model> --no-lod` writes no coarse version. `--up -y` stands up a model whose
 file declares the wrong axis, which the baker now warns about rather than detects.
 `--max-texture 1024` halves every image over 1024 on its longer side until it fits, re-encoded in
-the codec it arrived in; on a bought 4K scene it took the textures from 1.94 GB to 128 MB. The
+the codec it arrived in; on a bought 4K scene it took the textures from 1.94 GB to 128 MB. A DDS is
+kept as its BC blocks and its stored mip chain since 1.24, uploaded as they are where the device
+samples them, so the cap drops stored levels rather than resampling; a chain that stops above the
+cap is decoded and shrunk as a PNG. The
 geometry, which is the larger half once the textures are capped, is what the next three are for:
 since 1.18 a mesh is written quantised, a mesh the source merged from copies is written once with
 its placements, and the scene's lights travel with it. The same bought scene went from 1.67 GB to
@@ -92,6 +95,7 @@ push. `scripts/` has its own `tsconfig.scripts.json` because those files need `@
 | `--blend-as-cutout`    | Draw blended materials as cutouts at 0.5. Foliage exported as `BLEND` wants this; glass does not. Each one converted is printed. |
 | `--sdf <m>`            | Bake one distance field over the static geometry at `m` metres a voxel, for traced indirect light. 0.25 m is ~5 MB a courtyard.  |
 | `--normals-directx`    | Turn every normal map's green over: for maps written DirectX's way, green down. See _Normal maps_ for the tell.                  |
+| `--decode-dds`         | Decode a DDS to PNG rather than keep its BC blocks and mip chain (1.24), for a consumer whose reader is older than 1.24.         |
 | `--simplify <m>`       | Take out the triangles the shape does not need: the surface moves no more than `m`, a texture no more than a texel of 1,024.     |
 | `--no-instances`       | Write merged copies as one mesh, as every bake before 1.18 did.                                                                  |
 | `--no-quantise`        | Write `MESH` rather than `MSHQ`: floats, for a reader before 1.18.                                                               |
@@ -1274,3 +1278,67 @@ a flat, unsaturated map is a base built for tinting.
 For the finish rather than the colour, `reflectivity` is what separates a metallic flake from a matte
 wrap, and `roughness` is the width of the highlight that sells it. Both come across from the source
 material and both are per-material, so a repaint can change them alongside the map.
+
+## 11. A garment: cooked cloth onto a skinned cloth
+
+A model that ships with simulated clothing carries two things for each garment: **a coarse
+simulation** — particles, the constraints between them and the limits that keep them on the body —
+and **the mesh drawn**, finer, whose every vertex is told which simulation triangle to follow.
+Both map onto the engine one array for one array; `examples/garment/` builds each by hand, and
+`demo/dev/skinnedCloth.html` is where the result is measured.
+
+### 11.1 The simulation: `SkinnedClothSetup`
+
+| Cooked data says                                      | The set-up takes                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------------- |
+| particle positions, in the bind pose                  | `positions`, model space, metres                                        |
+| a particle's mass, or that it is fixed                | `inverseMass` — 0 follows its skinning exactly                          |
+| up to eight bone influences a particle                | `joints`, `weights`, `joints2`, `weights2`, and `inverseBind`           |
+| stretch and shear links                               | `distance`: pairs, rest lengths, compliance                             |
+| bending, as an angle across a shared edge             | `bending`: the edge, then each triangle's far corner; rest π is flat    |
+| long-range attachments to fixed particles             | `tethers`: particle, anchor, length                                     |
+| how the constraints were split for parallel solving   | `batches` on either kind — checked, and refused by name if they overlap |
+| a sphere a particle may not leave                     | `limits.maxDistance`                                                    |
+| a sphere behind or in front it may not enter          | `limits.backstop`, `limits.frontstop`: a distance and a radius each     |
+| spheres and tapered capsules on bones                 | `colliders`: a joint, two radii, a length along the frame's +Z          |
+| step, substeps, iterations, damping, gravity, inertia | `parameters` — every field has a default                                |
+
+**Compliance is metres per newton**, the inverse of a stiffness: a cooked stiffness `k` is
+`1 / k`, and 0 is inextensible. **"None" may be written as `Infinity`** — a max distance or a stop
+distance — exactly as cooked data writes it; the device solver is handed something else and that is
+its business. **Self-collision flags are accepted and not simulated**: a garment its colliders and
+backstops hold looks right without them, and one that relies on them folds through itself.
+
+A garment with **variations** — a longer coat, an open one — has a set-up for each. Pick one and
+build a solver from it; switching is disposing one and creating the other, which starts settled.
+
+### 11.2 The mesh drawn: `ClothBindingData`
+
+One entry a render vertex: **the triangle** it follows (three particle indices — one index three
+times follows that particle alone), **where on it** (`coordinates`: the barycentric u and v of the
+second and third particle), **how far off it** (`offsets`, metres along the triangle's normal — how a
+lining sits inside a shell), and **how much** (`weights`: 0 skinned, 1 cloth, commonly painted into a
+vertex colour). `rest` is the particles at rest, the same array the set-up's `positions` is.
+The mesh itself is an ordinary skinned mesh; the binding is checked against it by name.
+
+### 11.3 A frame
+
+```ts
+const cloth = createSkinnedCloth(renderer, setup); // compute on WebGPU, the CPU under WebGL2
+const binding = renderer.createClothBinding(mesh, bindingData);
+
+// once a frame, before the draws:
+cloth.setWind(wind.velocityX, 0, wind.velocityZ); // the scene's one wind, sampled once
+cloth.step(jointGlobals, model, frameSeconds); // whole fixed steps, drawn on alpha
+
+renderer.setSkinPalette(palette);
+renderer.setCloth(binding, cloth.particles);
+renderer.drawMesh(mesh, model, 0, null, mover);
+renderer.setCloth(null);
+```
+
+**`step` takes joint globals, not the palette**: a collider sits on a joint's own frame, which only
+the global gives. The shadow pass takes the cloth too — `sink.skinnedMesh(mesh, model, palette,
+material, { binding, particles: cloth.particles })` — or the garment casts the shadow of its
+skinning. A teleport past `teleportDistance` or `teleportAngle` resets the cloth on its own; a cut
+in a cinematic is `cloth.reset()`.

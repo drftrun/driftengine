@@ -54,7 +54,31 @@ function fakeDevice(maxBufferSize = 268_435_456) {
             );
           },
         ),
+        /* A copy recorded on an encoder lands at submit, in queue order with the writes. */
+        submit: vi.fn((commands: { copies: [object, number, object, number, number][] }[]) => {
+          for (const command of commands) {
+            for (const [from, fromAt, to, toAt, size] of command.copies) {
+              const source = memory.get(from);
+              const target = memory.get(to);
+              if (source === undefined || target === undefined) continue;
+              target.set(source.subarray(fromAt, fromAt + size), toAt);
+            }
+          }
+        }),
       },
+      createCommandEncoder: vi.fn(() => {
+        const copies: [object, number, object, number, number][] = [];
+        return {
+          copyBufferToBuffer: (
+            from: object,
+            fromAt: number,
+            to: object,
+            toAt: number,
+            size: number,
+          ) => copies.push([from, fromAt, to, toAt, size]),
+          finish: () => ({ copies }),
+        };
+      }),
       /*
        * A fake device carries the limits a real one does, because the code under test reads
        * them: a mesh past `maxBufferSize` is refused with a sentence rather than left to the
@@ -118,11 +142,12 @@ describe('a gpu mesh', () => {
     createGpuMesh(device, triangle());
 
     const constants = created.find((b) => b.label === 'mesh.constants');
-    /* One 16-byte slot per attribute in `VERTEX_LAYOUT`: 14 x 16 = 224, up from 13 x 16 = 208
-       when the per-vertex channel took location 13. Hand-derived, not read back from the run.
-       It is the attribute count this scales with and never the vertex count, which is the
-       claim in the name of this test. */
-    expect(constants?.size).toBe(224);
+    /* One 16-byte slot per attribute in `VERTEX_LAYOUT`: 16 x 16 = 256, up from 14 x 16 = 224
+       when the second four influences took locations 14 and 15, and from 13 x 16 = 208 when the
+       per-vertex channel took 13. Hand-derived, not read back from the run. It is the attribute
+       count this scales with and never the vertex count, which is the claim in the name of this
+       test. */
+    expect(constants?.size).toBe(256);
   });
 
   it('grows the interleaved buffer when an optional attribute is really supplied', () => {
@@ -240,7 +265,8 @@ describe('a gpu mesh', () => {
       joints: new Float32Array(12),
       weights: new Float32Array(12),
     });
-    expect(rigged.skinOffsets).toEqual({ joints: 40, weights: 56 });
+    /* No second set on this rig, so its offsets say so with -1. */
+    expect(rigged.skinOffsets).toEqual({ joints: 40, weights: 56, joints2: -1, weights2: -1 });
     expect(createGpuMesh(device, triangle()).skinOffsets).toBeNull();
   });
 
@@ -249,22 +275,22 @@ describe('a gpu mesh', () => {
    * rows as they stood into the buffer it is handed before patching a position, and `writeBuffer`
    * copies at the call — so the previous buffer holds the old positions and the mesh the new ones.
    */
-  it('A DYNAMIC MESH HANDS OVER ITS ROWS AS THEY STOOD BEFORE IT PATCHES THEM', () => {
+  it('A DYNAMIC MESH HANDS OVER ITS POSITIONS AS THEY STOOD BEFORE IT WRITES NEW ONES', () => {
     const { device, memory } = fakeDevice();
     const mesh = createGpuMesh(device, triangle(), true);
     expect(mesh.motion).toEqual({ previous: null, changed: -1 });
     expect(createGpuMesh(device, triangle()).motion).toBeNull();
 
-    const previous = device.createBuffer({ size: 120, usage: 0 });
+    const previous = device.createBuffer({ size: 36, usage: 0 });
     mesh.update?.(device, new Float32Array([10, 0, 0, 11, 0, 0, 10, 1, 0]), undefined, previous);
 
     const was = new Float32Array((memory.get(previous) as Uint8Array).buffer);
     const now = new Float32Array(
       (memory.get(mesh.vertexBuffers[0] as object) as Uint8Array).buffer,
     );
-    /* The first vertex's x, then the second's: ten floats a vertex in this triangle's rows. */
-    expect([was[0], was[10]]).toEqual([0, 1]);
-    expect([now[0], now[10]]).toEqual([10, 11]);
+    /* The first vertex's x, then the second's: three floats a vertex in a buffer of positions. */
+    expect([was[0], was[3]]).toEqual([0, 1]);
+    expect([now[0], now[3]]).toEqual([10, 11]);
   });
 
   it('destroys every buffer it made', () => {
@@ -295,7 +321,7 @@ describe('the vertex layout', () => {
    */
   it('matches the attribute locations the shaders were compiled with', () => {
     expect(VERTEX_LAYOUT.map((entry) => entry.shaderLocation)).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
   });
 
@@ -317,6 +343,9 @@ describe('the vertex layout', () => {
       'float32x4',
       /* The four-lane per-vertex channel. */
       'float32x4',
+      /* The second four influences, joints then weights. */
+      'float32x4',
+      'float32x4',
     ]);
   });
 
@@ -330,7 +359,17 @@ describe('the vertex layout', () => {
   it('spends the channel at 13, which is what makes it exclusive with instancing', () => {
     const channel = VERTEX_LAYOUT.find((a) => a.name === 'channel');
     expect(channel).toMatchObject({ shaderLocation: 13, format: 'float32x4', optional: true });
-    expect(Math.max(...VERTEX_LAYOUT.map((a) => a.shaderLocation)) + 1).toBe(14);
+  });
+
+  /*
+   * **Sixteen locations, every one WebGL2 guarantees, and the last two are the second four
+   * influences.** A skinned draw can spend them because an instanced one, which takes 11 to 15,
+   * cannot skin; there is no seventeenth to add after these.
+   */
+  it('SPENDS THE LAST TWO LOCATIONS ON THE SECOND FOUR INFLUENCES, and has none left', () => {
+    expect(VERTEX_LAYOUT.find((a) => a.name === 'joints2')).toMatchObject({ shaderLocation: 14 });
+    expect(VERTEX_LAYOUT.find((a) => a.name === 'weights2')).toMatchObject({ shaderLocation: 15 });
+    expect(Math.max(...VERTEX_LAYOUT.map((a) => a.shaderLocation)) + 1).toBe(16);
   });
 });
 
@@ -375,13 +414,12 @@ describe('the skinning attributes', () => {
 
 describe('a mesh whose geometry moves', () => {
   /*
-   * **The interleaving is what makes this backend's update different.** WebGL2 keeps a buffer per
-   * attribute, so rewriting positions is one `bufferSubData` over a contiguous array. Here every
-   * attribute shares one buffer, so a position is three floats every `stride` — writing them
-   * individually would be one `writeBuffer` per vertex. So a dynamic mesh keeps the interleaved
-   * array it was built from, patches the fields that move, and uploads the lot in one call.
-   *
-   * That CPU-side copy is the whole reason the flag exists rather than every mesh paying it.
+   * **Its positions and normals live in buffers of their own, so a rewrite sends them and nothing
+   * else.** Every other attribute is interleaved into one buffer, and a rewrite of positions used to
+   * patch a CPU copy of that buffer and upload it whole: a dynamic cloth mesh re-sent every colour,
+   * coordinate, tangent and joint of every vertex each frame for the twenty-four bytes a vertex that
+   * moved — reported at 2.8 MB a frame for one character's garments. Now the caller's arrays go up
+   * as they are, and no copy of the vertex data is kept to patch.
    */
   it('has no update unless it declared itself deforming', () => {
     const { device } = fakeDevice();
@@ -389,26 +427,64 @@ describe('a mesh whose geometry moves', () => {
     expect(createGpuMesh(device, triangle(), true).update).not.toBeNull();
   });
 
-  it('patches the positions in place and uploads the whole vertex buffer once', () => {
-    const { device } = fakeDevice();
+  it('A REWRITE OF ITS POSITIONS WRITES THEM, AND ONLY THEM, TO A BUFFER OF THEIR OWN', () => {
+    const { device, memory } = fakeDevice();
     const mesh = createGpuMesh(device, triangle(), true);
     const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const before = writes.mock.calls.length;
+    const positions = new Float32Array([2, 7, 4, 1, 7, 0, 0, 8, 0]);
 
-    mesh.update?.(device, new Float32Array([2, 7, 4, 1, 7, 0, 0, 8, 0]));
+    mesh.update?.(device, positions);
 
-    expect(writes.mock.calls.length - before, 'one upload, not one per vertex').toBe(1);
-    const uploaded = writes.mock.calls[writes.mock.calls.length - 1]?.[2] as Float32Array;
-    /* Required attributes only, so the stride is position(3) + normal(3) + colour(3) +
-       emissive(1) = 10 floats, and position sits at the front of each vertex. */
-    /* All three of the first vertex, distinct, so a component written into its neighbour shows. */
-    expect(uploaded[0], "the first vertex's x").toBeCloseTo(2, 6);
-    expect(uploaded[1], "the first vertex's y").toBeCloseTo(7, 6);
-    expect(uploaded[2], "the first vertex's z").toBeCloseTo(4, 6);
-    expect(uploaded[11], "the second vertex's y").toBeCloseTo(7, 6);
-    expect(uploaded[21], "the third vertex's y").toBeCloseTo(8, 6);
-    /* And the colour beside it is untouched: what a surface *is* did not change because it bent. */
-    expect(uploaded[6]).toBeCloseTo(1, 6);
+    expect(writes.mock.calls.length - before, 'one write, of the positions').toBe(1);
+    expect(writes.mock.calls[writes.mock.calls.length - 1]?.[0]).toBe(mesh.vertexBuffers[0]);
+    const now = new Float32Array(
+      (memory.get(mesh.vertexBuffers[0] as object) as Uint8Array).buffer,
+    );
+    expect(Array.from(now)).toEqual(Array.from(positions));
+  });
+
+  it('writes normals to a buffer of their own when the caller has them', () => {
+    const { device, memory } = fakeDevice();
+    const mesh = createGpuMesh(device, triangle(), true);
+    const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const before = writes.mock.calls.length;
+    const normals = new Float32Array([0, 1, 0, 0.6, 0.8, 0, 0, 0, 1]);
+
+    mesh.update?.(device, new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), normals);
+
+    expect(writes.mock.calls.length - before, 'positions and normals, two writes').toBe(2);
+    const now = new Float32Array(
+      (memory.get(mesh.vertexBuffers[1] as object) as Uint8Array).buffer,
+    );
+    expect(Array.from(now)).toEqual(Array.from(normals));
+  });
+
+  /*
+   * The pipeline reads what the mesh binds: positions at location 0 and normals at 1 in buffers of
+   * their own, ahead of the interleaved rest — colour and emissive for this triangle, sixteen bytes
+   * — and the constants; an instanced draw's buffer after all four. A static mesh keeps today's two.
+   */
+  it('lays its two streams out ahead of the rest, and the pipeline layout agrees', () => {
+    const { device } = fakeDevice();
+    const mesh = createGpuMesh(device, triangle(), true);
+    const layouts = vertexBufferLayouts({ dynamic: true });
+    expect(layouts).toHaveLength(mesh.vertexBuffers.length);
+    expect(layouts[0]).toEqual({
+      arrayStride: 12,
+      attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+    });
+    expect(layouts[1]).toEqual({
+      arrayStride: 12,
+      attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }],
+    });
+    expect(layouts[2]?.arrayStride).toBe(16);
+    expect(layouts[2]?.attributes.map((a) => a.shaderLocation)).toEqual([2, 3]);
+    expect(mesh.vertexStride, 'the stride of buffer 0, which the motion pass steps by').toBe(12);
+    expect(vertexBufferLayouts({ dynamic: true }, true)).toHaveLength(5);
+    expect(vertexBufferLayouts({})).toHaveLength(
+      createGpuMesh(device, triangle()).vertexBuffers.length,
+    );
   });
 
   it('moves the bounds with the geometry', () => {
@@ -419,23 +495,6 @@ describe('a mesh whose geometry moves', () => {
     mesh.update?.(device, new Float32Array([0, 20, 0, 1, 20, 0, 0, 21, 0]));
     expect(mesh.bounds.min[1]).toBeCloseTo(20, 6);
     expect(mesh.bounds.max[1]).toBeCloseTo(21, 6);
-  });
-
-  it('writes normals beside the positions when the caller has them', () => {
-    const { device } = fakeDevice();
-    const mesh = createGpuMesh(device, triangle(), true);
-    const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
-
-    mesh.update?.(
-      device,
-      new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-      new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
-    );
-    const uploaded = writes.mock.calls[writes.mock.calls.length - 1]?.[2] as Float32Array;
-    /* Normals follow positions in the layout, so the first vertex's normal is floats 3..5. */
-    expect(uploaded[3]).toBeCloseTo(0, 6);
-    expect(uploaded[4]).toBeCloseTo(1, 6);
-    expect(uploaded[5]).toBeCloseTo(0, 6);
   });
 
   it('refuses a rewrite of the wrong size, naming both', () => {

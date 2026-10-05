@@ -129,6 +129,108 @@ fn motionSkinnedVert(
 }
 
 /*
+ * The same for a rig with eight influences a vertex, the second four at the scene's own locations
+ * 14 and 15 and summed after the first, as \`skinMatrix()\` sums them with \`SKIN_EIGHT\` on — or the
+ * motion of a face or a shoulder would be the four heaviest joints' alone.
+ */
+@vertex
+fn motionSkinnedEightVert(
+  @location(0) position: vec3<f32>,
+  @location(11) joints: vec4<f32>,
+  @location(12) weights: vec4<f32>,
+  @location(14) joints2: vec4<f32>,
+  @location(15) weights2: vec4<f32>,
+) -> Varyings {
+  let skin = skinOf(palette, joints, weights) + skinOf(palette, joints2, weights2);
+  let wasSkin =
+    skinOf(previousPalette, joints, weights) + skinOf(previousPalette, joints2, weights2);
+  let world = draw.model * (skin * vec4<f32>(position, 1.0));
+  let wasWorld = draw.previousModel * (wasSkin * vec4<f32>(position, 1.0));
+  var out: Varyings;
+  out.clip = frame.raster * world;
+  out.now = frame.viewProj * world;
+  out.was = frame.previousViewProj * wasWorld;
+  return out;
+}
+
+/*
+ * The cloth-bound stage: a skinned vertex moved toward its simulation triangle by its painted
+ * weight, as shaders/clothBinding.ts moves it in the scene, once with this frame's particles and
+ * once with last frame's. **The same arithmetic in the same order**, or the depth this stage writes
+ * is not the scene's and the equal test admits none of the garment. The binding's turn is not
+ * needed: a motion is where a point went, not which way it faces.
+ */
+@group(2) @binding(0) var clothBinding: texture_2d<f32>;
+@group(2) @binding(1) var clothParticles: texture_2d<f32>;
+@group(2) @binding(2) var previousClothParticles: texture_2d<f32>;
+
+fn clothTexel(i: i32, width: i32) -> vec2<i32> {
+  return vec2<i32>(i % width, i / width);
+}
+
+fn clothPoint(particles: texture_2d<f32>, indices: vec4<f32>, at: vec4<f32>) -> vec3<f32> {
+  let width = i32(textureDimensions(particles, 0).x);
+  let a = i32(indices.x);
+  let b = i32(indices.y);
+  let c = i32(indices.z);
+  let pa = textureLoad(particles, clothTexel(a, width), 0).xyz;
+  if (a == b && b == c) {
+    return pa;
+  }
+  let pb = textureLoad(particles, clothTexel(b, width), 0).xyz;
+  let pc = textureLoad(particles, clothTexel(c, width), 0).xyz;
+  let n = normalize(cross(pb - pa, pc - pa));
+  return pa * (1.0 - at.x - at.y) + pb * at.x + pc * at.y + n * at.z;
+}
+
+/* A skinned point now and last frame, carried to the cloth by the vertex's own weight. */
+fn clothVaryings(vertex: u32, world: vec4<f32>, wasWorld: vec4<f32>) -> Varyings {
+  let width = i32(textureDimensions(clothBinding, 0).x);
+  let indices = textureLoad(clothBinding, clothTexel(i32(vertex) * 2, width), 0);
+  let at = textureLoad(clothBinding, clothTexel(i32(vertex) * 2 + 1, width), 0);
+  let follow = indices.w;
+  let placed = vec4<f32>(mix(world.xyz, clothPoint(clothParticles, indices, at), follow), world.w);
+  let wasPlaced = vec4<f32>(
+    mix(wasWorld.xyz, clothPoint(previousClothParticles, indices, at), follow),
+    wasWorld.w);
+  var out: Varyings;
+  out.clip = frame.raster * placed;
+  out.now = frame.viewProj * placed;
+  out.was = frame.previousViewProj * wasPlaced;
+  return out;
+}
+
+@vertex
+fn motionClothVert(
+  @builtin(vertex_index) vertex: u32,
+  @location(0) position: vec3<f32>,
+  @location(11) joints: vec4<f32>,
+  @location(12) weights: vec4<f32>,
+) -> Varyings {
+  let world = draw.model * (skinOf(palette, joints, weights) * vec4<f32>(position, 1.0));
+  let wasWorld =
+    draw.previousModel * (skinOf(previousPalette, joints, weights) * vec4<f32>(position, 1.0));
+  return clothVaryings(vertex, world, wasWorld);
+}
+
+@vertex
+fn motionClothEightVert(
+  @builtin(vertex_index) vertex: u32,
+  @location(0) position: vec3<f32>,
+  @location(11) joints: vec4<f32>,
+  @location(12) weights: vec4<f32>,
+  @location(14) joints2: vec4<f32>,
+  @location(15) weights2: vec4<f32>,
+) -> Varyings {
+  let skin = skinOf(palette, joints, weights) + skinOf(palette, joints2, weights2);
+  let wasSkin =
+    skinOf(previousPalette, joints, weights) + skinOf(previousPalette, joints2, weights2);
+  let world = draw.model * (skin * vec4<f32>(position, 1.0));
+  let wasWorld = draw.previousModel * (wasSkin * vec4<f32>(position, 1.0));
+  return clothVaryings(vertex, world, wasWorld);
+}
+
+/*
  * The rewritten stage: a mesh whose vertices were rewritten this frame reads last frame's rows from
  * a second buffer of the same stride, so each vertex carries both of its positions.
  */

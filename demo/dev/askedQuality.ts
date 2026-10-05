@@ -433,6 +433,8 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
      */
     ...(asked.get('fx') === '0' ? { screenEffects: false } : {}),
     ...(cullDraws ? { cullDraws } : {}),
+    /* `?skinscatter=screen`: skin spread by Burley's blur in the picture as well as pre-integrated. */
+    ...(asked.get('skinscatter') === 'screen' ? { skinScattering: 'screen-space' as const } : {}),
     /* `?glassshadows=off|half|full`: off is glass as it cast before a pane had a colour. */
     ...(glassShadows === 'off' || glassShadows === 'half' || glassShadows === 'full'
       ? { glassShadows }

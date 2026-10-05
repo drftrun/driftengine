@@ -43,7 +43,7 @@ import {
 } from '@driftengine/assets';
 import { componentCount, findRepeats } from '@driftengine/assets';
 import type { Repeats } from '@driftengine/assets';
-import { CODEC_PNG, CODEC_RAW, DrftError, codecName } from '@driftengine/drft';
+import { CODEC_RAW, DrftError, codecName } from '@driftengine/drft';
 import { MAX_COLLIDER_HULLS } from '@driftengine/drft';
 import { decomposeConvex } from '@driftengine/physics';
 import { readFile } from 'node:fs/promises';
@@ -52,10 +52,10 @@ import type { DrftTextureSource } from '@driftengine/drft';
 import { assetCandidates } from '@driftengine/assets';
 import type { AssetReference } from '@driftengine/assets';
 import { describeImage } from '@driftengine/assets';
-import { ddsToRgba, isDds } from '@driftengine/assets';
+import { isDds } from '@driftengine/assets';
 /* The Node-side PNG encoder, which is why a decoded surface is not embedded uncompressed. */
-import { encodePng } from '../packages/core/scripts/png.mjs';
 import { processTextures } from './bakeTextureCap.ts';
+import { ddsTexture } from './bakeDds.ts';
 import { colliderBeside, levelsBeside } from '@driftengine/assets';
 import type { MeshData } from '@driftengine/drft';
 
@@ -235,54 +235,28 @@ function withTangentsIfMapped(mesh: MeshData, material: DrftMaterial | undefined
 }
 
 /**
- * An image the model already carried, identified and wrapped for embedding.
+ * An image, identified and wrapped for embedding: a DDS through `bakeDds.ts`, anything else by its
+ * own header.
  *
- * A glTF keeps its images inside the binary chunk or in a data URI as often as it points at
- * files, so this path is the common one for that format and never taken for FBX or OBJ. The
- * bytes are still identified rather than trusted: `mimeType` is optional in glTF and wrong
- * often enough that reading the image's own header is the only reliable answer.
+ * **Every texture comes through here, whoever found its bytes.** The reader resolves the images a
+ * model names beside the model, and a glTF carries its own as often as it points at files; the
+ * baker's own search of the folder it was given finds the rest. That search had a copy of this
+ * that knew PNG, JPEG and WEBP only, so a DDS it found baked as a white pixel while the same bytes
+ * beside the model were decoded. The bytes are identified rather than trusted: glTF's `mimeType` is
+ * optional and wrong often enough that the image's own header is the only reliable answer.
  */
-function describeEmbedded(name: string, bytes: Uint8Array, warnings: string[]): DrftTextureSource {
-  /*
-   * Block-compressed DDS is decoded here rather than identified and refused, because a third of a
-   * shipped vehicle's textures are in it and the alternative is a model that imports correctly
-   * shaped and visibly half-painted.
-   *
-   * **It is then re-encoded, which it was not for three minor versions.** The decoded surface used
-   * to be embedded as `CODEC_RAW`, on the argument that a bake runs offline and never in a frame —
-   * true of the *time* and not of the file, which a browser downloads. Measured on a shipped car's
-   * level of detail B: 21 textures, 3.6 MB of DDS, 11.6 MB of RGBA, in a 22.8 MB container. A
-   * consumer wrote the missing encoder themselves and reported it as the difference between a
-   * model that needs sharding to clear a static host's per-file limit and one that does not.
-   *
-   * Both ends are lossless, so this is a smaller file and not a worse one.
-   */
-  if (isDds(bytes)) {
-    try {
-      const decoded = ddsToRgba(bytes);
-      const png = encodePng(decoded.width, decoded.height, Buffer.from(decoded.rgba));
-      console.log(
-        `  texture ${name} — DDS decoded and re-encoded ${decoded.width}x${decoded.height}, ` +
-          `${(png.length / 1024).toFixed(0)} KB from ${(bytes.length / 1024).toFixed(0)} KB ` +
-          `(${(decoded.rgba.length / 1024).toFixed(0)} KB uncompressed)`,
-      );
-      return { name, codec: CODEC_PNG, width: decoded.width, height: decoded.height, bytes: png };
-    } catch (error) {
-      warnings.push(`texture "${name}": ${error instanceof Error ? error.message : String(error)}`);
-      return {
-        name,
-        codec: CODEC_RAW,
-        width: 1,
-        height: 1,
-        bytes: new Uint8Array([255, 255, 255, 255]),
-      };
-    }
-  }
+function describeTexture(
+  name: string,
+  bytes: Uint8Array,
+  decodeDds: boolean,
+  warnings: string[],
+): DrftTextureSource {
+  if (isDds(bytes)) return ddsTexture(name, bytes, decodeDds, warnings);
   try {
     const info = describeImage(bytes);
     console.log(
       `  texture ${name} — ${codecName(info.codec)} ${info.width}x${info.height}, ` +
-        `${(bytes.length / 1024).toFixed(0)} KB carried by the model`,
+        `${(bytes.length / 1024).toFixed(0)} KB embedded`,
     );
     return { name, codec: info.codec, width: info.width, height: info.height, bytes };
   } catch (error) {
@@ -415,6 +389,7 @@ function embedTextures(
   refs: readonly AssetReference[],
   modelFile: string,
   searchRoot: string,
+  decodeDds: boolean,
   warnings: string[],
 ): DrftTextureSource[] {
   const out: DrftTextureSource[] = [];
@@ -423,7 +398,7 @@ function embedTextures(
     const declared = reference.name;
     /* Already in hand: a glTF image inside the binary chunk or a data URI needs no lookup. */
     if (reference.bytes !== undefined) {
-      out.push(describeEmbedded(declared, reference.bytes, warnings));
+      out.push(describeTexture(declared, reference.bytes, decodeDds, warnings));
       continue;
     }
     let found: { file: string; bytes: Uint8Array } | null = null;
@@ -457,31 +432,8 @@ function embedTextures(
       continue;
     }
 
-    try {
-      const info = describeImage(found.bytes);
-      out.push({
-        name: declared,
-        codec: info.codec,
-        width: info.width,
-        height: info.height,
-        bytes: found.bytes,
-      });
-      console.log(
-        `  texture ${path.relative(searchRoot, found.file)} — ${codecName(info.codec)} ` +
-          `${info.width}x${info.height}, ${(found.bytes.length / 1024).toFixed(0)} KB embedded`,
-      );
-    } catch (error) {
-      warnings.push(
-        `texture "${declared}": ${error instanceof Error ? error.message : String(error)}`,
-      );
-      out.push({
-        name: declared,
-        codec: CODEC_RAW,
-        width: 1,
-        height: 1,
-        bytes: new Uint8Array([255, 255, 255, 255]),
-      });
-    }
+    console.log(`  texture "${declared}" found at ${path.relative(searchRoot, found.file)}`);
+    out.push(describeTexture(declared, found.bytes, decodeDds, warnings));
   }
   return out;
 }
@@ -577,7 +529,7 @@ async function main(): Promise<void> {
     console.error(
       'usage: bake <file-or-folder> [-o out.drft] [--from glb|gltf|obj|stl] [--up x|-x|y|-y|z|-z]' +
         ' [--lod cells] [--no-lod] [--no-levels] [--max-texture px] [--texture-codec jpeg|jpeg-all] [--sdf m]' +
-        ' [--normals-directx] [--simplify m]' +
+        ' [--normals-directx] [--decode-dds] [--simplify m]' +
         ' [--no-instances] [--no-quantise] [--blend-as-cutout] [--direct | --via-blender]',
     );
     process.exit(1);
@@ -761,6 +713,12 @@ async function main(): Promise<void> {
    * a horizontal joint whose rows above read green over the middle, which glTF would put under it.
    */
   const directxNormals = args.includes('--normals-directx');
+  /*
+   * `--decode-dds`: a block-compressed DDS is decoded and re-encoded as PNG rather than kept as its
+   * blocks. For a consumer on a reader older than 1.24, which cannot read a BC texture; see
+   * `bakeDds.ts` for what each gives up.
+   */
+  const decodeDds = args.includes('--decode-dds');
   const textured = (
     textures: DrftTextureSource[],
     materialList: readonly DrftMaterial[] | undefined,
@@ -869,6 +827,7 @@ async function main(): Promise<void> {
           reached.refs,
           chosen,
           stat.isDirectory() ? input : path.dirname(chosen),
+          decodeDds,
           warnings,
         ),
     reached.materials,
@@ -941,7 +900,7 @@ async function main(): Promise<void> {
     const levelTextures = await textured(
       levelReached.refs.length === 0
         ? []
-        : embedTextures(levelReached.refs, full, path.dirname(full), warnings),
+        : embedTextures(levelReached.refs, full, path.dirname(full), decodeDds, warnings),
       levelReached.materials,
     );
     levels.push(

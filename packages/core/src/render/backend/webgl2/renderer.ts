@@ -121,8 +121,31 @@ import { createDriftLightUniforms, resolveDriftLight } from '../../driftLight/un
 
 import type { RendererApi } from '../api.ts';
 import { flatFrag, flatVert } from '../../shaders/flat/index.ts';
-import { MORPH_DELTA_TEXTURE_UNIT, SKIN_PALETTE_TEXTURE_UNIT } from '../../lightBudget.ts';
+import { skinEight } from '../../shaders/skinning.ts';
+import {
+  MODEL_MAP_TEXTURE_UNIT,
+  MORPH_DELTA_TEXTURE_UNIT,
+  SKIN_PALETTE_TEXTURE_UNIT,
+} from '../../lightBudget.ts';
+import { MODEL_PARAM_FLOATS, eyeAxisInWorld, packModel } from '../../surfaceModel.ts';
+import type { SurfaceModelKind } from '../../surfaceModel.ts';
+import { modelBound, skinHalfBound } from '../../shaders/flat/models.ts';
+import type { SkinHalf } from '../../shaders/flat/models.ts';
+import { GlSkinScatter } from './skinScatter.ts';
+import {
+  CLOTH_BINDING_TEXTURE_UNIT,
+  CLOTH_PARTICLES_TEXTURE_UNIT,
+  CLOTH_REST_TEXTURE_UNIT,
+} from '../../lightBudget.ts';
 import { SkinPaletteTexture } from './skinPaletteTexture.ts';
+import { clothBound } from '../../shaders/clothBinding.ts';
+import { validateClothBinding } from '../../clothBindingData.ts';
+import type { ClothBindingData } from '../../clothBindingData.ts';
+import { GlClothBinding, GlClothParticles } from './clothTextures.ts';
+import { MAX_MORPH_TARGETS } from '../../skinPalette.ts';
+
+/** The weights a cloth-bound draw of a morphing mesh deforms by when none were set: none. */
+const NO_MORPH_WEIGHTS = new Float32Array(MAX_MORPH_TARGETS);
 
 /** Shader-side encoding of `RenderQuality.outputTransform`. */
 /* The codes the shader reads, stated once in `vertexDefaults.ts` for both backends. */
@@ -211,6 +234,8 @@ import type { IncrementalMesh } from '../../mesh.ts';
 import type { MeshData } from '../../mesh.ts';
 import type { MeshOptions } from '../api.ts';
 import { SurfaceTexture } from '../../surfaceTexture.ts';
+import { glCompressedFormats } from '../../glCompressed.ts';
+import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
 import type { SurfaceMaterial, SurfaceTextureOptions } from '../../surfaceTexture.ts';
 import { PlumeRenderer } from '../../plumeRenderer.ts';
 import { createScatterDeform, resolveScatterDeform } from '../../scatterDeform.ts';
@@ -256,6 +281,8 @@ import type { FlockParams } from '../../flockRenderer.ts';
 import { InstancedBatch } from './instanced.ts';
 import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
+import { CUTOUT_RESOLVE_CODE, resolveCutout } from '../../cutoutDither.ts';
+import type { CutoutResolve } from '../../cutoutDither.ts';
 import type { CutoutCaster } from '../../cutoutCaster.ts';
 import type { SurfaceTextureHandle } from '../api.ts';
 import { materialHasMaps, noteMapsWithoutUvs } from '../../mapsWithoutUvs.ts';
@@ -1133,6 +1160,17 @@ export class WebGL2Renderer implements RendererApi {
   private flatMorphedUniforms: Record<string, WebGLUniformLocation> | null = null;
   private flatBothProgram: WebGLProgram | null = null;
   private flatBothUniforms: Record<string, WebGLUniformLocation> | null = null;
+  /**
+   * The two skinned variants built with `SKIN_EIGHT` on, for a rig whose vertices name eight
+   * joints: compiled the first time such a mesh is created, and only then. See `skinning.ts`.
+   */
+  private flatSkinned8Program: WebGLProgram | null = null;
+  private flatSkinned8Uniforms: Record<string, WebGLUniformLocation> | null = null;
+  private flatBoth8Program: WebGLProgram | null = null;
+  private flatBoth8Uniforms: Record<string, WebGLUniformLocation> | null = null;
+  /** And its shadow caster, so the shadow parts from nothing the body does. */
+  private depthSkinned8Program: WebGLProgram | null = null;
+  private depthSkinned8Uniforms: Record<string, WebGLUniformLocation | null> | null = null;
   /** The morph weights the following draws use, or null for none. */
   private morphWeights: Float32Array | null = null;
   /**
@@ -1169,6 +1207,14 @@ export class WebGL2Renderer implements RendererApi {
    * before this existed.
    */
   private readonly sceneTarget: SceneTarget | null;
+  /**
+   * Skin's screen-space scattering, made where the profile asks for it and has a composite to add
+   * into, and null otherwise — which is every profile by default. See `GlSkinScatter`.
+   */
+  private readonly skinScatter: GlSkinScatter | null;
+  /** Whether this frame has spread its skin: once, at its first blended draw or at its end. */
+  private skinScattered = false;
+  private readonly skinInverseProjection = mat4.create();
   /** So the refusal below is once per renderer rather than once per frame. See `setColourGrade`. */
   private warnedGradeWithoutComposite = false;
   /** Scratch for a volume's `uDepthToLocal`. Built per draw and never allocated in the loop. */
@@ -1191,6 +1237,30 @@ export class WebGL2Renderer implements RendererApi {
   private readonly skinPalette = new SkinPaletteTexture();
   /** Whether a palette is currently chosen. Distinct from whether one was ever uploaded. */
   private skinPaletteSet = false;
+  /**
+   * Cloth-bound skinned lit programs, keyed `eight|morphed`, compiled when a binding is made for a
+   * mesh of that kind; and their casters, keyed by `eight`. See `ensureClothPrograms`.
+   */
+  private readonly clothFlat = new Map<
+    string,
+    { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> }
+  >();
+  private readonly clothDepth = new Map<
+    string,
+    { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation | null> }
+  >();
+  /** The cloth the next skinned draws are placed by, or null. See `setCloth`. */
+  private cloth: { binding: GlClothBinding; particles: GlClothParticles } | null = null;
+  /**
+   * Each shading model's lit programs, keyed `variant|model` by the vertex variant they pair with,
+   * compiled the first time a draw asks for one. See `modelProgram`.
+   */
+  private readonly modelFlat = new Map<
+    string,
+    { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> }
+  >();
+  /** The last palette chosen, which an eye's axis is turned by. See `setSkinPalette`. */
+  private paletteData: Float32Array | null = null;
 
   private readonly emptyTexture2D: WebGLTexture;
   /** One glass resolution reused by every draw, so a pane allocates nothing. See `glass.ts`. */
@@ -1697,6 +1767,22 @@ export class WebGL2Renderer implements RendererApi {
   /** The material last set, so a lit program rebuilt for glass can be given it. */
   private currentMaterial: SurfaceMaterial | null = null;
   /**
+   * The frame a dithered cutout's pattern is offset by, advanced at `beginFrame` and wrapped at 64
+   * so the noise's argument stays small. See `cutoutDither.ts`.
+   */
+  private cutoutFrame = 0;
+  /** Scratch for `uCutout`, so a material write allocates nothing. */
+  private readonly cutoutVector = new Float32Array(4);
+  /** The material's model numbers, `uModelParams`, packed by `packModel`. */
+  private readonly modelParams = new Float32Array(MODEL_PARAM_FLOATS);
+  /** The material's four switches, `uMaterialFlags`: albedo, ORM map, emissive map, two-sided. */
+  private readonly materialFlags = new Int32Array(4);
+  /**
+   * The default framebuffer's sample count, read once, for a frame drawn with no scene target: a
+   * dithered cutout there takes alpha-to-coverage when the canvas itself is multisampled.
+   */
+  private readonly canvasSamples: number;
+  /**
    * The lit stage's switches: what the lit programs were compiled with (`litOn`), and what the
    * profile and the content have asked for since (`litWanted`).
    *
@@ -1823,7 +1909,7 @@ export class WebGL2Renderer implements RendererApi {
       if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       gl.useProgram(this.depthProgram);
     },
-    skinnedMesh: (mesh, model, palette, material) => {
+    skinnedMesh: (mesh, model, palette, material, cloth) => {
       if (!this.drawingGlassDepth && !castsDepth(material)) {
         if (this.quality.glassShadows !== 'off' && glassOf(material, this.glassCasterScratch)) {
           this.glassCasters.recordSkinned(mesh, model, palette, material, this.glassCasterScratch);
@@ -1833,8 +1919,25 @@ export class WebGL2Renderer implements RendererApi {
       }
       this.shadowDrawBudget.ask();
       const { gl } = this;
-      const u = this.depthSkinnedUniforms;
-      gl.useProgram(this.depthSkinnedProgram);
+      /* A rig of eight casts through the caster built with SKIN_EIGHT on, as it draws. */
+      const eightCaster =
+        (mesh as Mesh).isSkinnedEight &&
+        this.depthSkinned8Program !== null &&
+        this.depthSkinned8Uniforms !== null;
+      /* A garment casts through the cloth-bound caster of its rig's kind, as it draws. */
+      const clothCaster =
+        cloth === undefined
+          ? undefined
+          : this.clothDepth.get((mesh as Mesh).isSkinnedEight ? '8' : '4');
+      const u =
+        clothCaster?.uniforms ??
+        (eightCaster
+          ? (this.depthSkinned8Uniforms as Record<string, WebGLUniformLocation | null>)
+          : this.depthSkinnedUniforms);
+      gl.useProgram(
+        clothCaster?.program ??
+          (eightCaster ? this.depthSkinned8Program : this.depthSkinnedProgram),
+      );
       gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
       gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
       /* The peel layer reads the first pass's depths; `beginShadowPass` bound that texture to
@@ -1844,6 +1947,12 @@ export class WebGL2Renderer implements RendererApi {
       this.skinPalette.update(gl, palette);
       this.skinPalette.bind(gl, SKIN_PALETTE_TEXTURE_UNIT);
       gl.uniform1i(u['uJointPalette'] ?? null, SKIN_PALETTE_TEXTURE_UNIT);
+      if (clothCaster !== undefined && cloth !== undefined) {
+        this.bindCloth(u, {
+          binding: cloth.binding as unknown as GlClothBinding,
+          particles: cloth.particles as unknown as GlClothParticles,
+        });
+      }
       /* Narrowing is safe for the reason `mesh` above gives: this renderer only ever handed
          out its own `Mesh`. */
       (mesh as Mesh).draw(gl);
@@ -1889,7 +1998,7 @@ export class WebGL2Renderer implements RendererApi {
     if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
     gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
     gl.uniform2f(u['uUvOffset'] ?? null, cutout.uOffset, cutout.vOffset);
-    gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
+    gl.uniform2f(u['uAlphaCutout'] ?? null, cutout.cutoff, cutout.dithered);
     /* Narrowed for the reason the sink's own `mesh` gives: this renderer only hands out its own. */
     (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
   }
@@ -2802,11 +2911,22 @@ export class WebGL2Renderer implements RendererApi {
           this.quality.discardResolvedAttachments,
         )
       : null;
+    /* Screen-space skin needs the composite to add into; without one it is pre-integrated, said once. */
+    if (this.quality.skinScattering === 'screen-space' && this.sceneTarget === null) {
+      console.warn(
+        "WebGL2: skinScattering 'screen-space' needs screenEffects to add into; skin is pre-integrated",
+      );
+    }
+    this.skinScatter =
+      this.quality.skinScattering === 'screen-space' && this.sceneTarget !== null
+        ? new GlSkinScatter(gl)
+        : null;
     /*
      * Said once at init, because the number a caller asked for and the number the part gave
      * them are not always the same, and a silently clamped sample count is a quality setting
      * that does not apply — the same failure mode `capabilityClamp` exists to avoid.
      */
+    this.canvasSamples = Math.max(1, (gl.getParameter(gl.SAMPLES) as number | null) ?? 1);
     const got = this.sceneTarget?.sampleCount ?? 1;
     if (this.quality.sceneSamples > 1 && got !== this.quality.sceneSamples) {
       console.warn(
@@ -3020,6 +3140,7 @@ export class WebGL2Renderer implements RendererApi {
     this.disposed = true;
 
     const { gl } = this;
+    if (!this.contextLost) this.skinScatter?.dispose();
     this.detachContextLoss();
     this.contextLostListeners.length = 0;
     this.contextRestoredListeners.length = 0;
@@ -3060,9 +3181,15 @@ export class WebGL2Renderer implements RendererApi {
         this.flatSkinnedProgram,
         this.flatMorphedProgram,
         this.flatBothProgram,
+        this.flatSkinned8Program,
+        this.flatBoth8Program,
+        this.depthSkinned8Program,
         this.flatInstancedProgram,
       ]) {
         if (extra !== null) gl.deleteProgram(extra);
+      }
+      for (const entry of [...this.clothFlat.values(), ...this.clothDepth.values()]) {
+        gl.deleteProgram(entry.program);
       }
       for (const program of [
         this.flatProgram,
@@ -3160,11 +3287,26 @@ export class WebGL2Renderer implements RendererApi {
    */
   private warmVariants(data: MeshData): void {
     const skinnable = data.joints !== undefined;
+    /* A rig of eight takes the variants built with SKIN_EIGHT on, and a caster of its own. */
+    const eight = skinnable && data.joints2 !== undefined;
     const morphable = data.morphTargets !== undefined;
     for (const skinned of skinnable ? [false, true] : [false]) {
       for (const morphed of morphable ? [false, true] : [false]) {
-        if (skinned || morphed) this.ensureVariant(skinned, morphed);
+        if (skinned || morphed) this.ensureVariant(skinned, morphed, skinned && eight);
       }
+    }
+    if (eight && this.depthSkinned8Program === null && !this.contextLost) {
+      this.depthSkinned8Program = compileProgram(
+        this.gl,
+        skinEight(DEPTH_SKINNED_VERT),
+        DEPTH_FRAG,
+        'depth-skinned8',
+      );
+      this.depthSkinned8Uniforms = uniformLocations(
+        this.gl,
+        this.depthSkinned8Program,
+        'depth-skinned8',
+      );
     }
   }
 
@@ -3210,25 +3352,36 @@ export class WebGL2Renderer implements RendererApi {
    * `bindMeshPass` would otherwise carry every uniform at zero, and zero is a real value for most
    * of them — the failure this file records for `uGrain` and `uAmbientGround`.
    */
-  private ensureVariant(skinned: boolean, morphed: boolean): void {
+  private ensureVariant(skinned: boolean, morphed: boolean, eight = false): void {
     if (this.contextLost) return;
-    if (skinned && morphed && this.flatBothProgram !== null) return;
-    if (skinned && !morphed && this.flatSkinnedProgram !== null) return;
-    if (!skinned && morphed && this.flatMorphedProgram !== null) return;
-    if (!skinned && !morphed) return;
+    if (skinned && eight) {
+      if (morphed ? this.flatBoth8Program !== null : this.flatSkinned8Program !== null) return;
+    } else {
+      if (skinned && morphed && this.flatBothProgram !== null) return;
+      if (skinned && !morphed && this.flatSkinnedProgram !== null) return;
+      if (!skinned && morphed && this.flatMorphedProgram !== null) return;
+      if (!skinned && !morphed) return;
+    }
 
     const { gl } = this;
-    const label = `flat.${morphed ? 'morphed' : ''}${skinned ? 'skinned' : ''}`;
+    const label = `flat.${morphed ? 'morphed' : ''}${skinned ? (eight ? 'skinned8' : 'skinned') : ''}`;
     /* `flatFragSource`, not a fresh `flatFrag`: every variant shades through one fragment stage
        at one light budget, and the uploads are written for that budget. */
+    const vertex = flatVert({ skinned, morphed, instanced: false });
     const program = compileProgram(
       gl,
-      flatVert({ skinned, morphed, instanced: false }),
+      skinned && eight ? skinEight(vertex) : vertex,
       this.flatFragSource,
       label,
     );
     const uniforms = uniformLocations(gl, program, label);
-    if (skinned && morphed) {
+    if (skinned && eight && morphed) {
+      this.flatBoth8Program = program;
+      this.flatBoth8Uniforms = uniforms;
+    } else if (skinned && eight) {
+      this.flatSkinned8Program = program;
+      this.flatSkinned8Uniforms = uniforms;
+    } else if (skinned && morphed) {
       this.flatBothProgram = program;
       this.flatBothUniforms = uniforms;
     } else if (skinned) {
@@ -3245,6 +3398,8 @@ export class WebGL2Renderer implements RendererApi {
     if (camera !== null && env !== null) {
       gl.useProgram(program);
       this.writeMeshPassState(uniforms, camera, env);
+      /* And the material the caller has set, which a program born mid-pass must carry too. */
+      this.writeMaterialState(uniforms, this.currentMaterial);
       this.useFlatProgram();
     }
   }
@@ -3257,11 +3412,24 @@ export class WebGL2Renderer implements RendererApi {
    * a canvas drawn procedurally at runtime, a decoded bitmap, a video frame — stays
    * the consumer's decision. What it gains is a GPU object with sane sampler state.
    */
-  createSurfaceTexture(
-    source: TexImageSource,
-    options: SurfaceTextureOptions = {},
-  ): SurfaceTexture {
-    return new SurfaceTexture(this.gl, source, options);
+  createSurfaceTexture(source: SurfaceSource, options: SurfaceTextureOptions = {}): SurfaceTexture {
+    return new SurfaceTexture(this.gl, source, options, this.compressedFormats);
+  }
+
+  private compressedCache: readonly CompressedTextureFormat[] | null = null;
+
+  /**
+   * The BC formats this device takes as blocks, each named with its colour space (`'bc7-srgb'`).
+   *
+   * **Ask before choosing**, because a phone usually answers none: a BC texture handed to
+   * `createSurfaceTexture` where its format is not here is refused by name rather than decoded,
+   * since core ships no decoder. `@driftengine/assets`' loader asks this for every BC texture in a
+   * container and decodes at load where the answer is no. Read from the four extensions WebGL2
+   * spreads BC across; see `glCompressed.ts`.
+   */
+  get compressedFormats(): readonly CompressedTextureFormat[] {
+    this.compressedCache ??= glCompressedFormats(this.gl);
+    return this.compressedCache;
   }
 
   /**
@@ -3271,10 +3439,10 @@ export class WebGL2Renderer implements RendererApi {
    * refusal names the first that is not.
    */
   createSurfaceTextureArray(
-    sources: readonly TexImageSource[],
+    sources: readonly SurfaceSource[],
     options: SurfaceTextureOptions = {},
   ): SurfaceTexture {
-    return new SurfaceTexture(this.gl, sources, options);
+    return new SurfaceTexture(this.gl, sources, options, this.compressedFormats);
   }
 
   /**
@@ -3332,6 +3500,176 @@ export class WebGL2Renderer implements RendererApi {
     }
     this.skinPalette.update(this.gl, palette);
     this.skinPaletteSet = true;
+    this.paletteData = palette;
+  }
+
+  /**
+   * The lit program for one vertex variant shading by a model: the standard program's vertex
+   * stage, and the fragment stage with the model's switch on (`modelBound`). Compiled the first
+   * time a draw asks — a scene that names no model compiles none — and fed the pass and the
+   * material at once, as `ensureClothPrograms` feeds its own.
+   */
+  private modelProgram(
+    variant: string,
+    kind: SurfaceModelKind,
+    /** Which half of a skin it draws under the screen-space blur. See `SkinHalf`. */
+    half: SkinHalf = 'whole',
+  ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } {
+    const key = `${variant}|${kind}|${half}`;
+    const held = this.modelFlat.get(key);
+    if (held !== undefined) return held;
+    const { gl } = this;
+    const label = `flat.${variant}.${kind}.${half}`;
+    const program = compileProgram(
+      gl,
+      litVertexOf(variant),
+      skinHalfBound(modelBound(this.flatFragSource, kind), half),
+      label,
+    );
+    const made = { program, uniforms: uniformLocations(gl, program, label) };
+    this.modelFlat.set(key, made);
+    this.flatTargets.push(made);
+    gl.useProgram(program);
+    const camera = this.lastPassCamera;
+    const env = this.lastPassEnv;
+    if (camera !== null && env !== null) this.writeMeshPassState(made.uniforms, camera, env);
+    this.writeMaterialState(made.uniforms, this.currentMaterial);
+    return made;
+  }
+
+  /**
+   * An eye's axis in the world for this draw, into its program's `uModelParams`: the material's
+   * own numbers with the axis turned by the draw's model matrix and the eye's joint. See
+   * `eyeAxisInWorld`.
+   */
+  private writeEyeAxis(u: Record<string, WebGLUniformLocation>, model: ArrayLike<number>): void {
+    const eye = this.currentMaterial?.model;
+    if (eye?.kind !== 'eye') return;
+    eyeAxisInWorld(eye, model, this.skinPaletteSet ? this.paletteData : null, this.modelParams, 4);
+    this.gl.uniform4fv(u['uModelParams'] ?? null, this.modelParams);
+  }
+
+  /**
+   * A mesh's cloth binding: which simulation triangle each of its vertices follows, where on it,
+   * and by how much. See `ClothBindingData`.
+   *
+   * Refused by name for a mesh with no rig — a binding blends a vertex between its skinning and the
+   * cloth — and for one that disagrees with the mesh. Compiles the programs that draw and cast it
+   * here, at creation, so no frame ever waits on a compile.
+   */
+  createClothBinding(mesh: Mesh, data: ClothBindingData): GlClothBinding {
+    const target = mesh;
+    if (!target.isSkinned) {
+      throw new Error(
+        'createClothBinding: this mesh has no rig, and a binding blends each vertex between its ' +
+          'skinning and the cloth',
+      );
+    }
+    validateClothBinding(data, target.vertexCount);
+    this.ensureClothPrograms(target.isSkinnedEight, target.morph !== null);
+    return new GlClothBinding(this.gl, data);
+  }
+
+  /** One character's particles, `count` of them, to be updated every frame. */
+  createClothParticles(count: number): GlClothParticles {
+    return new GlClothParticles(this.gl, count);
+  }
+
+  /**
+   * This frame's particles, three floats each, world space; last frame's are kept for motion. A
+   * simulation's output, as it is.
+   */
+  updateClothParticles(particles: GlClothParticles, positions: Float32Array): void {
+    if (this.contextLost) return;
+    particles.update(this.gl, positions);
+  }
+
+  /**
+   * Place the following skinned draws by a cloth: `binding` the mesh's, `particles` the
+   * character's. Null for none, which is every draw until this is called. Both or neither, and
+   * the particles must be as many as the binding names.
+   */
+  setCloth(binding: GlClothBinding | null, particles: GlClothParticles | null = null): void {
+    if (binding === null || particles === null) {
+      this.cloth = null;
+      return;
+    }
+    if (binding.particles !== particles.count) {
+      throw new Error(
+        `setCloth: the binding names ${binding.particles} particles and these are ${particles.count}`,
+      );
+    }
+    this.cloth = { binding, particles };
+  }
+
+  disposeClothBinding(binding: GlClothBinding): void {
+    if (this.contextLost) return;
+    binding.dispose(this.gl);
+  }
+
+  disposeClothParticles(particles: GlClothParticles): void {
+    if (this.contextLost) return;
+    particles.dispose(this.gl);
+  }
+
+  /**
+   * The cloth-bound lit program and caster for a rig of this kind, once. Fed at once if a pass is
+   * bound, for the reason `ensureVariant` gives: a program compiled after `bindMeshPass` would
+   * otherwise carry every uniform at zero.
+   */
+  private ensureClothPrograms(eight: boolean, morphed: boolean): void {
+    if (this.contextLost) return;
+    const { gl } = this;
+    const key = `${eight ? 8 : 4}|${morphed ? 'm' : '-'}`;
+    if (!this.clothFlat.has(key)) {
+      const label = `flat.cloth${eight ? '8' : ''}${morphed ? '.morphed' : ''}`;
+      const vertex = flatVert({ skinned: true, morphed, instanced: false });
+      const program = compileProgram(
+        gl,
+        clothBound(eight ? skinEight(vertex) : vertex),
+        this.flatFragSource,
+        label,
+      );
+      const uniforms = uniformLocations(gl, program, label);
+      this.clothFlat.set(key, { program, uniforms });
+      this.flatTargets.push({ program, uniforms });
+      const camera = this.lastPassCamera;
+      const env = this.lastPassEnv;
+      if (camera !== null && env !== null) {
+        gl.useProgram(program);
+        this.writeMeshPassState(uniforms, camera, env);
+        this.writeMaterialState(uniforms, this.currentMaterial);
+        this.useFlatProgram();
+      }
+    }
+    const depthKey = eight ? '8' : '4';
+    if (!this.clothDepth.has(depthKey)) {
+      const label = `depth-cloth${eight ? '8' : ''}`;
+      const program = compileProgram(
+        gl,
+        clothBound(eight ? skinEight(DEPTH_SKINNED_VERT) : DEPTH_SKINNED_VERT),
+        DEPTH_FRAG,
+        label,
+      );
+      this.clothDepth.set(depthKey, { program, uniforms: uniformLocations(gl, program, label) });
+    }
+  }
+
+  /** Bind the cloth's three textures to their units and name them to `u`. */
+  private bindCloth(
+    u: Record<string, WebGLUniformLocation | null>,
+    cloth: { binding: GlClothBinding; particles: GlClothParticles },
+  ): void {
+    const { gl } = this;
+    gl.activeTexture(gl.TEXTURE0 + CLOTH_BINDING_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, cloth.binding.binding);
+    gl.uniform1i(u['uClothBinding'] ?? null, CLOTH_BINDING_TEXTURE_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + CLOTH_PARTICLES_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, cloth.particles.current);
+    gl.uniform1i(u['uClothParticles'] ?? null, CLOTH_PARTICLES_TEXTURE_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + CLOTH_REST_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, cloth.binding.rest);
+    gl.uniform1i(u['uClothRest'] ?? null, CLOTH_REST_TEXTURE_UNIT);
   }
 
   /**
@@ -3353,6 +3691,16 @@ export class WebGL2Renderer implements RendererApi {
     this.materialDoubleSided = material?.doubleSided === true;
     this.materialHasMaps = materialHasMaps(material);
     this.currentMaterial = material;
+    /* What the blur spreads this skin by: the last material to name a profile says. */
+    const model = material?.model;
+    if (model?.kind === 'skin' && this.skinScatter !== null) {
+      this.skinScatter.setProfile(
+        model.profile,
+        model.scatterColor[0] * model.radius,
+        model.scatterColor[1] * model.radius,
+        model.scatterColor[2] * model.radius,
+      );
+    }
     /*
      * Written to every flat program, because material state persists across draws and a skinned
      * draw is entitled to the material the caller set before it. A second program holding none of
@@ -3368,6 +3716,30 @@ export class WebGL2Renderer implements RendererApi {
       this.writeMaterialState(target.uniforms, material);
     }
     this.useFlatProgram();
+  }
+
+  /**
+   * How a material's cutout edge is drawn this frame: the material's mode against what the frame can
+   * resolve. A translucent draw tests hard whatever the material says, because a blended draw has
+   * nothing to average a pattern with. See `cutoutDither.ts`.
+   */
+  private cutoutResolveNow(material: SurfaceMaterial | null, translucent: boolean): CutoutResolve {
+    if (translucent || material === null) return 'hard';
+    return resolveCutout(
+      material.cutoutMode ?? 'hard',
+      this.temporalJittering,
+      this.sceneTarget?.sampleCount ?? this.canvasSamples,
+    );
+  }
+
+  /** The lit pass's `uCutout` for a material this frame, into scratch. See `uCutout`. */
+  private cutoutUniform(material: SurfaceMaterial | null, translucent: boolean): Float32Array {
+    const v = this.cutoutVector;
+    v[0] = material?.cutout ?? 0;
+    v[1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveNow(material, translucent)];
+    v[2] = this.cutoutFrame;
+    v[3] = 0;
+    return v;
   }
 
   /**
@@ -3420,7 +3792,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (orm !== null) orm.bind(gl, ORM_TEXTURE_UNIT);
     gl.uniform1i(u['uOrmMap'] ?? null, ORM_TEXTURE_UNIT);
-    gl.uniform1i(u['uOrmEnabled'] ?? null, orm === null ? 0 : 1);
+    this.materialFlags[1] = orm === null ? 0 : 1;
     gl.uniform3f(
       u['uOrmScale'] ?? null,
       material?.occlusionStrength ?? 1,
@@ -3434,7 +3806,7 @@ export class WebGL2Renderer implements RendererApi {
      *
      * **The stand-in is black, so the gate is what keeps a glow on.** The shader multiplies by
      * this map, and `emptyTexture2D` is opaque black rather than the multiplicative identity, so an
-     * unbound material keeps the arithmetic it had before only because `uEmissiveMapEnabled` is 0
+     * unbound material keeps the arithmetic it had before only because its flag in `uMaterialFlags` is 0
      * and the read never happens. What would make that wrong is a read taken outside that branch:
      * every glow on a material without a map would go out.
      */
@@ -3443,7 +3815,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (emissiveMap !== null) emissiveMap.bind(gl, EMISSIVE_TEXTURE_UNIT);
     gl.uniform1i(u['uEmissiveMap'] ?? null, EMISSIVE_TEXTURE_UNIT);
-    gl.uniform1i(u['uEmissiveMapEnabled'] ?? null, emissiveMap === null ? 0 : 1);
+    this.materialFlags[2] = emissiveMap === null ? 0 : 1;
     const emissiveScale = material?.emissiveScale ?? null;
     gl.uniform3f(
       u['uEmissiveScale'] ?? null,
@@ -3461,7 +3833,20 @@ export class WebGL2Renderer implements RendererApi {
      */
     gl.uniform2f(u['uUvScale'] ?? null, material?.uScale ?? 1, material?.vScale ?? 1);
     gl.uniform2f(u['uUvOffset'] ?? null, material?.uOffset ?? 0, material?.vOffset ?? 0);
-    gl.uniform1i(u['uDoubleSided'] ?? null, material?.doubleSided === true ? 1 : 0);
+    this.materialFlags[3] = material?.doubleSided === true ? 1 : 0;
+
+    /*
+     * The material's shading model: its numbers, and its map or the stand-in, before the albedo
+     * early return as every map above is. Written to the standard programs too, which declare both
+     * and read neither — one decision for every program, as `setMaterial` says.
+     */
+    const modelMap = material?.modelMap ?? null;
+    gl.activeTexture(gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
+    if (modelMap !== null) modelMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
+    gl.uniform1i(u['uModelMap'] ?? null, MODEL_MAP_TEXTURE_UNIT);
+    packModel(material?.model ?? null, modelMap !== null, this.modelParams);
+    gl.uniform4fv(u['uModelParams'] ?? null, this.modelParams);
 
     /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
        return, so a material with no albedo still leaves a complete texture on the unit. */
@@ -3479,12 +3864,14 @@ export class WebGL2Renderer implements RendererApi {
          array target, and with nothing there it is incomplete. */
       gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
-      gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
+      this.materialFlags[0] = 0;
+      gl.uniform4iv(u['uMaterialFlags'] ?? null, this.materialFlags);
       return;
     }
     albedo.bind(gl, SURFACE_TEXTURE_UNIT);
-    gl.uniform1f(u['uAlbedoCutout'] ?? null, material?.cutout ?? 0);
-    gl.uniform1i(u['uAlbedoEnabled'] ?? null, 1);
+    gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(material, false));
+    this.materialFlags[0] = 1;
+    gl.uniform4iv(u['uMaterialFlags'] ?? null, this.materialFlags);
   }
 
   /**
@@ -3503,7 +3890,7 @@ export class WebGL2Renderer implements RendererApi {
    * Rebind `SURFACE_TEXTURE_UNIT` to whatever `setSurfaceTexture` last put there.
    *
    * Only `drawSdfText` calls this, after the atlas has finished borrowing the same unit.
-   * No uniform is written here — the flat program's `uAlbedo`/`uAlbedoEnabled` were never
+   * No uniform is written here — the flat program's `uAlbedo` and its flag in `uMaterialFlags` were never
    * touched by the text draw and are still correct, since that draw runs its own separate
    * program. What moved is unit 15's actual `WebGLTexture` binding, which is GL state, not
    * program state, and this puts it back to what `currentSurfaceTexture` says it should be.
@@ -3793,6 +4180,8 @@ export class WebGL2Renderer implements RendererApi {
     if (camera !== null && env !== null) {
       gl.useProgram(program);
       this.writeMeshPassState(uniforms, camera, env);
+      /* And the material the caller has set, which a program born mid-pass must carry too. */
+      this.writeMaterialState(uniforms, this.currentMaterial);
       this.useFlatProgram();
     }
   }
@@ -3834,6 +4223,7 @@ export class WebGL2Renderer implements RendererApi {
     opacity: number,
     options: TranslucentMeshOptions = {},
   ): void {
+    this.scatterSkin();
     this.submitInstanced(batch, data, opacity, true, options);
   }
 
@@ -3876,8 +4266,11 @@ export class WebGL2Renderer implements RendererApi {
     if (culling && !batchBoxVisible(batch.box, this.frustum, this.occlusion)) return;
     this.drawBudget.ask();
     this.ensureInstancedProgram();
-    const program = this.flatInstancedProgram;
-    const u = this.flatInstancedUniforms;
+    /* A material with a model takes that model's instanced program; see `modelProgram`. */
+    const modelKind = this.currentMaterial?.model?.kind ?? null;
+    const modelled = modelKind === null ? null : this.modelProgram('instanced', modelKind);
+    const program = modelled?.program ?? this.flatInstancedProgram;
+    const u = modelled?.uniforms ?? this.flatInstancedUniforms;
     if (program === null || u === null) return;
 
     const { gl } = this;
@@ -3935,8 +4328,19 @@ export class WebGL2Renderer implements RendererApi {
     /* Both sides of a double-sided material, as every mesh path does and WebGPU's pipeline does
        for both: without it a batch's far faces were culled here alone. */
     if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
+    /* A dithered cutout: coverage when this batch is opaque in a multisampled frame, the hard test
+       when it is blended. See `cutoutDither.ts`. */
+    const cutoutResolve = this.cutoutResolveNow(this.currentMaterial, false);
+    const coverage = !blend && cutoutResolve === 'coverage';
+    const ditheredBlend = blend && cutoutResolve !== 'hard';
+    if (coverage) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (ditheredBlend)
+      gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, true));
     if (culling && cullsInstances(count, mesh.indexCount)) batch.drawCulled(gl, data, this.frustum);
     else batch.draw(gl, count);
+    if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (ditheredBlend)
+      gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, false));
     if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
 
     if (layer > 0) {
@@ -4107,6 +4511,7 @@ export class WebGL2Renderer implements RendererApi {
     tint: Vec3,
     env: Environment,
   ): void {
+    this.scatterSkin();
     // The engine decides, not the caller: every pass already knows where the
     // waterline is, and leaving it to each call site is how one of them ends up
     // raining dust into the sea.
@@ -4151,6 +4556,7 @@ export class WebGL2Renderer implements RendererApi {
     style: TextStyle,
     timeSec: number,
   ): void {
+    this.scatterSkin();
     if (text.draw(viewportWidth, viewportHeight, originX, originY, style, timeSec)) {
       this.textBudget.ask();
     }
@@ -4256,6 +4662,7 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   drawSdfText(handle: SdfTextRenderer, model: Float32Array, color: Vec3, opacity: number): void {
+    this.scatterSkin();
     if (this.contextLost) return;
     const viewProj = this.frameViewProj;
     if (viewProj === null) return;
@@ -4355,6 +4762,7 @@ export class WebGL2Renderer implements RendererApi {
     env: Environment,
     timeSeconds: number,
   ): void {
+    this.scatterSkin();
     if (data.count === 0) return;
     const { gl } = this;
     const u = batch.uniforms;
@@ -4416,6 +4824,7 @@ export class WebGL2Renderer implements RendererApi {
     coreGain: number,
     minWidthPerMetre = 0.004,
   ): void {
+    this.scatterSkin();
     if (data.count === 0) return;
     const { gl } = this;
     const u = batch.uniforms;
@@ -4490,6 +4899,7 @@ export class WebGL2Renderer implements RendererApi {
     minWidthPerMetre = 0,
     additive = false,
   ): void {
+    this.scatterSkin();
     if (data.count === 0) return;
     const { gl } = this;
     const u = lines.uniforms;
@@ -4735,6 +5145,7 @@ export class WebGL2Renderer implements RendererApi {
     originY = 0,
     originZ = 0,
   ): void {
+    this.scatterSkin();
     plumes.draw(
       this.gl,
       this.frameViewFor(camera),
@@ -4793,6 +5204,7 @@ export class WebGL2Renderer implements RendererApi {
     windZ = 0,
     strength = 1,
   ): void {
+    this.scatterSkin();
     if (caustics === null || !this.quality.water) return;
     const drew = caustics.draw(
       this.gl,
@@ -5122,6 +5534,14 @@ export class WebGL2Renderer implements RendererApi {
     this.uploadWind(this.depthUniforms, this.frameWind);
     gl.useProgram(this.depthSkinnedProgram);
     this.uploadWind(this.depthSkinnedUniforms, this.frameWind);
+    if (this.depthSkinned8Program !== null && this.depthSkinned8Uniforms !== null) {
+      gl.useProgram(this.depthSkinned8Program);
+      this.uploadWind(this.depthSkinned8Uniforms, this.frameWind);
+    }
+    for (const caster of this.clothDepth.values()) {
+      gl.useProgram(caster.program);
+      this.uploadWind(caster.uniforms, this.frameWind);
+    }
     gl.useProgram(this.depthCutoutProgram);
     this.uploadWind(this.depthCutoutUniforms, this.frameWind);
     gl.useProgram(this.depthProgram);
@@ -5148,14 +5568,21 @@ export class WebGL2Renderer implements RendererApi {
       this.bindSceneCasterMaterial(material);
       this.drawMesh(mesh as Mesh, model);
     },
-    skinnedMesh: (mesh, model, palette, material) => {
+    skinnedMesh: (mesh, model, palette, material, cloth) => {
       /* The opaque handle narrowed to this backend's own, for the reason `casterSink`
          gives about the mesh: nothing else ever handed one out. */
       this.bindSceneCasterMaterial(material);
       this.setSkinPalette(palette);
+      if (cloth !== undefined) {
+        this.setCloth(
+          cloth.binding as unknown as GlClothBinding,
+          cloth.particles as unknown as GlClothParticles,
+        );
+      }
       this.drawMesh(mesh as Mesh, model);
       /* Put back, or the next rigid draw in the replay skins by whatever this one left bound. */
       this.setSkinPalette(null);
+      this.setCloth(null);
     },
     instanced: (batch, data, material) => {
       /* The opaque handle narrowed to this backend's own, for the reason `casterSink`
@@ -5295,7 +5722,7 @@ export class WebGL2Renderer implements RendererApi {
     if (cutout !== null) {
       gl.uniform2f(u['uUvScale'] ?? null, cutout.u, cutout.v);
       gl.uniform2f(u['uUvOffset'] ?? null, cutout.uOffset, cutout.vOffset);
-      gl.uniform1f(u['uAlphaCutout'] ?? null, cutout.cutoff);
+      gl.uniform2f(u['uAlphaCutout'] ?? null, cutout.cutoff, cutout.dithered);
       (cutout.albedo as SurfaceTexture).bind(gl, SURFACE_TEXTURE_UNIT);
       gl.uniform1i(u['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
     }
@@ -5434,11 +5861,13 @@ export class WebGL2Renderer implements RendererApi {
       morphed: boolean,
       instanced: boolean,
       label: string,
+      eight = false,
     ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } | null => {
       if (old === null) return null;
+      const vertex = flatVert({ skinned, morphed, instanced });
       const program = compileProgram(
         gl,
-        flatVert({ skinned, morphed, instanced }),
+        eight ? skinEight(vertex) : vertex,
         this.flatFragSource,
         label,
       );
@@ -5459,14 +5888,50 @@ export class WebGL2Renderer implements RendererApi {
     const both = recompile(this.flatBothProgram, true, true, false, 'flat.morphedskinned');
     this.flatBothProgram = both?.program ?? null;
     this.flatBothUniforms = both?.uniforms ?? null;
+    const skinned8 = recompile(this.flatSkinned8Program, true, false, false, 'flat.skinned8', true);
+    this.flatSkinned8Program = skinned8?.program ?? null;
+    this.flatSkinned8Uniforms = skinned8?.uniforms ?? null;
+    const both8 = recompile(this.flatBoth8Program, true, true, false, 'flat.morphedskinned8', true);
+    this.flatBoth8Program = both8?.program ?? null;
+    this.flatBoth8Uniforms = both8?.uniforms ?? null;
     const instanced = recompile(this.flatInstancedProgram, false, false, true, 'flat.instanced');
     this.flatInstancedProgram = instanced?.program ?? null;
     this.flatInstancedUniforms = instanced?.uniforms ?? null;
 
+    for (const [key, entry] of this.clothFlat) {
+      const eight = key.startsWith('8');
+      const withMorph = key.endsWith('m');
+      const label = `flat.cloth${eight ? '8' : ''}${withMorph ? '.morphed' : ''}`;
+      const vertex = flatVert({ skinned: true, morphed: withMorph, instanced: false });
+      const program = compileProgram(
+        gl,
+        clothBound(eight ? skinEight(vertex) : vertex),
+        this.flatFragSource,
+        label,
+      );
+      gl.deleteProgram(entry.program);
+      this.clothFlat.set(key, { program, uniforms: uniformLocations(gl, program, label) });
+    }
+
+    for (const [key, entry] of this.modelFlat) {
+      const [variant, kind, half] = key.split('|') as [string, SurfaceModelKind, SkinHalf];
+      const label = `flat.${variant}.${kind}.${half}`;
+      const program = compileProgram(
+        gl,
+        litVertexOf(variant),
+        skinHalfBound(modelBound(this.flatFragSource, kind), half),
+        label,
+      );
+      gl.deleteProgram(entry.program);
+      this.modelFlat.set(key, { program, uniforms: uniformLocations(gl, program, label) });
+    }
+
     this.flatTargets.length = 0;
-    for (const target of [plain, skinned, morphed, both, instanced]) {
+    for (const target of [plain, skinned, morphed, both, skinned8, both8, instanced]) {
       if (target !== null) this.flatTargets.push(target);
     }
+    for (const target of this.clothFlat.values()) this.flatTargets.push(target);
+    for (const target of this.modelFlat.values()) this.flatTargets.push(target);
     const camera = this.lastPassCamera;
     const env = this.lastPassEnv;
     for (const target of this.flatTargets) {
@@ -6688,12 +7153,15 @@ export class WebGL2Renderer implements RendererApi {
 
   beginFrame(clearColor: Vec3): void {
     if (this.contextLost) return;
+    this.skinScattered = false;
+    this.skinScatter?.reset();
     if (this.litAsked) {
       this.litAsked = false;
       this.rebuildLit();
     }
     this.budget.reset();
     this.materials.dirty();
+    this.cutoutFrame = (this.cutoutFrame + 1) % 64;
     /*
      * Said once, for the reason `refuseOitMultisampled` gives: a quality setting that is enabled
      * and does nothing is the fault the capability clamp exists to prevent.
@@ -6770,6 +7238,8 @@ export class WebGL2Renderer implements RendererApi {
     if (this.contextLost) return;
     /* A view model left open would squeeze every pass after the world, the composite included. */
     if (this.viewModelActive) this.endViewModel();
+    /* Skin not yet spread, because nothing blended came after it, is spread now. */
+    this.scatterSkin();
 
     /*
      * Camera motion blur, built from the camera the frame was *rendered* with.
@@ -7330,6 +7800,16 @@ export class WebGL2Renderer implements RendererApi {
      * is a non-idempotent step entering this body; there is none today, and one added would show
      * as a skinned game behaving differently from an unskinned one.
      */
+    /*
+     * **A pass starts with no material**, so it cannot inherit one from the pass before it. Here
+     * rather than in `writeMeshPassState`, which also feeds a program compiled mid-pass — a model's,
+     * a cloth's, the instanced one — and there forgot the material the caller had set, so the next
+     * draws drew without it until somebody called `setMaterial` again.
+     */
+    this.materialDoubleSided = false;
+    this.materialHasMaps = false;
+    this.currentMaterial = null;
+    this.currentSurfaceTexture = null;
     for (const target of this.flatTargets) {
       this.gl.useProgram(target.program);
       this.writeMeshPassState(target.uniforms, camera, env);
@@ -7663,7 +8143,7 @@ export class WebGL2Renderer implements RendererApi {
      * the sort of per-draw cost this renderer avoids everywhere else.
      */
     /*
-     * And the surface unit, which starts every pass with no texture on it: `uAlbedoEnabled`
+     * And the surface unit, which starts every pass with no texture on it: its flag in `uMaterialFlags`
      * is 0 until a caller asks for one, and a world that never asks would otherwise leave
      * this sampler incomplete for the whole session.
      */
@@ -7743,19 +8223,15 @@ export class WebGL2Renderer implements RendererApi {
     gl.activeTexture(gl.TEXTURE0 + SURFACE_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uAlbedo'] ?? null, SURFACE_TEXTURE_UNIT);
-    gl.uniform1i(u['uAlbedoEnabled'] ?? null, 0);
+    /* Every material switch off — the albedo, both maps, two-sided — in their one row. */
+    gl.uniform4i(u['uMaterialFlags'] ?? null, 0, 0, 0, 0);
     /* No albedo, so no effects table: the stand-in, which the shader reads as none. */
     gl.activeTexture(gl.TEXTURE0 + SURFACE_EFFECTS_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
     gl.uniform1i(u['uSurfaceEffects'] ?? null, SURFACE_EFFECTS_TEXTURE_UNIT);
     gl.uniform2f(u['uUvScale'] ?? null, 1, 1);
     gl.uniform2f(u['uUvOffset'] ?? null, 0, 0);
-    gl.uniform1f(u['uAlbedoCutout'] ?? null, 0);
-    gl.uniform1i(u['uDoubleSided'] ?? null, 0);
-    this.materialDoubleSided = false;
-    this.materialHasMaps = false;
-    this.currentMaterial = null;
-    this.currentSurfaceTexture = null;
+    gl.uniform4f(u['uCutout'] ?? null, 0, 0, 0, 0);
 
     /*
      * **And the normal map, which this did not reset and had to.**
@@ -7783,15 +8259,19 @@ export class WebGL2Renderer implements RendererApi {
     gl.activeTexture(gl.TEXTURE0 + ORM_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uOrmMap'] ?? null, ORM_TEXTURE_UNIT);
-    gl.uniform1i(u['uOrmEnabled'] ?? null, 0);
     gl.uniform3f(u['uOrmScale'] ?? null, 1, 1, 1);
 
     /* And the emissive map. The scale goes back to one, which is the identity it multiplies by. */
     gl.activeTexture(gl.TEXTURE0 + EMISSIVE_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     gl.uniform1i(u['uEmissiveMap'] ?? null, EMISSIVE_TEXTURE_UNIT);
-    gl.uniform1i(u['uEmissiveMapEnabled'] ?? null, 0);
     gl.uniform3f(u['uEmissiveScale'] ?? null, 1, 1, 1);
+
+    /* And the shading model: its map back to the stand-in and its numbers to the standard's. */
+    gl.activeTexture(gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
+    gl.uniform1i(u['uModelMap'] ?? null, MODEL_MAP_TEXTURE_UNIT);
+    gl.uniform4fv(u['uModelParams'] ?? null, NO_MODEL_PARAMS);
 
     /*
      * White, because a uniform nobody has written is **zero**, and this one multiplies
@@ -7903,6 +8383,66 @@ export class WebGL2Renderer implements RendererApi {
     if (this.quality.cullDraws && this.occluded(mesh.bounds, model)) return;
     this.drawBudget.ask();
     this.takeMaterial();
+    /* Skin under the screen-space blur draws its two halves: the frame's, then at once its diffuse. */
+    const splits = this.skinSplits();
+    this.drawMeshHalf(mesh, model, depthLayer, tint, splits ? 'scene' : 'whole');
+    if (splits && this.skinScatter !== null) {
+      this.skinScatter.begin();
+      this.drawMeshHalf(mesh, model, depthLayer, tint, 'diffuse');
+      this.sceneTarget?.bind();
+    }
+  }
+
+  /**
+   * Whether a skin draw now draws its two halves: the profile asked, the frame has not spread its
+   * skin yet, this is the frame's own picture — not a mirror's or a probe's, nor an overlay after
+   * the frame — and the blur's target can be had.
+   */
+  private skinSplits(): boolean {
+    const skin = this.skinScatter;
+    const scene = this.sceneTarget;
+    return (
+      skin !== null &&
+      scene !== null &&
+      this.currentMaterial?.model?.kind === 'skin' &&
+      !this.skinScattered &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.framePresented &&
+      skin.ready(scene)
+    );
+  }
+
+  /**
+   * Spread the frame's skin and add it back: once, at the first blended draw or at the frame's end.
+   * Called first in every draw WebGPU records as blended — translucent meshes and batches, text,
+   * particles, plumes, wind streaks, bolts, lines, caustics, film — so the two backends add skin at
+   * the same point. The frame's depth is copied for the blur to read, and where it cannot be the
+   * diffuse goes back unspread rather than not at all.
+   */
+  private scatterSkin(): void {
+    const skin = this.skinScatter;
+    const scene = this.sceneTarget;
+    const projection = this.frameProjection;
+    if (skin === null || scene === null || this.skinScattered) return;
+    /* Latched whether or not skin was drawn: a skin drawn after this point is the whole surface. */
+    this.skinScattered = true;
+    if (!skin.pending) return;
+    if (this.reflectionPassActive || this.probePassActive || projection === null) return;
+    const depth = scene.snapshotDepth(true);
+    mat4.invert(this.skinInverseProjection, projection);
+    skin.spread(scene, depth, this.emptyTexture2D, projection, this.skinInverseProjection);
+    this.useFlatProgram();
+  }
+
+  /** One draw of a mesh, as `drawMesh` describes, of the half of a skin `half` names. */
+  private drawMeshHalf(
+    mesh: Mesh,
+    model: ReadonlyMat4,
+    depthLayer: number,
+    tint: Vec3 | null,
+    half: SkinHalf,
+  ): void {
     const { gl } = this;
     /*
      * A rigged mesh takes the skinned program, an unrigged one the plain program.
@@ -7922,40 +8462,86 @@ export class WebGL2Renderer implements RendererApi {
      * belongs to was never compiled. Deriving one from the other, as the first version did, made a
      * missing skinned-only program silently switch morph off as well.
      */
-    const both = wantSkin && wantMorph && this.flatBothUniforms !== null;
-    const skinned = both || (wantSkin && this.flatSkinnedUniforms !== null);
+    /* A rig of eight takes the pair built with SKIN_EIGHT on; `warmVariants` compiled them. */
+    const eight = wantSkin && mesh.isSkinnedEight;
+    /*
+     * **A cloth set and a skinned draw take the cloth-bound program of this rig's kind**, compiled
+     * when the binding was made. Its morph half is the mesh's whether weights are set or not: the
+     * program declares the deltas whenever the mesh has them, so they are bound, at zero weight
+     * when none were asked for — an unbound sampler would default to a shadow map's unit.
+     */
+    const cloth = wantSkin ? this.cloth : null;
+    const clothed =
+      cloth === null
+        ? undefined
+        : this.clothFlat.get(`${eight ? 8 : 4}|${mesh.morph !== null ? 'm' : '-'}`);
+    const bothUniforms = eight ? this.flatBoth8Uniforms : this.flatBothUniforms;
+    const skinnedUniforms = eight ? this.flatSkinned8Uniforms : this.flatSkinnedUniforms;
+    const both = wantSkin && wantMorph && bothUniforms !== null;
+    const skinned = both || (wantSkin && skinnedUniforms !== null);
     const morphed = both || (wantMorph && !wantSkin && this.flatMorphedUniforms !== null);
     const variant =
       skinned && morphed
-        ? this.flatBothUniforms
+        ? bothUniforms
         : skinned
-          ? this.flatSkinnedUniforms
+          ? skinnedUniforms
           : morphed
             ? this.flatMorphedUniforms
             : null;
-    const u = variant ?? this.flatUniforms;
-    const program =
-      skinned && morphed
-        ? this.flatBothProgram
-        : skinned
-          ? this.flatSkinnedProgram
-          : morphed
-            ? this.flatMorphedProgram
-            : null;
+    let u = clothed?.uniforms ?? variant ?? this.flatUniforms;
+    let program =
+      clothed !== undefined
+        ? clothed.program
+        : skinned && morphed
+          ? eight
+            ? this.flatBoth8Program
+            : this.flatBothProgram
+          : skinned
+            ? eight
+              ? this.flatSkinned8Program
+              : this.flatSkinnedProgram
+            : morphed
+              ? this.flatMorphedProgram
+              : null;
+    /* A material with a model takes that model's program for the same vertex variant. */
+    const modelKind = this.currentMaterial?.model?.kind ?? null;
+    if (modelKind !== null) {
+      const modelled = this.modelProgram(
+        clothed !== undefined
+          ? `cloth${eight ? 8 : 4}${mesh.morph !== null ? 'm' : '-'}`
+          : skinned && morphed
+            ? eight
+              ? 'both8'
+              : 'both'
+            : skinned
+              ? eight
+                ? 'skinned8'
+                : 'skinned'
+              : morphed
+                ? 'morphed'
+                : 'plain',
+        modelKind,
+        half,
+      );
+      program = modelled.program;
+      u = modelled.uniforms;
+    }
 
     if (program !== null) {
       gl.useProgram(program);
-      if (skinned) {
+      if (skinned || clothed !== undefined) {
         this.skinPalette.bind(gl, SKIN_PALETTE_TEXTURE_UNIT);
         gl.uniform1i(u['uJointPalette'] ?? null, SKIN_PALETTE_TEXTURE_UNIT);
       }
-      if (morphed && mesh.morph !== null) {
+      if ((morphed || clothed !== undefined) && mesh.morph !== null) {
         mesh.morph.bind(gl, MORPH_DELTA_TEXTURE_UNIT);
         gl.uniform1i(u['uMorphDeltas'] ?? null, MORPH_DELTA_TEXTURE_UNIT);
         gl.uniform1i(u['uMorphTargetCount'] ?? null, mesh.morph.targetCount);
         gl.uniform1i(u['uMorphTextureWidth'] ?? null, mesh.morph.width);
-        gl.uniform1fv(u['uMorphWeights'] ?? null, this.morphWeights as Float32Array);
+        gl.uniform1fv(u['uMorphWeights'] ?? null, this.morphWeights ?? NO_MORPH_WEIGHTS);
       }
+      if (clothed !== undefined && cloth !== null) this.bindCloth(u, cloth);
+      if (modelKind === 'eye') this.writeEyeAxis(u, model);
     } else {
       this.useFlatProgram();
     }
@@ -7988,11 +8574,20 @@ export class WebGL2Renderer implements RendererApi {
      * depth 1.0 against a buffer cleared to 1.0, and under `LESS` it would not draw at
      * all. Film, caustics and text lie flush on surfaces for the same reason.
      */
-    gl.depthFunc(this.reversedDepth ? gl.GREATER : gl.LESS);
+    /* A skin's diffuse half is the same surface again: it finds the depth its frame half wrote. */
+    const again = half === 'diffuse';
+    gl.depthFunc(again ? gl.EQUAL : this.reversedDepth ? gl.GREATER : gl.LESS);
+    if (again) gl.depthMask(false);
+    /* A dithered cutout in a multisampled frame with no temporal resolve: its share becomes the
+       pixel's samples. Scoped to this draw, as the depth compare above is. See `cutoutDither.ts`. */
+    const coverage = !again && this.cutoutResolveNow(this.currentMaterial, false) === 'coverage';
+    if (coverage) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     if (layer === 0) {
       if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
       mesh.draw(gl);
       if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
+      if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+      if (again) gl.depthMask(true);
       gl.depthFunc(this.reversedDepth ? gl.GEQUAL : gl.LEQUAL);
       if (tint !== null) gl.uniform3fv(u['uTint'] ?? null, WHITE_TINT);
       if (program !== null) this.useFlatProgram();
@@ -8014,6 +8609,8 @@ export class WebGL2Renderer implements RendererApi {
     if (this.materialDoubleSided) gl.disable(gl.CULL_FACE);
     mesh.draw(gl);
     if (this.materialDoubleSided) gl.enable(gl.CULL_FACE);
+    if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (again) gl.depthMask(true);
     gl.polygonOffset(0, 0);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     if (program !== null) this.useFlatProgram();
@@ -8066,6 +8663,7 @@ export class WebGL2Renderer implements RendererApi {
     opacity: number,
     options: TranslucentMeshOptions = {},
   ): void {
+    this.scatterSkin();
     if (this.contextLost) return;
     /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
        and `Mesh.indexCount`. */
@@ -8088,10 +8686,19 @@ export class WebGL2Renderer implements RendererApi {
     this.drawBudget.ask();
 
     const { gl } = this;
-    const u = this.flatUniforms;
-    this.useFlatProgram();
+    /* A material with a model takes that model's plain program; see `modelProgram`. */
+    const modelKind = this.currentMaterial?.model?.kind ?? null;
+    const modelled = modelKind === null ? null : this.modelProgram('plain', modelKind);
+    const u = modelled?.uniforms ?? this.flatUniforms;
+    if (modelled === null) this.useFlatProgram();
+    else gl.useProgram(modelled.program);
+    if (modelKind === 'eye') this.writeEyeAxis(u, model);
     gl.uniformMatrix4fv(u['uModel'] ?? null, false, model);
     gl.uniform1f(u['uOpacity'] ?? null, Math.min(opacity, 1));
+    /* A dithered cutout tests hard on a blended draw, and is put back below with the rest. */
+    const ditheredHere = this.cutoutResolveNow(this.currentMaterial, false) !== 'hard';
+    if (ditheredHere)
+      gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, true));
     /*
      * Both default to what `bindMeshPass` already put there — lit and fogged — so the
      * common call with no fourth argument writes the same two values it always implicitly
@@ -8169,6 +8776,8 @@ export class WebGL2Renderer implements RendererApi {
     if (!depthWrite && ownsState) gl.depthMask(true);
     if (ownsState) gl.disable(gl.BLEND);
     gl.uniform1f(u['uOpacity'] ?? null, 1);
+    if (ditheredHere)
+      gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, false));
     if (tint !== null) gl.uniform3fv(u['uTint'] ?? null, WHITE_TINT);
     if (refracting) this.unbindSeeThrough(u);
     /* Put back for whatever is drawn next, exactly as `uOpacity` and `uTint` are — a pass
@@ -8640,6 +9249,7 @@ export class WebGL2Renderer implements RendererApi {
     sheen: number,
     options: FilmOptions = {},
   ): void {
+    this.scatterSkin();
     const { gl } = this;
     const u = this.filmUniforms;
     gl.useProgram(this.filmProgram);
@@ -8802,3 +9412,22 @@ function angularDiscExponent(angularRadius: number): number {
  * name to prefer. It goes when something else forces a major, and not before.
  */
 export { WebGL2Renderer as Renderer };
+
+/** The standard model's numbers: no model, no map. */
+const NO_MODEL_PARAMS = new Float32Array(MODEL_PARAM_FLOATS);
+
+/**
+ * The lit vertex stage a program of this variant compiles: the standard programs' and the cloth's,
+ * which `modelProgram` pairs a model's fragment stage with.
+ */
+function litVertexOf(variant: string): string {
+  if (variant.startsWith('cloth')) {
+    const eight = variant[5] === '8';
+    const vertex = flatVert({ skinned: true, morphed: variant.endsWith('m'), instanced: false });
+    return clothBound(eight ? skinEight(vertex) : vertex);
+  }
+  const skinned = variant.startsWith('skinned') || variant.startsWith('both');
+  const morphed = variant === 'morphed' || variant.startsWith('both');
+  const vertex = flatVert({ skinned, morphed, instanced: variant === 'instanced' });
+  return variant.endsWith('8') ? skinEight(vertex) : vertex;
+}

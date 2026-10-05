@@ -31,6 +31,18 @@ uniform highp sampler2D uJointPalette;
 
 layout(location = 11) in vec4 aJoints;
 layout(location = 12) in vec4 aWeights;
+/*
+ * **The fifth to eighth influences, read only by a pipeline built for a mesh that has them.**
+ *
+ * Declared in every skinned variant at the last two locations WebGL2 guarantees — 13 is the channel,
+ * and an instanced draw, which takes 11 to 15, cannot skin — and fed zeros by the absent-attribute
+ * constants for a mesh with four. \`SKIN_EIGHT\` is a pipeline constant rather than a permutation,
+ * so the generated vertex stages do not double: off, the device compiles the second sum away and a
+ * four-influence mesh pays nothing; on, it is four more palette reads a vertex.
+ */
+const bool SKIN_EIGHT = false;  // wgsl:override
+layout(location = 14) in vec4 aJoints2;
+layout(location = 15) in vec4 aWeights2;
 
 /** One joint's matrix, read as four consecutive texels of row 0. */
 mat4 jointMatrix(int index) {
@@ -51,9 +63,24 @@ mat4 jointMatrix(int index) {
  * by hand with unnormalised weights, which shades slightly dark or bright rather than breaking.
  */
 mat4 skinMatrix() {
-  return jointMatrix(int(aJoints.x)) * aWeights.x
-       + jointMatrix(int(aJoints.y)) * aWeights.y
-       + jointMatrix(int(aJoints.z)) * aWeights.z
-       + jointMatrix(int(aJoints.w)) * aWeights.w;
+  mat4 m = jointMatrix(int(aJoints.x)) * aWeights.x
+         + jointMatrix(int(aJoints.y)) * aWeights.y
+         + jointMatrix(int(aJoints.z)) * aWeights.z
+         + jointMatrix(int(aJoints.w)) * aWeights.w;
+  if (SKIN_EIGHT) {
+    m += jointMatrix(int(aJoints2.x)) * aWeights2.x
+       + jointMatrix(int(aJoints2.y)) * aWeights2.y
+       + jointMatrix(int(aJoints2.z)) * aWeights2.z
+       + jointMatrix(int(aJoints2.w)) * aWeights2.w;
+  }
+  return m;
 }
+
 `;
+
+/** The source above with the eight-influence switch on, for a WebGL2 program built for such a mesh. */
+export function skinEight(source: string): string {
+  const off = 'const bool SKIN_EIGHT = false;';
+  if (!source.includes(off)) throw new Error('skinEight: the source carries no SKIN_EIGHT switch');
+  return source.replace(off, 'const bool SKIN_EIGHT = true;');
+}

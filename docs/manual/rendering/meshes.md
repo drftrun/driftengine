@@ -81,7 +81,10 @@ triangle. Everything else is optional and named for what it does:
   a texture.
 - `layers`: which image of a texture array each face wears.
 - `channel`: four lanes for wind sway, a sky factor, per-vertex alpha and glass thickness.
-- `joints` and `weights` for skinning, `morphTargets` for blend shapes.
+- `joints` and `weights` for skinning, four bones a vertex, and `joints2` and `weights2` for the
+  next four where a vertex follows up to eight — the imported models that carry them keep all
+  eight, heaviest first, and a mesh without the second four draws exactly as it did.
+  `morphTargets` for blend shapes.
 
 `validateMeshData` checks that every attribute covers every vertex and every index names one that
 exists, and throws naming what is wrong. Mesh data is the same type the `.drft` container stores, so
@@ -118,8 +121,10 @@ export function waveFlag(renderer: RendererApi) {
 ```
 
 A mesh is immutable unless it was created `dynamic`. A dynamic one takes new positions, and normals
-if you have them, through `updateMesh`, without a new GPU buffer per frame. The vertex count is fixed
-for its life. Cloth is drawn this way.
+if you have them, through `updateMesh`, without a new GPU buffer per frame, and only those two are
+uploaded: the colours, texture coordinates and the rest stay where they are. The vertex count is
+fixed for its life. Cloth hanging in the world is drawn this way; cloth on a character is placed in
+the vertex stage instead, see [Ragdolls and cloth](../simulation/ragdolls-and-cloth.md).
 
 ## Uploading a large mesh across frames
 

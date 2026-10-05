@@ -27,6 +27,8 @@ import {
   ATTR_EMISSIVE_COLOR,
   ATTR_GRAIN,
   ATTR_JOINTS,
+  ATTR_JOINTS2,
+  ATTR_WEIGHTS2,
   ATTR_RELIEF,
   ATTR_ROUGHNESS,
   ATTR_SPECULAR,
@@ -64,7 +66,9 @@ type Name =
   | 'joints'
   | 'weights'
   | 'layers'
-  | 'channel';
+  | 'channel'
+  | 'joints2'
+  | 'weights2';
 
 /** The frozen order `MESH` uses, with each optional array's bit: `FORMAT.md` §4.3. */
 const ORDER: readonly {
@@ -89,6 +93,8 @@ const ORDER: readonly {
   /* Whole numbers naming an image, so exact: a layer quantised onto its neighbour is another picture. */
   { name: 'layers', width: 1, bit: ATTR_LAYERS, kind: 'exact' },
   { name: 'channel', width: 4, bit: ATTR_CHANNEL, kind: 'value' },
+  { name: 'joints2', width: 4, bit: ATTR_JOINTS2, kind: 'exact' },
+  { name: 'weights2', width: 4, bit: ATTR_WEIGHTS2, kind: 'value' },
 ];
 
 /** A growing little-endian byte list, for the writer: offline, so it may allocate. */
