@@ -82,7 +82,7 @@ triangle. Everything else is optional and named for what it does:
 - `layers`: which image of a texture array each face wears.
 - `channel`: four lanes for wind sway, a sky factor, per-vertex alpha and glass thickness.
 - `joints` and `weights` for skinning, four bones a vertex, and `joints2` and `weights2` for the
-  next four where a vertex follows up to eight — the imported models that carry them keep all
+  next four where a vertex follows up to eight. The imported models that carry them keep all
   eight, heaviest first, and a mesh without the second four draws exactly as it did.
   `morphTargets` for blend shapes.
 
