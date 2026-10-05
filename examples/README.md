@@ -56,6 +56,7 @@ and the page keeps running with the new code.
 | [`character/`](character/)       | A character controller in a valley of steps, a slab, a bridge and a pond.                        |
 | [`vehicle/`](vehicle/)           | A raycast car on a ring of cones, driven by a DriftScript driver or by you, on tarmac or ice.    |
 | [`ragdoll/`](ragdoll/)           | A ragdoll shoved down the stairs, a flag in a gusting wind, and a sheet dropped over a crate.    |
+| [`garment/`](garment/)           | A figure walking a circle in a cape: skinned cloth on the device, and a finer mesh bound to it.  |
 | [`animation/`](animation/)       | A figure walking a circle on a blend tree, reaching for a lantern, its pace set in DriftScript.  |
 | [`navigation/`](navigation/)     | Villagers walking lanes in DriftScript, and dogs crossing a square on a mesh built from it.      |
 | [`entities/`](entities/)         | Frogs catching fireflies over a pond, every rule a DriftScript system, with time that rewinds.   |
