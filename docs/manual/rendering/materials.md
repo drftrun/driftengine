@@ -93,11 +93,11 @@ scale each channel: `roughnessScale`, `metallicScale` and `occlusionStrength` ar
 
 A lamp's highlight is normally a look control: it peaks at 1 times the specular value however rough
 the surface, so strength and width can be set apart. A material that sets `physicalSpecular: true`
-takes GGX's own term instead, `π · D · Vis · F · N·L`, as Unreal shades and as skin and the eye
-already do here. The peak is then `1 / (4 α²)` of the light head-on, where α is the roughness
+takes GGX's own term instead, `π · D · Vis · F · N·L`, as a physically based renderer shades and
+as skin and the eye already do here. The peak is then `1 / (4 α²)` of the light head-on, where α is the roughness
 squared, so a polished surface's highlight is several times the look's and a rough one's lower and
-wider. The per-vertex `specular` value becomes the reflectance at normal incidence, F0: Unreal's
-`0.08 × Specular`, 0.04 for its default. Fresnel then brightens every surface toward a grazing angle,
+wider. The per-vertex `specular` value becomes the reflectance at normal incidence, F0: about
+0.04 for most surfaces that are not metal. Fresnel then brightens every surface toward a grazing angle,
 not only a metal. It reaches lamps and the sun, on the standard, lightmap and anisotropic models; a
 rectangle's highlight is integrated over the rectangle with the same F0 already, so it does not
 change. Without `hdrScene` an 8-bit frame clips the brighter peak. The code is compiled into the lit

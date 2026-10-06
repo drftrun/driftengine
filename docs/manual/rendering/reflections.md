@@ -237,7 +237,7 @@ where there are none.
 With `fresnel: true` it is the surface's reflectance head-on instead, and each pixel returns
 `strength · A + B` of what it finds: the split-sum BRDF at its own view and the box's `roughness`,
 the fit the lit stage reflects its environment by. A floor then reflects more toward the horizon
-than underfoot, and the share follows the camera, as Unreal weighs its reflections. The roughness
+than underfoot, and the share follows the camera, as a real floor's does. The roughness
 and reflectance are the box's rather than each pixel's, since the pass reads no material.
 
 Water reflects through its own planar mirror; see [Water](water.md). For a wet street, see

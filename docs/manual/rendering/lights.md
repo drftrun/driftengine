@@ -81,8 +81,8 @@ physical law, windowed so the light still ends at its radius, and is far brighte
 strip under the example switches between them.
 
 A light may name its own fall instead, with `falloffExponent`: `(1 - (d/R)^2)^n`, `R` its radius
-and `n` the exponent, with no distance term at all. That is Unreal's falloff for a light without
-inverse-square falloff, so a rig authored there keeps its shape: a fill meant to light a whole hall
+and `n` the exponent, with no distance term at all. It is the falloff other tools give a light
+without inverse-square falloff, so a rig authored in one keeps its shape: a fill meant to light a whole hall
 across a hundred metres does, where the inverse square would have it gone a few metres out. Absent
 or 0, the light takes the frame's falloff. Each chosen light's exponent reaches the environment as
 `env.lightFalloffExponents`, filled from the selection's `falloffExponents` beside the cones. Water,
