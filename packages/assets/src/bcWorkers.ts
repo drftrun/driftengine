@@ -13,10 +13,16 @@
  *
  * ```ts
  * import { DrftLoader } from '@driftengine/assets';
- * import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+ * import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
  *
  * const loader = new DrftLoader(renderer, { bcWorker: spawnBcWorker });
  * ```
+ *
+ * **A declared subpath, so it resolves the way the barrel does**: to the build by default and to
+ * this file under `drift-source`. The path into `src/` that 4.8.7 documented still resolves, through
+ * the manifest's `./*` passthrough, and hands every consumer TypeScript inside `node_modules`, which
+ * is the default the 2026-09-13 flip took away from the barrels; a resolver that maps a package's
+ * subpaths into `src/` also doubled it, to `src/src/bcWorkers.ts`.
  *
  * Without it BC textures decode on the main thread, and the loader says so once. **What that costs**
  * is the decode of a texture the device cannot take as blocks, which on a phone is every BC texture:

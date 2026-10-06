@@ -76,7 +76,8 @@ function settle(reply: BcReply, pending: Pending): void {
 
 /**
  * A decoder over a worker `spawn` starts, or on the main thread where it is null — the default, since
- * the worker's factory lives behind its own specifier (`bcWorkers.ts`) and a caller names it.
+ * the worker's factory lives behind its own specifier (`@driftengine/assets/bcWorkers`) and a caller
+ * names it.
  */
 export function createBcDecoder(spawn: (() => BcWorker) | null = null): BcDecoder {
   let worker: BcWorker | null = null;
@@ -96,7 +97,7 @@ export function createBcDecoder(spawn: (() => BcWorker) | null = null): BcDecode
   if (spawn === null) {
     reason =
       'BC textures decode on the main thread: no worker was named. Pass `bcWorker: spawnBcWorker`, ' +
-      'exported by @driftengine/assets/src/bcWorkers.ts, to decode them off it';
+      "exported by '@driftengine/assets/bcWorkers', to decode them off it";
   } else {
     try {
       worker = spawn();

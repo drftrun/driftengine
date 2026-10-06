@@ -129,7 +129,7 @@ test('every worker entry compiles as an IIFE, which is what a bundler does to it
  * asks whether a worker *compiles* and not whether a barrel *reaches* one. So this asks the second
  * question, the way a consumer's bundler asks it: bundle the barrel and look for the construction.
  * A barrel that needs one is not forbidden — it is asked to be a specifier of its own, the way
- * `physics/src/workers.ts` is.
+ * `@driftengine/physics/workers` is.
  */
 test('no package barrel reaches a worker construction', () => {
   const barrels = readdirSync(path.join(ROOT, 'packages'))
@@ -178,6 +178,7 @@ test('no package barrel reaches a worker construction', () => {
     [],
     `these barrels reach a worker construction, so a bundler emits it for every consumer that ` +
       `imports anything from them:\n  ${offenders.join('\n  ')}\n` +
-      'Move the factory behind its own specifier, as `physics/src/workers.ts` is.',
+      "Move the factory behind its own specifier, declared in the package's exports, as " +
+      '`@driftengine/physics/workers` is.',
   );
 });

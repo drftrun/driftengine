@@ -454,6 +454,8 @@ export type { ReflectionOptions, ReflectiveSample } from './render/gi/reflection
  */
 export { GRADE_PLACEHOLDER_SIZE, MAX_GRADE_SIZE, identityGradeLut } from './render/colourGrade.ts';
 export type { ColourGradeLut } from './render/colourGrade.ts';
+export { DEFAULT_FILMIC_CURVE } from './render/filmicCurve.ts';
+export type { FilmicCurve } from './render/filmicCurve.ts';
 /**
  * How bloom answers past its threshold — a ramp in place of the subtraction, and a tint for each
  * of the pyramid's `BLOOM_LEVELS` octaves — the third argument of `setBloom`.
@@ -513,6 +515,20 @@ export type {
   SurfaceModel,
   SurfaceModelKind,
 } from './render/surfaceModel.ts';
+/*
+ * What a draw lays over its surface beyond its material — a rim of light, a dissolve, wrinkle
+ * normals by region — set per draw with `setSurfaceOverlay`, its images regions of one atlas.
+ */
+/* Every opaque lit surface reflecting the frame by its own material: `screenSpaceReflections`. */
+export { DEFAULT_FRAME_REFLECTIONS } from './render/frameReflections.ts';
+export type { FrameReflections } from './render/frameReflections.ts';
+export type {
+  OverlayRegion,
+  SurfaceDissolve,
+  SurfaceOverlay,
+  SurfaceRim,
+  SurfaceWrinkle,
+} from './render/surfaceOverlay.ts';
 /*
  * A baked lightmap: the page a consumer decoded, which `createLightmap` uploads as a lightmapped
  * material's `modelMap`, and the region of it a material or an instance reads.

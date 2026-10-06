@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "ab8ba78e:248076",
-  "directionalShadows+environmentProbe": "32972b50:274087",
-  "directionalShadows+environmentProbe+nightEmissive": "fa9fbf10:276573",
-  "directionalShadows+nightEmissive": "2c46b82c:250562",
-  "environmentProbe": "d5400d3b:254124",
-  "environmentProbe+nightEmissive": "ce3f3c53:256610",
-  "nightEmissive": "7d2fca1d:230599",
-  "none": "4f5238a3:228113",
-  "pointShadows": "46a0d6b7:267321",
-  "pointShadows+directionalShadows": "0208494a:287284",
-  "pointShadows+directionalShadows+environmentProbe": "431d29cc:313295",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "00befb9c:315781",
-  "pointShadows+directionalShadows+nightEmissive": "7cb33f60:289770",
-  "pointShadows+environmentProbe": "5efcec3f:293332",
-  "pointShadows+environmentProbe+nightEmissive": "82c5b0e7:295818",
-  "pointShadows+nightEmissive": "bae707e9:269807",
+  "directionalShadows": "30bb546c:256138",
+  "directionalShadows+environmentProbe": "b4c4013c:282149",
+  "directionalShadows+environmentProbe+nightEmissive": "4a8cdb3e:284635",
+  "directionalShadows+nightEmissive": "a1372220:258624",
+  "environmentProbe": "04546daf:262186",
+  "environmentProbe+nightEmissive": "b48bea81:264672",
+  "nightEmissive": "e1aa2b75:238661",
+  "none": "722b64fd:236175",
+  "pointShadows": "14df8cf1:275383",
+  "pointShadows+directionalShadows": "b81742e0:295346",
+  "pointShadows+directionalShadows+environmentProbe": "6dfbc470:321357",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "07f0e6fa:323843",
+  "pointShadows+directionalShadows+nightEmissive": "5187fd1c:297832",
+  "pointShadows+environmentProbe": "de72575b:301394",
+  "pointShadows+environmentProbe+nightEmissive": "a6e5937d:303880",
+  "pointShadows+nightEmissive": "35c80f69:277869",
 }
 `;
 
@@ -385,11 +385,18 @@ float mediumFog(float dist, float pointY) {
     return mix(ramp, 1.0 - exp2(-wetLinear * wetLinear * 1.442695), uUnderwaterFactor);
   }
 
+  // Where the medium begins along the ray: uFogNear, the linear mode's slot, which this mode
+  // never read before Atmosphere.fogStart. The ray is integrated from there on, at the density
+  // of that point; at a start of 0 every term is the one it always was. See render/fog.ts.
+  float start = min(uFogNear, dist);
+  float before = dist > 0.0 ? start / dist : 0.0;
   float t = (pointY - uFogEyeY) * uFogHeightFalloff;
+  float rest = t * (1.0 - before);
   // (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than
   // branched: at t = 0 the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
-  float denom = abs(t) < 1e-4 ? 1e-4 : t;
-  float air = 1.0 - exp(-uFogDensity * dist * (1.0 - exp(-denom)) / denom);
+  float denom = abs(rest) < 1e-4 ? 1e-4 : rest;
+  float air =
+    1.0 - exp(-uFogDensity * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom);
   if (uUnderwaterFactor <= 0.0) return air;
   // Water is its own medium and keeps its own curve, so crossing the surface
   // changes nothing about how the water column reads.
@@ -2080,7 +2087,7 @@ vec3 areaGlassTint(
 }
 
 
-out vec4 outColor;
+layout(location = 0) out vec4 outColor;
 
 
 /** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
@@ -3710,6 +3717,137 @@ float modelReflectance(float standard) {
 }
 
 
+/* Whether this program carries a draw's overlay. Off but where one has been set: overlay.ts. */
+const bool SURFACE_OVERLAY = true;  // wgsl:override
+/* The overlay's fifteen vectors; packSurfaceOverlay in surfaceOverlay.ts says what each holds. */
+uniform vec4 uOverlay[15];
+
+/* Whether the atlas is what the refraction slot holds: not where this draw refracts or is glass. */
+bool overlayImagesBound() {
+  return uSeeThrough.x <= 0.0 && uSeeThrough.z <= 0.0;
+}
+
+/* One image of the atlas at uv, repeated within its region; zero where the region has no size. */
+vec4 overlayImage(vec4 region, vec2 uv) {
+  if (region.x <= 0.0) return vec4(0.0);
+  return textureLod(uRefractScene, region.zw + fract(uv) * region.xy, 0.0);
+}
+
+/* The dissolve's noise at uv, and whether the draw dissolves at all: -1 where it does not. */
+float overlayDissolveNoise(vec2 uv) {
+  if (uOverlay[6].x <= 0.0 || uOverlay[7].z <= 0.0) return -1.0;
+  if (!overlayImagesBound()) return -1.0;
+  return overlayImage(uOverlay[6], uv * uOverlay[7].xy).r;
+}
+
+/* Whether the dissolve cuts this fragment away: where its noise is under the threshold, or all of
+   it at a threshold of 1. */
+bool overlayCuts(vec2 uv) {
+  float noise = overlayDissolveNoise(uv);
+  if (noise < 0.0) return false;
+  return noise < uOverlay[7].z || uOverlay[7].z >= 1.0;
+}
+
+/*
+ * The wrinkle normal blended into the mapped one by the two masks' channels times the six weights,
+ * in the frame the normal map is read in. **Under uniform control flow up to the frame**, which
+ * takes derivatives: every branch before it is on the overlay's numbers alone, and the weight a
+ * pixel takes is a mix rather than a branch.
+ */
+vec3 overlayWrinkle(vec3 mapped, vec3 unmapped, vec2 uv) {
+  if (uOverlay[10].x <= 0.0 || !overlayImagesBound()) return mapped;
+  mat3 tbn = tangentFrame(unmapped, vWorldPos, vUv.xy, vTangent, vHasTangents);
+  vec3 a = overlayImage(uOverlay[11], uv).rgb;
+  vec3 b = overlayImage(uOverlay[12], uv).rgb;
+  float weight = clamp(
+    dot(a, uOverlay[13].xyz) + dot(b, vec3(uOverlay[13].w, uOverlay[14].xy)), 0.0, 1.0);
+  vec3 wrinkle = overlayImage(uOverlay[10], uv).xyz * 2.0 - 1.0;
+  /* z rebuilt where none is stored, as normalMapped does: see normalMap.ts. */
+  wrinkle.z = wrinkle.z > 0.0 ? wrinkle.z : sqrt(max(0.0, 1.0 - dot(wrinkle.xy, wrinkle.xy)));
+  return normalize(mix(mapped, normalize(tbn * wrinkle), weight));
+}
+
+/*
+ * The rim's place on the screen, 0 to 1 up its height and its width in the same units: from view
+ * space and the projection's tangent, not from gl_FragCoord, whose y runs up on one backend and
+ * down on the other (the 2026-08-17 rule), and whose scale is a render target's, not the screen's.
+ */
+vec2 overlayScreen() {
+  vec4 eye = uView * vec4(vWorldPos, 1.0);
+  float depth = max(-eye.z, 1e-4) * uClusterFrustum.z;
+  return vec2(eye.x / depth + uClusterFrustum.w, eye.y / depth + 1.0) * 0.5;
+}
+
+/* What the overlay adds to the light the surface gives off: the dissolve's band, the colour laid
+   over through its noise, and the rim. Zero where the draw sets none of them. */
+vec3 overlayGlow(vec2 uv, vec3 n) {
+  vec3 glow = vec3(0.0);
+  float noise = overlayDissolveNoise(uv);
+  if (noise >= 0.0) {
+    float band = 1.0 - clamp((noise - uOverlay[7].z) / uOverlay[7].w, 0.0, 1.0);
+    glow += uOverlay[8].rgb * uOverlay[8].w * band + uOverlay[9].rgb * uOverlay[9].w * noise;
+  }
+  float strength = uOverlay[0].w;
+  if (strength > 0.0) {
+    vec3 toEye = normalize(uCameraPos - vWorldPos);
+    float edge = pow(1.0 - clamp(dot(n, toEye), 0.0, 1.0), max(uOverlay[1].x, 1e-4));
+    float up = pow(clamp(n.y * 0.5 + 0.5, 0.0, 1.0), max(uOverlay[1].y, 1e-4));
+    float rim = pow(edge * up, max(uOverlay[1].z, 1e-4));
+    float time = uSurfaceScene.x;
+    if (uOverlay[2].x > 0.0 && overlayImagesBound()) {
+      vec2 at = overlayScreen() * uOverlay[3].z + uOverlay[3].xy * time;
+      rim *= overlayImage(uOverlay[2], at).r;
+    }
+    rim = min(rim, 1.0);
+    rim *= mix(uOverlay[4].x, uOverlay[4].y, 0.5 + 0.5 * sin(uOverlay[3].w * time));
+    if (uOverlay[5].x > 0.0 && overlayImagesBound()) {
+      rim *= 1.0 - uOverlay[1].w * overlayImage(uOverlay[5], uv).r;
+    }
+    glow += uOverlay[0].rgb * strength * rim;
+  }
+  return glow;
+}
+
+
+/*
+ * Whether this pipeline is the reflection pass's surface half: the frame's opaque draws again,
+ * against the depth they wrote, leaving the two outputs below and no light. Off in every other
+ * pipeline, and set from the key as skin's halves are. See reflectionSurface.ts.
+ */
+const bool REFLECTION_SURFACE = false;  // wgsl:override
+/*
+ * Whether the frame's own draws write the two outputs as well: WebGL2's arrangement, on where the
+ * frame's materials' reflections are, and off in every WebGPU pipeline, which replays the draws
+ * instead. A lit switch, so a program that does not write them carries nothing live across the
+ * lamps for them.
+ */
+const bool REFLECTION_MAPS = true;  // wgsl:override
+/* The environment as the frame shows it, and the surface's roughness in w. */
+layout(location = 1) out vec4 outReflectedProbe;
+/* What a reflection found in the frame is multiplied by to land where the environment did. */
+layout(location = 2) out vec4 outReflectedTint;
+
+/* How much of the surface the medium in front of it leaves: the fog block below's own measure. */
+float reflectionAir() {
+  return uFogEnabled != 0 ? mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y) : 0.0;
+}
+
+/*
+ * The two outputs, carried through what the shaded colour meets after the blend: its occlusion,
+ * the water, and the air, as \`main\` applies them. \`air\` is the fog the caller has already
+ * reckoned, so the frame's own draws pay for it once.
+ */
+void reflectionSurfaceOut(vec3 probe, vec3 tint, float roughness, float occlusion, float air) {
+  vec3 keep = vec3(occlusion * (1.0 - air));
+  if (uFogEnabled != 0) {
+    vec3 waterTransmission = vec3(0.42) + uUnderwaterColor * 2.0;
+    keep *= mix(vec3(1.0), waterTransmission, uUnderwaterFactor * 0.55);
+  }
+  outReflectedProbe = vec4(probe * keep, roughness);
+  outReflectedTint = vec4(tint * keep, 1.0);
+}
+
+
 /**
  * The rectangle's signed form factor at this fragment: its corners **wound so a surface on the
  * emitting side sees them counter-clockwise**, which is what makes it positive there. The natural
@@ -3868,6 +4006,10 @@ void main() {
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
+  /* A draw's dissolve cuts the surface away before anything is shaded: overlay.ts. */
+  if (SURFACE_OVERLAY) {
+    if (overlayCuts(surfaceAt.xy)) discard;
+  }
 
   /*
    * Surface colour and its coverage, resolved before anything else — including before it is
@@ -3982,6 +4124,11 @@ void main() {
   }
 
   vec3 lit = albedo;
+  /* How much of the environment the frame shows here, and how a found reflection would land:
+     reflectionSurface.ts. None where nothing is reflected. */
+  vec3 reflectedProbe = vec3(0.0);
+  vec3 reflectedTint = vec3(0.0);
+  float reflectedRoughness = 1.0;
   /* Skin's diffuse, held before emission for the screen-space blur's own pass: models.ts. */
   vec3 diffuseAlone = vec3(0.0);
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
@@ -4029,7 +4176,10 @@ void main() {
      * right: a mipped colour image, sampled under uniform control flow, exactly as uAlbedo is
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
+    vec3 unmapped = n;
     if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
+    /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
+    if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change
@@ -4745,6 +4895,15 @@ void main() {
         environment * mix(vec3(1.0), albedo, metal),
         weight
       );
+      reflectedTint = mix(vec3(1.0), albedo, metal) * weight;
+      reflectedProbe = environment * reflectedTint;
+      reflectedRoughness = surfaceRoughness;
+    }
+    /* The reflection pass's surface half leaves here, before the lamps: reflectionSurface.ts. */
+    if (REFLECTION_SURFACE) {
+      reflectionSurfaceOut(reflectedProbe, reflectedTint, reflectedRoughness, ormOcclusion,
+        reflectionAir());
+      return;
     }
     /*
      * The sun's highlight, on top of whatever the surface reflects rather than underneath it —
@@ -5760,6 +5919,9 @@ void main() {
       * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
     /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
     lit += windowGlow * uEmission.x;
+    /* And a draw's overlay: its rim, its dissolve's band and the colour laid over. Not gated on the
+       night, as emission is: a glow the surface wears rather than light it gives off. overlay.ts. */
+    if (SURFACE_OVERLAY) lit += overlayGlow(surfaceAt.xy, n);
 
     /*
      * And the same emission again, weighted by how far this surface faces away from the sun.
@@ -5956,6 +6118,10 @@ void main() {
     return;
   }
 
+  /* WebGL2's frame writes the reflection maps itself, with the fog already reckoned above. */
+  if (REFLECTION_MAPS) {
+    reflectionSurfaceOut(reflectedProbe, reflectedTint, reflectedRoughness, ormOcclusion, fog);
+  }
   outColor = vec4(shaded, alpha);
 }
 "

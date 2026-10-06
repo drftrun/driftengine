@@ -1,5 +1,66 @@
 [
   {
+    "version": "4.9.0",
+    "date": "2026-10-07",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "`screenSpaceReflections`: every opaque lit surface reflects the frame by its own material, the probe's share swapped for what a ray finds, softened by roughness and left to the probes past a ceiling.",
+        "text": "A renderer built with `screenSpaceReflections` reflects the frame in every opaque lit surface by that surface's own material, where `ReflectiveSurface` reflects it by a box's. The lit stage leaves, per pixel, how much of the environment it showed and the tint a reflection lands with; the screen-space trace gains a material mode that marches every such pixel against the frame's depth and swaps the probe's share for what it finds. The swap is exact because the lit stage's blend is a mix: the frame holds the environment times the tint times the weight, and a found reflection belongs there with the same tint and weight, so nothing else in the pixel moves. A rougher surface shows a softer reflection, blurred by its roughness, and past `maxRoughness` it keeps the probes' reflection alone. One floor mesh with one ORM map therefore mirrors the figures standing on its glossy panels and barely shows them on its matte ones. What a surface reflects is what the lit stage already reflected: a metal by its metalness, a dielectric where `setSurfaceReflectivity` or its material asks. `true` takes `DEFAULT_FRAME_REFLECTIONS`; a `FrameReflections` sets the ceiling, the march and the blur. WebGPU writes the two maps by replaying the opaque lit draws without their lamps, since a second attachment on the frame's pass would bind every pipeline in it; WebGL2 writes them beside the colour, enabled around the opaque lit draws alone and behind a lit switch, so a renderer without the option carries nothing for it. It needs `screenEffects`, `hdrScene` and one sample, and says so once where it has none. On `demo/dev/frameReflections.html` the trace moves 30,138 floor pixels and none above them, a ceiling below every stripe matches the frame without the trace to the pixel, and the two backends differ by 41 pixels."
+      },
+      {
+        "kind": "added",
+        "short": "`setSurfaceOverlay` lays a rim of light, a dissolve with a glowing edge and wrinkle normals by six region weights over a draw's materials, its images regions of one atlas.",
+        "text": "`renderer.setSurfaceOverlay(overlay)` lays something over the surfaces of the draws that follow, beyond their materials, so one character's whole set of materials changes together while another's does not; per draw, reset by `bindMeshPass`. A `rim` glows along the silhouette: an edge `(1 - N·V)^falloff` leaning toward normals that face up, raised to a contrast, times a noise laid in screen space and scrolled on the environment's `surfaceTime`, a slow pulse and a mask in the mesh's uv, added to emission and not gated on the night. A `dissolve` cuts the surface away where a noise in its uv falls under a threshold, with a glowing band at the edge and a colour laid through the same noise. A `wrinkle` blends a second normal map into the surface's by six region weights read through two masks. Every image is a region of one atlas (`OverlayRegion`), read in the slot the frame's refraction copy takes, which an opaque surface never reads; a draw that refracts keeps its refraction and reads none of the overlay's images, and says so once. A lit switch, off until an overlay is set. WebGL2 carries the overlay's fifteen uniform vectors where its device has room and refuses it in words where it does not, as on a 256-vector part at the eight-light budget, and reads a compressed atlas as none. On `demo/dev/surfaceOverlay.html` every control moves only the object it names, and the two backends agree to the pixel."
+      },
+      {
+        "kind": "added",
+        "short": "`outputTransform: 'filmic'` and `setFilmicCurve`: a film curve shaped by five numbers that holds mid grey at mid grey, applied by the composite.",
+        "text": "`outputTransform: 'filmic'` is a film curve in the ACEScg working space: a straight segment through mid grey meeting a soft toe below and a shoulder above, shaped by a slope, a toe, a shoulder and two clips, with the ACES reference's glow and red modifier around it. `setFilmicCurve` sets the numbers and a renderer starts with `DEFAULT_FILMIC_CURVE`; a curve that runs backwards or divides by zero is clamped and said once rather than refused. 0.18 of scene light comes out at 0.18, where `'aces'` gives about 0.11: 118 of 255 on both backends, and every one of sixteen grey and colour patches agrees with a consumer's own transcription of the reference. It is the composite's, so it needs `screenEffects` and `hdrScene`; without them every pass grades with `'aces'` and the renderer says so once. Bound to DriftScript as `drift/render.filmic`."
+      },
+      {
+        "kind": "added",
+        "short": "`highDynamicRange` draws to a display's own range on WebGPU, `displayRange` says which range the frame went out in, and `setDisplayLuminance` lets highlights reach the display's peak.",
+        "text": "`highDynamicRange: true` asks for a canvas whose highlights run past paper white as far as the display can show. It is had where the renderer is on WebGPU, the frame keeps its light past white (`screenEffects` and `hdrScene`) and the display reports a high range: the canvas is configured `rgba16float` with extended tone mapping and read back to confirm it. `renderer.displayRange` says which range the frame goes out in, `'high'` or `'standard'`, and `displayRangeReason` says why; WebGL2 draws into an eight-bit canvas and always answers `'standard'`. `setDisplayLuminance(paperWhite, peak)` gives the ratio highlights may reach: paper white stays where it was and so does everything below it, the filmic shoulder rolls off toward the peak, and a colour grade colours a highlight without clipping it back to white. On a standard display it changes nothing. A host without a browser display query answers it with `createRenderer`'s `highDynamicRangeDisplay`."
+      },
+      {
+        "kind": "added",
+        "short": "`setCameraMotionBlur(scale, maxShare)` blurs each drawn object by its own motion under DriftTR on WebGPU: a mover smears while the still stage behind it stays sharp.",
+        "text": "Camera motion blur now reads each pixel's motion from the reconstruction's motion target, so a mover with a previous placement or pose smears along its own path while the stage standing still behind it does not, and `setCameraMotionBlur` takes a maximum as a share of the frame. On `demo/dev/objectBlur.html` a box crossing a still camera's view smears 8 pixels, 1 with the blur off, 5 capped. It is WebGPU's under DriftTR alone, since that is where per-object motion is kept; WebGL2, and WebGPU without reconstruction, blur by the camera's motion alone and say so once when given a mover."
+      },
+      {
+        "kind": "added",
+        "short": "`setChromaticAberration(intensity, start)` pulls the colour channels apart toward the frame's edges past a start radius, at three wavelengths, on both backends.",
+        "text": "`setChromaticAberration(intensity, start)` is a lens fringe in the composite: the three channels sampled apart toward the frame's edges, scaled by their wavelengths, from a start radius outward, so the middle of the frame is untouched. Held until changed; 0 is none. On `demo/dev/toneCurve.html?fringe=` it moves 13,480 pixels, none inside the start, and the two backends agree. It needs `screenEffects`, and says so once."
+      },
+      {
+        "kind": "added",
+        "short": "`Atmosphere.fogStart` keeps the exponential fog's first metres clear, integrated along each ray's own path in the lit stage and the GPU-driven pipeline alike.",
+        "text": "`Atmosphere.fogStart` holds the exponential height fog off for its first metres: the medium begins where the ray has travelled that far, integrated along the ray's own path, so a stage reads clear up close and hazes with distance as a fog start does in a scene authored elsewhere. 0, or absent, is the fog as before. On `demo/dev/fogStart.html` the measured columns match values worked by hand on both backends, and the GPU-driven pipeline's fog takes it too."
+      },
+      {
+        "kind": "added",
+        "short": "A registered pass reads the frame: `reads: ['colorSnapshot']` hands it the colour drawn so far as `sceneColor`, beside the depth's `sceneDepth`, on both backends.",
+        "text": "A pass that declares `reads: ['depthSnapshot']` is handed the frame's depth as `sceneDepth` — in the `PrepareContext` on WebGPU, an `r32float` texture, and in the `PassContext` on WebGL2 — and one that declares `reads: ['colorSnapshot']` the colour with everything drawn before it as `sceneColor`, copied afresh at each such pass's draw. A distortion samples the scene behind it with it; a full-screen pass drawn last reads the whole frame and writes over it in scene light, before the tone curve. Under DriftTR the pass runs after the upscale over a copy of the reconstructed frame. On `demo/dev/framePass.html` a pass inverting the frame reads the same values on both backends, with multisampling too."
+      },
+      {
+        "kind": "changed",
+        "short": "The worker factories are at declared subpaths, `@driftengine/assets/bcWorkers` and `@driftengine/physics/workers`, where a bundler and Node can both find them.",
+        "text": "`spawnBcWorker` and the physics island pool's `createIslandPool` were reached by a path into a package's `src`, which a published package's `exports` does not have to allow and a strict resolver refuses. Each now has a subpath of its own in its package's `exports`, `@driftengine/assets/bcWorkers` and `@driftengine/physics/workers`, built to `dist` like the barrels, and the messages that name them say so. The barrels still do not reach them, which is what keeps a worker out of a game that never names one."
+      },
+      {
+        "kind": "fixed",
+        "short": "A scene capture or a probe bake inside a frame no longer turns that frame black on WebGPU, nor switches off its skin spread, nor steps the temporal jitter twice.",
+        "text": "Three defects at the boundary a capture or a probe bake opens in the middle of a frame. On WebGPU, `captureScene` and `bakeProbe` saved the open pass before flushing the frame graph, which opens the frame's pass, so a capture after any draw restored the wrong pass and the frame came out black. On both backends, the latch that spreads skin once a frame was set before the check that refuses a mirror, a probe or a capture, so a blended draw inside a capture switched the frame's skin spread off. And the temporal history stepped its jitter each time the camera was bound rather than once a frame, so a frame that bound it twice drew two frames' jitter. Each has a test, and `scripts/capture-check.mjs` captures at the start of a frame, among its draws and at its end, against controls taken the same way."
+      },
+      {
+        "kind": "fixed",
+        "short": "WebGPU asks a device for the textures and samplers the environment probe's widest lit variant really binds, sixteen and twelve, counted from the generated bindings.",
+        "text": "The check that decides whether a device can build the environment probe's permutation compared its limits against seven sampled textures and four samplers, typed when the probe was added. The widest lit variant had since grown to sixteen and twelve with the material maps, glass, the fixture atlas and DriftLight, so a device under those would have been admitted to a permutation it cannot bind. The counts now come from the generated bindings, a shared sampler counted once."
+      }
+    ]
+  },
+  {
     "version": "4.8.7",
     "date": "2026-10-06",
     "entries": [

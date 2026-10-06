@@ -847,7 +847,18 @@ export const FLOORS = {
    * pixel shader keeps its 96 registers, fixed arm, and its 120 (WebGPU) and 108 (WebGL2) clustered,
    * at 2.8% to 6.4% more instructions — where 4.8.2's regression was the registers.
    */
-  'core-only': 847996,
+  /*
+   * **Raised 2026-10-07 by +31,369, 3.7%, for 4.9.0, with every `core-*` entry by
+   * about as much**, measured per in-progress commit from a worktree of each: the capture fixes,
+   * the filmic curve, fog from a distance, the fringe and a pass reading the frame 7,630; HDR output
+   * 1,241; blur by each object's motion 846; the surface overlay 9,116; the probe's ceilings counted
+   * 124; and reflections through the frame's materials 12,375. The overlay and the reflections are
+   * mostly the generated WGSL — 5.8 and 5.5 KB of the lit file — where every helper is stored once
+   * and what each of the sixteen permutations' \`main\` carries is a few calls, the rest their
+   * TypeScript and the trace's material mode. Both sit behind lit switches, so a frame that sets no
+   * overlay and asks for no reflections compiles neither in on a device.
+   */
+  'core-only': 879365,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -866,7 +877,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-gizmo': 853010,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-gizmo': 884009,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -878,7 +890,8 @@ export const FLOORS = {
    */
   /* Raised 2026-10-05 with `core-only`, 4.8.4; the cloth's own share is 14,638 over core. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-cloth': 862584,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-cloth': 893575,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -897,7 +910,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-audio': 854362,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-audio': 885734,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -925,7 +939,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-animation': 854440,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-animation': 885437,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -966,7 +981,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-script': 888844,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-script': 920143,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1158,7 +1174,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-splats': 865279,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-splats': 896550,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1181,7 +1198,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-terrain': 849382,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-terrain': 880752,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1213,7 +1231,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-ui2d': 858304,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-ui2d': 889658,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1223,7 +1242,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-and-assets': 874962,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-and-assets': 905898,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1240,7 +1260,8 @@ export const FLOORS = {
   /* Raised 2026-10-04 with `core-only`: what had accumulated since 4.6.1, and 4.8.3's scene coverage. */
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
-  'core-audio-spatial': 856503,
+  /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
+  'core-audio-spatial': 887888,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

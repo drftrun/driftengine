@@ -27,6 +27,11 @@ import type { DecalBox } from './decalProjector.ts';
  * which is the same price the temporal row declined for a velocity buffer. A caller declares a
  * `ReflectiveSurface` instead: a box, and a facing rule for which surfaces inside it reflect. It is
  * the shape `DecalProjector` already has, for the same reason.
+ *
+ * **Or every surface by its own material**, where the renderer was built with
+ * `screenSpaceReflections`: the lit stage leaves two maps of what it reflected — not a G-buffer, the
+ * environment's share and its tint, which is all a swap needs — and the same trace runs in a
+ * material mode over every pixel. See `frameReflections.ts`.
  */
 
 /**

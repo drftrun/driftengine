@@ -26,6 +26,8 @@ import { AUTO_EXPOSURE_GLSL } from './exposure.ts';
 import { LOCAL_EXPOSURE_GLSL } from './localExposure.ts';
 import { FILM_LOOK_GLSL } from './filmLook.ts';
 import { HIGHLIGHT_SHOULDER_GLSL } from './outputTransform.ts';
+import { FILMIC_GLSL } from '../filmicCurve.ts';
+import { FRINGE_GLSL } from './fringe.ts';
 
 export const RUSH_FRAG = `#version 300 es
 precision highp float;
@@ -64,6 +66,18 @@ uniform float uReach;
  */
 uniform int uOutputTransform;
 uniform float uOutputExposure;
+/**
+ * The \`filmic\` curve's eight constants, solved once a curve by \`resolveFilmicCurve\`: (slope, black
+ * clip, white clip, toe scale) and (shoulder scale, toe match, straight match, shoulder match).
+ * Read only where \`uOutputTransform\` is 4.
+ */
+uniform vec4 uFilmA;
+uniform vec4 uFilmB;
+/**
+ * The display's peak over paper white on a high dynamic range canvas, and 1 everywhere else: a
+ * value of 1 is the display's paper white, and only above 1 does anything here let light past it.
+ */
+uniform float uDisplayHeadroom;
 
 /**
  * The frame's depth, and the matrix that carries a pixel back to where it was last frame.
@@ -91,6 +105,14 @@ uniform mat4 uReprojection;
 uniform float uMotionStrength;
 /** A ceiling on the smear, in UV, so a fast turn softens the frame rather than erasing it. */
 uniform float uMotionMax;
+/**
+ * Each drawn object's own motion, where the frame keeps it: the reconstruction's motion target,
+ * whose texel is where a mover's surface was minus where it is, in this pass's uv, and a flag in the
+ * fourth channel above one half where a draw wrote it. \`uObjectMotion\` is 1 where it is bound and
+ * drawn this frame and 0 otherwise, when a placeholder is bound and the camera's motion alone blurs.
+ */
+uniform sampler2D uMotion;
+uniform float uObjectMotion;
 
 /**
  * Ambient occlusion, already estimated and blurred by its own pass. 1 is open, 0 is enclosed.
@@ -244,10 +266,12 @@ vec3 acesFilmic(vec3 x) {
 }
 
 ${HIGHLIGHT_SHOULDER_GLSL}
+${FILMIC_GLSL}
 vec3 grade(vec3 c) {
   if (uOutputTransform == 0) return c;
   if (uOutputTransform == 2) c = acesFilmic(c);
   if (uOutputTransform == 3) c = highlightShoulder(c * uOutputExposure);
+  if (uOutputTransform == 4) c = filmicCurve(c * uOutputExposure);
   return linearToSrgb(c);
 }
 
@@ -260,9 +284,16 @@ vec3 withBloom(vec3 c) {
 /** The grade, sampled after the curve and before the veil. See uGradeLut's own comment. */
 vec3 applyColourGrade(vec3 c) {
   if (uGradeStrength <= 0.0) return c;
-  vec3 clamped = clamp(c, 0.0, 1.0);
+  /*
+   * **A table graded for paper white grades the colour and keeps the light above it** on a high
+   * range display: the pixel is brought under white by its brightest channel, graded, and taken
+   * back up by the same factor, so a lamp keeps its brightness and takes the look's colour. At a
+   * headroom of 1 the factor is exactly 1 and this is the grade it always was.
+   */
+  float over = uDisplayHeadroom > 1.0 ? max(max(c.r, max(c.g, c.b)), 1.0) : 1.0;
+  vec3 clamped = clamp(c / over, 0.0, 1.0);
   vec3 uvw = (clamped * (uGradeSize - 1.0) + 0.5) / uGradeSize;
-  return mix(c, textureLod(uGradeLut, uvw, 0.0).rgb, uGradeStrength);
+  return mix(c, textureLod(uGradeLut, uvw, 0.0).rgb * over, uGradeStrength);
 }
 
 /** The veil, mixed in last of everything this pass does. See uVeilAlpha's own comment. */
@@ -292,14 +323,24 @@ vec3 withVeil(vec3 c) {
  * correctly, and a camera turning past a horizon *should* smear it.
  */
 vec3 cameraBlur(vec3 scene) {
-  float depth = textureLod(uDepth, vUv, 0.0).r;
-  vec4 clip = vec4(vUv * 2.0 - 1.0, ${glslSceneDepthToNdc('depth')}, 1.0);
-  vec4 previous = uReprojection * clip;
-  /* Behind the previous eye: there is no last-frame position to smear toward. */
-  if (previous.w <= 0.0) return scene;
-
-  vec2 wasUv = (previous.xy / previous.w) * 0.5 + 0.5;
-  vec2 velocity = (vUv - wasUv) * uMotionStrength;
+  /*
+   * **A drawn object's own motion where it has one**: a kick's leg or a thrown body smears along
+   * its path while the stage standing still behind it does not, which the camera's motion alone
+   * cannot tell apart. Read unconditionally, the placeholder where there is no target.
+   */
+  vec4 moved = textureLod(uMotion, vUv, 0.0);
+  vec2 velocity;
+  if (uObjectMotion > 0.5 && moved.a > 0.5) {
+    velocity = -moved.xy * uMotionStrength;
+  } else {
+    float depth = textureLod(uDepth, vUv, 0.0).r;
+    vec4 clip = vec4(vUv * 2.0 - 1.0, ${glslSceneDepthToNdc('depth')}, 1.0);
+    vec4 previous = uReprojection * clip;
+    /* Behind the previous eye: there is no last-frame position to smear toward. */
+    if (previous.w <= 0.0) return scene;
+    vec2 wasUv = (previous.xy / previous.w) * 0.5 + 0.5;
+    velocity = (vUv - wasUv) * uMotionStrength;
+  }
 
   float distance = length(velocity);
   if (distance < 1e-4) return scene;
@@ -337,9 +378,11 @@ vec3 finish(vec3 light) {
   return withGrain(withVeil(applyColourGrade(grade(lensed))), gl_FragCoord.xy);
 }
 
+${FRINGE_GLSL}
 void main() {
   vec4 sampled = textureLod(uScene, vUv, 0.0);
-  vec3 scene = sampled.rgb;
+  /* The lens's colour fringe first, on the scene as it arrived. See shaders/fringe.ts. */
+  vec3 scene = withFringe(sampled.rgb);
   if (uMotionStrength > 0.0) scene = cameraBlur(scene);
   /*
    * Defocus after the camera smear and before everything else, because a lens is the last thing

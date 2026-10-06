@@ -101,8 +101,24 @@ export const RENDER_CAPABILITIES: readonly CapabilityDefinition[] = [
     [R, { name: 'stops', type: 'f32' }],
     "How far this frame is scaled into the tone curve, above 0. Replaces the profile's " +
       '`outputExposure` for this frame onward. Adaptation is yours: a game knows it walked into a ' +
-      'cave, and the renderer could only find out a frame late. Ignored unless the output ' +
-      'transform is `aces`, since otherwise there is no curve to be exposed into.',
+      'cave, and the renderer could only find out a frame late. Ignored where the output ' +
+      'transform is `none` or `srgb`, since there is then no curve to be exposed into.',
+  ),
+  define(
+    'filmic',
+    [
+      R,
+      { name: 'slope', type: 'f32' },
+      { name: 'toe', type: 'f32' },
+      { name: 'shoulder', type: 'f32' },
+      { name: 'blackClip', type: 'f32' },
+      { name: 'whiteClip', type: 'f32' },
+    ],
+    "The `filmic` output transform's curve, held until changed: the straight segment's slope " +
+      'through mid grey, how much of the curve the toe and the shoulder take (0 to 1), and how ' +
+      'far black and white clip past their ends (0 to 1). The engine defaults are 0.88, 0.55, ' +
+      '0.26, 0 and 0.04. Mid grey stays mid grey whatever they are. A number out of range is ' +
+      "clamped into it. Ignored unless the quality profile's output transform is `filmic`.",
   ),
   define(
     'motionBlur',
@@ -185,6 +201,14 @@ export function renderImplementation(): Record<string, unknown> {
     bloomAbove: (renderer: RendererApi, scale: number, threshold: number) =>
       renderer.setBloom(scale, threshold),
     exposure: (renderer: RendererApi, stops: number) => renderer.setOutputExposure(stops),
+    filmic: (
+      renderer: RendererApi,
+      slope: number,
+      toe: number,
+      shoulder: number,
+      blackClip: number,
+      whiteClip: number,
+    ) => renderer.setFilmicCurve({ slope, toe, shoulder, blackClip, whiteClip }),
     motionBlur: (renderer: RendererApi, scale: number) => renderer.setCameraMotionBlur(scale),
     speedBlur: (renderer: RendererApi, strength: number) => renderer.setSpeedRush(strength),
     focus: (renderer: RendererApi, distance: number, range: number, scale: number) =>

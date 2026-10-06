@@ -19,6 +19,8 @@ import { AREA_LIGHT_GLSL } from './areaLight.ts';
 import { NORMAL_MAP_GLSL } from './normalMap.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
+import { overlayGlsl } from './overlay.ts';
+import { reflectionSurfaceGlsl } from './reflectionSurface.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
 import { FULL_LIGHT_BUDGET, type LightBudget } from '../../uniformVectorBudget.ts';
 
@@ -469,6 +471,16 @@ export interface FlatShaderOptions {
    */
   readonly physicalSpecular?: boolean;
   /**
+   * Whether it carries a draw's surface overlay, `uOverlay` and all (`setSurfaceOverlay`). True
+   * when absent. See `overlayGlsl`.
+   */
+  readonly surfaceOverlay?: boolean;
+  /**
+   * Whether the frame's own draws write the reflection maps beside their colour: WebGL2's way to
+   * the frame's materials' reflections. True when absent. See `reflectionSurfaceGlsl`.
+   */
+  readonly reflectionMaps?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -613,6 +625,10 @@ export function flatFrag(options: FlatShaderOptions): string {
       SURFACE_EFFECTS_GLSL,
       /* Depth zero and after the tangent frame and the lobes it calls; see models.ts. */
       modelsGlsl(options.physicalSpecular ?? true),
+      /* After the models, so its switch takes the next id; depth zero, as main calls it. */
+      overlayGlsl(options.surfaceOverlay ?? true),
+      /* After the overlay, so its switch takes the next id. See reflectionSurface.ts. */
+      reflectionSurfaceGlsl(options.reflectionMaps ?? true),
       /* After the models, whose answer to a rectangle it asks for. See areaLight.ts. */
       AREA_LIGHT_GLSL,
       MAIN_GLSL,

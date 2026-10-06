@@ -178,3 +178,45 @@ describe('the gpu surface', () => {
     expect(() => createGpuSurface(canvas, fakeDevice() as unknown as GPUDevice)).toThrow(/webgpu/i);
   });
 });
+
+/*
+ * **A high range is configured, then read back**: half floats with extended tone mapping where the
+ * profile and the display allow it, and standard again where the browser ignored the option — a
+ * browser that does not know `toneMapping` configures the canvas anyway and clips at white, which
+ * a game choosing its HDR look would otherwise never learn.
+ */
+describe('A HIGH DYNAMIC RANGE CANVAS', () => {
+  const high = { range: 'high', reason: 'asked, held and shown' } as const;
+
+  it('IS HALF FLOATS WITH EXTENDED TONE MAPPING, AND SAYS SO', () => {
+    vi.stubGlobal('navigator', { gpu: { getPreferredCanvasFormat: () => 'bgra8unorm' } });
+    const { canvas, context } = fakeCanvas();
+    const configured = context as unknown as { getConfiguration: () => unknown };
+    configured.getConfiguration = () => ({ toneMapping: { mode: 'extended' } });
+    const surface = createGpuSurface(canvas, fakeDevice() as unknown as GPUDevice, high);
+    expect(surface.format).toBe('rgba16float');
+    expect(context.configure).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'rgba16float', toneMapping: { mode: 'extended' } }),
+    );
+    expect(surface.displayRange).toBe('high');
+  });
+
+  it('IS STANDARD WHERE THE BROWSER IGNORED THE OPTION, IN WORDS', () => {
+    vi.stubGlobal('navigator', { gpu: { getPreferredCanvasFormat: () => 'bgra8unorm' } });
+    const { canvas } = fakeCanvas();
+    const surface = createGpuSurface(canvas, fakeDevice() as unknown as GPUDevice, high);
+    expect(surface.displayRange).toBe('standard');
+    expect(surface.displayRangeReason).toMatch(/no extended-range canvas/);
+  });
+
+  it('IS THE PREFERRED FORMAT AND THE STANDARD RANGE WHERE NOBODY ASKED', () => {
+    vi.stubGlobal('navigator', { gpu: { getPreferredCanvasFormat: () => 'bgra8unorm' } });
+    const { canvas, context } = fakeCanvas();
+    const surface = createGpuSurface(canvas, fakeDevice() as unknown as GPUDevice);
+    expect(surface.format).toBe('bgra8unorm');
+    expect(context.configure).toHaveBeenCalledWith(
+      expect.not.objectContaining({ toneMapping: expect.anything() }),
+    );
+    expect(surface.displayRange).toBe('standard');
+  });
+});

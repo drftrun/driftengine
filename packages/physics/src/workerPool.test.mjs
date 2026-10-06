@@ -272,6 +272,19 @@ test('a dial changed mid-run reaches the workers', () => {
   }
 });
 
+/**
+ * Workers asked for with no pool is the other common failure, and the reason is the fix: it names the
+ * declared subpath that exports the factory, which resolves under every condition, rather than a path
+ * into `src/`, which hands a consumer TypeScript inside `node_modules`.
+ */
+test('a world asked for workers with no pool names the specifier that gives it one', () => {
+  const world = new PhysicsWorld({ allowSleep: false, workers: 4 });
+  assert.equal(world.parallelism.requested, 4);
+  assert.equal(world.parallelism.running, 0);
+  assert.match(world.parallelism.reason, /no pool was given.*'@driftengine\/physics\/workers'/);
+  world.dispose();
+});
+
 /** A bundler that cannot build the worker is the commonest failure, and it must not be fatal. */
 test('a pool that cannot start says why, and the world still steps correctly', () => {
   const serial = new PhysicsWorld({ allowSleep: false });

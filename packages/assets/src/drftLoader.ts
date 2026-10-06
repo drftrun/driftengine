@@ -84,7 +84,7 @@ export interface DrftLoaderOptions {
   readonly fetchImpl?: FetchLike;
   /**
    * What starts the worker a BC texture the device cannot take as blocks is decoded in:
-   * `spawnBcWorker`, from `@driftengine/assets/src/bcWorkers.ts`. Absent, they decode on the main
+   * `spawnBcWorker`, from `@driftengine/assets/bcWorkers`. Absent, they decode on the main
    * thread and the loader says so once — the factory is behind its own specifier so a consumer that
    * never names it has no worker in its build. See `bcWorkers.ts`.
    */

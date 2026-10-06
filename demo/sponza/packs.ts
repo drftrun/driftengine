@@ -24,7 +24,7 @@
  * which is how the band beside a pier was found to be a decal (see `BLENDED`).
  */
 import { DrftLoader, writePartMaterial } from '@driftengine/assets';
-import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
 import { STONE_ALBEDO, paleFloor, stoneSurface } from './stone';
 import { lanternGlass } from './glass';
 import type { DrftLight } from '@driftengine/drft';

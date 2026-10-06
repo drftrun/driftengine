@@ -85,11 +85,18 @@ float mediumFog(float dist, float pointY) {
     return mix(ramp, 1.0 - exp2(-wetLinear * wetLinear * 1.442695), uUnderwaterFactor);
   }
 
+  // Where the medium begins along the ray: uFogNear, the linear mode's slot, which this mode
+  // never read before Atmosphere.fogStart. The ray is integrated from there on, at the density
+  // of that point; at a start of 0 every term is the one it always was. See render/fog.ts.
+  float start = min(uFogNear, dist);
+  float before = dist > 0.0 ? start / dist : 0.0;
   float t = (pointY - uFogEyeY) * uFogHeightFalloff;
+  float rest = t * (1.0 - before);
   // (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than
   // branched: at t = 0 the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
-  float denom = abs(t) < 1e-4 ? 1e-4 : t;
-  float air = 1.0 - exp(-uFogDensity * dist * (1.0 - exp(-denom)) / denom);
+  float denom = abs(rest) < 1e-4 ? 1e-4 : rest;
+  float air =
+    1.0 - exp(-uFogDensity * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom);
   if (uUnderwaterFactor <= 0.0) return air;
   // Water is its own medium and keeps its own curve, so crossing the surface
   // changes nothing about how the water column reads.

@@ -930,9 +930,11 @@ test('a metal takes a lamp highlight even with no specular attribute', () => {
  */
 test('occlusion multiplies the surface and not the medium', () => {
   expect(source).toContain('lit *= ormOcclusion;');
-  const occlusionAt = source.indexOf('lit *= ormOcclusion;');
-  const fogAt = source.indexOf('if (uFogEnabled != 0) {');
-  const lightingAt = source.indexOf('if (uLightingEnabled != 0) {');
+  /* Within `main`: the reflection surface's helper above it asks the fog the same question. */
+  const mainAt = source.indexOf('void main()');
+  const occlusionAt = source.indexOf('lit *= ormOcclusion;', mainAt);
+  const fogAt = source.indexOf('if (uFogEnabled != 0) {', mainAt);
+  const lightingAt = source.indexOf('if (uLightingEnabled != 0) {', mainAt);
   expect(occlusionAt).toBeGreaterThan(lightingAt);
   expect(occlusionAt, 'before the fog block, or it darkens the air').toBeLessThan(fogAt);
 });

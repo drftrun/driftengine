@@ -27,7 +27,7 @@ import type {
   TranslucentMeshOptions,
 } from '../../packages/core/src/index';
 import { DrftLoader } from '@driftengine/assets';
-import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
 import type { DrftPart } from '@driftengine/assets';
 
 import type { SceneFile } from './bake/write';

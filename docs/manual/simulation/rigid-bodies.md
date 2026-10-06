@@ -212,7 +212,7 @@ were on the last tick.
 No two islands share a body, so solving them in any order, or at once, gives the same bits. The
 `Executor` seam runs them: `SerialExecutor` by default, `ShuffledExecutor` in a random order, which
 the tests use to prove order does not matter, and `DisjointExecutor`. `new PhysicsWorld({ workers,
-pool: createIslandPool })` solves on a pool of workers from `@driftengine/physics/src/workers.ts`,
+pool: createIslandPool })` solves on a pool of workers from `@driftengine/physics/workers`,
 named at the call so a game that never asks for workers bundles none. It needs a cross-origin
 isolated page, since it shares memory; without one the world stays serial, correct, and says why in
 `parallelism.reason`.

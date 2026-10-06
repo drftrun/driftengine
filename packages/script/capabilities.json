@@ -6144,8 +6144,46 @@
         "scene.write"
       ],
       "deterministic": false,
-      "doc": "How far this frame is scaled into the tone curve, above 0. Replaces the profile's `outputExposure` for this frame onward. Adaptation is yours: a game knows it walked into a cave, and the renderer could only find out a frame late. Ignored unless the output transform is `aces`, since otherwise there is no curve to be exposed into.",
+      "doc": "How far this frame is scaled into the tone curve, above 0. Replaces the profile's `outputExposure` for this frame onward. Adaptation is yours: a game knows it walked into a cave, and the renderer could only find out a frame late. Ignored where the output transform is `none` or `srgb`, since there is then no curve to be exposed into.",
       "implementation": "drift/render.exposure"
+    },
+    {
+      "module": "drift/render",
+      "name": "filmic",
+      "signature": "fn(renderer: Renderer, slope: f32, toe: f32, shoulder: f32, blackClip: f32, whiteClip: f32) -> void",
+      "params": [
+        {
+          "name": "renderer",
+          "type": "Renderer"
+        },
+        {
+          "name": "slope",
+          "type": "f32"
+        },
+        {
+          "name": "toe",
+          "type": "f32"
+        },
+        {
+          "name": "shoulder",
+          "type": "f32"
+        },
+        {
+          "name": "blackClip",
+          "type": "f32"
+        },
+        {
+          "name": "whiteClip",
+          "type": "f32"
+        }
+      ],
+      "returns": "void",
+      "effects": [
+        "scene.write"
+      ],
+      "deterministic": false,
+      "doc": "The `filmic` output transform's curve, held until changed: the straight segment's slope through mid grey, how much of the curve the toe and the shoulder take (0 to 1), and how far black and white clip past their ends (0 to 1). The engine defaults are 0.88, 0.55, 0.26, 0 and 0.04. Mid grey stays mid grey whatever they are. A number out of range is clamped into it. Ignored unless the quality profile's output transform is `filmic`.",
+      "implementation": "drift/render.filmic"
     },
     {
       "module": "drift/render",

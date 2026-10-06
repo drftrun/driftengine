@@ -1,5 +1,6 @@
 import { glSceneDepthFormat } from './depthConvention.ts';
 import { clampGrain, clampVignette, grainSeed } from './shaders/filmLook.ts';
+import { FRINGE_FLOATS, resolveFringe } from './shaders/fringe.ts';
 import { AmbientOcclusionPass } from './ambientOcclusionPass.ts';
 import { ExposurePass } from './exposurePass.ts';
 import { clampAutoExposure } from './shaders/exposure.ts';
@@ -99,6 +100,8 @@ export class SceneTarget {
   private gradeStrength = 0;
   /** The lens and the print, held like the grade. See `filmLook.ts`. */
   private vignette = 0;
+  /** The lens's colour fringe: red's and green's pull and where it begins. See `fringe.ts`. */
+  private readonly fringe = new Float32Array(FRINGE_FLOATS);
   private grain = 0;
   private grainSeed = 0;
   /** Eye adaptation: how far, and this frame's time step. See `Renderer.setAutoExposure`. */
@@ -702,6 +705,11 @@ export class SceneTarget {
     this.vignette = clampVignette(strength);
   }
 
+  /** The lens's colour fringe, held until changed. See `Renderer.setChromaticAberration`. */
+  setChromaticAberration(intensity: number, start: number): void {
+    resolveFringe(intensity, start, this.fringe);
+  }
+
   /** The print's grain and this frame's seed, held until changed. See `Renderer.setFilmGrain`. */
   setFilmGrain(strength: number, seed: number): void {
     this.grain = clampGrain(strength);
@@ -769,8 +777,15 @@ export class SceneTarget {
   resolve(
     strength: number,
     reachUv: number,
-    /* The grade, applied here because this is the last pass. See RUSH_FRAG's own note. */
-    grade: { readonly transform: number; readonly exposure: number } = {
+    /*
+     * The grade, applied here because this is the last pass. See RUSH_FRAG's own note. `film` is
+     * the `filmic` curve's eight constants (`resolveFilmicCurve`), read only under transform 4.
+     */
+    grade: {
+      readonly transform: number;
+      readonly exposure: number;
+      readonly film?: Float32Array;
+    } = {
       transform: 0,
       exposure: 1,
     },
@@ -1012,6 +1027,12 @@ export class SceneTarget {
     gl.uniform1f(this.uniforms['uReach'] ?? null, reachUv);
     gl.uniform1i(this.uniforms['uOutputTransform'] ?? null, grade.transform);
     gl.uniform1f(this.uniforms['uOutputExposure'] ?? null, grade.exposure);
+    if (grade.film !== undefined) {
+      gl.uniform4fv(this.uniforms['uFilmA'] ?? null, grade.film, 0, 4);
+      gl.uniform4fv(this.uniforms['uFilmB'] ?? null, grade.film, 4, 4);
+    }
+    /* A standard range always here: see `Renderer.displayRange`. */
+    gl.uniform1f(this.uniforms['uDisplayHeadroom'] ?? null, 1);
 
     /*
      * Depth on its own unit, and the reprojection with it. Bound every frame rather than
@@ -1113,6 +1134,12 @@ export class SceneTarget {
       this.uniforms['uLocalExposure'] ?? null,
       localGrid === null ? 0 : this.localExposure,
     );
+    /* Each object's own motion is WebGPU's under a reconstruction; here the scene stands in on
+       unit 7 and the flag says not to read it, so the camera's motion alone blurs. */
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, scene);
+    gl.uniform1i(this.uniforms['uMotion'] ?? null, 7);
+    gl.uniform1f(this.uniforms['uObjectMotion'] ?? null, 0);
     gl.activeTexture(gl.TEXTURE0);
 
     /* No unit and no texture: a flat colour, not a sample. Uploaded unconditionally — two
@@ -1122,6 +1149,7 @@ export class SceneTarget {
     gl.uniform3fv(this.uniforms['uVeilColor'] ?? null, veilColor);
     gl.uniform1f(this.uniforms['uVeilAlpha'] ?? null, veilAlpha);
     gl.uniform1f(this.uniforms['uVignette'] ?? null, this.vignette);
+    gl.uniform3fv(this.uniforms['uFringe'] ?? null, this.fringe);
     gl.uniform2f(this.uniforms['uGrain'] ?? null, this.grain, this.grainSeed);
 
     gl.bindVertexArray(this.vao);

@@ -238,7 +238,42 @@ With `fresnel: true` it is the surface's reflectance head-on instead, and each p
 `strength · A + B` of what it finds: the split-sum BRDF at its own view and the box's `roughness`,
 the fit the lit stage reflects its environment by. A floor then reflects more toward the horizon
 than underfoot, and the share follows the camera, as a real floor's does. The roughness
-and reflectance are the box's rather than each pixel's, since the pass reads no material.
+and reflectance are the box's rather than each pixel's; for each pixel's own, see the next section.
+
+## Every surface by its own material
+
+```ts sample=snippets/reflections.ts#materials
+/**
+ * Every opaque lit surface reflecting the frame by its own material: a glossy panel mirrors what
+ * stands on it, a satin one shows it softened, and past a roughness of 0.5 a surface keeps the
+ * probes' reflection alone. A quality option, so chosen when the renderer is built.
+ */
+export const reflectiveQuality: RenderQualityOptions = {
+  screenEffects: true,
+  hdrScene: true,
+  screenSpaceReflections: { maxRoughness: 0.5 },
+};
+```
+
+`screenSpaceReflections` makes every opaque lit surface reflect the frame, each by its own material
+rather than by a box's. The lit stage leaves behind, per pixel, how much of the environment it
+reflected there and at what roughness, and a ray marched against the frame's depth swaps that share
+of the probe for what it finds. So one floor mesh with one ORM map mirrors the figures standing on its
+glossy panels and barely shows them on its matte ones. Rougher surfaces show a softer reflection,
+and past `maxRoughness` a surface keeps the probes' reflection alone, faded over the last quarter
+below it. `true` takes `DEFAULT_FRAME_REFLECTIONS`; a `FrameReflections` sets the ceiling, the
+march's reach, thickness and steps, and the blur.
+
+What a surface reflects is what the lit stage already reflected: a metal by its metalness, a
+dielectric where `setSurfaceReflectivity` or its material asks for a reflection. A surface that
+reflects no environment reflects no frame either. Where a ray leaves the frame or finds nothing, the
+probe's reflection stays.
+
+It needs `screenEffects` and `hdrScene`, since the swap is made in scene light, and a frame of one
+sample; where it has none of these it says so once and draws the probes alone. On WebGPU it draws
+every opaque lit draw a second time, without its lamps, into two half-float targets. On WebGL2 the
+draws write those targets beside their colour. Either way it then marches each reflective pixel.
+Draws through the GPU-driven pipeline are reflected, but do not reflect.
 
 Water reflects through its own planar mirror; see [Water](water.md). For a wet street, see
 [Wet surfaces](wet-surfaces.md).

@@ -153,10 +153,39 @@ example sets them in TypeScript.
   where `'srgb'` would clip each channel and turn its core pink. It has none of ACES's toe or
   desaturation. Use it to match a renderer that grades this way, or when the midtones must stay as
   authored.
+- `'filmic'` is a film curve shaped by five numbers, and it holds mid grey where it is: 0.18 of
+  scene light comes out at 0.18, where `'aces'` gives about 0.11. A straight segment through mid
+  grey meets a soft toe below and a shoulder above, in the ACEScg working space, with the ACES
+  reference's glow and red modifier around it. Its numbers are held until changed, by
+  `renderer.setFilmicCurve({ slope, toe, shoulder, blackClip, whiteClip })`; a renderer starts with
+  `DEFAULT_FILMIC_CURVE`, which is slope 0.88, toe 0.55, shoulder 0.26 and the clips 0 and 0.04. A longer `toe` lifts the shadows,
+  a larger `shoulder` rolls the highlights off sooner, and the two clips let black crush and white
+  clip. A grading tool's look is matched by passing its numbers rather than by baking the
+  difference into a colour grade, whose lattice has the fewest steps exactly where two curves
+  differ most, in the shadows. It is applied by the composite alone, so it needs `screenEffects`
+  and `hdrScene`; without them every pass grades with `'aces'`, and the renderer says so once.
 
 **If a scene looks dark and flat, try `'aces'` with an `outputExposure` before touching a light.**
 The default stays `'none'` only so no existing game changes. With `screenEffects` on, the curve is
 applied once at the end of the frame; without it, each pass applies it itself.
+
+## High dynamic range displays
+
+`highDynamicRange: true` asks for a canvas whose highlights run past paper white, as far as the
+display can show. It is had only where three things hold: the renderer is on WebGPU, the frame keeps
+its light past white (`screenEffects` and `hdrScene`), and the display reports a high dynamic range.
+`renderer.displayRange` says which range the frame goes out in, `'high'` or `'standard'`, and
+`renderer.displayRangeReason` says why, so a game can choose a look graded for the output it got.
+WebGL2 always answers `'standard'`: it draws into an eight-bit canvas. On a high range, tell it the
+display's paper white and peak, as `renderer.setDisplayLuminance(203, 1000)` does for a display
+whose white is 203 nits and whose peak is a thousand.
+
+`setDisplayLuminance(paperWhite, peak)` takes the two in any one unit; their ratio is how far above
+white the highlights may reach. Paper white stays where it was, and so does everything below it:
+under `'filmic'` the shoulder rolls off toward the display's peak instead of toward white, with the
+toe and mid grey unchanged, and a colour grade colours a highlight without clipping it back to white.
+On a standard display it changes nothing. A host without a browser display query answers it with
+`createRenderer`'s `highDynamicRangeDisplay` option.
 
 ## Exposure and the eye
 
@@ -229,6 +258,11 @@ table changes, so calling it every frame is free. `null` removes it. It needs `s
 
 - `setVignette(strength)` darkens the corners as a lens does, before the tone curve: 0.5 is about
   1.2 stops at the corner.
+- `setChromaticAberration(intensity, start)` parts the colours toward the frame's edges as a simple
+  lens does: red and green land nearer the centre than blue, by their wavelengths' distance from
+  it. `intensity` is a percentage, from 0 for none; `start` is how far out the fringe begins, as a
+  share of the half-frame, 0 at the centre. Under heavy motion blur or depth of field the fringe
+  softens with the blur.
 - `setFilmGrain(strength, seed)` adds grain in display values, after the grade; 0.03 is fine grain.
   The seed is yours: a new one each frame for grain that moves, the same one for a still that is
   identical run to run.
@@ -250,13 +284,18 @@ frame's height. It costs eight taps on the pixels out of focus and one compariso
 
 ## Motion blur
 
-`setCameraMotionBlur(scale)`, or `render.motionBlur` in a script, scales the `cameraMotionBlur`
-ceiling for this frame. The blur comes
-from the camera's movement between frames, so it smears a whip pan or a fast flight and leaves a
-still frame untouched. **Ramp it with speed**, as the example does from the camera's turn rate:
-blur that is always on stops reading as speed within seconds and becomes a filter. It costs eight
-taps on moving pixels. Blur follows the camera only; an object moving past a still camera is not
-blurred.
+`setCameraMotionBlur(scale, maxShare)`, or `render.motionBlur` in a script, scales the
+`cameraMotionBlur` ceiling for this frame; `maxShare` is the longest smear, as a share of the frame,
+0.03 unless given. The blur comes from the camera's movement between frames, so it smears a whip
+pan or a fast flight and leaves a still frame untouched. **Ramp it with speed**, as the example does
+from the camera's turn rate: blur that is always on stops reading as speed within seconds and
+becomes a filter. It costs eight taps on moving pixels.
+
+**Under DriftTR each drawn object is blurred by its own motion**: a draw that names where it was
+last frame (a `Mover`, as the reconstruction asks for anyway) smears along its own path, so a kick
+or a thrown body blurs while a still stage behind it stays sharp. Without a reconstruction, and on
+WebGL2, the camera's motion alone blurs the frame, and the renderer says so once when a draw names
+its previous placement.
 
 `setSpeedRush(strength)`, `render.speedBlur` in a script, is a second speed cue, applied to the finished image, for the moments a
 game wants to say "fast". Both are held until changed.

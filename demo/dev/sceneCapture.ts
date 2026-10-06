@@ -11,6 +11,24 @@
  *     /sceneCapture.html?mode=room&capture=0  the same room with the capture never drawn: outside
  *                                             the screen the two frames must be the same pixels, so
  *                                             a capture leaves the frame it is drawn in alone
+ *     /sceneCapture.html?mode=room&refract=1  the room with a reflecting floor (`drawReflection`)
+ *                                             and a refracting pane in front of the boxes, both
+ *                                             drawn after the capture: the order a game drawing a
+ *                                             screen, a shiny floor and a heat haze uses, and the
+ *                                             pair to take under `&recon=1.5` with `capture=0`;
+ *                                             `&instanced=1` refracts through a batch of spheres
+ *                                             instead, as a game's distortion particles do
+ *     /sceneCapture.html?mode=room&at=world   where in the frame the capture is taken: `start`
+ *                                             (the default, first), `world` (after the room, so the
+ *                                             frame has draws recorded and no pass open) or `end`
+ *                                             (after the reflection and the refraction too)
+ *     /sceneCapture.html?mode=room&screen=0   the capture taken and the screen not drawn: the frame
+ *                                             must then be `capture=0`'s pixels, whatever the order.
+ *                                             `&skin=1` puts a sphere of screen-space skin in the
+ *                                             room (with `&skinscatter=screen`), and `&glow=1` adds
+ *                                             a blended draw to the capture's callback, as a game's
+ *                                             glowing signs are; `scripts/capture-check.mjs` walks
+ *                                             every combination on both backends
  *
  * **Why the control is exact.** A capture holds radiance and the quad draws it unlit, so the frame
  * grades the screen's pixels once, as it grades the direct view's; with half floats both are the
@@ -21,8 +39,11 @@
 import {
   Camera,
   MeshBuilder,
+  ReflectiveSurface,
   createEnvironment,
+  createMeshInstances,
   createRenderer,
+  skinModel,
 } from '../../packages/core/src/index';
 import type { MeshData, RendererApi, Vec3 } from '../../packages/core/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
@@ -103,9 +124,51 @@ async function main(): Promise<void> {
   /* In the room, a small screen on a post: the filling quad scaled and stood up beside the boxes. */
   const onWall = new Float32Array([0.6, 0, 0, 0, 0, 0.6, 0, 0, 0, 0, 0.6, 0, -2.6, 1.6, -1.2, 1]);
   const showing = { albedo: capture };
+  const refract = mode === 'room' && ASKED.get('refract') === '1';
+  /* The floor's top face, in a slab thin enough to hold nothing else, and a pane before the boxes. */
+  const floor = new ReflectiveSurface({
+    center: [0, 0, 0],
+    halfExtents: [4, 4, 0.1],
+    forward: [0, -1, 0],
+    up: [0, 0, 1],
+    strength: 0.6,
+    reachM: 10,
+  });
+  const pane = renderer.createMesh(
+    new MeshBuilder().addBox([0, 0.9, 1.4], [1.6, 0.8, 0.02], [0.9, 0.95, 1]).build(),
+  );
+  const instanced = ASKED.get('instanced') === '1';
+  const ball = renderer.createMesh(new MeshBuilder().addSphere([0, 0, 0], 0.45, [1, 1, 1]).build());
+  const balls = renderer.createInstanced(ball, 3);
+  const placed = createMeshInstances(3);
+  for (let i = 0; i < 3; i++) {
+    placed.models.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1.3 + 1.3 * i, 0.9, 1.4, 1], i * 16);
+  }
+  placed.count = 3;
+  renderer.uploadInstanced(balls, placed);
+  const skin = ASKED.get('skin') === '1';
+  const glow = ASKED.get('glow') === '1';
+  const head = renderer.createMesh(
+    new MeshBuilder().addSphere([1.6, 0.6, 1.2], 0.55, [1, 0.8, 0.7]).build(),
+  );
+  const skinned = { model: skinModel({ scatterColor: [0.707, 0.48, 0.36], radius: 0.05 }) };
+  const sign = renderer.createMesh(fillingQuad(1));
+  const signAt = new Float32Array([0.5, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0.5, 0, 2.4, 1.4, -1.8, 1]);
   const drawWorld = (camera: Camera): void => {
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(world, identity);
+    if (skin) {
+      renderer.setMaterial(skinned);
+      renderer.drawMesh(head, identity);
+      renderer.setMaterial(null);
+    }
+  };
+  /* What the capture draws: the world, and in `glow` a blended draw after it. */
+  const drawCaptured = (camera: Camera): void => {
+    drawWorld(camera);
+    if (glow) {
+      renderer.drawTranslucentMesh(sign, signAt, 1, { additive: true, lit: false, fog: false });
+    }
   };
 
   const frame = (): void => {
@@ -114,17 +177,43 @@ async function main(): Promise<void> {
       second.updateMatrices(aspect);
       drawWorld(second);
     } else {
-      if (mode !== 'room' || ASKED.get('capture') !== '0') {
-        renderer.captureScene(capture, second, CLEAR, mode === 'empty' ? () => {} : drawWorld);
-      }
+      const capturing = mode !== 'room' || ASKED.get('capture') !== '0';
+      const at = mode === 'room' ? (ASKED.get('at') ?? 'start') : 'start';
+      const take = (when: string): void => {
+        if (at !== when) return;
+        if (capturing) {
+          renderer.captureScene(capture, second, CLEAR, mode === 'empty' ? () => {} : drawCaptured);
+        }
+        /* The frame's own camera again, as any draw after a capture would bind it — and bound
+           whether or not the capture was taken, so the two frames differ by the capture alone. */
+        if (when !== 'start') renderer.bindMeshPass(viewer, env);
+      };
+      take('start');
       if (mode === 'room') drawWorld(viewer);
       else renderer.bindMeshPass(viewer, env);
-      renderer.setMaterial(showing);
-      renderer.drawTranslucentMesh(screen, mode === 'room' ? onWall : identity, 1, {
-        lit: false,
-        fog: false,
-      });
-      renderer.setMaterial(null);
+      take('world');
+      if (refract) {
+        renderer.drawReflection(floor);
+        if (instanced) {
+          renderer.drawTranslucentInstanced(balls, placed, 1, {
+            refraction: 0.04,
+            lit: false,
+            fog: false,
+            depthWrite: false,
+          });
+        } else {
+          renderer.drawTranslucentMesh(pane, identity, 1, { refraction: 0.04, lit: false });
+        }
+      }
+      take('end');
+      if (ASKED.get('screen') !== '0') {
+        renderer.setMaterial(showing);
+        renderer.drawTranslucentMesh(screen, mode === 'room' ? onWall : identity, 1, {
+          lit: false,
+          fog: false,
+        });
+        renderer.setMaterial(null);
+      }
     }
     renderer.endFrame();
     requestAnimationFrame(frame);

@@ -1192,7 +1192,11 @@ try {
       for (const underwaterFactor of [0, 0.5, 1]) {
         for (const heightFalloff of [0, 0.02, 0.1]) {
           for (const density of [0, 0.002, 0.05]) {
-            media.push({ ...base, mode, underwaterFactor, heightFalloff, density });
+            /* The medium from the eye, and from 30 m out (`Atmosphere.fogStart`), which rides
+               the ramp's near slot; the ramp keeps its own near. */
+            for (const near of mode === MEDIUM_FOG ? [0, 30] : [base.near]) {
+              media.push({ ...base, mode, underwaterFactor, heightFalloff, density, near });
+            }
           }
         }
       }

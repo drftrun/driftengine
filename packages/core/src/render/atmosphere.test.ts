@@ -98,6 +98,41 @@ function atmosphere(overrides: Partial<Atmosphere> = {}): Atmosphere {
   };
 }
 
+describe('a medium that starts at a distance', () => {
+  const base: Atmosphere = {
+    fogColor: [0.5, 0.5, 0.5],
+    fogDensity: 0.01,
+    fogHeightFalloff: 0,
+    fogBaseY: 0,
+    underwater: null,
+  };
+  const target = (): ResolvedAtmosphere => ({
+    fogColor: new Float32Array(3),
+    underwaterColor: new Float32Array(3),
+    fogDensity: 0,
+    fogHeightFalloff: 0,
+    fogEyeY: 0,
+    fogMode: 0,
+    fogNear: 0,
+    fogFar: 0,
+    underwaterFogDensity: 0,
+    underwaterFactor: 0,
+  });
+
+  test('CARRIES FOGSTART IN THE NEAR SLOT THE MEDIUM NEVER READ', () => {
+    expect(resolveAtmosphere({ ...base, fogStart: 10 }, 1, false, target()).fogNear).toBe(10);
+  });
+
+  test('A STRAY FOGNEAR ON A MEDIUM STARTS NOTHING, so no world authored before it moves', () => {
+    expect(resolveAtmosphere({ ...base, fogNear: 25 }, 1, false, target()).fogNear).toBe(0);
+  });
+
+  test('THE LINEAR RAMP KEEPS ITS OWN NEAR, and ignores a start it has no meaning for', () => {
+    const ramp: Atmosphere = { ...base, fogMode: 'linear', fogNear: 25, fogFar: 60, fogStart: 10 };
+    expect(resolveAtmosphere(ramp, 1, false, target()).fogNear).toBe(25);
+  });
+});
+
 describe('fogDensityAtEye', () => {
   test('a uniform medium is the density it was given, at any height', () => {
     const air = atmosphere({ fogDensity: 0.0133 });

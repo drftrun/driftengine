@@ -15,6 +15,11 @@ import {
   glShadowDepthFunc,
 } from '../../depthConvention.ts';
 import type { FrameView } from '../../frameView.ts';
+import { maskOf } from '../../frame/resources.ts';
+
+/** The two copies a registered pass may declare it reads. See `drawPass`. */
+const COLOR_SNAPSHOT = maskOf('colorSnapshot');
+const DEPTH_SNAPSHOT = maskOf('depthSnapshot');
 import type { Mover } from '../../recon/mover.ts';
 import { resolveGlass } from '../../glass.ts';
 import type { GlassOptions, ResolvedGlass } from '../../glass.ts';
@@ -31,6 +36,12 @@ import {
 } from '../../temporalAa.ts';
 import { DecalPass } from '../../decalPass.ts';
 import { SsrPass } from '../../ssrPass.ts';
+import { ReflectionSurfaceTargets } from '../../reflectionSurfaceTargets.ts';
+import {
+  frameReflectionsRefused,
+  resolveFrameReflections,
+  type ResolvedFrameReflections,
+} from '../../frameReflections.ts';
 import { GlobalMediumPass } from '../../globalMediumPass.ts';
 import {
   DEFAULT_GLOBAL_MEDIUM,
@@ -81,11 +92,18 @@ import { isWeakGpuFamily, webgl2RendererName } from '../../gpuCapability.ts';
 import { GpuTimer } from '../../gpuTimer.ts';
 import { compileProgram, uniformLocations } from '../../shader.ts';
 import {
+  countUniformVectors,
   FULL_LIGHT_BUDGET,
   type LightBudget,
   nextLightBudget,
   planLightBudget,
 } from '../../uniformVectorBudget.ts';
+import {
+  OVERLAY_FLOATS,
+  overlayLays,
+  packSurfaceOverlay,
+  type SurfaceOverlay,
+} from '../../surfaceOverlay.ts';
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
 import { SceneTarget } from '../../sceneTarget.ts';
 import type { ColourGradeLut } from '../../colourGrade.ts';
@@ -293,8 +311,22 @@ import { TextRenderer } from '../../textRenderer.ts';
 import { SdfTextRenderer } from '../../sdfTextRenderer.ts';
 import type { SdfFont } from '../../sdfFont.ts';
 import type { SdfTextStyle } from '../../sdfTextLayout.ts';
-import { MOTION_BLUR_MAX_UV, RUSH_REACH_UV } from '../../vertexDefaults.ts';
-import { OUTPUT_TRANSFORM_CODE } from '../../vertexDefaults.ts';
+import {
+  MOTION_BLUR_MAX_UV,
+  OBJECT_BLUR_UNKEPT,
+  RUSH_REACH_UV,
+  clampMotionShare,
+} from '../../vertexDefaults.ts';
+import { OUTPUT_TRANSFORM_CODE, forwardTransformCode } from '../../vertexDefaults.ts';
+import type { DisplayRange } from '../../displayRange.ts';
+import {
+  DEFAULT_FILMIC_CURVE,
+  FILMIC_CLAMPED,
+  FILMIC_CONSTANTS,
+  FILMIC_WITHOUT_COMPOSITE,
+  resolveFilmicCurve,
+  type FilmicCurve,
+} from '../../filmicCurve.ts';
 import type { RenderBackend } from '../api.ts';
 import { deviceSnappedCellSize } from '../../textLayout.ts';
 import type { TextStyle } from '../../textLayout.ts';
@@ -1348,6 +1380,10 @@ export class WebGL2Renderer implements RendererApi {
   private readonly reflectionQueue = new ReflectionQueue();
   /** Built on the first frame that submits a surface, and never for a scene with none. */
   private ssr: SsrPass | null = null;
+  /** The frame's materials' reflections, resolved; null where off. See `frameReflections.ts`. */
+  private readonly frameReflections: ResolvedFrameReflections | null;
+  /** Their two maps on the scene's framebuffer, null where they cannot be drawn. */
+  private readonly reflectionTargets: ReflectionSurfaceTargets | null;
   /** Said once where a reflection cannot be traced at all. */
   private reflectionsRefused = false;
   /** Where the frame's camera stands, which is what gives a reconstructed normal its sign. */
@@ -1430,6 +1466,8 @@ export class WebGL2Renderer implements RendererApi {
    * exactly as it asked to be and nothing about it changes.
    */
   private exposure: number;
+  /** The `filmic` curve's eight constants, held until `setFilmicCurve` is called again. */
+  private readonly filmConstants = new Float32Array(FILMIC_CONSTANTS);
   /**
    * This frame's veil colour, and how much of it to composite. See `setFrameVeil`.
    *
@@ -1631,6 +1669,15 @@ export class WebGL2Renderer implements RendererApi {
   private warnedNoPointShadowArray = false;
   /** Said once, for the retired ambient dial. */
   private warnedEnvironmentAmbient = false;
+  /** The overlay the draws wear, `uOverlay`: see `setSurfaceOverlay`. */
+  private readonly overlayFloats = new Float32Array(OVERLAY_FLOATS);
+  /** Its atlas, and the 2D copy of it bound where the refraction copy goes. */
+  private overlayMaps: SurfaceTexture | null = null;
+  private overlayTexture: WebGLTexture | null = null;
+  /** Whether this device's lit stage has room for the overlay's vectors: asked once. */
+  private overlayRoom: boolean | null = null;
+  private warnedOverlayRoom = false;
+  private warnedOverlayBlocks = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
   private probePassActive = false;
   /**
@@ -2298,6 +2345,8 @@ export class WebGL2Renderer implements RendererApi {
     gl: WebGL2RenderingContext;
     outputTransform: number;
     outputExposure: number;
+    sceneColor: WebGLTexture | null;
+    sceneDepth: WebGLTexture | null;
   } | null = null;
   private passDevice: PassDevice | null = null;
 
@@ -2309,6 +2358,9 @@ export class WebGL2Renderer implements RendererApi {
    * call. `init` runs now rather than at the first frame, because building a pipeline in the
    * frame loop is the allocation the house rules are about.
    */
+  /** Each registered pass's declared reads, as a mask, resolved once at registration. */
+  private readonly passReads = new Map<PassHandle, number>();
+
   registerPass(definition: PassDefinition): PassHandle {
     const handle = registerIn(this.passes, definition);
     /*
@@ -2327,6 +2379,8 @@ export class WebGL2Renderer implements RendererApi {
       depthCorrection: correction,
     };
     if (definition.prepare !== undefined) this.preparingPasses++;
+    /* Resolved once: `maskOf` builds an array, and the frame path may not. */
+    this.passReads.set(handle, maskOf(...(definition.reads ?? [])));
     definition.init?.(this.passDevice);
     return handle;
   }
@@ -2378,10 +2432,28 @@ export class WebGL2Renderer implements RendererApi {
       gl: this.gl,
       outputTransform: 0,
       outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
     };
     const context = this.passContext;
     context.outputTransform = this.gradeCode();
     context.outputExposure = this.gradeExposure();
+    /*
+     * The copies a pass declared it reads, taken here with everything drawn before it: colour
+     * afresh at each reading pass, as WebGPU's `takePassColour` does, so a full-screen effect drawn
+     * last reads the whole frame; depth afresh too, since a blit is the whole cost of either here.
+     * Not in a mirror, a probe's face or a capture, whose pictures are not the frame's.
+     */
+    const reads = this.passReads.get(handle) ?? 0;
+    const own = !this.reflectionPassActive && !this.probePassActive && !this.capturePassActive;
+    context.sceneColor =
+      own && (reads & COLOR_SNAPSHOT) !== 0
+        ? (this.sceneTarget?.snapshotColor(true) ?? null)
+        : null;
+    context.sceneDepth =
+      own && (reads & DEPTH_SNAPSHOT) !== 0
+        ? (this.sceneTarget?.snapshotDepth(true) ?? null)
+        : null;
     definition.draw(context as PassContext);
   }
 
@@ -2389,6 +2461,7 @@ export class WebGL2Renderer implements RendererApi {
   unregisterPass(handle: PassHandle): void {
     const definition = unregisterIn(this.passes, handle);
     if (definition?.prepare !== undefined) this.preparingPasses--;
+    this.passReads.delete(handle);
     if (definition !== undefined && this.passDevice !== null) definition.dispose?.(this.passDevice);
   }
 
@@ -2559,10 +2632,11 @@ export class WebGL2Renderer implements RendererApi {
     gl.bindTexture(gl.TEXTURE_2D, this.clusterTexture);
     gl.uniform1i(u['uClusterTable'] ?? null, CLUSTER_TABLE_TEXTURE_UNIT);
     gl.uniform1i(u['uClustered'] ?? null, on ? 1 : 0);
-    if (!on) return;
 
     /*
-     * The frustum, read off the projection rather than taken as a parameter.
+     * The frustum, read off the projection rather than taken as a parameter — **and with the view,
+     * written whether or not the lights are clustered**: a surface overlay's rim finds its place on
+     * the screen through the same two (`overlayScreen`).
      *
      * A perspective matrix carries `1 / tan(fovY/2)` at [5] and that over the aspect at [0], and
      * the near and far planes in [14] and [10]. Deriving them here means the binner and the shader
@@ -2580,6 +2654,7 @@ export class WebGL2Renderer implements RendererApi {
     this.clusterFrustum[3] = aspect;
     gl.uniform4fv(u['uClusterFrustum'] ?? null, this.clusterFrustum);
     gl.uniformMatrix4fv(u['uView'] ?? null, false, camera.view);
+    if (!on) return;
 
     this.clusterTable ??= createClusterTable();
     /* The rectangles past the fixed arm's go into the table. See `ClusterLightSet.areas`. */
@@ -2683,6 +2758,13 @@ export class WebGL2Renderer implements RendererApi {
     this.quality = resolveRenderQuality(qualityOptions);
     /* The grade this world asked for, until a frame says otherwise. See `setOutputExposure`. */
     this.exposure = this.quality.outputExposure;
+    resolveFilmicCurve(DEFAULT_FILMIC_CURVE, this.filmConstants);
+    if (
+      this.quality.outputTransform === 'filmic' &&
+      !(this.quality.screenEffects && this.quality.hdrScene)
+    ) {
+      console.warn(FILMIC_WITHOUT_COMPOSITE);
+    }
     /*
      * Multisampling, but only when anything can use it.
      *
@@ -2981,6 +3063,29 @@ export class WebGL2Renderer implements RendererApi {
           this.quality.discardResolvedAttachments,
         )
       : null;
+    /*
+     * The frame's materials' reflections, where the frame can carry them: scene light to swap the
+     * probe's share in, and one sample, which the trace's depth copy and both maps are. Said once
+     * where it cannot, in the words the other backend uses. See `frameReflections.ts`.
+     */
+    this.frameReflections = resolveFrameReflections(this.quality.screenSpaceReflections);
+    const reflectionsRefusal =
+      this.frameReflections === null
+        ? null
+        : this.sceneTarget === null || !this.sceneTarget.keepsRange
+          ? 'the frame keeps no scene light to swap the probe in (`screenEffects` and `hdrScene`)'
+          : this.sceneTarget.sampleCount > 1
+            ? 'a multisampled frame has no single depth or colour to march through'
+            : null;
+    if (reflectionsRefusal !== null) {
+      console.warn(`WebGL2: ${frameReflectionsRefused(reflectionsRefusal)}`);
+    }
+    this.reflectionTargets =
+      this.frameReflections !== null && reflectionsRefusal === null
+        ? new ReflectionSurfaceTargets(gl)
+        : null;
+    /* The lit programs write the maps from the first frame they are rebuilt in. See `litOn`. */
+    if (this.reflectionTargets !== null) this.askLit('REFLECTION_MAPS');
     /* Screen-space skin needs the composite to add into; without one it is pre-integrated, said once. */
     if (this.quality.skinScattering === 'screen-space' && this.sceneTarget === null) {
       console.warn(
@@ -3623,10 +3728,13 @@ export class WebGL2Renderer implements RendererApi {
   updateSurfaceTexture(texture: SurfaceTexture, source: TexImageSource): void {
     if (this.contextLost) return;
     texture.update(this.gl, source);
+    /* New pixels are a new copy for the overlay's slot: see `SurfaceTexture.flatLayer`. */
+    if (texture === this.overlayMaps) this.bindOverlayMaps(texture);
   }
 
   disposeSurfaceTexture(texture: SurfaceTexture): void {
     if (this.contextLost) return;
+    if (texture === this.overlayMaps) this.bindOverlayMaps(null);
     texture.dispose(this.gl);
     this.captureTargets.get(texture)?.dispose(this.gl);
     this.captureTargets.delete(texture);
@@ -4021,6 +4129,8 @@ export class WebGL2Renderer implements RendererApi {
     /* The first physical highlight asked for is when the lit programs start carrying one. */
     if (material?.physicalSpecular === true) this.askLit('PHYSICAL_SPECULAR');
     gl.uniform4fv(u['uModelParams'] ?? null, this.modelParams);
+    /* The draw's overlay, which a program born mid-pass must wear too: see `setSurfaceOverlay`. */
+    gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
 
     /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
        return, so a material with no albedo still leaves a complete texture on the unit. */
@@ -4118,6 +4228,76 @@ export class WebGL2Renderer implements RendererApi {
     this.materials.dirty();
     this.environmentDials[1] = Math.min(1, Math.max(0, amount));
     this.writeFlatVector('uEnvironmentDials', this.environmentDials);
+  }
+
+  /**
+   * The overlay the following draws wear — a rim of light, a dissolve, wrinkles by region — or null
+   * for none. Pass state, as the material is: `bindMeshPass` puts it back to none. See
+   * `surfaceOverlay.ts` for what it lays and `shaders/flat/overlay.ts` for how.
+   *
+   * **Refused, said once, where the lit stage has no room for it.** Fifteen vectors more than the
+   * program this device fits: counted from the source as `fitFlatProgram` counts, and on a device
+   * whose limit is the 256 an Adreno 740 reports, the eight-light build at 254 has none. The draws
+   * then wear nothing, which is the picture a game without the feature draws. Its atlas is bound as
+   * a 2D copy of its first layer, in the refraction copy's unit (`SurfaceTexture.flatLayer`); a
+   * compressed atlas has no copy and is read as none, also said once.
+   */
+  setSurfaceOverlay(overlay: SurfaceOverlay | null): void {
+    if (this.contextLost) return;
+    let wanted = overlay;
+    if (overlayLays(wanted) && !this.overlayFits()) {
+      if (!this.warnedOverlayRoom) {
+        this.warnedOverlayRoom = true;
+        console.warn(
+          'Renderer: setSurfaceOverlay is refused on this device. The overlay takes fifteen ' +
+            'fragment uniform vectors and the lit shader already uses all but ' +
+            `${this.overlayRoomLeft()} of the ${this.fragmentVectorLimit()} this GPU offers; ` +
+            'draws wear no overlay. A lower `maxLights` makes the room, or WebGPU has it.',
+        );
+      }
+      wanted = null;
+    }
+    packSurfaceOverlay(wanted, this.overlayFloats);
+    if (overlayLays(wanted)) this.askLit('SURFACE_OVERLAY');
+    this.materials.dirty();
+    this.writeFlatVector('uOverlay', this.overlayFloats);
+    this.bindOverlayMaps((wanted?.maps ?? null) as SurfaceTexture | null);
+  }
+
+  /** The overlay's atlas into the refraction copy's unit, as a 2D copy, or the empty texture. */
+  private bindOverlayMaps(maps: SurfaceTexture | null): void {
+    const { gl } = this;
+    this.overlayMaps = maps;
+    this.overlayTexture = maps === null ? null : maps.flatLayer(gl);
+    if (maps !== null && this.overlayTexture === null && !this.warnedOverlayBlocks) {
+      this.warnedOverlayBlocks = true;
+      console.warn(
+        "Renderer: a surface overlay's maps are a compressed texture, which WebGL2 cannot copy " +
+          'into the 2D image the lit stage reads them from. The overlay is drawn without its ' +
+          'images; upload the atlas from an image instead.',
+      );
+    }
+    gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture ?? this.emptyTexture2D);
+  }
+
+  /** The most fragment uniform vectors this GPU offers a stage. */
+  private fragmentVectorLimit(): number {
+    return this.gl.getParameter(this.gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
+  }
+
+  /** What the lit shader at this renderer's budget leaves of the limit, with no overlay. */
+  private overlayRoomLeft(): number {
+    return (
+      this.fragmentVectorLimit() - countUniformVectors(this.flatFragAt(this.lightBudget, false))
+    );
+  }
+
+  /** Whether the lit shader with the overlay compiled in fits this GPU: counted once. */
+  private overlayFits(): boolean {
+    this.overlayRoom ??=
+      countUniformVectors(this.flatFragAt(this.lightBudget, true)) <= this.fragmentVectorLimit();
+    return this.overlayRoom;
   }
 
   /**
@@ -4555,8 +4735,11 @@ export class WebGL2Renderer implements RendererApi {
     if (coverage) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     if (ditheredBlend)
       gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, true));
+    const keeps = !blend && this.reflectionKeeps();
+    if (keeps) this.reflectionTargets?.on();
     if (culling && cullsInstances(count, mesh.indexCount)) batch.drawCulled(gl, data, this.frustum);
     else batch.draw(gl, count);
+    if (keeps) this.reflectionTargets?.off();
     if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     if (ditheredBlend)
       gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, false));
@@ -4627,7 +4810,8 @@ export class WebGL2Renderer implements RendererApi {
     const { gl } = this;
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
     gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    /* The overlay's atlas, where one is held: it shares the unit. See `setSurfaceOverlay`. */
+    gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture ?? this.emptyTexture2D);
   }
 
   disposeMesh(mesh: Mesh): void {
@@ -4872,7 +5056,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   private gradeCode(): number {
     return this.sceneTarget === null || !this.quality.hdrScene
-      ? OUTPUT_TRANSFORM_CODE[this.quality.outputTransform]
+      ? forwardTransformCode(this.quality.outputTransform)
       : 0;
   }
 
@@ -6116,7 +6300,7 @@ export class WebGL2Renderer implements RendererApi {
    * throws a sentence with the device's numbers in it rather than a bare driver string.
    */
   /** The lit fragment source this renderer's profile compiles, at a light budget. */
-  private flatFragAt(budget: LightBudget): string {
+  private flatFragAt(budget: LightBudget, overlay = this.litOn.SURFACE_OVERLAY): string {
     return flatFrag({
       pointShadows: this.quality.pointShadows,
       directionalShadows: this.quality.directionalShadows,
@@ -6129,6 +6313,8 @@ export class WebGL2Renderer implements RendererApi {
       surfaceEffects: this.litOn.SURFACE_EFFECTS,
       driftLight: this.litOn.DRIFT_LIGHT,
       physicalSpecular: this.litOn.PHYSICAL_SPECULAR,
+      surfaceOverlay: overlay,
+      reflectionMaps: this.litOn.REFLECTION_MAPS,
       maxLights: budget.maxLights,
       maxAreaLights: budget.maxAreaLights,
     });
@@ -6954,10 +7140,21 @@ export class WebGL2Renderer implements RendererApi {
    * Set before `beginFrame` and held until changed, like `setSpeedRush`, which it sits
    * beside for the same reason: both describe how the finished image is presented rather
    * than anything in the world.
+   *
+   * `maxShare` is the longest smear, as a share of the frame (0.03 unless given, at most half): a
+   * fast turn softens the frame rather than erasing it. **Each drawn object's own motion is
+   * followed only under a reconstruction on WebGPU**, which draws the motion target it reads; here,
+   * and on WebGPU without one, the camera's motion alone smears the frame, and a draw that names
+   * where it was last frame is told so once.
    */
-  setCameraMotionBlur(scale: number): void {
+  setCameraMotionBlur(scale: number, maxShare = MOTION_BLUR_MAX_UV): void {
     this.motionBlurScale = Math.min(Math.max(scale, 0), 1);
+    this.motionBlurMax = clampMotionShare(maxShare);
   }
+
+  /** The longest smear, as a share of the frame. See `setCameraMotionBlur`. */
+  private motionBlurMax = MOTION_BLUR_MAX_UV;
+  private warnedObjectBlur = false;
 
   /**
    * The camera has cut: this frame is a new shot, not the next moment of the last one.
@@ -7171,6 +7368,47 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * The `filmic` curve this and every later frame is graded through, until it is set again: a
+   * grading volume's five numbers, solved once here into the constants the resolve reads. Ignored
+   * unless `outputTransform` is `filmic`. A number out of range is clamped into it and said once,
+   * since a frame loop must not throw. See `filmicCurve.ts`.
+   */
+  setFilmicCurve(curve: FilmicCurve): void {
+    if (resolveFilmicCurve(curve, this.filmConstants) && !this.warnedFilmClamped) {
+      this.warnedFilmClamped = true;
+      console.warn(FILMIC_CLAMPED);
+    }
+  }
+
+  private warnedFilmClamped = false;
+
+  /**
+   * The range the frame goes out in: `'high'` where the profile asked for `highDynamicRange`, the
+   * frame holds light past white and the display shows it — on WebGPU — and `'standard'` otherwise.
+   * **Always standard here**: this backend draws into a canvas of eight bits a channel, which has
+   * nothing above white to show. Typed as the question rather than this backend's answer, because
+   * the shared surface is derived from this class.
+   */
+  readonly displayRange: DisplayRange = 'standard';
+
+  /** Why it is that range, in words, for a game choosing its look and for a bug report. */
+  get displayRangeReason(): string {
+    return this.quality.highDynamicRange
+      ? 'WebGL2 draws into an eight-bit canvas, which has no range above white'
+      : 'highDynamicRange was not asked for';
+  }
+
+  /**
+   * How bright paper white and the display's peak are, in one unit, held until changed: their
+   * ratio is how far above white the highlights may run where `displayRange` is `'high'`, and
+   * nothing changes where it is standard, which is always here.
+   */
+  setDisplayLuminance(paperWhite: number, peak: number): void {
+    void paperWhite;
+    void peak;
+  }
+
+  /**
    * Composite a flat colour over the finished frame — for a cut dipping to white or to black.
    *
    * `alpha` 0 leaves the picture untouched and is the default; 1 replaces it outright. Nothing
@@ -7259,6 +7497,21 @@ export class WebGL2Renderer implements RendererApi {
       return;
     }
     this.sceneTarget.setVignette(strength);
+  }
+
+  /**
+   * The lens's colour fringe, held until changed: `intensity` is a percentage, 0 is none, and red
+   * and green are pulled toward the centre by their wavelength's distance from blue, growing from
+   * `start` — a share of the half-frame, 0 the centre — to the whole of it at the edge. Applied to
+   * scene light at the composite's first read. Needs `screenEffects`, and says so once rather than
+   * doing nothing. See `shaders/fringe.ts`.
+   */
+  setChromaticAberration(intensity: number, start = 0): void {
+    if (this.sceneTarget === null) {
+      this.warnLookWithoutComposite(intensity);
+      return;
+    }
+    this.sceneTarget.setChromaticAberration(intensity, start);
   }
 
   /**
@@ -7451,6 +7704,8 @@ export class WebGL2Renderer implements RendererApi {
 
   beginFrame(clearColor: Vec3): void {
     if (this.contextLost) return;
+    /* One frame of the jitter's sequence however many times the frame binds its camera. */
+    this.temporalHistory.nextFrame();
     this.skinScattered = false;
     this.skinScatter?.reset();
     if (this.litAsked) {
@@ -7520,6 +7775,8 @@ export class WebGL2Renderer implements RendererApi {
     }
 
     this.sceneTarget?.begin(this.canvas.width, this.canvas.height);
+    /* The materials' maps on the scene's framebuffer, cleared and disabled: `reflectionKeeps`. */
+    this.reflectionTargets?.begin(this.canvas.width, this.canvas.height);
     gl.clearColor(clearColor[0], clearColor[1], clearColor[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   }
@@ -7576,7 +7833,7 @@ export class WebGL2Renderer implements RendererApi {
           motion = {
             reprojection: this.reprojection as Float32Array,
             strength: blur,
-            max: MOTION_BLUR_MAX_UV,
+            max: this.motionBlurMax,
           };
         }
       }
@@ -7668,7 +7925,11 @@ export class WebGL2Renderer implements RendererApi {
 
     /* The grade travels to the resolve only where the mesh pass gave it up. See `bindMeshPass`. */
     const lateGrade = this.quality.hdrScene
-      ? { transform: OUTPUT_TRANSFORM_CODE[this.quality.outputTransform], exposure: this.exposure }
+      ? {
+          transform: OUTPUT_TRANSFORM_CODE[this.quality.outputTransform] ?? 0,
+          exposure: this.exposure,
+          film: this.filmConstants,
+        }
       : { transform: 0, exposure: 1 };
     /*
      * Depth of field, on the same ceiling-and-dial split as bloom above: `depthOfField` decides
@@ -7744,6 +8005,49 @@ export class WebGL2Renderer implements RendererApi {
      * drawn over a reflective floor rather than under it, and before the post chain so bloom and
      * the grade see a reflection exactly as they would see any other part of the picture.
      */
+    /*
+     * **The frame's materials' reflections first**, on the same terms: every pixel the opaque lit
+     * draws left a reflection for, marched and swapped for the probe's share. The maps leave the
+     * scene's framebuffer before the resolve draws into it while sampling them.
+     */
+    const reflectionTargets = this.reflectionTargets;
+    const probeMap = reflectionTargets?.probeTexture ?? null;
+    const tintMap = reflectionTargets?.tintTexture ?? null;
+    if (
+      reflectionTargets !== null &&
+      this.frameReflections !== null &&
+      probeMap !== null &&
+      tintMap !== null &&
+      this.frameViewProj !== null &&
+      this.sceneTarget !== null
+    ) {
+      const scene = this.sceneTarget.colorAttachment();
+      const depth = this.sceneTarget.snapshotDepth(true);
+      if (scene !== null && depth !== null) {
+        this.ssr ??= new SsrPass(this.gl, this.sceneTarget.keepsRange);
+        this.ssr.traceMaterials(
+          scene,
+          depth,
+          probeMap,
+          tintMap,
+          this.frameViewProj,
+          this.frameEye,
+          this.canvas.width,
+          this.canvas.height,
+          REFLECTION_EDGE_FADE,
+          this.frameReflections,
+        );
+        this.sceneTarget.bind();
+        reflectionTargets.detach();
+        this.ssr.resolveMaterials(
+          probeMap,
+          tintMap,
+          this.canvas.width,
+          this.canvas.height,
+          this.frameReflections,
+        );
+      }
+    }
     if (this.reflectionQueue.length > 0 && this.frameViewProj !== null) {
       const scene = this.sceneTarget?.colorAttachment() ?? null;
       const depth = this.sceneTarget?.snapshotDepth(true) ?? null;
@@ -8127,6 +8431,10 @@ export class WebGL2Renderer implements RendererApi {
     this.materialHasMaps = false;
     this.currentMaterial = null;
     this.currentSurfaceTexture = null;
+    /* Nor an overlay: the atlas's unit is given the empty texture with the refraction copy's. */
+    this.overlayFloats.fill(0);
+    this.overlayMaps = null;
+    this.overlayTexture = null;
     /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
     this.ambientSH.fill(0);
     /* No reflection and an environment at its own brightness; the emission the world asks for. */
@@ -8283,8 +8591,10 @@ export class WebGL2Renderer implements RendererApi {
      * unless a draw sets the strength above zero.
      */
     gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture2D);
+    gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture ?? this.emptyTexture2D);
     gl.uniform1i(u['uRefractScene'] ?? null, REFRACT_SCENE_TEXTURE_UNIT);
+    /* The draws' overlay, none at a pass's start, and its atlas above: see `setSurfaceOverlay`. */
+    gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
     /* Neither refracting nor glass, which is every draw that does not say otherwise. See
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
@@ -8693,9 +9003,18 @@ export class WebGL2Renderer implements RendererApi {
      * here, so there is no motion target for this to be written into, and a mover passed here is
      * neither read nor advanced.
      */
-    _previousModel: ReadonlyMat4 | Mover | null = null,
+    previousModel: ReadonlyMat4 | Mover | null = null,
   ): void {
     if (this.contextLost) return;
+    /* A mover's own motion is not blurred here: see `setCameraMotionBlur`. Said once. */
+    if (
+      previousModel !== null &&
+      !this.warnedObjectBlur &&
+      this.quality.cameraMotionBlur * this.motionBlurScale > 0
+    ) {
+      this.warnedObjectBlur = true;
+      console.warn(OBJECT_BLUR_UNKEPT);
+    }
     /* Geometry that has not all arrived is not drawn, nor a mesh with none. See `Mesh.complete`
        and `Mesh.indexCount`. */
     if (!mesh.complete || mesh.indexCount === 0) return;
@@ -8726,7 +9045,11 @@ export class WebGL2Renderer implements RendererApi {
      * light and its colour, each into the blur's own target.
      */
     const splits = this.skinSplits();
+    /* An opaque lit draw into the frame writes its material's reflection too: see `reflectionKeeps`. */
+    const keeps = this.reflectionKeeps();
+    if (keeps) this.reflectionTargets?.on();
     this.drawMeshHalf(mesh, model, depthLayer, tint, splits ? 'scene' : 'whole');
+    if (keeps) this.reflectionTargets?.off();
     if (splits && this.skinScatter !== null) {
       this.skinScatter.begin();
       this.drawMeshHalf(mesh, model, depthLayer, tint, 'diffuse');
@@ -8741,6 +9064,21 @@ export class WebGL2Renderer implements RendererApi {
    * skin yet, this is the frame's own picture — not a mirror's or a probe's, nor an overlay after
    * the frame — and the blur's target can be had.
    */
+  /**
+   * Whether a draw now is the frame's own, opaque and lit, and so writes the two maps beside its
+   * colour: not a mirror's, a probe's or a capture's, whose framebuffers have no maps, and not after
+   * the frame. See `reflectionSurfaceTargets.ts`.
+   */
+  private reflectionKeeps(): boolean {
+    return (
+      this.reflectionTargets !== null &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.capturePassActive &&
+      !this.framePresented
+    );
+  }
+
   private skinSplits(): boolean {
     const skin = this.skinScatter;
     const scene = this.sceneTarget;
@@ -8769,10 +9107,16 @@ export class WebGL2Renderer implements RendererApi {
     const scene = this.sceneTarget;
     const projection = this.frameProjection;
     if (skin === null || scene === null || this.skinScattered) return;
+    /*
+     * **Not the frame's picture, so not the frame's moment**: a blended draw in a mirror, a probe
+     * bake or a scene capture lands over none of the frame's skin. Latching there switched the
+     * spread off for the frame, so a capture with a glowing sign in it left every face drawn after
+     * it flat. `scripts/capture-check.mjs`.
+     */
+    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return;
     /* Latched whether or not skin was drawn: a skin drawn after this point is the whole surface. */
     this.skinScattered = true;
     if (!skin.pending) return;
-    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return;
     if (projection === null) return;
     const depth = scene.snapshotDepth(true);
     mat4.invert(this.skinInverseProjection, projection);

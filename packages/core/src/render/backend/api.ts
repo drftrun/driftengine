@@ -7,6 +7,7 @@ import type { ProbeBakeOptions } from '../reflectionProbe.ts';
 import type { Renderer, TranslucentMeshOptions } from './webgl2/renderer.ts';
 import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
+import type { SurfaceOverlay } from '../surfaceOverlay.ts';
 import type { SurfaceSource } from '../compressedSource.ts';
 import type { LightmapPage } from '../lightmap.ts';
 import type { DeviceParticles } from '../particlePool.ts';
@@ -311,6 +312,7 @@ export type RendererApi = Omit<
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
   | 'setMaterial'
+  | 'setSurfaceOverlay'
   | 'createClothBinding'
   | 'createClothParticles'
   | 'updateClothParticles'
@@ -341,6 +343,13 @@ export type RendererApi = Omit<
   setCloth(binding: ClothBindingHandle | null, particles?: ClothParticlesHandle | null): void;
   disposeClothBinding(binding: ClothBindingHandle): void;
   disposeClothParticles(particles: ClothParticlesHandle): void;
+  /**
+   * What the following draws lay over their surfaces beyond their materials — a rim of light, a
+   * dissolve with a glowing edge, wrinkle normals by region — or null for none, which every pass
+   * starts with. Per draw, so one character's whole set of materials changes together. Its images
+   * are regions of one atlas (`SurfaceOverlay.maps`). See `surfaceOverlay.ts`.
+   */
+  setSurfaceOverlay(overlay: SurfaceOverlay | null): void;
   /**
    * Upload a caller's image, or a BC image's blocks with their stored chain where
    * `compressedFormats` has the format. See `SurfaceTextureHandle` for the boundary this guards.

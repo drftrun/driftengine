@@ -129,6 +129,31 @@ On WebGPU, `prepare` is also handed the frame's environment probe and, with Drif
 composed distance field, one frame behind, for a pass that wants to light or trace its own work the
 way the frame does.
 
+## Reading the frame
+
+A pass cannot sample the frame it is drawing into, so it reads copies, and declares which:
+
+- `reads: ['depthSnapshot']` hands it the frame's depth as it stands, one copy a frame, as
+  `sceneDepth`: on WebGPU in the `PrepareContext`, a single-sample `r32float` texture to read with
+  `textureLoad` or a non-filtering sampler, and on WebGL2 in the `PassContext`. It holds the depth
+  buffer's own values, reversed as the buffer is: 1 at the near plane, 0 at the far one.
+- `reads: ['colorSnapshot']` hands it the frame's colour with everything drawn before it, copied
+  afresh at each such pass's draw, as `sceneColor`: on WebGPU in the `PrepareContext`, at the scene's
+  size and format, and on WebGL2 in the `PassContext`. A distortion samples the scene behind it with
+  it; a full-screen pass drawn last reads the whole frame and writes over it, in scene light, before
+  the tone curve: a radial blur, a flash, a filter over the finished picture.
+
+The views on WebGPU arrive in `prepare`, since a bind group is built before the frame's pass opens,
+and are filled at the draw. Both copies are `null` without `screenEffects`, which is what keeps a
+scene target to copy from.
+
+**Under DriftTR a pass that reads the colour draws after the upscale**, over the reconstructed
+picture and after every blended draw, whatever order it was asked in: otherwise it would read a frame
+without the blended draws and then be covered by them. It draws at the output's size and the
+reconstruction's format, which `ctx.format` names there, so it keeps a pipeline for that target. Its
+`sceneDepth` stays the render's opaque depth: coarser by the ratio above a ratio of 1, and a blended
+draw is in no depth either way.
+
 ## Compute
 
 ```ts sample=snippets/passes.ts#compute

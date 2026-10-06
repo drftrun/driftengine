@@ -18,7 +18,11 @@
  * Any of them with `&map=1` wears a normal map of ripples, which the bending follows rather than
  * the flat sheet's own normal; `&lit=1` draws the bending variants lit, where the lit block's
  * shading normal is the one taken. `&map=1` against `&map=1&lit=1` is the pair that must agree: the
- * map is read through one function either way.
+ * map is read through one function either way. `&instanced=1` draws the same pane as a batch of
+ * one (`drawTranslucentInstanced`), as a game's distortion particles are drawn: `&map=1` instanced
+ * against `&map=1` must agree, since a batch reads the same material through the same function.
+ * Measured 2026-10-06 on both backends: 0 pixels apart, and 95,773 pixels from the batch without
+ * the map. The batch's pane carries no channel, since an instanced pipeline has no location for one.
  *
  * **The pattern behind the pane is high-contrast vertical bars**, because a displacement is only
  * measurable against something whose position is known: a flat backdrop refracts to itself and
@@ -35,7 +39,12 @@
  * beside `vertexChannel.ts` and `decals.ts`.
  */
 
-import { Camera, createEnvironment, createRenderer } from '../../packages/core/src/index';
+import {
+  Camera,
+  createEnvironment,
+  createMeshInstances,
+  createRenderer,
+} from '../../packages/core/src/index';
 import type { MeshData, RendererApi, Vec3 } from '../../packages/core/src/index';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
@@ -127,7 +136,7 @@ function backdrop(): MeshData {
  * The `.w` lane of the per-vertex channel carries the thickness multiplier. `ramp` fills it 0 to 1
  * across the sheet; every other variant leaves it at 1 so the draw's own thickness stands.
  */
-function pane(variant: Variant, mapped: boolean): MeshData {
+function pane(variant: Variant, mapped: boolean, instanced = false): MeshData {
   const CELLS = 16;
   const HALF = 5;
   const verts = (CELLS + 1) * (CELLS + 1);
@@ -195,6 +204,12 @@ function pane(variant: Variant, mapped: boolean): MeshData {
    * pane that bends the scene and takes no colour out of it.
    */
   if (variant === 'nolane') return { positions, normals, colors, emissive, indices };
+  /* A batch carries no channel either: an instanced pipeline spends the locations it would need. */
+  if (instanced) {
+    return mapped
+      ? { positions, normals, colors, emissive, uvs, indices }
+      : { positions, normals, colors, emissive, indices };
+  }
   if (FROST[variant] !== undefined) {
     /* Glass keeps its own highlight: a dark, glossy pane, so what it adds over the bars is its
        reflection and its specular rather than a colour of its own. */
@@ -262,8 +277,12 @@ async function main(): Promise<void> {
   const bars = renderer.createMesh(backdrop());
   const mapped = asked.get('map') === '1';
   const litBend = asked.get('lit') === '1';
-  const glass = variant === 'none' ? null : renderer.createMesh(pane(variant, mapped));
+  const instanced = asked.get('instanced') === '1';
+  const glass = variant === 'none' ? null : renderer.createMesh(pane(variant, mapped, instanced));
   const rippled = mapped ? { normal: renderer.createSurfaceTexture(ripples()) } : null;
+  const batch = glass === null || !instanced ? null : renderer.createInstanced(glass, 1);
+  const placed = createMeshInstances(1);
+  placed.count = 1;
 
   const env = createEnvironment();
   env.ambient = [0.3, 0.3, 0.3];
@@ -466,13 +485,20 @@ async function main(): Promise<void> {
           glass: { transmission: 0.9, frost, tint: [0.95, 1, 0.97] },
         });
       } else {
-        renderer.drawTranslucentMesh(glass, model, 1, {
+        const options = {
           lit: litBend,
           fog: false,
           refraction: strength,
           refractTint: absorbing ? GLASS : undefined,
           thicknessM: absorbing ? 1.2 : 0,
-        });
+        };
+        if (batch !== null) {
+          placed.models.set(model);
+          renderer.uploadInstanced(batch, placed);
+          renderer.drawTranslucentInstanced(batch, placed, 1, options);
+        } else {
+          renderer.drawTranslucentMesh(glass, model, 1, options);
+        }
       }
     }
     renderer.endFrame();

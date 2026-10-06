@@ -293,6 +293,13 @@ export class SurfaceTexture {
   private effectsTable: WebGLTexture | null = null;
   /** The block format a compressed texture holds, or null for one uploaded from images. */
   private readonly blockFormat: BlockFormat | null;
+  /** Level 0's size, which `flatLayer` copies; kept as `update` changes it. */
+  private width = 0;
+  private height = 0;
+  /** The texture's storage format, which `flatLayer`'s copy matches so the copy converts nothing. */
+  private readonly storage: number;
+  /** Layer 0 as a plain 2D texture, made by `flatLayer` and dropped when the pixels change. */
+  private flat: WebGLTexture | null = null;
 
   /**
    * One image, or an array of images that must share one size (`layerSize` refuses otherwise).
@@ -327,6 +334,9 @@ export class SurfaceTexture {
       this.layers = 1;
       this.blockFormat = null;
       this.mipmapped = false;
+      this.width = capture.width;
+      this.height = capture.height;
+      this.storage = capture.float ? gl.RGBA16F : gl.RGBA8;
       gl.texStorage3D(
         gl.TEXTURE_2D_ARRAY,
         1,
@@ -340,6 +350,9 @@ export class SurfaceTexture {
       this.layers = baked.layers.length;
       this.blockFormat = null;
       this.mipmapped = false;
+      this.width = baked.width;
+      this.height = baked.height;
+      this.storage = gl.RGBA8;
       /* A typed array refuses either flag set, so both are put down here rather than assumed. */
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -377,6 +390,7 @@ export class SurfaceTexture {
          `generateMipmap` cannot write a compressed format. */
       this.layers = blocks.length;
       this.blockFormat = (blocks[0] as CompressedTextureSource).format;
+      this.storage = gl.NONE;
       this.mipmapped = (options.mipmap ?? true) && plan.levels > 1;
       uploadCompressedArray(gl, plan.name, blocks, this.mipmapped ? plan.levels : 1);
     } else {
@@ -384,6 +398,10 @@ export class SurfaceTexture {
       this.layers = sources.length;
       this.blockFormat = null;
       this.mipmapped = options.mipmap ?? true;
+      const { width, height } = layerSize(sources);
+      this.width = width;
+      this.height = height;
+      this.storage = this.srgb ? gl.SRGB8_ALPHA8 : gl.RGBA8;
       uploadImages(gl, sources, this.srgb);
     }
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
@@ -462,6 +480,9 @@ export class SurfaceTexture {
     refuseArrayUpdate(this.layers);
     refuseBlockUpdate(this.blockFormat);
     const { width, height } = sourceSize(source);
+    this.width = width;
+    this.height = height;
+    this.dropFlat(gl);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
     /* Unflipped, matching the constructor. See it for why, and for what it cost. */
     gl.texImage3D(
@@ -494,8 +515,54 @@ export class SurfaceTexture {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.texture);
   }
 
+  /**
+   * Layer 0 as a plain 2D texture: what a `sampler2D` can be handed, which an array cannot. Copied
+   * the first time it is asked for, by a framebuffer blit into storage of the same format, and kept
+   * until `update` or `dispose`. Engine-internal: a surface overlay's atlas is bound where the
+   * lit stage's one 2D image slot is (`surfaceOverlay.ts`).
+   *
+   * **Null for blocks**, which no framebuffer can read; the caller says so. What it costs is a copy
+   * of level 0 in memory beside the array, and the bindings of both framebuffer targets, which are
+   * read back before the blit and put back after it — a sync query, paid once per image.
+   */
+  flatLayer(gl: WebGL2RenderingContext): WebGLTexture | null {
+    if (this.texture === null || this.blockFormat !== null) return null;
+    if (this.flat !== null) return this.flat;
+    const flat = gl.createTexture();
+    const read = gl.createFramebuffer();
+    const draw = gl.createFramebuffer();
+    if (flat === null || read === null || draw === null) return null;
+    gl.bindTexture(gl.TEXTURE_2D, flat);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, this.storage, this.width, this.height);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    const heldRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const heldDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read);
+    gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.texture, 0, 0);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, draw);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, flat, 0);
+    const [w, h] = [this.width, this.height];
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, heldRead);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, heldDraw);
+    gl.deleteFramebuffer(read);
+    gl.deleteFramebuffer(draw);
+    this.flat = flat;
+    return flat;
+  }
+
+  private dropFlat(gl: WebGL2RenderingContext): void {
+    if (this.flat !== null) gl.deleteTexture(this.flat);
+    this.flat = null;
+  }
+
   dispose(gl: WebGL2RenderingContext): void {
     if (this.texture === null) return;
+    this.dropFlat(gl);
     gl.deleteTexture(this.texture);
     this.texture = null;
     if (this.effectsTable !== null) gl.deleteTexture(this.effectsTable);

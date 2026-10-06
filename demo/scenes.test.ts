@@ -178,10 +178,7 @@ const MODULES = [
 ].filter(([id]) => !id.endsWith('.test.ts'));
 
 /** The worker factories packages publish beside their barrels. See the rule below. */
-const WORKER_SPECIFIERS = [
-  '@driftengine/physics/src/workers.ts',
-  '@driftengine/assets/src/bcWorkers.ts',
-];
+const WORKER_SPECIFIERS = ['@driftengine/physics/workers', '@driftengine/assets/bcWorkers'];
 
 test('every scene reaches the engine through the public barrel alone', () => {
   for (const [id, source] of MODULES) {

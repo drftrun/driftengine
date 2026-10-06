@@ -399,7 +399,7 @@ asserting that property since. What kept a pool out was never the engine.
 
 ```ts
 import { PhysicsWorld } from '@driftengine/physics';
-import { createIslandPool } from '@driftengine/physics/src/workers.ts';
+import { createIslandPool } from '@driftengine/physics/workers';
 
 const world = new PhysicsWorld({ workers: 4, pool: createIslandPool });
 world.parallelism; // { requested: 4, running: 4, reason: '' }
@@ -414,7 +414,7 @@ unreachable, so a barrel that merely re-exported the factory still wrote **12,25
 worker to disk in builds where nothing could fetch it. Reported by one consumer and reproduced on a
 second the same day.
 
-So the factory is at `@driftengine/physics/src/workers.ts`. A caller already had to name it, so the
+So the factory is at `@driftengine/physics/workers`. A caller already had to name it, so the
 cost is the specifier and nothing else, and importing `PhysicsWorld` now names no worker at all.
 
 **Read `parallelism` instead of assuming the option took.** Every path that does not start a pool

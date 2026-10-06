@@ -6,7 +6,8 @@ import { DEPTH_01_TO_CLIP } from './lightVolumeDraw.ts';
 import type { ReflectionQueue } from './screenSpaceReflection.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
-import { SSR_RESOLVE_FRAG } from './shaders/ssrResolve.ts';
+import { SSR_MATERIAL_RESOLVE_FRAG, SSR_RESOLVE_FRAG } from './shaders/ssrResolve.ts';
+import type { ResolvedFrameReflections } from './frameReflections.ts';
 import { SSR_TRACE_FRAG } from './shaders/ssrTrace.ts';
 import { blendKeeping } from './sceneCoverage.ts';
 
@@ -36,6 +37,10 @@ export class SsrPass {
   private height = 0;
 
   /** `inverse(viewProjection) * DEPTH_01_TO_CLIP`, rebuilt once a frame rather than per surface. */
+  /** The frame's materials' resolve, compiled the first time a frame traces them. */
+  private materialResolve: WebGLProgram | null = null;
+  private materialUniforms: Record<string, WebGLUniformLocation | null> = {};
+
   private readonly depthToWorld = new Float32Array(16);
   private readonly scissor = new Int32Array(4);
 
@@ -150,6 +155,11 @@ export class SsrPass {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, scene);
     gl.uniform1i(u['uSsrScene'] ?? null, 1);
+    /* The materials' maps unread in this mode, and pointed at a bound texture all the same: a
+       driver may fetch a sampler's descriptor before the branch that skips it. */
+    gl.uniform1i(u['uSsrProbeMap'] ?? null, 0);
+    gl.uniform1i(u['uSsrTintMap'] ?? null, 0);
+    gl.uniform1f(u['uSsrMaterial'] ?? null, 0);
     gl.uniformMatrix4fv(u['uSsrDepthToWorld'] ?? null, false, this.depthToWorld);
     /* No Y flip on this backend: `gl.scissor` and the framebuffer both count rows from the bottom,
        which is the space the raw matrix already emits. See `CLIP_Y_FLIP`. */
@@ -195,6 +205,131 @@ export class SsrPass {
   }
 
   /** Composite what the trace found over whatever framebuffer is bound. */
+  /**
+   * Every pixel the lit stage left a reflection for, marched against the frame's depth by the
+   * trace's material mode, into this pass's own target; `resolveMaterials` then swaps the probe's
+   * share for it. See `frameReflections.ts`. Ends on the default framebuffer, as the surfaces' does.
+   */
+  traceMaterials(
+    scene: WebGLTexture,
+    depth: WebGLTexture,
+    probe: WebGLTexture,
+    tint: WebGLTexture,
+    viewProjection: ReadonlyMat4,
+    eye: ArrayLike<number>,
+    width: number,
+    height: number,
+    edgeFade: number,
+    reflections: ResolvedFrameReflections,
+  ): void {
+    const { gl } = this;
+    const u = this.traceUniforms;
+    this.ensureSize(width, height);
+    mat4.invert(this.depthToWorld, viewProjection);
+    mat4.multiply(this.depthToWorld, this.depthToWorld, DEPTH_01_TO_CLIP);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    gl.viewport(0, 0, width, height);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.BLEND);
+    gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
+
+    gl.useProgram(this.trace);
+    gl.bindVertexArray(this.vao);
+    const textures = [depth, scene, probe, tint];
+    const names = ['uSsrDepth', 'uSsrScene', 'uSsrProbeMap', 'uSsrTintMap'];
+    for (let unit = 0; unit < 4; unit++) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, textures[unit] ?? null);
+      gl.uniform1i(u[names[unit] ?? ''] ?? null, unit);
+    }
+    gl.uniformMatrix4fv(u['uSsrDepthToWorld'] ?? null, false, this.depthToWorld);
+    gl.uniformMatrix4fv(u['uSsrViewProj'] ?? null, false, viewProjection as Float32Array);
+    gl.uniform3f(u['uSsrEye'] ?? null, eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0);
+    gl.uniform1f(u['uSsrEdgeFade'] ?? null, edgeFade);
+    gl.uniform3f(u['uSsrAxis'] ?? null, 0, 0, 0);
+    gl.uniform3f(u['uSsrTint'] ?? null, 1, 1, 1);
+    gl.uniform1f(u['uSsrStrength'] ?? null, 1);
+    gl.uniform2f(u['uSsrFresnel'] ?? null, 0, 0);
+    gl.uniform1f(u['uSsrFacingCos'] ?? null, -1);
+    gl.uniform1f(u['uSsrReach'] ?? null, reflections.reachM);
+    gl.uniform1f(u['uSsrThickness'] ?? null, reflections.thicknessM);
+    gl.uniform1f(u['uSsrSteps'] ?? null, reflections.steps);
+    gl.uniform1f(u['uSsrMaterial'] ?? null, 1);
+    gl.uniform1f(u['uSsrMaxRoughness'] ?? null, reflections.maxRoughness);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    /* Back to the surfaces' mode, which every other trace in the frame is. */
+    gl.uniform1f(u['uSsrMaterial'] ?? null, 0);
+
+    gl.bindVertexArray(null);
+    for (let unit = 3; unit >= 0; unit--) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * The probe's share of each pixel swapped for what `traceMaterials` found, blurred by the
+   * surface's roughness, added onto whatever framebuffer is bound — the scene's, with the two maps
+   * already detached from it. See `SSR_MATERIAL_RESOLVE_FRAG`.
+   */
+  resolveMaterials(
+    probe: WebGLTexture,
+    tint: WebGLTexture,
+    width: number,
+    height: number,
+    reflections: ResolvedFrameReflections,
+  ): void {
+    const { gl } = this;
+    if (this.reflection === null) return;
+    if (this.materialResolve === null) {
+      this.materialResolve = compileProgram(
+        gl,
+        FULLSCREEN_VERT,
+        SSR_MATERIAL_RESOLVE_FRAG,
+        'ssrMaterialResolve',
+      );
+      this.materialUniforms = uniformLocations(gl, this.materialResolve, 'ssrMaterialResolve');
+    }
+    const u = this.materialUniforms;
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+    /* Added, a negative addend subtracting, and the scene's alpha kept. */
+    blendKeeping(gl, gl.ONE, gl.ONE);
+    gl.useProgram(this.materialResolve);
+    const textures = [this.reflection, probe, tint];
+    const names = ['uSsrReflection', 'uSsrProbeMap', 'uSsrTintMap'];
+    for (let unit = 0; unit < 3; unit++) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, textures[unit] ?? null);
+      gl.uniform1i(u[names[unit] ?? ''] ?? null, unit);
+    }
+    gl.uniform3f(
+      u['uSsrBlur'] ?? null,
+      1 / Math.max(width, 1),
+      1 / Math.max(height, 1),
+      reflections.blur * height,
+    );
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    for (let unit = 2; unit >= 0; unit--) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
   resolveReflections(): void {
     const { gl } = this;
     if (this.reflection === null) return;
@@ -234,6 +369,8 @@ export class SsrPass {
     if (this.framebuffer !== null) gl.deleteFramebuffer(this.framebuffer);
     gl.deleteProgram(this.trace);
     gl.deleteProgram(this.resolve);
+    if (this.materialResolve !== null) gl.deleteProgram(this.materialResolve);
+    this.materialResolve = null;
     gl.deleteVertexArray(this.vao);
     this.reflection = null;
     this.framebuffer = null;

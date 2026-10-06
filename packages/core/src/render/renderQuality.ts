@@ -1,5 +1,6 @@
 /** Construction-time GPU quality controls shared by every renderer resource. */
 
+import type { FrameReflections } from './frameReflections.ts';
 import { MAX_AREA_LIGHTS } from './areaLights.ts';
 import { MAX_GLOBAL_MEDIUM_STEPS } from './globalMedium.ts';
 import { MAX_POINT_LIGHTS } from './lightBudget.ts';
@@ -26,8 +27,14 @@ import { PREFILTER_SAMPLE_COUNTS } from './prefilterEnvMap.ts';
  * red where `srgb` clips each channel and turns its core pink and wide. It is the curve a ported
  * game's own resolve applied — for a port that has to match one — and it has none of ACES's toe or
  * desaturation. See `HIGHLIGHT_SHOULDER_GLSL` for the arithmetic.
+ *
+ * `filmic` is a film curve shaped by five numbers — a slope, a toe, a shoulder and how far black
+ * and white clip — that holds a mid grey of 0.18 at 0.18 where `aces` gives about 0.11, so a look
+ * graded against such a curve is matched by its numbers (`setFilmicCurve`) rather than by a lookup
+ * table. Applied by the composite alone, so it needs `screenEffects` and `hdrScene`; without them
+ * every pass grades with `aces` and the renderer says so once. See `filmicCurve.ts`.
  */
-export type OutputTransform = 'none' | 'srgb' | 'aces' | 'shoulder';
+export type OutputTransform = 'none' | 'srgb' | 'aces' | 'shoulder' | 'filmic';
 
 /**
  * The three settings whose accepted values are a closed set, written as one.
@@ -355,6 +362,18 @@ export interface RenderQuality {
    * eight-bit and this buys only the consistent grading.
    */
   readonly hdrScene: boolean;
+  /**
+   * Ask for a high dynamic range display: a canvas whose highlights run past paper white to as
+   * far as the display allows, where it reports one. Off by default.
+   *
+   * **Asked for, not assumed.** It needs WebGPU, a display reporting a high dynamic range, and a
+   * composite that holds the light to give it (`screenEffects` and `hdrScene`); where any of those
+   * is missing the frame goes out as it always did and the renderer says which in
+   * `displayRangeReason`. `displayRange` is the answer a game reads to choose a look graded for the
+   * output it got. `setDisplayLuminance` sets how far above paper white the highlights may reach.
+   * WebGL2 has no extended-range canvas to draw into, so there it is always the standard range.
+   */
+  readonly highDynamicRange: boolean;
   /** Camera-depth water tint and scattering across every visible pass. */
   readonly underwaterAtmosphere: boolean;
   /** Procedural noise octaves evaluated by plume shaders. */
@@ -522,14 +541,14 @@ export interface RenderQuality {
    */
   readonly sceneSamples: number;
   /**
-   * Camera motion blur, 0 to 1. Off by default.
+   * Motion blur, 0 to 1. Off by default.
    *
-   * Camera rather than per-object, and that is a decision rather than a stage. Per-object
-   * blur needs a velocity buffer: every mesh writing its own screen-space motion into a
-   * second render target, so a second set of matrices per draw and a wider G-buffer, which
-   * is a structural change to a forward renderer that writes one colour target. Camera blur
-   * needs only the previous view-projection, which is one matrix, and it covers the case
-   * that actually matters — a camera whipping round a turntable or through a world.
+   * By the camera's motion everywhere, and **by each drawn object's own motion where a
+   * reconstruction draws one** (DriftTR, WebGPU): a mover's pixels smear along its path while a
+   * still stage stays sharp. Elsewhere a velocity buffer would be every mesh writing its motion into
+   * a second target — a structural change to a forward renderer — so those frames blur by the
+   * camera alone, which needs only the previous view-projection, and say so once when a draw names
+   * where it was. `setCameraMotionBlur` is the per-frame dial and the longest smear.
    *
    * Runs inside the composite pass, so it costs a depth sample and eight taps on the pixels
    * that are moving and nothing on a still frame. Needs `screenEffects`, since without the
@@ -580,6 +599,18 @@ export interface RenderQuality {
    * Needs `screenEffects`, since the resolve composites over the finished scene.
    */
   readonly orderIndependent: boolean;
+  /**
+   * Every opaque lit surface reflects the frame by its own material: a ray marched against the
+   * frame's depth swaps the probes' share of each pixel for what it finds, at the pixel's own
+   * roughness and reflectance, and a surface past `maxRoughness` keeps the probes alone. Off by
+   * default; `true` for the defaults, or the numbers. See `frameReflections.ts`.
+   *
+   * Needs `screenEffects` and `hdrScene`, since the swap is made in scene light, and a frame of one
+   * sample; it says once where it cannot be drawn. What it costs on WebGPU is every opaque lit draw
+   * a second time without its lamps, into two half-float targets, and a march per reflective pixel;
+   * on WebGL2 the same two targets, written beside the colour by the opaque lit draws themselves.
+   */
+  readonly screenSpaceReflections: boolean | FrameReflections;
   /**
    * Depth of field: how wide the blur may reach, as a fraction of the frame's height. Off by
    * default.
@@ -964,9 +995,11 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   sceneSamples: 1,
   planarReflections: false,
   hdrScene: false,
+  highDynamicRange: false,
   cameraMotionBlur: 0,
   temporalAa: false,
   orderIndependent: false,
+  screenSpaceReflections: false,
   depthOfField: 0,
   reconstruction: 0,
   indirectLight: false,
@@ -1126,12 +1159,15 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     ),
     planarReflections: options.planarReflections ?? DEFAULT_RENDER_QUALITY.planarReflections,
     hdrScene: options.hdrScene ?? DEFAULT_RENDER_QUALITY.hdrScene,
+    highDynamicRange: options.highDynamicRange ?? DEFAULT_RENDER_QUALITY.highDynamicRange,
     cameraMotionBlur: Math.min(
       1,
       Math.max(0, options.cameraMotionBlur ?? DEFAULT_RENDER_QUALITY.cameraMotionBlur),
     ),
     temporalAa: options.temporalAa ?? DEFAULT_RENDER_QUALITY.temporalAa,
     orderIndependent: options.orderIndependent ?? DEFAULT_RENDER_QUALITY.orderIndependent,
+    screenSpaceReflections:
+      options.screenSpaceReflections ?? DEFAULT_RENDER_QUALITY.screenSpaceReflections,
     /* Off, or a ratio at least 1.3 and at most 2 — never a number between zero and the range. */
     reconstruction: resolveReconstruction(options.reconstruction),
     indirectLight: options.indirectLight ?? DEFAULT_RENDER_QUALITY.indirectLight,

@@ -76,6 +76,18 @@ uniform float uSsrThickness;
 uniform float uSsrSteps;
 /** How much of the frame each side is fade, as a fraction. */
 uniform float uSsrEdgeFade;
+/**
+ * **1 where the trace is the frame's materials rather than a box's**: every pixel the lit stage
+ * left a reflection for reflects, by its own material, and the box, its axis and its strength are
+ * not read. See \`flat/reflectionSurface.ts\` for the two maps it is handed.
+ */
+uniform float uSsrMaterial;
+/** The roughness past which a pixel's reflection is the probes' alone, faded over the last quarter. */
+uniform float uSsrMaxRoughness;
+/** The environment as the frame shows it, and the surface's roughness in its alpha. */
+uniform sampler2D uSsrProbeMap;
+/** What a found reflection is multiplied by to land where the environment did. */
+uniform sampler2D uSsrTintMap;
 
 out vec4 fragColor;
 
@@ -153,6 +165,20 @@ void main() {
     returned = clamp(uSsrStrength * dfg.x + dfg.y, 0.0, 1.0);
   }
   mask *= returned;
+  /*
+   * **Or the pixel's own material**, where the trace is the frame's: reflective wherever the lit
+   * stage left a reflection to swap (any tint above zero), and the probes' alone past the
+   * roughness ceiling. How much it returns is the tint, which the resolve multiplies by, so the
+   * mask here is only whether to march and how much to trust a hit.
+   */
+  if (uSsrMaterial > 0.5) {
+    vec3 tint = textureLod(uSsrTintMap, vUv, 0.0).rgb;
+    float roughness = textureLod(uSsrProbeMap, vUv, 0.0).a;
+    float reflective = max(max(tint.r, tint.g), tint.b) > 0.0 ? 1.0 : 0.0;
+    float ceiling = max(uSsrMaxRoughness, 1.0e-4);
+    mask = reflective * (1.0 - smoothstep(ceiling * 0.75, ceiling, roughness));
+    mask *= ${glslIsFarDepth('stored')} ? 0.0 : 1.0;
+  }
 
   vec3 found = vec3(0.0);
   float weight = 0.0;

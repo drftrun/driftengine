@@ -19,7 +19,7 @@ The page links each module to the chapters whose examples import it. The languag
 types, records and the rest, is at [script.driftengine.dev](https://script.driftengine.dev/docs).
 
 <!-- generated script-reach -->
-25 modules and 341 functions, written from `capabilities.json` by `npm run manual:sync`.
+25 modules and 342 functions, written from `capabilities.json` by `npm run manual:sync`.
 
 | Module | Functions | Deterministic | Bound from |
 |---|---|---|---|
@@ -41,7 +41,7 @@ types, records and the rest, is at [script.driftengine.dev](https://script.drift
 | [`drift/persistence`](#driftpersistence) | 5 | 0 | arguments |
 | [`drift/physics`](#driftphysics) | 42 | 32 | arguments |
 | [`drift/random`](#driftrandom) | 3 | 3 | arguments |
-| [`drift/render`](#driftrender) | 8 | 0 | arguments |
+| [`drift/render`](#driftrender) | 9 | 0 | arguments |
 | [`drift/rollback`](#driftrollback) | 6 | 0 | arguments |
 | [`drift/scene`](#driftscene) | 11 | 8 | arguments |
 | [`drift/terrain`](#driftterrain) | 8 | 8 | arguments |
@@ -478,6 +478,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `bloom` | `fn(renderer: Renderer, scale: f32) -> void` | no | How much of the frame's bloom ceiling to take, 0 to 1. |
 | `bloomAbove` | `fn(renderer: Renderer, scale: f32, threshold: f32) -> void` | no | How much of the bloom ceiling to take, 0 to 1, and how bright a pixel must be before it blooms, in scene units, above 0. |
 | `exposure` | `fn(renderer: Renderer, stops: f32) -> void` | no | How far this frame is scaled into the tone curve, above 0. |
+| `filmic` | `fn(renderer: Renderer, slope: f32, toe: f32, shoulder: f32, blackClip: f32, whiteClip: f32) -> void` | no | The `filmic` output transform's curve, held until changed: the straight segment's slope through mid grey, how much of the curve the toe and the shoulder take (0 to 1), and how far black and white clip past their ends (0 to 1). |
 | `motionBlur` | `fn(renderer: Renderer, scale: f32) -> void` | no | How much of the camera motion blur ceiling this frame takes, 0 to 1. |
 | `speedBlur` | `fn(renderer: Renderer, strength: f32) -> void` | no | How much speed blur the frame resolves with, 0 to 1. |
 | `focus` | `fn(renderer: Renderer, distance: f32, range: f32, scale: f32) -> void` | no | Where this frame's lens is focused and how deep the sharp zone is, in metres, and how much of the depth-of-field ceiling to take, 0 to 1. |

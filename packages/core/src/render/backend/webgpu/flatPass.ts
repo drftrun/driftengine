@@ -12,6 +12,7 @@ import type { LitSwitch, PipelineCache } from './pipelineCache.ts';
 import type { ClothViews } from './clothTextures.ts';
 import { shaderModule } from './shaderModules.ts';
 import { SCENE_ALPHA_COVERS } from '../../sceneCoverage.ts';
+import { REFLECTION_SURFACE_FORMAT } from './reflectionSurfacePass.ts';
 
 /** The material maps the flat pass reads: `2d-array` colour, filtered, not shadow maps. */
 const SURFACE_MAPS: ReadonlySet<string> = new Set([
@@ -232,6 +233,26 @@ export const FLAT_VERT_SIZE = Math.max(
 );
 const FLAT_VERT_BINDING = PLAIN_VERTEX.uniforms;
 
+/**
+ * The most sampled textures and distinct samplers any lit variant carrying the environment probe
+ * binds in its fragment stage, counted from the generated bindings: what a device must allow per
+ * stage before the probe's permutation can be built. A sampler several textures share counts once,
+ * which is what `// wgsl:share` buys.
+ */
+export function probeStageCeilings(): { readonly textures: number; readonly samplers: number } {
+  let textures = 0;
+  let samplers = 0;
+  for (const [variant, bindings] of Object.entries(FLAT_BINDINGS.flatFrag)) {
+    if (!variant.includes('environmentProbe')) continue;
+    const listed = Object.values(
+      (bindings as { textures?: Record<string, { sampler: number }> }).textures ?? {},
+    );
+    textures = Math.max(textures, listed.length);
+    samplers = Math.max(samplers, new Set(listed.map((entry) => entry.sampler)).size);
+  }
+  return { textures, samplers };
+}
+
 /** Everything the generator recorded about one permutation of the fragment stage. */
 export function flatFragmentBindings(variant: FlatVariant): StageBindings {
   const found = FRAGMENT_BINDINGS[variant];
@@ -253,6 +274,7 @@ function flatFragmentConstants(
   cache: PipelineCache,
   model: SurfaceModelKind | null,
   skinPass: SkinHalf = 'whole',
+  reflectionSurface = false,
 ): Record<string, number> {
   const overrides = flatFragmentBindings(variant).overrides;
   if (overrides?.['GLASS_SHADOWS'] === undefined) {
@@ -269,6 +291,11 @@ function flatFragmentConstants(
     /* Skin's halves under the screen-space blur, set from the key as a model's switch is. */
     if (name === 'SKIN_SCREEN' || name === 'SKIN_DIFFUSE' || name === 'SKIN_ALBEDO') {
       constants[String(id)] = skinPass !== 'whole' && name === SKIN_HALF_SWITCH[skinPass] ? 1 : 0;
+      continue;
+    }
+    /* The reflection pass's surface half, set from the key too. See `reflectionSurface.ts`. */
+    if (name === 'REFLECTION_SURFACE') {
+      constants[String(id)] = reflectionSurface ? 1 : 0;
       continue;
     }
     if (!(name in cache.litSwitches)) {
@@ -609,6 +636,11 @@ export function flatPipeline(
   model: SurfaceModelKind | null = null,
   /** Which half of a skin it draws. The key must carry it: `|ss`, `|sd` or `|sa`. See `SkinHalf`. */
   skinPass: SkinHalf = 'whole',
+  /**
+   * The reflection pass's surface half: the draw again, against its own depth, into the two
+   * targets `reflectionSurfacePass.ts` holds. The key must carry it: `|rs`.
+   */
+  reflectionSurface = false,
 ): GPURenderPipeline {
   return cache.get(
     key,
@@ -633,6 +665,7 @@ export function flatPipeline(
         cloth,
         model,
         skinPass,
+        reflectionSurface,
       ),
     true,
   );
@@ -765,10 +798,12 @@ function flatDescriptor(
   cloth = false,
   model: SurfaceModelKind | null = null,
   skinPass: SkinHalf = 'whole',
+  reflectionSurface = false,
 ): GPURenderPipelineDescriptor {
   const offset = depthOffsetForLayer(depthLayer);
-  /* The diffuse and colour halves are the same surface again, into the blur's targets. */
-  const diffuseAlone = skinPass === 'diffuse' || skinPass === 'albedo';
+  /* The diffuse and colour halves are the same surface again, into the blur's targets; and so is
+     the reflection pass's surface half, into its two. */
+  const diffuseAlone = skinPass === 'diffuse' || skinPass === 'albedo' || reflectionSurface;
   return {
     label: key,
     layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
@@ -798,31 +833,33 @@ function flatDescriptor(
       }),
       entryPoint: 'main',
       /* Every variant declares it, so every lit pipeline may set it: see `PipelineCache`. */
-      constants: flatFragmentConstants(variant, cache, model, skinPass),
-      targets: [
-        oitTarget(oit) ??
-          (translucent === 'additive'
-            ? {
-                format: cache.format,
-                blend: {
-                  color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
-                  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-                },
-              }
-            : translucent
-              ? {
-                  format: cache.format,
-                  blend: {
-                    color: {
-                      srcFactor: 'src-alpha',
-                      dstFactor: 'one-minus-src-alpha',
-                      operation: 'add',
+      constants: flatFragmentConstants(variant, cache, model, skinPass, reflectionSurface),
+      targets: reflectionSurface
+        ? [null, { format: REFLECTION_SURFACE_FORMAT }, { format: REFLECTION_SURFACE_FORMAT }]
+        : [
+            oitTarget(oit) ??
+              (translucent === 'additive'
+                ? {
+                    format: cache.format,
+                    blend: {
+                      color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+                      alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
                     },
-                    alpha: SCENE_ALPHA_COVERS,
-                  },
-                }
-              : { format: cache.format }),
-      ],
+                  }
+                : translucent
+                  ? {
+                      format: cache.format,
+                      blend: {
+                        color: {
+                          srcFactor: 'src-alpha',
+                          dstFactor: 'one-minus-src-alpha',
+                          operation: 'add',
+                        },
+                        alpha: SCENE_ALPHA_COVERS,
+                      },
+                    }
+                  : { format: cache.format }),
+          ],
     },
     primitive: { topology: 'triangle-list', cullMode: doubleSided ? 'none' : 'back' },
     /* Coverage only where a sample count can carry it: WebGPU refuses it at one sample. */

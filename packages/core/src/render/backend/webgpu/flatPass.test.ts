@@ -8,6 +8,7 @@ import {
   flatVariant,
   flatVertexBindings,
   flatVertexKey,
+  probeStageCeilings,
 } from './flatPass.ts';
 import { FLAT_BINDINGS, FLAT_FRAG_WGSL } from '../../shaders/generated/flat.wgsl.ts';
 
@@ -169,11 +170,13 @@ test('every variant that can bend declares the wind, and the instanced one decla
  * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — which a pipeline
  * sets from its cache, and on the four shading models', skin's three halves and the lightmap's
  * (`models.ts`), which it sets from its own key, and last on the physical highlight's, from the
- * cache again. Every variant declares all fourteen, because a pipeline naming an override its
+ * cache again, after it on a surface overlay's, from the cache too, and last on the reflection
+ * pass's surface half, from the key, and whether the frame's draws write its maps, from the cache.
+ * Every variant declares all seventeen, because a pipeline naming an override its
  * module lacks fails validation and drops the frame, the permutations without shadows included,
  * which read the glass switch nowhere. The models and halves are generated off, the lit features on.
  */
-test('EVERY LIT VARIANT DECLARES THE FOURTEEN SWITCHES ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE SEVENTEEN SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
   const switches = [
@@ -207,6 +210,15 @@ test('EVERY LIT VARIANT DECLARES THE FOURTEEN SWITCHES ITS PIPELINES SET', () =>
     expect(wgsl, `${variant}: PHYSICAL_SPECULAR`).toMatch(
       /@id\(13\) override PHYSICAL_SPECULAR: bool = true;/,
     );
+    expect(wgsl, `${variant}: SURFACE_OVERLAY`).toMatch(
+      /@id\(14\) override SURFACE_OVERLAY: bool = true;/,
+    );
+    expect(wgsl, `${variant}: REFLECTION_SURFACE`).toMatch(
+      /@id\(15\) override REFLECTION_SURFACE: bool = false;/,
+    );
+    expect(wgsl, `${variant}: REFLECTION_MAPS`).toMatch(
+      /@id\(16\) override REFLECTION_MAPS: bool = true;/,
+    );
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
     expect(bindings?.overrides, variant).toEqual({
       GLASS_SHADOWS: 0,
@@ -223,6 +235,9 @@ test('EVERY LIT VARIANT DECLARES THE FOURTEEN SWITCHES ITS PIPELINES SET', () =>
       SKIN_ALBEDO: 11,
       MODEL_LIGHTMAP: 12,
       PHYSICAL_SPECULAR: 13,
+      SURFACE_OVERLAY: 14,
+      REFLECTION_SURFACE: 15,
+      REFLECTION_MAPS: 16,
     });
   }
 });
@@ -270,7 +285,20 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
   const { device, descriptors } = fakeDevice();
   const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
   flatPipeline(cache, device, {} as unknown as GPUBindGroupLayout, 'none', 'flat:s0:u0', {});
-  const off = { '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, '11': 0, '12': 0, '13': 0 };
+  const off = {
+    '5': 0,
+    '6': 0,
+    '7': 0,
+    '8': 0,
+    '9': 0,
+    '10': 0,
+    '11': 0,
+    '12': 0,
+    '13': 0,
+    '14': 0,
+    '15': 0,
+    '16': 0,
+  };
   expect(descriptors[0]?.fragment?.constants).toEqual({
     '0': 0,
     '1': 1,
@@ -406,4 +434,59 @@ test('every material field the WebGPU renderer names exists in every fragment pe
       expect(fields[name as string], `${name} in variant ${variant}`).toBeDefined();
     }
   }
+});
+
+/*
+ * **The probe's ceilings are the generated bindings' own.** Counted by hand off the widest variant,
+ * `directionalShadows+environmentProbe+pointShadows`: sixteen textures, from the refraction copy to
+ * the model map, and twelve samplers once the four the shadow share holds and the two the glass tint
+ * share holds are each counted once. The renderer typed seven and four here until it was derived.
+ */
+test('THE PROBE ASKS A DEVICE FOR THE TEXTURES AND SAMPLERS ITS WIDEST VARIANT BINDS', () => {
+  expect(probeStageCeilings()).toEqual({ textures: 16, samplers: 12 });
+});
+
+/*
+ * **The reflection pass's surface half is the frame's draw again**: the same layout and vertex stage,
+ * its own switch on, the two maps as its targets with nothing at the colour's location, and a depth
+ * it tests `equal` and never writes — so only what the frame kept writes a material, and the frame's
+ * depth is left as the frame left it. The ordinary pipeline beside it has the switch off.
+ */
+test('THE REFLECTION SURFACE HALF WRITES ITS TWO MAPS AGAINST THE DEPTH THE FRAME WROTE', () => {
+  const { device, descriptors } = fakeDevice();
+  const cache = new PipelineCache(device, 'bgra8unorm', 1, true, true);
+  const layout = {} as unknown as GPUBindGroupLayout;
+  flatPipeline(cache, device, layout, 'none', 'flat:s0:u0', {});
+  flatPipeline(
+    cache,
+    device,
+    layout,
+    'none',
+    'flat:s0:u0|rs',
+    {},
+    false,
+    false,
+    false,
+    true,
+    0,
+    false,
+    'none',
+    false,
+    false,
+    false,
+    false,
+    null,
+    'whole',
+    true,
+  );
+  const [frame, surface] = descriptors;
+  expect(frame?.fragment?.constants?.['15'], 'the frame’s own: off').toBe(0);
+  expect(surface?.fragment?.constants?.['15'], 'the surface half: on').toBe(1);
+  expect(surface?.fragment?.targets).toEqual([
+    null,
+    { format: 'rgba16float' },
+    { format: 'rgba16float' },
+  ]);
+  expect(surface?.depthStencil?.depthWriteEnabled).toBe(false);
+  expect(surface?.depthStencil?.depthCompare).toBe('equal');
 });

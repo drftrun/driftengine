@@ -40,7 +40,10 @@ export interface FogOptions {
   readonly underwaterFactor: number;
   /** `MEDIUM_FOG` integrates a medium; `LINEAR_FOG` ramps between near and far. */
   readonly mode: number;
-  /** Linear mode only: where haze begins, and where it is total. */
+  /**
+   * Where haze begins: the ramp's start in linear mode, and in the medium the distance along the
+   * ray it is integrated from (`Atmosphere.fogStart`), 0 at the camera.
+   */
   readonly near: number;
   readonly far: number;
 }
@@ -88,13 +91,26 @@ export function mediumFog(fog: FogOptions, dist: number, pointY: number): number
     return mix(ramp, 1 - Math.pow(2, -wetLinear * wetLinear * 1.442695), fog.underwaterFactor);
   }
 
+  /*
+   * **Where the medium begins along the ray**, `near` — the linear mode's slot, which this mode
+   * never read before `Atmosphere.fogStart`. The ray is integrated from that point on: the density
+   * there, carried over what is left of the ray. At a start of 0 every term below is the one it
+   * always was, so a world that sets none draws the same bits.
+   */
+  const start = Math.min(fog.near, dist);
+  const before = dist > 0 ? start / dist : 0;
   const t = (pointY - fog.eyeY) * fog.heightFalloff;
+  const rest = t * (1 - before);
   /*
    * `(1 - e^-t)/t`, which tends to 1 as the ray levels out. **Guarded rather than branched**: at
    * `t = 0` the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
    */
-  const denom = Math.abs(t) < 1e-4 ? 1e-4 : t;
-  const air = 1 - Math.exp((-fog.density * dist * (1 - Math.exp(-denom))) / denom);
+  const denom = Math.abs(rest) < 1e-4 ? 1e-4 : rest;
+  const air =
+    1 -
+    Math.exp(
+      (-fog.density * Math.exp(-t * before) * (dist - start) * (1 - Math.exp(-denom))) / denom,
+    );
   if (fog.underwaterFactor <= 0) return air;
   /* Water is its own medium and keeps its own curve, so crossing the surface changes nothing
      about how the water column reads. */

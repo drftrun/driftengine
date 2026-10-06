@@ -119,7 +119,23 @@ export type PassContext = {
   /** The exposure that goes with it. 1 where the composite will apply the real one. */
   readonly outputExposure: number;
 } & (
-  | { readonly backend: 'webgl2'; readonly gl: WebGL2RenderingContext }
+  | {
+      readonly backend: 'webgl2';
+      readonly gl: WebGL2RenderingContext;
+      /**
+       * The frame's colour with everything drawn before this pass, for a pass declaring
+       * `reads: ['colorSnapshot']`, and null for one that does not or where the frame keeps no
+       * scene target (`screenEffects` off). A copy, never the attachment being drawn into, which
+       * WebGL2 cannot sample; taken afresh at each such pass's draw. WebGPU hands the same copy
+       * over in `PrepareContext.sceneColor`, where a bind group has to be built before the pass.
+       */
+      readonly sceneColor: WebGLTexture | null;
+      /**
+       * The frame's depth as it stands, for a pass declaring `reads: ['depthSnapshot']`: a copy, at
+       * the buffer's own values and reversed as it is (1 near, 0 far). Null as `sceneColor` is.
+       */
+      readonly sceneDepth: WebGLTexture | null;
+    }
   | {
       readonly backend: 'webgpu';
       readonly pass: GPURenderPassEncoder;
@@ -217,6 +233,42 @@ export type PrepareContext =
        * should not apply it either; the renderer's own verbs do not jitter a mirror.
        */
       readonly jitter: Float32Array;
+      /**
+       * The frame's single-sample copy of its depth, or null where the frame keeps none (no
+       * composite: `screenEffects` off).
+       *
+       * One `r32float` texel a pixel holding the depth buffer's own value, reversed as the
+       * buffer is (`REVERSED_DEPTH`: 1 at the near plane, 0 at the far one). Unfilterable, so a
+       * pass binds it as `'unfilterable-float'` and reads it with a non-filtering sampler or
+       * `textureLoad`.
+       *
+       * **Handed over here, filled at the draw.** The view is the one this frame's copy will be
+       * written into, so a pass builds its bind groups with it before the frame's pass opens; the
+       * copy itself is taken when a pass that declares `reads: ['depthSnapshot']` is drawn, with
+       * everything drawn before it, which is what the soft edge of a translucent particle
+       * needs. A pass that does not declare that read finds whatever the frame last wrote there.
+       */
+      readonly sceneDepth: GPUTextureView | null;
+      /**
+       * The frame's colour, for a pass that declares `reads: ['colorSnapshot']`, or null where no
+       * registered pass does or the frame keeps no composite (`screenEffects` off).
+       *
+       * At the scene's own size and format — under a reconstruction, the render's rather than the
+       * output's, since that is the picture a registered pass draws into — and filterable.
+       * **Handed over here, refilled at the draw**: the view is the texture each reading pass's
+       * draw copies the frame into, with everything drawn before it, so a distortion samples the
+       * scene behind it and a full-screen effect drawn last reads the whole frame and writes over
+       * it, in scene light, before the tone curve. A copy a reading pass, where `sceneDepth` is one
+       * a frame.
+       *
+       * **Under a reconstruction a pass that reads it is drawn after the upscale**, over the
+       * reconstructed picture and after every blended draw, whatever order it was asked in — at the
+       * output's size and the reconstruction's format, which `PassContext.format` names at that
+       * draw, so a pass drawn there keeps a pipeline for it. The view is then the output-size copy.
+       * `sceneDepth` stays the render's opaque depth: at a ratio above 1 its texels are coarser by
+       * the ratio, and a blended draw is in neither depth, as it never is.
+       */
+      readonly sceneColor: GPUTextureView | null;
     };
 
 /**

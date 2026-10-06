@@ -191,3 +191,39 @@ test('THE SECOND PIPELINE’S HAZE IS THE MEDIUM THE FIRST ONE BINDS, field for 
   expect(atmosphereFog(cases[1]![0], 29.8, true, into).mode).toBe(MEDIUM_FOG);
   expect(atmosphereFog(cases[1]![0], 29.8, true, into).underwaterFactor).toBeGreaterThan(0);
 });
+
+/*
+ * **A medium that starts some way along the ray**: integrated from `fogStart` metres out, so
+ * nothing nearer is fogged and what is further is fogged by the air past that point alone — a
+ * faint, bright fog that hazes a crowd and leaves the figures in front of it clear. Carried in the
+ * linear mode's `near`, which the medium never read, so a world that sets no start draws the
+ * expression it always did. Expectations are worked by hand.
+ */
+test('A MEDIUM THAT STARTS AT A DISTANCE FOGS NOTHING BEFORE IT AND ONLY THE AIR PAST IT', () => {
+  const air: FogOptions = { ...CLEAR, density: 0.1, near: 10 };
+  expect(mediumFog(air, 5, 0)).toBe(0);
+  expect(mediumFog(air, 10, 0)).toBe(0);
+  /* Twenty metres of 0.1 per metre: 1 - e^-2, times the level ray's guard — (1 - e^-1e-4)/1e-4,
+     the 8 mm of a scale height every flat ray has always been integrated with. */
+  const level = (1 - Math.exp(-1e-4)) / 1e-4;
+  expect(mediumFog(air, 30, 0)).toBeCloseTo(1 - Math.exp(-2 * level), 9);
+  /* A ray climbing 10 m over 20, haze thinning 0.1 a metre, starting 10 m out: the density at the
+     start point (height 5) carried over the last ten metres, ∫₁₀²⁰ 0.1·e^(−0.05t) dt = 0.477302. */
+  const thinning: FogOptions = { ...air, heightFalloff: 0.1 };
+  expect(mediumFog(thinning, 20, 10)).toBeCloseTo(1 - Math.exp(-0.477302), 6);
+});
+
+test('A MEDIUM WITH NO START IS THE EXPRESSION IT ALWAYS WAS, TO THE BIT', () => {
+  const air: FogOptions = { ...CLEAR, density: 0.03, heightFalloff: 0.07, eyeY: 2 };
+  for (const [dist, y] of [
+    [5, 1],
+    [40, 12],
+    [300, -3],
+  ] as const) {
+    const t = (y - 2) * 0.07;
+    const denom = Math.abs(t) < 1e-4 ? 1e-4 : t;
+    expect(mediumFog(air, dist, y)).toBe(
+      1 - Math.exp((-0.03 * dist * (1 - Math.exp(-denom))) / denom),
+    );
+  }
+});

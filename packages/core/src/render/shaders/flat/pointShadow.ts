@@ -342,7 +342,7 @@ float areaShadow(
 ${LAMP_GLASS_GLSL}
 #endif
 
-out vec4 outColor;
+layout(location = 0) out vec4 outColor;
 
 ${OUTPUT_TRANSFORM_GLSL}
 

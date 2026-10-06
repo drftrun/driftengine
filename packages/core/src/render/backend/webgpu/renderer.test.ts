@@ -270,6 +270,9 @@ function stubScene() {
        * A perspective rather than an identity: inverting the identity is defined and meaningless.
        */
       projection: mat4.perspective(mat4.create(), Math.PI / 3, 16 / 9, 0.1, 500),
+      /* The view on its own, which every pass now writes beside the frustum: a surface overlay's
+         rim finds its place on the screen through the two, clustered or not. */
+      view: mat4.create(),
       position: new Float32Array([0, 0, 0]),
     } as never,
     env: {
@@ -5172,6 +5175,7 @@ describe.each([
       viewProjection,
       projection,
       invViewProjection: mat4.invert(mat4.create(), viewProjection),
+      view,
       position: new Float32Array([0, 0, 0]),
     } as never;
   }
@@ -8627,4 +8631,158 @@ it('A PASS THAT OPENS ON THE MATERIAL THE LAST ONE CLOSED ON STILL BINDS ITS MAP
       `frame ${frame} draws with a group holding the map`,
     ).toBe(true);
   }
+});
+
+/*
+ * **A scene capture is a boundary inside somebody else's frame**, and three things leaked across
+ * it. Taken after the frame had drawn, the flush that replays the frame's draws opened the frame's
+ * pass, and the capture gave back the null it had saved before the flush: the opened pass was left
+ * on the frame's encoder and every later one was refused — a black frame. A blended draw inside the
+ * capture latched the frame's skin spread, so every face drawn after it went unspread. And a frame
+ * binding its camera again after a capture, as any draw after one does, opened a second temporal
+ * frame. `scripts/capture-check.mjs` finds all three on a device.
+ */
+describe('A SCENE CAPTURE INSIDE A FRAME LEAVES THE FRAME ALONE', () => {
+  const identity = mat4.create();
+
+  it('A CAPTURE TAKEN AFTER THE FRAME HAS DRAWN HANDS BACK THE PASS ITS FLUSH OPENED', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const capture = renderer.createSceneCapture(64, 32);
+    const r = renderer as unknown as { pass: unknown };
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, identity);
+    expect(r.pass, 'the draw is recorded, and no pass is open yet').toBeNull();
+    expect(renderer.captureScene(capture, new Camera(), [0, 0, 0], () => {})).toBe(true);
+    expect(r.pass, 'the frame continues in the pass the flush opened').not.toBeNull();
+    renderer.endFrame();
+  });
+
+  it('A BLENDED DRAW INSIDE A CAPTURE DOES NOT END THE FRAME’S SKIN SPREAD', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, skinScattering: 'screen-space' }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const capture = renderer.createSceneCapture(64, 32);
+    const r = renderer as unknown as { skinScattered: boolean };
+    renderer.beginFrame([0, 0, 0]);
+    renderer.captureScene(capture, new Camera(), [0, 0, 0], (seen) => {
+      renderer.bindMeshPass(seen, env);
+      renderer.drawTranslucentMesh(mesh, identity, 1, { additive: true });
+    });
+    expect(r.skinScattered, 'the frame’s skin is still to be spread').toBe(false);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawTranslucentMesh(mesh, identity, 1, { additive: true });
+    expect(r.skinScattered, 'and the frame’s own blended draw is what spreads it').toBe(true);
+    renderer.endFrame();
+  });
+
+  it('A FRAME THAT BINDS ITS CAMERA TWICE IS ONE TEMPORAL FRAME', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, temporalAa: true }),
+    );
+    const { camera, env } = stubScene();
+    const r = renderer as unknown as { temporalHistory: { frameIndex: number } };
+    for (let frame = 0; frame < 3; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+    }
+    expect(r.temporalHistory.frameIndex, 'three frames, three steps of the sequence').toBe(3);
+  });
+});
+
+/*
+ * **A registered pass that reads the frame's colour is handed a copy of it**, refilled at its own
+ * draw with everything drawn before it: a distortion samples the scene behind it, and a full-screen
+ * effect drawn last reads the whole frame and writes over it. A pass that does not declare the read
+ * costs no copy and is handed no view.
+ */
+describe('A REGISTERED PASS READS THE FRAME’S COLOUR', () => {
+  it('IS HANDED A COPY TAKEN AT ITS DRAW, AND A PASS THAT DOES NOT READ IT IS NOT', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ screenEffects: true }));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const seen: (GPUTextureView | null)[] = [];
+    const plain = renderer.registerPass({ label: 'plain', draw: () => {} });
+    const reader = renderer.registerPass({
+      label: 'reader',
+      reads: ['colorSnapshot'],
+      prepare: (ctx) => {
+        if (ctx.backend === 'webgpu') seen.push(ctx.sceneColor);
+      },
+      draw: () => {},
+    });
+    const copies = () =>
+      stub.encoder.copyTextureToTexture.mock.calls.filter(
+        ([, to]) => (to.texture as { label?: string }).label === 'pass.sceneColor',
+      );
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.drawPass(plain);
+    expect(copies(), 'a pass that does not read the colour takes no copy').toHaveLength(0);
+    renderer.drawPass(reader);
+    renderer.drawPass(reader);
+    expect(copies(), 'one copy a reading draw').toHaveLength(2);
+    expect(
+      copies().every(([from]) => (from.texture as { label?: string }).label === 'post.sceneColor'),
+      'of the frame’s own colour',
+    ).toBe(true);
+    renderer.endFrame();
+    expect(seen.length, 'prepare ran').toBeGreaterThan(0);
+    expect(
+      seen.every((view) => view !== null),
+      'and was handed the copy’s view',
+    ).toBe(true);
+  });
+
+  /*
+   * **Under a reconstruction it draws after the blended draws**, which land after the upscale: a
+   * full-screen effect drawn among them at the render's size would read a frame without them and
+   * be covered by them. So it is queued, handed a copy of the reconstructed picture, and drawn over
+   * it at the reconstruction's format, however early it was asked.
+   */
+  it('UNDER A RECONSTRUCTION, DRAWS AFTER THE UPSCALE OVER A COPY OF THE RECONSTRUCTED PICTURE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const formats: string[] = [];
+    const reader = renderer.registerPass({
+      label: 'reader',
+      reads: ['colorSnapshot'],
+      draw: (ctx) => {
+        if (ctx.backend === 'webgpu') formats.push(ctx.format);
+      },
+    });
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawPass(reader);
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+    expect(formats, 'nothing drawn where it was asked').toEqual([]);
+    renderer.endFrame();
+    expect(formats, 'drawn once, after the upscale, at the picture’s format').toEqual([
+      'rgba16float',
+    ]);
+    const fromShown = stub.encoder.copyTextureToTexture.mock.calls.filter(
+      ([from, to]) =>
+        (from.texture as { label?: string }).label === 'recon.shown' &&
+        (to.texture as { label?: string }).label === 'refract.snapshot',
+    );
+    expect(fromShown, 'from a copy of the reconstructed picture').toHaveLength(1);
+  });
 });

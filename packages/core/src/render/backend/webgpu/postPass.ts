@@ -29,6 +29,7 @@ import {
 } from '../../shaders/generated/ssrTrace.wgsl.ts';
 import {
   SSRRESOLVE_BINDINGS as SSR_RESOLVE_BINDINGS,
+  SSR_MATERIAL_RESOLVE_FRAG_WGSL,
   SSR_RESOLVE_FRAG_WGSL,
 } from '../../shaders/generated/ssrResolve.wgsl.ts';
 import {
@@ -332,6 +333,16 @@ export const REFLECTION_OVER_BLEND: GPUBlendState = {
 };
 
 /**
+ * The frame's materials' reflection, added: the found colour times the tint, less the probe's share,
+ * which is negative where the probe was brighter than what replaced it. A half-float scene takes
+ * the negative addend as the subtraction it is. Its alpha kept.
+ */
+export const FRAME_REFLECTION_BLEND: GPUBlendState = {
+  color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+  alpha: SCENE_ALPHA_KEEPS,
+};
+
+/**
  * The bloom pyramid's way back up: an octave added onto a level that the blend multiplies by that
  * level's tint first — the blend constant, which white makes `one, one` exactly. Into the pyramid's
  * own levels, never the scene. See `BloomResponse`.
@@ -450,6 +461,12 @@ export const SSR_FRAG_SIZE = SSR_BINDINGS.SSR_TRACE_FRAG.uniformSize;
 export const SSR_UNIFORMS = SSR_BINDINGS.SSR_TRACE_FRAG.uniforms;
 export const SSR_TEXTURES = SSR_BINDINGS.SSR_TRACE_FRAG.textures;
 export const SSR_RESOLVE_TEXTURES = SSR_RESOLVE_BINDINGS.SSR_RESOLVE_FRAG.textures;
+/** The material resolve's block — the blur — and its three inputs. See `frameReflections.ts`. */
+export const SSR_MATERIAL_FIELDS: UniformFields =
+  SSR_RESOLVE_BINDINGS.SSR_MATERIAL_RESOLVE_FRAG.fields;
+export const SSR_MATERIAL_SIZE = SSR_RESOLVE_BINDINGS.SSR_MATERIAL_RESOLVE_FRAG.uniformSize;
+export const SSR_MATERIAL_UNIFORMS = SSR_RESOLVE_BINDINGS.SSR_MATERIAL_RESOLVE_FRAG.uniforms;
+export const SSR_MATERIAL_TEXTURES = SSR_RESOLVE_BINDINGS.SSR_MATERIAL_RESOLVE_FRAG.textures;
 
 /**
  * The resolve's layout: one texture and no uniform block.
@@ -513,6 +530,7 @@ export {
   DECAL_PROJECT_FRAG_WGSL,
   SSR_TRACE_FRAG_WGSL,
   SSR_RESOLVE_FRAG_WGSL,
+  SSR_MATERIAL_RESOLVE_FRAG_WGSL,
 };
 export { BLOOM_PREFILTER_FRAG_WGSL, BLOOM_DOWNSAMPLE_FRAG_WGSL, BLOOM_UPSAMPLE_FRAG_WGSL };
 export { RUSH_UNIFORMS, RUSH_TEXTURES };

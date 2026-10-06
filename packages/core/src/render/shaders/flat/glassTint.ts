@@ -34,7 +34,9 @@ export type LitSwitch =
   | 'LIGHT_FIXTURES'
   | 'SURFACE_EFFECTS'
   | 'DRIFT_LIGHT'
-  | 'PHYSICAL_SPECULAR';
+  | 'PHYSICAL_SPECULAR'
+  | 'SURFACE_OVERLAY'
+  | 'REFLECTION_MAPS';
 
 /** Every switch off: what a renderer starts from before its profile and its content say otherwise. */
 export function noLitSwitches(): Record<LitSwitch, boolean> {
@@ -45,6 +47,8 @@ export function noLitSwitches(): Record<LitSwitch, boolean> {
     SURFACE_EFFECTS: false,
     DRIFT_LIGHT: false,
     PHYSICAL_SPECULAR: false,
+    SURFACE_OVERLAY: false,
+    REFLECTION_MAPS: false,
   };
 }
 

@@ -188,13 +188,16 @@ describe('the history', () => {
    */
   it('has nothing to sample on its first frame', () => {
     const history = new TemporalHistory();
+    history.nextFrame();
     expect(history.openFrame(1280, 720)).toBe(false);
   });
 
   it('has something to sample once a frame has been accumulated', () => {
     const history = new TemporalHistory();
+    history.nextFrame();
     history.openFrame(1280, 720);
     history.accumulated();
+    history.nextFrame();
     expect(history.openFrame(1280, 720)).toBe(true);
   });
 
@@ -204,17 +207,22 @@ describe('the history', () => {
    */
   it('has nothing to sample when the target is resized', () => {
     const history = new TemporalHistory();
+    history.nextFrame();
     history.openFrame(1280, 720);
     history.accumulated();
+    history.nextFrame();
     expect(history.openFrame(1920, 1080)).toBe(false);
   });
 
   it('recovers on the frame after a resize', () => {
     const history = new TemporalHistory();
+    history.nextFrame();
     history.openFrame(1280, 720);
     history.accumulated();
+    history.nextFrame();
     history.openFrame(1920, 1080);
     history.accumulated();
+    history.nextFrame();
     expect(history.openFrame(1920, 1080)).toBe(true);
   });
 
@@ -224,9 +232,11 @@ describe('the history', () => {
    */
   it('has nothing to sample after the camera cuts', () => {
     const history = new TemporalHistory();
+    history.nextFrame();
     history.openFrame(1280, 720);
     history.accumulated();
     history.invalidate();
+    history.nextFrame();
     expect(history.openFrame(1280, 720)).toBe(false);
   });
 
@@ -235,11 +245,31 @@ describe('the history', () => {
    * hold the sequence still on the frames a resize or a cut discarded, and the same offset twice
    * in a row is one sample rather than two.
    */
+  /*
+   * **A frame is opened once, however many times it asks.** A renderer opens one where the scene's
+   * camera arrives, and a frame binds that camera again after a scene capture, after an inset, after
+   * anything that bound another: each opened a frame of its own, so the sequence stepped twice a
+   * frame and the world saw every other position. `nextFrame` is the renderer saying a frame began.
+   */
+  it('OPENS ONE FRAME OF THE SEQUENCE A FRAME, HOWEVER MANY TIMES IT ASKS', () => {
+    const history = new TemporalHistory();
+    history.nextFrame();
+    history.openFrame(1280, 720);
+    history.accumulated();
+    history.nextFrame();
+    const first = history.frameIndex;
+    expect(history.openFrame(1280, 720)).toBe(true);
+    expect(history.openFrame(1280, 720), 'the same answer the second time').toBe(true);
+    expect(history.frameIndex, 'and the same step').toBe(first + 1);
+  });
+
   it('advances the jitter on every frame it opens', () => {
     const history = new TemporalHistory();
     const first = history.frameIndex;
+    history.nextFrame();
     history.openFrame(1280, 720);
     expect(history.frameIndex).toBe(first + 1);
+    history.nextFrame();
     history.openFrame(1280, 720);
     expect(history.frameIndex).toBe(first + 2);
   });

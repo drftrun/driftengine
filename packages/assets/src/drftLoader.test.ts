@@ -669,9 +669,10 @@ test('A BC TEXTURE GOES UP AS ITS BLOCKS WHERE THE DEVICE TAKES THEM, AND DECODE
     expect(pixels.width).toBe(8);
     expect(Array.from(pixels.data)).toEqual(Array.from(decodeBc('bc1', 8, 8, level0)));
     /* No worker named, so none in the barrel's graph: the decode is on the main thread, said once
-       with the specifier that would move it. See `bcWorkers.ts`. */
+       with the specifier that would move it — the declared subpath, which resolves under every
+       condition, rather than a path into `src/`. See `bcWorkers.ts`. */
     expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(/main thread: no worker was named.*bcWorkers\.ts/),
+      expect.stringMatching(/main thread: no worker was named.*'@driftengine\/assets\/bcWorkers'/),
     );
   } finally {
     warn.mockRestore();

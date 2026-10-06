@@ -451,6 +451,17 @@ export class TemporalHistory {
   private picture = false;
   private width = 0;
   private height = 0;
+  /** Whether this frame of the renderer's has opened one of the sequence, and what it answered. */
+  private opened = false;
+  private answer = false;
+
+  /**
+   * A frame of the renderer's began: the next `openFrame` opens a frame of the sequence. Called at
+   * `beginFrame`, by both backends.
+   */
+  nextFrame(): void {
+    this.opened = false;
+  }
 
   /**
    * Open a frame at this target size, and answer whether the history may be sampled.
@@ -458,13 +469,22 @@ export class TemporalHistory {
    * **The jitter advances whether or not it may be.** Holding the sequence still on the frames a
    * resize or a cut discarded would sample the same position twice running, which is one sample
    * and not two.
+   *
+   * **Once a frame, however many times it is asked.** A renderer asks where the scene's camera
+   * arrives, and a frame binds that camera again after a scene capture or anything else that bound
+   * another; each asking opened a frame of its own, so the sequence stepped twice in such a frame
+   * and the edges of the picture swam. Asked again, it gives the answer it gave. What it gives up:
+   * a size changed between two asks in one frame is seen at the next frame, not at once.
    */
   openFrame(width: number, height: number): boolean {
+    if (this.opened) return this.answer;
+    this.opened = true;
     this.frameIndex++;
     const usable = this.picture && width === this.width && height === this.height;
     if (!usable) this.picture = false;
     this.width = width;
     this.height = height;
+    this.answer = usable;
     return usable;
   }
 

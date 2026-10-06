@@ -126,7 +126,7 @@ export interface WorldOptions {
    *
    * ```ts
    * import { PhysicsWorld } from '@driftengine/physics';
-   * import { createIslandPool } from '@driftengine/physics/src/workers.ts';
+   * import { createIslandPool } from '@driftengine/physics/workers';
    *
    * const world = new PhysicsWorld({ workers: 4, pool: createIslandPool });
    * ```
@@ -284,9 +284,9 @@ export class PhysicsWorld implements IslandSolver {
     if (granted > 0) {
       if (options.pool === undefined) {
         this.parallelism.reason =
-          'workers were asked for but no pool was given. Import createIslandPool from ' +
-          '@driftengine/physics/src/workers.ts and pass it as the pool option; it is behind its ' +
-          'own specifier so that importing PhysicsWorld does not put a worker in your bundle.';
+          'workers were asked for but no pool was given. Import createIslandPool, exported by ' +
+          "'@driftengine/physics/workers', and pass it as the pool option; it is behind its own " +
+          'specifier so that importing PhysicsWorld does not put a worker in your bundle.';
       } else {
         const pool = options.pool({ workers: granted, spawn: options.spawn });
         if (pool.executor !== null) this.executor = pool.executor;

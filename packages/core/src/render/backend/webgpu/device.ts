@@ -7,6 +7,14 @@
  * reset the page did not cause, and a frame is wrong because of something the frame did.
  */
 
+import type { DisplayRange, DisplayRangeChoice } from '../../displayRange.ts';
+
+/** A canvas nobody asked to extend. */
+const STANDARD_RANGE: DisplayRangeChoice = {
+  range: 'standard',
+  reason: 'highDynamicRange was not asked for',
+};
+
 /** What the renderer needs from the canvas it draws into, with the API's shape absorbed. */
 export interface GpuSurface {
   readonly device: GPUDevice;
@@ -22,6 +30,9 @@ export interface GpuSurface {
   readonly canvas: HTMLCanvasElement;
   /** The swap chain's format, which every render pipeline has to be built against. */
   readonly format: GPUTextureFormat;
+  /** The range the canvas was configured in, and why. See `displayRange.ts`. */
+  readonly displayRange: DisplayRange;
+  readonly displayRangeReason: string;
   /** Whether the device has gone. Read per frame; never throws. */
   readonly lost: boolean;
   /** Called when the device is lost. Fires immediately if it already has been. */
@@ -51,13 +62,27 @@ export interface GpuSurface {
  * consumer its GPU had failed every time it unmounted a canvas on purpose, so a disposed
  * surface stays silent.
  */
-export function createGpuSurface(canvas: HTMLCanvasElement, device: GPUDevice): GpuSurface {
+export function createGpuSurface(
+  canvas: HTMLCanvasElement,
+  device: GPUDevice,
+  /** The range the profile and the display allow (`chooseDisplayRange`); standard unless given. */
+  wanted: DisplayRangeChoice = STANDARD_RANGE,
+): GpuSurface {
   const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
   if (context === null) {
     throw new Error('createGpuSurface: the canvas would not give a webgpu context');
   }
 
-  const format = navigator.gpu.getPreferredCanvasFormat();
+  /*
+   * **A high range is half floats with extended tone mapping**: a value of 1 is the display's
+   * paper white, and what lies above it is shown up to the display's peak instead of clipped. The
+   * colour space stays sRGB, so the composite's encoding is the one it always wrote, carried past 1.
+   */
+  const extended = wanted.range === 'high';
+  const format: GPUTextureFormat = extended
+    ? 'rgba16float'
+    : navigator.gpu.getPreferredCanvasFormat();
+  let range: DisplayRangeChoice = wanted;
   const listeners: (() => void)[] = [];
   let lost = false;
   let disposed = false;
@@ -115,16 +140,30 @@ export function createGpuSurface(canvas: HTMLCanvasElement, device: GPUDevice): 
      * has no use for a transparent canvas, and the opaque path is the one a compositor can
      * take without a blend.
      */
-    context.configure({ device, format, alphaMode: 'opaque' });
+    context.configure(
+      extended
+        ? { device, format, alphaMode: 'opaque', toneMapping: { mode: 'extended' } }
+        : { device, format, alphaMode: 'opaque' },
+    );
   };
 
   configure(canvas.width, canvas.height);
+  /*
+   * **Read back, because a browser that does not know the option ignores it** and draws the
+   * standard range from an extended-range frame, clipped at paper white, which is the frame a game
+   * would grade for the standard range if it knew. So it is told.
+   */
+  if (extended && context.getConfiguration?.()?.toneMapping?.mode !== 'extended') {
+    range = { range: 'standard', reason: 'this browser has no extended-range canvas' };
+  }
 
   return {
     device,
     context,
     canvas,
     format,
+    displayRange: range.range,
+    displayRangeReason: range.reason,
     get lost() {
       return lost;
     },

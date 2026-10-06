@@ -47,12 +47,20 @@ fn mediumFog(dist: f32, pointY: f32) -> f32 {
     return mix(ramp, 1.0 - exp2(-wetLinear * wetLinear * 1.442695), underwaterFactor);
   }
 
+  /* Where the medium begins along the ray: fogRange.x, the linear mode's near, which this mode
+     never read before Atmosphere.fogStart. Integrated from there on, at that point's density; at
+     a start of 0 every term is the one it always was. See render/fog.ts. */
+  let start = min(frame.fogRange.x, dist);
+  var before = 0.0;
+  if (dist > 0.0) { before = start / dist; }
   let t = (pointY - frame.fogColour.w) * frame.fogHeight.x;
+  let rest = t * (1.0 - before);
   /* (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than branched: at t = 0
      the quotient is 0/0, and 1e-4 of a scale height is 8 mm. */
-  var denom = t;
-  if (abs(t) < 1e-4) { denom = 1e-4; }
-  let air = 1.0 - exp(-frame.fogHeight.y * dist * (1.0 - exp(-denom)) / denom);
+  var denom = rest;
+  if (abs(rest) < 1e-4) { denom = 1e-4; }
+  let air =
+    1.0 - exp(-frame.fogHeight.y * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom);
   if (underwaterFactor <= 0.0) { return air; }
   /* Water is its own medium and keeps its own curve, so crossing the surface changes nothing
      about how the water column reads. */

@@ -235,6 +235,8 @@ function recordedFrame(
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   };
   pass.prepare(frame);
   return commands;
@@ -273,6 +275,8 @@ function recordedPresent(shadow: GpuDrivenShadowOptions = {}) {
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   pass.draw({
     backend: 'webgpu',
@@ -804,6 +808,8 @@ test('THE LIGHT\u2019S HISTORY SWAPS ON A FRAME THAT DRAWS THE MAP, and on no ot
       environment: null,
       distanceField: null,
       jitter: NO_JITTER,
+      sceneDepth: null,
+      sceneColor: null,
     });
     const [compact] = groupsAtDispatch(commands, 'gpu-driven compact', 0, 'light');
     return compact === undefined ? null : bufferAt(compact, 3).label;
@@ -942,6 +948,8 @@ test('PAST ITS FOLLOW RADIUS THE MAP FOLLOWS THE EYE, and under it the scene fit
       environment: null,
       distanceField: null,
       jitter: NO_JITTER,
+      sceneDepth: null,
+      sceneColor: null,
     });
     expect(writes.some((write) => write.label === 'gpu-driven shadow matrix')).toBe(true);
     const matrix = buffers.find((buffer) => buffer.label === 'gpu-driven shadow matrix');
@@ -1014,6 +1022,8 @@ test('each mesh is uploaded as the sphere round its clusters, in the world', () 
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   const [instances] = groupsAtDispatch(commands, 'gpu-driven cull instances', 0);
   const spheres = bufferAt(instances as StubGroup, 1);
@@ -1106,6 +1116,8 @@ function mountedOver(scene: StreamingScene) {
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   };
   return { stub, pass, frame, mounted };
 }
@@ -1492,6 +1504,8 @@ test("AND THE BLENDED COMPACTION COUNTS INTO ITS OWN BLOCK, not the opaque half'
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
 
   /* Three compactions now: phase one, phase two, and the blended set. */
@@ -1603,6 +1617,8 @@ test('THE FRAME CARRIES THE WIDTH IT WAS RASTERISED AT, and the row the buffer s
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   const frame = buffers.find((buffer) => buffer.label === 'gpu-driven frame');
   const floats = new Float32Array((frame as { bytes: Uint8Array }).bytes.buffer);
@@ -1644,6 +1660,8 @@ test('THE PYRAMID COVERS THE WIDTH THE RASTER DREW, not the row the buffer pads 
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   const settings = buffers.find((buffer) => buffer.label === 'gpu-driven cull settings, phase two');
   const floats = new Float32Array((settings as { bytes: Uint8Array }).bytes.buffer);
@@ -1685,6 +1703,8 @@ test('UNDER RECONSTRUCTION THE RASTER TAKES THE FRAME’S JITTER, and the blit h
     environment: null,
     distanceField: null,
     jitter: new Float32Array([0.01, -0.02]),
+    sceneDepth: null,
+    sceneColor: null,
   });
 
   /* Rows 0 and 1 gain the jitter times row 3, whose only entry is the -1 in column 2. */
@@ -1753,6 +1773,8 @@ function countingPass(
       environment: null,
       distanceField: null,
       jitter: NO_JITTER,
+      sceneDepth: null,
+      sceneColor: null,
     });
     return frameText(commands);
   };
@@ -1875,6 +1897,8 @@ test('A DISPOSED PASS HAS DESTROYED EVERY BUFFER IT MADE, the counts\u2019 among
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   pass.dispose(mounted);
   expect(buffers.some((one) => one.label === 'gpu-driven drawn')).toBe(true);
@@ -1912,6 +1936,8 @@ test('A PASS WITH OCCLUSION OFF CULLS PHASE TWO WITHOUT THE PYRAMID, and changes
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   const culls = groupsAtDispatch(commands, 'gpu-driven cull clusters', 0);
   const settings = (group: StubGroup | undefined) =>
@@ -1961,6 +1987,8 @@ test('AND THE GLASS IS CULLED WITHOUT THE PYRAMID TOO, which reads phase two\u20
       environment: null,
       distanceField: null,
       jitter: NO_JITTER,
+      sceneDepth: null,
+      sceneColor: null,
     });
     const culls = groupsAtDispatch(commands, 'gpu-driven cull clusters', 0);
     expect(culls).toHaveLength(3);
@@ -2043,6 +2071,8 @@ async function framesWithBlend(
     environment: null,
     distanceField: null,
     jitter: NO_JITTER,
+    sceneDepth: null,
+    sceneColor: null,
   });
   return frameText(commands);
 }

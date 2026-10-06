@@ -7,8 +7,10 @@ import { recordingGl } from '../../rendererHarness.ts';
 import { BloomPass } from '../../bloomPass.ts';
 import { createEnvironment } from './renderer.ts';
 import { Camera } from '../../camera.ts';
+import { MeshBuilder } from '../../../geometry/meshBuilder.ts';
 import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
+import type { PassContext } from '../../pass.ts';
 import {
   CLOTH_PARTICLES_TEXTURE_UNIT,
   EMISSIVE_TEXTURE_UNIT,
@@ -1848,6 +1850,85 @@ test('A SCENE CAPTURE DRAWS ITS CALLBACK FLIPPED AND UNGRADED, AND HANDS THE FRA
 });
 
 /*
+ * **A capture inside a frame leaves the frame alone**: a blended draw inside it does not end the
+ * frame's skin spread, and the frame binding its camera again afterwards is one temporal frame.
+ * The WebGPU file holds the third half, the pass a mid-frame capture gives back.
+ */
+test('A BLENDED DRAW INSIDE A CAPTURE DOES NOT END THE FRAME’S SKIN SPREAD ON WEBGL2', () => {
+  const { canvas } = recordingGl();
+  const renderer = new Renderer(
+    canvas,
+    resolveRenderQuality({ screenEffects: true, skinScattering: 'screen-space' }),
+  );
+  const capture = renderer.createSceneCapture(64, 32);
+  const mesh = renderer.createMesh(
+    new MeshBuilder().addBox([0, 0, 0], [1, 1, 1], [1, 1, 1]).build(),
+  );
+  const env = createEnvironment();
+  const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const r = renderer as unknown as { skinScattered: boolean };
+  renderer.beginFrame([0, 0, 0]);
+  renderer.captureScene(capture, new Camera(), [0, 0, 0], (seen) => {
+    renderer.bindMeshPass(seen, env);
+    renderer.drawTranslucentMesh(mesh, identity, 1, { additive: true });
+  });
+  expect(r.skinScattered, 'the frame’s skin is still to be spread').toBe(false);
+  renderer.bindMeshPass(new Camera(), env);
+  renderer.drawTranslucentMesh(mesh, identity, 1, { additive: true });
+  expect(r.skinScattered, 'and the frame’s own blended draw is what spreads it').toBe(true);
+  renderer.endFrame();
+});
+
+test('A FRAME THAT BINDS ITS CAMERA TWICE IS ONE TEMPORAL FRAME ON WEBGL2', () => {
+  const { canvas } = recordingGl();
+  const renderer = new Renderer(
+    canvas,
+    resolveRenderQuality({ screenEffects: true, temporalAa: true }),
+  );
+  const camera = new Camera();
+  const env = createEnvironment();
+  const r = renderer as unknown as { temporalHistory: { frameIndex: number } };
+  for (let frame = 0; frame < 3; frame++) {
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+  }
+  expect(r.temporalHistory.frameIndex, 'three frames, three steps of the sequence').toBe(3);
+});
+
+/*
+ * **A registered pass that reads the frame's colour or depth is handed a copy of each**, blitted at
+ * its draw with everything drawn before it, as WebGPU hands the colour over in `PrepareContext`. A
+ * pass that declares neither is handed neither and costs no blit.
+ */
+test('A REGISTERED PASS READS THE FRAME’S COLOUR AND DEPTH ON WEBGL2, AND ONLY IF IT ASKS', () => {
+  const { canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({ screenEffects: true }));
+  const handed: { color: unknown; depth: unknown }[] = [];
+  const keep = (ctx: PassContext): void => {
+    if (ctx.backend === 'webgl2') handed.push({ color: ctx.sceneColor, depth: ctx.sceneDepth });
+  };
+  const plain = renderer.registerPass({ label: 'plain', draw: keep });
+  const reader = renderer.registerPass({
+    label: 'reader',
+    reads: ['colorSnapshot', 'depthSnapshot'],
+    draw: keep,
+  });
+  renderer.beginFrame([0, 0, 0]);
+  const blits = (): number => calls.filter((call) => call.name === 'blitFramebuffer').length;
+  const before = blits();
+  renderer.drawPass(plain);
+  expect(blits(), 'a pass that reads nothing takes no copy').toBe(before);
+  renderer.drawPass(reader);
+  expect(blits(), 'one copy of the colour and one of the depth').toBe(before + 2);
+  renderer.endFrame();
+  expect(handed[0]).toEqual({ color: null, depth: null });
+  expect(handed[1]?.color, 'the reader is handed the colour').not.toBeNull();
+  expect(handed[1]?.depth, 'and the depth').not.toBeNull();
+});
+
+/*
  * **Particles a compute shader wrote are WebGPU's alone**, since this backend has no compute stage
  * to have written them: asked twice, it says so once and issues no draw either time.
  */
@@ -1865,4 +1946,49 @@ test('DEVICE PARTICLES ARE REFUSED ONCE IN WORDS ON WEBGL2, AND NOTHING IS DRAWN
   expect(said).toHaveLength(1);
   expect(calls.slice(before).filter((call) => call.name.startsWith('draw'))).toHaveLength(0);
   warn.mockRestore();
+});
+
+/*
+ * **A surface overlay asks the lit stage for fifteen vectors, and a part without them says so.** At
+ * the eight-light rung an Adreno 740's 256 hold the lit shader at 254, and the overlay would take it
+ * to 269 — a program the part refuses to link, at a `beginFrame` that must not throw. So the overlay
+ * is refused once, in words, and the next frame builds no overlay in; where there is room, the next
+ * frame's lit programs carry it.
+ */
+test('REFUSES A SURFACE OVERLAY WHERE ITS VECTORS DO NOT FIT, IN WORDS, AND BUILDS IT IN WHERE THEY DO', () => {
+  for (const vectors of [256, 4096]) {
+    const { canvas, calls } = recordingGl({
+      fragmentUniformVectors: vectors,
+      refuseLinkAbove: vectors,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const renderer = new Renderer(canvas, resolveRenderQuality({}));
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    const environment = createEnvironment({});
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, environment);
+    const overlay = { rim: { colour: [1, 0, 0] as [number, number, number], intensity: 2 } };
+    renderer.setSurfaceOverlay(overlay);
+    renderer.setSurfaceOverlay(overlay);
+    renderer.endFrame();
+    calls.length = 0;
+    renderer.beginFrame([0, 0, 0]);
+    const built = calls.some(
+      (call) =>
+        call.name === 'shaderSource' &&
+        String(call.args[1]).includes('const bool SURFACE_OVERLAY = true;'),
+    );
+    const refusals = warn.mock.calls.filter(([message]) =>
+      /setSurfaceOverlay is refused/.test(String(message)),
+    );
+    if (vectors === 256) {
+      expect(refusals, 'said once, however many draws ask').toHaveLength(1);
+      expect(built, 'and no lit program is built with it').toBe(false);
+    } else {
+      expect(refusals).toHaveLength(0);
+      expect(built, 'the next frame builds the overlay in').toBe(true);
+    }
+    vi.restoreAllMocks();
+  }
 });

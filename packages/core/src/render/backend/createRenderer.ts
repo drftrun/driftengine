@@ -5,6 +5,7 @@ import { BACKEND_TIMEOUT_MS, forcedBackend, selectBackend } from './select.ts';
 import { TIMED_OUT, withDeadline } from './deadline.ts';
 import { mountSplash, type MountedSplash, type SplashOptions } from '../../ui/splash.ts';
 import { gpuDrivenRefusal, gpuDrivenSupported } from '../gpudriven/pipeline.ts';
+import { browserHighDynamicRange, chooseDisplayRange } from '../displayRange.ts';
 
 /**
  * Which of the two pipelines is drawing.
@@ -149,6 +150,12 @@ export interface CreateRendererOptions {
    * badge is looked at on a deployed build.
    */
   readonly splash?: boolean | SplashOptions;
+  /**
+   * Whether the display shows a high dynamic range, asked only where `highDynamicRange` was. The
+   * browser's `(dynamic-range: high)` query by default; a host with no DOM, or one that knows
+   * better about its own display, answers instead. See `displayRange.ts`.
+   */
+  readonly highDynamicRangeDisplay?: () => boolean;
 }
 
 /** What was built, and which path built it. */
@@ -370,7 +377,17 @@ export async function createRenderer(
         const { createGpuSurface } = await import('./webgpu/device.ts');
         const { WebGPURenderer } = await import('./webgpu/renderer.ts');
         stage = 'creating the surface';
-        const surface = createGpuSurface(canvas, device);
+        const profile = resolveRenderQuality(qualityFor('webgpu'));
+        const surface = createGpuSurface(
+          canvas,
+          device,
+          chooseDisplayRange(
+            profile.highDynamicRange,
+            profile.screenEffects && profile.hdrScene,
+            profile.highDynamicRange &&
+              (options.highDynamicRangeDisplay ?? browserHighDynamicRange)(),
+          ),
+        );
         stage = 'constructing the renderer';
         return { surface, WebGPURenderer };
       })();

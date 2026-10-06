@@ -47,6 +47,19 @@ export interface Atmosphere {
   /** Linear mode only: where haze begins, and where it is total. */
   fogNear?: number;
   fogFar?: number;
+  /**
+   * The medium only: how far along the view ray it begins, in metres. Absent or 0 is at the
+   * camera, as every world before it was drawn.
+   *
+   * The air nearer than this is perfectly clear, and what lies beyond is fogged by the air past
+   * this point alone — so a faint, bright haze can lie over a distant crowd while the figures a
+   * few metres from the camera stay sharp, which no density can do when the medium starts at the
+   * eye: there it veils the whole frame, lifting the shadows and draining the colour before it
+   * reaches anything far enough to want it. Unlike `linear`'s `fogNear`, nothing past it is a
+   * ramp: it is the same extinction, integrated from further out. **What it gives up** is the air
+   * between the camera and the start, which a real medium has; that is the point of it.
+   */
+  fogStart?: number;
   underwater: UnderwaterAtmosphere | null;
 }
 
@@ -132,7 +145,15 @@ export function resolveAtmosphere(
   out.fogHeightFalloff = atmosphere.fogHeightFalloff;
   out.fogEyeY = cameraY;
   out.fogMode = atmosphere.fogMode === 'linear' ? 1 : 0;
-  out.fogNear = atmosphere.fogNear ?? 0;
+  /*
+   * **One slot, two meanings, and never both**: the ramp's near distance in linear mode, and in
+   * the medium where it begins (`fogStart`), which the medium never read before — so a world that
+   * left a `fogNear` on an exponential fog starts nothing, and draws exactly as it did.
+   */
+  out.fogNear =
+    atmosphere.fogMode === 'linear'
+      ? (atmosphere.fogNear ?? 0)
+      : Math.max(0, Number.isFinite(atmosphere.fogStart) ? (atmosphere.fogStart ?? 0) : 0);
   out.fogFar = atmosphere.fogFar ?? 1;
   /*
    * The air medium stands in when nothing is submerged. The shaders multiply by the factor

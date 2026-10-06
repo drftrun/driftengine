@@ -59,7 +59,7 @@ export { solveIslandInto } from './islandSolve.ts';
  * decides the pool is unreachable — so re-exporting it from this barrel wrote a 12 KB gzipped
  * worker chunk into the bundle of every consumer that merely imported `PhysicsWorld`.
  *
- * It lives at `@driftengine/physics/src/workers.ts`, which that file explains. A caller already had
+ * It lives at `@driftengine/physics/workers`, which `workers.ts` explains. A caller already had
  * to name `createIslandPool` at the call site for 3.54.0's own reason, so this costs a specifier.
  *
  * The *types* stay reachable from here, because a type import emits nothing and a consumer typing a

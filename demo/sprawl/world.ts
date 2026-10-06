@@ -25,7 +25,7 @@ import type {
   ShadowCasters,
 } from '../../packages/core/src/index';
 import { DrftLoader } from '@driftengine/assets';
-import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
 import type { DrftPart, LoadedRegion } from '@driftengine/assets';
 
 import { CityArrays } from './arrays';

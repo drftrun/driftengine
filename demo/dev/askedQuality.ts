@@ -457,6 +457,8 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
       ? { glassShadows }
       : {}),
     ...(asked.get('hdr') === '1' ? { hdrScene: true } : {}),
+    /* `?hdrout=1` asks for a high dynamic range display; `toneCurve.html?forcehigh=1` says it has one. */
+    ...(asked.get('hdrout') === '1' ? { highDynamicRange: true } : {}),
     /* Compiles the night-side emissive term in. The amount is a scene's own, on `Environment`. */
     ...(asked.get('nightem') === '1' ? { nightEmissive: true } : {}),
     ...(asked.get('hdr') === '0' ? { hdrScene: false } : {}),
@@ -465,16 +467,20 @@ export function askedQuality(search: string = location.search): RenderQualityOpt
     ...(exposure === undefined
       ? {}
       : { outputTransform: 'aces' as const, outputExposure: exposure }),
-    /* `?transform=none|srgb|aces|shoulder`, after the exposure so the two compose: an exposure
-       alone means ACES, and with this it scales into whichever curve is named. */
+    /* `?transform=none|srgb|aces|shoulder|filmic`, after the exposure so the two compose: an
+       exposure alone means ACES, and with this it scales into whichever curve is named. */
     ...(transform === 'none' ||
     transform === 'srgb' ||
     transform === 'aces' ||
-    transform === 'shoulder'
+    transform === 'shoulder' ||
+    transform === 'filmic'
       ? { outputTransform: transform }
       : {}),
     ...(samples === undefined ? {} : { sceneSamples: Math.round(samples) }),
     ...(occlusion === undefined ? {} : { ambientOcclusion: Math.min(1, occlusion) }),
+    /* `?ssr=1`: every opaque lit surface reflects the frame by its own material. Needs the scene's
+       `?hdr=1` and one sample, and says so where it has neither. See `frameReflections.ts`. */
+    ...(asked.get('ssr') === '1' ? { screenSpaceReflections: true } : {}),
     ...(mediumSteps === undefined ? {} : { globalMediumSteps: Math.round(mediumSteps) }),
     /* Off by `?half=0`, which is how a capture rules the upsample out as the cause of something. */
     ...(asked.get('half') === '0' ? { globalMediumHalfResolution: false } : {}),

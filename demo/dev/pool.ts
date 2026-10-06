@@ -25,7 +25,7 @@ import {
 } from '@driftengine/physics';
 /* A second specifier, deliberately: the barrel names no worker, so importing `PhysicsWorld` does
    not put one in a consumer's bundle. `workers.ts` carries the measurement. */
-import { createIslandPool } from '@driftengine/physics/src/workers.ts';
+import { createIslandPool } from '@driftengine/physics/workers';
 
 const DT = 1 / 60;
 

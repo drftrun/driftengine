@@ -113,7 +113,17 @@ export const OUTPUT_TRANSFORM_CODE: Readonly<Record<string, number>> = {
   srgb: 1,
   aces: 2,
   shoulder: 3,
+  filmic: 4,
 };
+
+/**
+ * The code a **forward** pass grades with: the transform's own, except `filmic`, which only the
+ * composite carries the constants for, and which a pass grading itself therefore draws as `aces`.
+ * Both backends' `gradeCode` read this, so neither can hand a forward stage a code it lacks.
+ */
+export function forwardTransformCode(transform: string): number {
+  return transform === 'filmic' ? 2 : (OUTPUT_TRANSFORM_CODE[transform] ?? 0);
+}
 
 /**
  * How far the speed rush reaches, and how far a motion-blurred pixel may travel, both in UV.
@@ -123,3 +133,21 @@ export const OUTPUT_TRANSFORM_CODE: Readonly<Record<string, number>> = {
  */
 export const RUSH_REACH_UV = 0.012;
 export const MOTION_BLUR_MAX_UV = 0.03;
+
+/**
+ * A longest smear as `setCameraMotionBlur` takes it: a share of the frame, above zero and at most
+ * half, and the default where the number is not one. Shared, so both backends cap one way.
+ */
+export function clampMotionShare(share: number): number {
+  return Number.isFinite(share) && share > 0 ? Math.min(share, 0.5) : MOTION_BLUR_MAX_UV;
+}
+
+/**
+ * Said once where a draw names where it was last frame and the frame blurs by motion, but keeps no
+ * motion target to blur that draw by: each object's own motion is drawn only under a
+ * reconstruction on WebGPU, and anywhere else the camera's motion alone smears the frame.
+ */
+export const OBJECT_BLUR_UNKEPT =
+  "[driftengine] motion blur follows each draw's own motion only under a reconstruction " +
+  "(DriftTR, WebGPU), which draws the motion target it reads; here the camera's motion alone " +
+  'blurs the frame, and a moving object is smeared only as the camera moved past it.';

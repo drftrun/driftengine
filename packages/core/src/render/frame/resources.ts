@@ -30,6 +30,12 @@ export const FRAME_RESOURCES = [
   'aoTarget',
   'depthSnapshot',
   'inset',
+  /*
+   * The frame's colour as a registered pass reads it: a copy taken at that pass's draw, so reading
+   * it constrains no attachment's store, as `depthSnapshot` does not. Last, so no bit before it
+   * moved when it arrived.
+   */
+  'colorSnapshot',
 ] as const;
 
 export type FrameResource = (typeof FRAME_RESOURCES)[number];

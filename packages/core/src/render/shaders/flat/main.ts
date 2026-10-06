@@ -26,6 +26,10 @@ export const MAIN_GLSL = `void main() {
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
+  /* A draw's dissolve cuts the surface away before anything is shaded: overlay.ts. */
+  if (SURFACE_OVERLAY) {
+    if (overlayCuts(surfaceAt.xy)) discard;
+  }
 
   /*
    * Surface colour and its coverage, resolved before anything else — including before it is
@@ -140,6 +144,11 @@ export const MAIN_GLSL = `void main() {
   }
 
   vec3 lit = albedo;
+  /* How much of the environment the frame shows here, and how a found reflection would land:
+     reflectionSurface.ts. None where nothing is reflected. */
+  vec3 reflectedProbe = vec3(0.0);
+  vec3 reflectedTint = vec3(0.0);
+  float reflectedRoughness = 1.0;
   /* Skin's diffuse, held before emission for the screen-space blur's own pass: models.ts. */
   vec3 diffuseAlone = vec3(0.0);
   /* The light arriving at a glass pane from behind it, gathered in each light loop below and added
@@ -187,7 +196,10 @@ export const MAIN_GLSL = `void main() {
      * right: a mipped colour image, sampled under uniform control flow, exactly as uAlbedo is
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
+    vec3 unmapped = n;
     if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
+    /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
+    if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change
@@ -916,6 +928,15 @@ export const MAIN_GLSL = `void main() {
         environment * mix(vec3(1.0), albedo, metal),
         weight
       );
+      reflectedTint = mix(vec3(1.0), albedo, metal) * weight;
+      reflectedProbe = environment * reflectedTint;
+      reflectedRoughness = surfaceRoughness;
+    }
+    /* The reflection pass's surface half leaves here, before the lamps: reflectionSurface.ts. */
+    if (REFLECTION_SURFACE) {
+      reflectionSurfaceOut(reflectedProbe, reflectedTint, reflectedRoughness, ormOcclusion,
+        reflectionAir());
+      return;
     }
     /*
      * The sun's highlight, on top of whatever the surface reflects rather than underneath it —
@@ -1940,6 +1961,9 @@ export const MAIN_GLSL = `void main() {
       * mix(1.0, min(lightShade, sunShade), EMISSIVE_SHADOW_SHARE) * fxGlow;
     /* And a lit window's glow, which the scene's lit share already times: not gated on night. */
     lit += windowGlow * uEmission.x;
+    /* And a draw's overlay: its rim, its dissolve's band and the colour laid over. Not gated on the
+       night, as emission is: a glow the surface wears rather than light it gives off. overlay.ts. */
+    if (SURFACE_OVERLAY) lit += overlayGlow(surfaceAt.xy, n);
 
 #if NIGHT_EMISSIVE
     /*
@@ -2138,6 +2162,10 @@ export const MAIN_GLSL = `void main() {
     return;
   }
 
+  /* WebGL2's frame writes the reflection maps itself, with the fog already reckoned above. */
+  if (REFLECTION_MAPS) {
+    reflectionSurfaceOut(reflectedProbe, reflectedTint, reflectedRoughness, ormOcclusion, fog);
+  }
   outColor = vec4(shaded, alpha);
 }
 `;

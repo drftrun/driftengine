@@ -165,7 +165,18 @@ Do the attribute first, because it is the one that is unambiguously right. Then 
 constants with the demos open, since this is a look question and the only instrument for it
 is a screenshot.
 
-## 2. Motion blur — camera blur done, per-object deliberately not
+## 2. Motion blur — camera blur done, per-object under DriftTR
+
+**Per-object blur arrived without the cost this section priced it at**, because the reconstruction
+had already paid it: DriftTR draws every mover's screen-space motion into a target of its own (a
+pass over the movers alone, not a second output on every material), and the composite now reads
+it, blurring a flagged pixel along its own motion and every other pixel by the camera's. So it is
+had wherever a frame reconstructs, which is WebGPU, and nowhere else: without a reconstruction no
+motion target is drawn, and WebGL2 has none at all. Those frames blur by the camera alone and say
+so once. What would extend it is a motion pass of its own for unreconstructed frames, which on
+WebGL2 means a second drawing of every mover and is the cost below.
+
+The rest of this section is the decision as it was taken, and still describes camera blur.
 
 Wanted, and worth being precise about which kind, because they have very different costs and
 only one of them suits this engine.

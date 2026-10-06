@@ -88,7 +88,8 @@ export function grainWeight(luma: number): number {
 
 /** Both backends' words when there is no composite to apply the look in. */
 export const FILM_LOOK_WITHOUT_COMPOSITE =
-  '[driftengine] setVignette and setFilmGrain need `screenEffects`: without a composite every ' +
+  '[driftengine] setVignette, setFilmGrain and setChromaticAberration need `screenEffects`: ' +
+  'without a composite every ' +
   'pass is the last thing to touch the frame, so there is no one place to apply a lens or a ' +
   'print. The look was not applied.';
 

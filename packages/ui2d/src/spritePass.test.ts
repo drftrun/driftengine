@@ -141,7 +141,14 @@ describe('the sprite pass on WebGL2', () => {
     drawSprite(pass.batch, 0, { x: 1, y: 0, w: 1, h: 1 }, null, null);
     drawSprite(pass.batch, 1, { x: 2, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const draws = named(calls, 'drawArraysInstanced');
     expect(draws.map((call) => call.args[3])).toEqual([2, 1]);
   });
@@ -152,7 +159,14 @@ describe('the sprite pass on WebGL2', () => {
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     drawSprite(pass.batch, 1, { x: 1, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(named(calls, 'drawArraysInstanced')).toHaveLength(1);
   });
 
@@ -160,7 +174,14 @@ describe('the sprite pass on WebGL2', () => {
     const { pass, gl, calls } = registered();
     pass.setTexture(0, IMAGE);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(calls).toEqual([]);
   });
 
@@ -176,7 +197,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(gl.getParameter(gl.DEPTH_TEST)).toBe(true);
     expect(gl.getParameter(gl.DEPTH_WRITEMASK)).toBe(true);
     expect(gl.getParameter(gl.BLEND)).toBe(false);
@@ -196,7 +224,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const order = calls.filter(
       (call) =>
         (call.name === 'disable' ||
@@ -213,7 +248,14 @@ describe('the sprite pass on WebGL2', () => {
     gl.disable(gl.CULL_FACE);
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(gl.getParameter(gl.CULL_FACE)).toBe(false);
   });
 
@@ -222,7 +264,14 @@ describe('the sprite pass on WebGL2', () => {
     gl.enable(gl.BLEND);
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(gl.getParameter(gl.BLEND)).toBe(true);
   });
 
@@ -231,7 +280,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const binds = named(calls, 'bindTexture');
     expect(binds[binds.length - 1]?.args[1]).toBeNull();
     const units = named(calls, 'activeTexture');
@@ -243,7 +299,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const arrays = named(calls, 'bindVertexArray');
     expect(arrays[arrays.length - 1]?.args[0]).toBeNull();
   });
@@ -255,7 +318,14 @@ describe('the sprite pass on WebGL2', () => {
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     drawSprite(pass.batch, 1, { x: 1, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     // The second run starts at instance 1, so its first attribute is one stride in.
     const zeroth = named(calls, 'vertexAttribPointer').filter((call) => call.args[0] === 0);
     expect(zeroth.map((call) => call.args[5])).toEqual([0, 14 * 4]);
@@ -266,7 +336,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 2, outputExposure: 1.5 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 2,
+      outputExposure: 1.5,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const ints = named(calls, 'uniform1i').map((call) => [
       (call.args[0] as { name: string }).name,
       call.args[1],
@@ -285,7 +362,14 @@ describe('the sprite pass on WebGL2', () => {
     pass.setTexture(0, IMAGE);
     drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     const vectors = new Map(
       named(calls, 'uniform4f').map((call) => [
         (call.args[0] as { name: string }).name,
@@ -324,7 +408,14 @@ describe('texture slots', () => {
     const { pass, gl, calls } = registered();
     drawSprite(pass.batch, pass.white, { x: 0, y: 0, w: 10, h: 10 }, null, [1, 0, 0, 1]);
     calls.length = 0;
-    pass.draw({ backend: 'webgl2', gl, outputTransform: 0, outputExposure: 1 });
+    pass.draw({
+      backend: 'webgl2',
+      gl,
+      outputTransform: 0,
+      outputExposure: 1,
+      sceneColor: null,
+      sceneDepth: null,
+    });
     expect(named(calls, 'drawArraysInstanced')).toHaveLength(1);
   });
 

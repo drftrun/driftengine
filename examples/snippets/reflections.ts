@@ -7,7 +7,14 @@
  */
 import { readRadianceHdr } from '@driftengine/assets';
 import { ReflectiveSurface } from '@driftengine/core';
-import type { Camera, Environment, MeshHandle, RendererApi, Vec3 } from '@driftengine/core';
+import type {
+  Camera,
+  Environment,
+  MeshHandle,
+  RenderQualityOptions,
+  RendererApi,
+  Vec3,
+} from '@driftengine/core';
 
 // #region room
 /** One probe in the middle of a finished room, baked once the room exists. */
@@ -130,4 +137,17 @@ export const stoneFloor = new ReflectiveSurface({
 export function drawFloorReflection(renderer: RendererApi): void {
   renderer.drawReflection(stoneFloor);
 }
+// #endregion
+
+// #region materials
+/**
+ * Every opaque lit surface reflecting the frame by its own material: a glossy panel mirrors what
+ * stands on it, a satin one shows it softened, and past a roughness of 0.5 a surface keeps the
+ * probes' reflection alone. A quality option, so chosen when the renderer is built.
+ */
+export const reflectiveQuality: RenderQualityOptions = {
+  screenEffects: true,
+  hdrScene: true,
+  screenSpaceReflections: { maxRoughness: 0.5 },
+};
 // #endregion

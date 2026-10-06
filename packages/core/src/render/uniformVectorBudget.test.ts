@@ -11,13 +11,18 @@ import {
   planLightBudget,
 } from './uniformVectorBudget.ts';
 
-/** The lit stage, at one budget, with everything a game turns on turned on. */
-const lit = (budget: LightBudget): string =>
+/**
+ * The lit stage, at one budget, with everything a game turns on turned on — **but a surface
+ * overlay**, which declares its vectors only where a draw has set one and the device has the room
+ * (`setSurfaceOverlay`), so it is not part of what a budget is planned against.
+ */
+const lit = (budget: LightBudget, surfaceOverlay = false): string =>
   flatFrag({
     pointShadows: true,
     directionalShadows: true,
     environmentProbe: false,
     nightEmissive: false,
+    surfaceOverlay,
     maxLights: budget.maxLights,
     maxAreaLights: budget.maxAreaLights,
   });
@@ -71,6 +76,7 @@ describe('countUniformVectors', () => {
       directionalShadows: true,
       environmentProbe: false,
       nightEmissive: false,
+      surfaceOverlay: false,
     });
     expect(countUniformVectors(withoutPointShadows)).toBe(250);
   });
@@ -105,6 +111,18 @@ describe('the ladder', () => {
    */
   it('KEEPS THE EIGHT-LIGHT RUNG INSIDE THE 256 VECTORS AN ADRENO 740 OFFERS', () => {
     expect(countUniformVectors(lit({ maxLights: 8, maxAreaLights: 2 }))).toBeLessThanOrEqual(256);
+  });
+
+  /*
+   * **A surface overlay is fifteen vectors, which that rung has no room for**: 254 and 269 against
+   * 256, so the WebGL2 renderer refuses the overlay there in words rather than linking a program
+   * the part refuses. Pinned so a smaller overlay, or a larger rung, is a decision someone sees.
+   */
+  it('PUTS A SURFACE OVERLAY AT FIFTEEN VECTORS, PAST THE ADRENO 740’S EIGHT-LIGHT RUNG', () => {
+    const rung = { maxLights: 8, maxAreaLights: 2 };
+    const without = countUniformVectors(lit(rung));
+    expect(countUniformVectors(lit(rung, true)) - without).toBe(15);
+    expect(countUniformVectors(lit(rung, true))).toBeGreaterThan(256);
   });
 
   it('starts at the budget the rest of the engine is written for', () => {

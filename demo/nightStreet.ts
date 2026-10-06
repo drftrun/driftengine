@@ -56,7 +56,7 @@ import type {
 } from '../packages/core/src/index';
 import type { DrftMaterial } from '@driftengine/drft';
 import { DrftLoader } from '@driftengine/assets';
-import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 

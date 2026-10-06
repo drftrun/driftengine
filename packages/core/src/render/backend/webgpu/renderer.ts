@@ -187,7 +187,19 @@ import {
   packModel,
   skinProfileDistance,
 } from '../../surfaceModel.ts';
-import type { SurfaceModel } from '../../surfaceModel.ts';
+import type { SurfaceModel, SurfaceModelKind } from '../../surfaceModel.ts';
+import {
+  OVERLAY_FLOATS,
+  overlayLays,
+  packSurfaceOverlay,
+  type SurfaceOverlay,
+} from '../../surfaceOverlay.ts';
+import {
+  frameReflectionsRefused,
+  resolveFrameReflections,
+  type ResolvedFrameReflections,
+} from '../../frameReflections.ts';
+import { ReflectionSurfacePass } from './reflectionSurfacePass.ts';
 import { validateClothBinding } from '../../clothBindingData.ts';
 import type { ClothBindingData } from '../../clothBindingData.ts';
 import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
@@ -216,7 +228,24 @@ import type { SurfaceMaterial, SurfaceTextureOptions } from '../../surfaceTextur
 import type { RenderBackend } from '../api.ts';
 import { reflectionTargetSize, type ReflectionSize } from '../../planarReflectionDraw.ts';
 import { drawingBufferSize } from '../../drawingBuffer.ts';
-import { MOTION_BLUR_MAX_UV, OUTPUT_TRANSFORM_CODE, RUSH_REACH_UV } from '../../vertexDefaults.ts';
+import {
+  MOTION_BLUR_MAX_UV,
+  OBJECT_BLUR_UNKEPT,
+  OUTPUT_TRANSFORM_CODE,
+  RUSH_REACH_UV,
+  clampMotionShare,
+  forwardTransformCode,
+} from '../../vertexDefaults.ts';
+import { FRINGE_FLOATS, resolveFringe } from '../../shaders/fringe.ts';
+import { displayHeadroom, type DisplayRange } from '../../displayRange.ts';
+import {
+  DEFAULT_FILMIC_CURVE,
+  FILMIC_CLAMPED,
+  FILMIC_CONSTANTS,
+  FILMIC_WITHOUT_COMPOSITE,
+  resolveFilmicCurve,
+  type FilmicCurve,
+} from '../../filmicCurve.ts';
 import { ExposurePass } from './exposurePass.ts';
 import { AO_STORE } from '../../shaders/ambientOcclusion.ts';
 import { clampAutoExposure } from '../../shaders/exposure.ts';
@@ -281,9 +310,15 @@ import {
   DECAL_TEXTURES,
   DECAL_UNIFORMS,
   PREMULTIPLIED_OVER_BLEND,
+  FRAME_REFLECTION_BLEND,
   REFLECTION_OVER_BLEND,
   SSR_FRAG_FIELDS,
   SSR_FRAG_SIZE,
+  SSR_MATERIAL_FIELDS,
+  SSR_MATERIAL_RESOLVE_FRAG_WGSL,
+  SSR_MATERIAL_SIZE,
+  SSR_MATERIAL_TEXTURES,
+  SSR_MATERIAL_UNIFORMS,
   SSR_RESOLVE_FRAG_WGSL,
   SSR_RESOLVE_TEXTURES,
   SSR_TEXTURES,
@@ -392,6 +427,7 @@ import {
   type FlatVariant,
   flatPipeline,
   flatPipelineAsync,
+  probeStageCeilings,
 } from './flatPass.ts';
 import type { OitTarget } from './flatPass.ts';
 import {
@@ -694,34 +730,20 @@ const MAX_SKY_DRAWS = 64;
 /**
  * Whether the environment probe's permutation fits this device's per-stage binding limits.
  *
- * The widest flat variant declares one albedo, three directional shadow maps, twelve
- * point-shadow cubes and the probe: seventeen textures and seventeen samplers. WebGPU's default
- * is sixteen of each and an adapter is free to offer no more — this one offers 48 textures and
- * exactly 16 samplers, so the samplers are what decide it.
+ * **Two ceilings, counted separately**: sampled textures and samplers, since textures that share a
+ * sampler (`// wgsl:share` in `flat/preamble.ts`) count once against the second. The widest variant
+ * binds sixteen textures and twelve samplers, which is exactly WebGPU's default texture ceiling, and
+ * `select.ts` asks for the adapter's own — 48 here — so the probe does not depend on that request.
  */
 function probeFits(device: GPUDevice): boolean {
   /*
-   * **Two ceilings, counted separately, and they are no longer the same number.**
-   *
-   * The widest permutation declares seventeen sampled textures — one albedo, three directional
-   * shadow maps, the point-shadow array, a normal map and the probe's own cube — **seven**, where
-   * it was seventeen while every point light's shadow was a `samplerCube` of its own. `select.ts` asks
-   * for the adapter's ceiling, which is 48 on this machine against a device default of 16, so
-   * six fits everywhere and the probe no longer depends on the request being granted.
-   *
-   * It used to declare seventeen *samplers* too, and that was the binding constraint: this
-   * adapter offers exactly sixteen and no request can raise it, so the probe stood down and
-   * reflective surfaces kept a gradient. The shadow bindings share one declaration — see
-   * `// wgsl:share shadow` in `flat/preamble.ts`, which costs nothing because they were already
-   * one object — so the count is four, and the fourth is the normal map's: it is a colour image
-   * and wants filtering, which a non-filtering shadow sampler cannot give it.
-   *
-   * **Counted from the generated bindings rather than typed**: `FLAT_BINDINGS.flatFrag`'s
-   * widest variant is `directionalShadows+environmentProbe+pointShadows`, seven textures and
-   * four samplers. A stale number here reads as a device declining a feature it can run.
+   * **Counted from the generated bindings rather than typed** (`probeStageCeilings`). It was typed
+   * here as seven textures and four samplers while the widest variant grew to sixteen and twelve
+   * with the material maps, glass, the fixture atlas and DriftLight: a stale number reads as a
+   * device declining a feature it can run, or, the way this one had drifted, as one admitted to a
+   * permutation it cannot bind.
    */
-  const TEXTURES = 7;
-  const SAMPLERS = 4;
+  const { textures: TEXTURES, samplers: SAMPLERS } = probeStageCeilings();
   const fits =
     device.limits.maxSampledTexturesPerShaderStage >= TEXTURES &&
     device.limits.maxSamplersPerShaderStage >= SAMPLERS;
@@ -789,6 +811,7 @@ const VERB_PASS = 3;
 /** What the depth snapshot copies from, and what it copies into. */
 const DEPTH_SOURCE = maskOf('sceneDepth');
 const DEPTH_SNAPSHOT = maskOf('depthSnapshot');
+const COLOR_SNAPSHOT = maskOf('colorSnapshot');
 
 /** The mirror's own colour and depth. */
 const MIRROR_TARGET = maskOf('mirrorColor', 'mirrorDepth');
@@ -1919,6 +1942,17 @@ export class WebGPURenderer implements RendererApi {
    */
   private refractSnapshot: GPUTexture | null = null;
   private refractSnapshotView: GPUTextureView | null = null;
+  /**
+   * The frame's colour as a registered pass reads it (`reads: ['colorSnapshot']`): the scene's own
+   * size and format, refilled at each such pass's draw. Allocated only once a pass declares the
+   * read, beside the frame's targets, and never in the frame loop. See `takePassColour`.
+   */
+  private passColour: GPUTexture | null = null;
+  private passColourView: GPUTextureView | null = null;
+  /** Registered passes that read the colour, queued this frame for after the upscale. */
+  private readonly latePasses: PassHandle[] = [];
+  /** A late pass draws unjittered, as every late draw does. */
+  private readonly latePassJitter = new Float32Array(2);
   /** Whether this frame has taken it. One snapshot serves every refracting draw. */
   private refractSnapshotTaken = false;
   /**
@@ -2429,8 +2463,18 @@ export class WebGPURenderer implements RendererApi {
   private readonly reflectionQueue = new ReflectionQueue();
   private ssrLayout!: GPUBindGroupLayout;
   private ssrResolveLayout!: GPUBindGroupLayout;
+  /** The frame's materials' reflections, resolved; null where off. See `frameReflections.ts`. */
+  private readonly frameReflections: ResolvedFrameReflections | null;
+  /** Their surface half, null where they are off or cannot be drawn: `reflectionSurfacePass.ts`. */
+  private readonly reflectionSurface: ReflectionSurfacePass | null;
+  /** The material resolve: its layout, its one block (the blur) and its group over the three maps. */
+  private ssrMaterialLayout!: GPUBindGroupLayout;
+  private ssrMaterialUniforms!: GPUBuffer;
+  private readonly ssrMaterialFloats = new Float32Array(SSR_MATERIAL_SIZE / 4);
+  private ssrMaterialGroup: GPUBindGroup | null = null;
   private ssrUniforms!: GPUBuffer;
-  private readonly ssrStaging = new ArrayBuffer(SSR_SLOT * MAX_REFLECTIVE_SURFACES);
+  /* One slot a surface, and one more for the frame's materials' trace. */
+  private readonly ssrStaging = new ArrayBuffer(SSR_SLOT * (MAX_REFLECTIVE_SURFACES + 1));
   private readonly ssrFloats = new Float32Array(this.ssrStaging);
   private ssrReflection: GPUTexture | null = null;
   private ssrReflectionView: GPUTextureView | null = null;
@@ -3000,8 +3044,15 @@ export class WebGPURenderer implements RendererApi {
     const { device } = this.surface;
     const { depth, colorMsaa } = target.attachments(this.samples, this.pipelines.format);
 
-    const savedPass = this.pass;
+    /*
+     * **Flushed, and only then set aside.** The flush replays what the frame has recorded, and
+     * replaying opens the frame's pass where none is open yet; saved before it, the pass given back
+     * afterwards was the null that stood there, while the one the flush opened was left open on the
+     * frame's encoder and every later pass on it was refused — a black frame for any capture taken
+     * after the frame had drawn something. `scripts/capture-check.mjs` takes one at three points.
+     */
     if (this.quality.frameGraph) this.flushGraph();
+    const savedPass = this.pass;
     const savedEncoder = this.encoder;
     this.markRings();
     const skinMark = this.skinPalettes.mark();
@@ -3105,6 +3156,7 @@ export class WebGPURenderer implements RendererApi {
     if (this.ormMap === texture) this.ormMap = null;
     if (this.emissiveMap === texture) this.emissiveMap = null;
     if (this.modelMap === texture) this.modelMap = null;
+    if (this.overlayMaps === texture) this.overlayMaps = null;
     this.forgetBindingsOf(texture);
     texture.dispose();
     this.captureTargets.get(texture)?.dispose();
@@ -3123,6 +3175,7 @@ export class WebGPURenderer implements RendererApi {
     /* Same reasoning, for whichever SDF labels were bound against this atlas. */
     this.sdfTextBindGroups.delete(texture);
     this.flatBindGroups.clear();
+    this.overlayGroups.clear();
     /*
      * The blank one is built with the albedo held aside, because `buildFlatBindGroup` reads
      * `this.albedo` for that slot — leaving it in place would put a real colour map into the
@@ -3514,6 +3567,20 @@ export class WebGPURenderer implements RendererApi {
     if (this.surface.lost) return;
     packAmbientSH(coefficients, this.ambientSH);
     this.material((f) => f.set(this.ambientSH, this.materialField('uAmbientSH')));
+  }
+
+  /**
+   * The overlay the following draws wear, or null for none: pass state, put back to none by
+   * `bindMeshPass`. See `renderer.ts` and `surfaceOverlay.ts`. The numbers go in the material block,
+   * which every variant declares; the atlas goes in a twin of each flat group (`overlayGroup`).
+   */
+  setSurfaceOverlay(overlay: SurfaceOverlay | null): void {
+    if (this.surface.lost) return;
+    packSurfaceOverlay(overlay, this.overlayFloats);
+    /* The first overlay laid is when the lit pipelines start carrying one. */
+    if (overlayLays(overlay)) this.enableLit('SURFACE_OVERLAY');
+    this.overlayMaps = (overlay?.maps ?? null) as GpuSurfaceTexture | null;
+    this.material((f) => f.set(this.overlayFloats, this.materialField('uOverlay')));
   }
 
   /** How reflective the surfaces drawn next are. Clamped, as `renderer.ts` clamps it. */
@@ -4260,7 +4327,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private gradeCode(): number {
     return !this.hasComposite || !this.quality.hdrScene
-      ? (OUTPUT_TRANSFORM_CODE[this.quality.outputTransform] ?? 0)
+      ? forwardTransformCode(this.quality.outputTransform)
       : 0;
   }
 
@@ -6579,6 +6646,10 @@ export class WebGPURenderer implements RendererApi {
     this.skinPalettes = new SkinPaletteRing(quality.drawsPerFrame);
     this.maxDrawingBufferPixels = quality.maxDrawingBufferPixels;
     this.exposure = quality.outputExposure;
+    resolveFilmicCurve(DEFAULT_FILMIC_CURVE, this.filmConstants);
+    if (quality.outputTransform === 'filmic' && !(quality.screenEffects && quality.hdrScene)) {
+      console.warn(FILMIC_WITHOUT_COMPOSITE);
+    }
     this.flushSchedule =
       quality.frameGraph && quality.identifierGraph
         ? createFlushSchedule(MAX_DRAWS_PER_FRAME)
@@ -6656,6 +6727,26 @@ export class WebGPURenderer implements RendererApi {
       );
     }
     this.skinScatter = skinScreen ? new SkinScatterPass(device) : null;
+    /*
+     * The frame's materials' reflections, where the frame can carry them: scene light to swap the
+     * probe's share in, and one sample, which the trace's depth copy and both maps are. Said once
+     * where it cannot. See `frameReflections.ts`.
+     */
+    this.frameReflections = resolveFrameReflections(quality.screenSpaceReflections);
+    const reflectionsRefusal =
+      this.frameReflections === null
+        ? null
+        : !quality.screenEffects || !quality.hdrScene
+          ? 'the frame keeps no scene light to swap the probe in (`screenEffects` and `hdrScene`)'
+          : this.samples > 1
+            ? 'a multisampled frame has no single depth or colour to march through'
+            : null;
+    if (reflectionsRefusal !== null)
+      console.warn(`WebGPU: ${frameReflectionsRefused(reflectionsRefusal)}`);
+    this.reflectionSurface =
+      this.frameReflections !== null && reflectionsRefusal === null
+        ? new ReflectionSurfacePass(device)
+        : null;
     this.skinPipelines = skinScreen
       ? new PipelineCache(
           device,
@@ -7046,6 +7137,11 @@ export class WebGPURenderer implements RendererApi {
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
         });
+        /* Or a surface overlay's atlas, in the twin a draw wearing one binds: `overlayGroup`. */
+        const maps = this.overlayBinding ? this.overlayMaps : null;
+        if (maps !== null) {
+          return { view: maps.layerView() ?? blankView, sampler: this.refractSampler };
+        }
         return { view: this.refractSnapshotView ?? blankView, sampler: this.refractSampler };
       }
       /*
@@ -7222,6 +7318,8 @@ export class WebGPURenderer implements RendererApi {
       { binding: RUSH_TEXTURES.uExposureHeld },
       /* Local exposure's grid, read filtered between tiles. See `localExposure.ts`. */
       { binding: RUSH_TEXTURES.uExposureLocal },
+      /* Each mover's own motion: the reconstruction's target, or the scene where there is none. */
+      { binding: RUSH_TEXTURES.uMotion },
     ]);
     this.rushUniforms = device.createBuffer({
       label: 'post.rushUniforms',
@@ -7239,11 +7337,29 @@ export class WebGPURenderer implements RendererApi {
     this.ssrLayout = createPostStageLayout(device, SSR_UNIFORMS, SSR_FRAG_SIZE, [
       { binding: SSR_TEXTURES.uSsrDepth, filterable: false },
       { binding: SSR_TEXTURES.uSsrScene },
+      /* The frame's materials, for the trace that reads them: `frameReflections.ts`. */
+      { binding: SSR_TEXTURES.uSsrProbeMap },
+      { binding: SSR_TEXTURES.uSsrTintMap },
     ]);
     this.ssrResolveLayout = createSsrResolveLayout(device);
+    this.ssrMaterialLayout = createPostStageLayout(
+      device,
+      SSR_MATERIAL_UNIFORMS,
+      SSR_MATERIAL_SIZE,
+      [
+        { binding: SSR_MATERIAL_TEXTURES.uSsrReflection },
+        { binding: SSR_MATERIAL_TEXTURES.uSsrProbeMap },
+        { binding: SSR_MATERIAL_TEXTURES.uSsrTintMap },
+      ],
+    );
+    this.ssrMaterialUniforms = device.createBuffer({
+      label: 'post.ssrMaterialUniforms',
+      size: SSR_MATERIAL_SIZE,
+      usage: USAGE_UNIFORM_DST,
+    });
     this.ssrUniforms = device.createBuffer({
       label: 'post.ssrUniforms',
-      size: SSR_SLOT * MAX_REFLECTIVE_SURFACES,
+      size: SSR_SLOT * (MAX_REFLECTIVE_SURFACES + 1),
       usage: USAGE_UNIFORM_DST,
     });
     this.decalUniforms = device.createBuffer({
@@ -7947,7 +8063,11 @@ export class WebGPURenderer implements RendererApi {
     /* Last frame's snapshot is last frame's scene. */
     this.refractSnapshotTaken = false;
     this.skinScattered = false;
+    /* One frame of the jitter's sequence however many times the frame binds its camera. */
+    this.temporalHistory.nextFrame();
+    this.latePasses.length = 0;
     this.skinScatter?.reset();
+    this.reflectionSurface?.reset();
     this.plumeVerts.reset();
     this.plumeFrags.reset();
     this.waterVerts.reset();
@@ -8557,6 +8677,9 @@ export class WebGPURenderer implements RendererApi {
     f[at('uWriteMode') + 1] = 0;
     /* 1, not 0: a multiplier's identity is one. See `setEnvironmentGain`. */
     f[at('uEnvironmentDials') + 2] = 1;
+    /* No overlay until a draw sets one. See `setSurfaceOverlay`. */
+    this.overlayFloats.fill(0);
+    f.fill(0, at('uOverlay'), at('uOverlay') + OVERLAY_FLOATS);
     /* The frame's own ambient until a draw asks for its own. See `setAmbientSH`. */
     f.fill(0, at('uAmbientSH'), at('uAmbientSH') + AMBIENT_SH_FLOATS);
     /*
@@ -8949,6 +9072,8 @@ export class WebGPURenderer implements RendererApi {
     this.emissiveMap = null;
     this.modelMap = null;
     this.bindGroup = this.blankAlbedoBindGroup;
+    /* Nor an overlay; its numbers are zeroed with the block's other defaults. */
+    this.overlayMaps = null;
     this.uvScale[0] = 1;
     this.uvScale[1] = 1;
     this.uvOffset[0] = 0;
@@ -9036,6 +9161,9 @@ export class WebGPURenderer implements RendererApi {
      * where it happened to pass, write motion for a surface no pixel of the frame belongs to.
      */
     if (this.tracksMotionNow()) this.recordDrawMotion(mesh, model, previousModel);
+    else if (previousModel !== null && this.quality.cameraMotionBlur * this.motionBlurScale > 0) {
+      this.warnObjectBlur();
+    }
     noteMapsWithoutUvs(mesh, mesh.hasUvs, this.materialHasMaps);
     /* An opaque draw meets the medium as the dial says: `submitMesh` reads an absent `fog` as
        true, which is a translucent draw's default and would put every opaque draw back in the fog
@@ -9455,6 +9583,26 @@ export class WebGPURenderer implements RendererApi {
           material,
         );
       }
+      /* And its surface half, for the frame's materials' reflections. See `keepReflectionSurface`. */
+      if (!blend && lit && depthWrite && this.reflectionSurfaceKeeps()) {
+        this.keepReflectionSurface(
+          mesh,
+          key,
+          base,
+          skinned,
+          morphed,
+          deltas,
+          layer,
+          eight,
+          clothed,
+          modelKind,
+          slot,
+          material,
+          null,
+          1,
+          null,
+        );
+      }
     }
     /* Back to the defaults for whatever is drawn next, exactly as `renderer.ts` restores them —
        unconditionally, because the scratch state above is shared by every draw after this one
@@ -9606,6 +9754,7 @@ export class WebGPURenderer implements RendererApi {
     const refraction = options.refraction ?? 0;
     const glassy = resolveGlass(options.glass, this.glassScratch);
     if ((refraction <= 0 && !glassy) || !this.takeRefractSnapshot()) return false;
+    this.seeThroughBound = true;
     const glass = this.glassScratch;
     /* Strength, path thickness, transmission, frost: one vector, for the budget the shader states. */
     const seeAt = this.materialField('uSeeThrough');
@@ -9627,6 +9776,7 @@ export class WebGPURenderer implements RendererApi {
 
   /** Put the scratch back after `bindSeeThrough`: refraction and glass off. */
   private releaseSeeThrough(): void {
+    this.seeThroughBound = false;
     const seeAt = this.materialField('uSeeThrough');
     this.perFrameFloats[seeAt] = 0;
     this.perFrameFloats[seeAt + 2] = 0;
@@ -9826,6 +9976,26 @@ export class WebGPURenderer implements RendererApi {
         pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
         if (cut === null) pass.drawIndexed(mesh.indexCount, count);
         else pass.drawIndexedIndirect(cut.args, 0);
+      }
+      /* And its surface half, for the frame's materials' reflections, with the same survivors. */
+      if (!blend && lit && depthWrite && this.reflectionSurfaceKeeps()) {
+        this.keepReflectionSurface(
+          mesh,
+          key,
+          base,
+          false,
+          false,
+          null,
+          layer,
+          false,
+          false,
+          modelKind,
+          slot,
+          material,
+          instanceBuffer,
+          count,
+          cut === null ? null : cut.args,
+        );
       }
     }
     /* Back to the defaults, unconditionally and for the reason `drawMesh` gives at length: this
@@ -10534,6 +10704,20 @@ export class WebGPURenderer implements RendererApi {
   private warnedNoPointShadowArray = false;
   /** Said once, for the retired ambient dial. */
   private warnedEnvironmentAmbient = false;
+  /** The overlay the draws wear, `uOverlay`: see `setSurfaceOverlay`. */
+  private readonly overlayFloats = new Float32Array(OVERLAY_FLOATS);
+  /** Its atlas, bound where the refraction copy goes in a twin of each flat group. */
+  private overlayMaps: GpuSurfaceTexture | null = null;
+  /**
+   * Each flat group's twin with the atlas in the refraction slot, by the group and the atlas, built
+   * on the first draw that wears it and dropped wherever `flatBindGroups` is.
+   */
+  private readonly overlayGroups = new Map<GPUBindGroup, Map<GpuSurfaceTexture, GPUBindGroup>>();
+  /** True while a twin is built: what `flatTextures` hands the refraction slot then. */
+  private overlayBinding = false;
+  /** True between `bindSeeThrough` and `releaseSeeThrough`: that draw reads the copy, not the atlas. */
+  private seeThroughBound = false;
+  private warnedOverlayRefraction = false;
   private readonly castingWorldIndices = new Int32Array(POINT_SHADOW_POOL).fill(-1);
   private readonly resolvedPointShadows = createResolvedPointShadows(MAX_POINT_LIGHTS);
   /** One face's view-projection, rebuilt per face rather than allocated. */
@@ -10983,6 +11167,43 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * The open material's flat group, or its twin with the surface overlay's atlas in the refraction
+   * slot where the draw wears one and does not refract. A twin is built from the live material,
+   * which `bindGroup` always is, and kept by the group and the atlas.
+   *
+   * **A draw that refracts, or is glass, keeps the frame's copy** and its overlay reads no image —
+   * the shader asks the same of `uSeeThrough` (`overlayImagesBound`) — said once.
+   */
+  private overlayGroup(): GPUBindGroup {
+    const maps = this.overlayMaps;
+    if (maps === null) return this.bindGroup;
+    if (this.seeThroughBound) {
+      if (!this.warnedOverlayRefraction) {
+        this.warnedOverlayRefraction = true;
+        console.warn(
+          'WebGPU: a draw that refracts or is glass wears a surface overlay with maps. The frame ' +
+            "copy it reads takes the overlay's slot, so its rim, dissolve and wrinkles read no image.",
+        );
+      }
+      return this.bindGroup;
+    }
+    let byMaps = this.overlayGroups.get(this.bindGroup);
+    if (byMaps === undefined) {
+      byMaps = new Map();
+      this.overlayGroups.set(this.bindGroup, byMaps);
+    }
+    let twin = byMaps.get(maps);
+    if (twin === undefined) {
+      this.overlayBinding = true;
+      twin = this.buildFlatBindGroup();
+      this.overlayBinding = false;
+      this.bindGroupBudget.ask();
+      byMaps.set(maps, twin);
+    }
+    return twin;
+  }
+
+  /**
    * The bind group a draw uses, skinned or not.
    *
    * **The skinned twin is cached against the two things that can invalidate it**, rather than
@@ -10998,7 +11219,8 @@ export class WebGPURenderer implements RendererApi {
     morphed: boolean,
     deltas: GPUTextureView | null,
   ): GPUBindGroup {
-    if (!skinned && !morphed) return this.bindGroup;
+    const base = this.overlayGroup();
+    if (!skinned && !morphed) return base;
     const palette = skinned ? this.skinPalettes.view(this.skinPaletteSlot) : null;
     /* Slot `k` caches at `k + 1`; index 0 is the morphed draw that is not skinned and has no
        slot of its own. See `skinnedGroups`. */
@@ -11007,12 +11229,14 @@ export class WebGPURenderer implements RendererApi {
     const cloth = skinned ? this.clothViews() : null;
     if (
       (this.skinnedGroups[at] ?? null) === null ||
-      this.skinnedGroupsBeside[at] !== this.bindGroup ||
+      this.skinnedGroupsBeside[at] !== base ||
       this.skinnedGroupsPalette[at] !== palette ||
       this.skinnedGroupsDeltas[at] !== deltas ||
       this.skinnedGroupsCloth[at] !== (cloth?.particles ?? null) ||
       this.skinnedGroupsClothBinding[at] !== (cloth?.binding ?? null)
     ) {
+      /* Built from the live material, with the overlay's atlas where `base` is its twin. */
+      this.overlayBinding = base !== this.bindGroup;
       this.skinnedGroups[at] = createFlatBindGroup(
         this.surface.device,
         this.flatLayoutFor(skinned, morphed),
@@ -11024,7 +11248,8 @@ export class WebGPURenderer implements RendererApi {
         deltas,
         cloth,
       );
-      this.skinnedGroupsBeside[at] = this.bindGroup;
+      this.overlayBinding = false;
+      this.skinnedGroupsBeside[at] = base;
       this.skinnedGroupsPalette[at] = palette;
       this.skinnedGroupsDeltas[at] = deltas;
       this.skinnedGroupsCloth[at] = cloth?.particles ?? null;
@@ -11090,6 +11315,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatGroupsForNewRings(): void {
     this.flatBindGroups.clear();
+    this.overlayGroups.clear();
     this.flatEnvironment = this.flatTextures('uEnvironment').view;
     this.skinnedGroups.length = 0;
 
@@ -11153,6 +11379,7 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatBindGroup(): void {
     this.flatBindGroups.clear();
+    this.overlayGroups.clear();
     this.flatEnvironment = this.flatTextures('uEnvironment').view;
     if (
       this.albedo === null &&
@@ -11394,9 +11621,14 @@ export class WebGPURenderer implements RendererApi {
       ? (OUTPUT_TRANSFORM_CODE[this.quality.outputTransform] ?? 0)
       : 0;
     f[at('uOutputExposure')] = graded ? this.exposure : 1;
+    f.set(this.filmA, at('uFilmA'));
+    f.set(this.filmB, at('uFilmB'));
+    f[at('uDisplayHeadroom')] = this.headroom;
     f.set(this.reprojection, at('uReprojection'));
     f[at('uMotionStrength')] = motionStrength;
-    f[at('uMotionMax')] = MOTION_BLUR_MAX_UV;
+    f[at('uMotionMax')] = this.motionBlurMax;
+    /* Each mover's own motion, where the reconstruction drew its target this frame. */
+    f[at('uObjectMotion')] = this.reconstructing && this.reconMotionView !== null ? 1 : 0;
     f[at('uAoStrength')] = this.frameProjection === null ? 0 : aoStrength;
     /*
      * The occlusion read where this frame's jitter put it (`uAoOffset`): measured from the jittered
@@ -11440,6 +11672,7 @@ export class WebGPURenderer implements RendererApi {
     f[at('uGradeSize')] = this.gradeSize;
     /* The lens and the print. See `setVignette` and `setFilmGrain`. */
     f[at('uVignette')] = this.vignette;
+    f.set(this.fringe, at('uFringe'));
     f[at('uAutoExposure')] = adapting ? this.autoExposure : 0;
     f[at('uLocalExposure')] = measuring && localising ? this.localExposure : 0;
     f[at('uGrain')] = this.grain;
@@ -11485,7 +11718,11 @@ export class WebGPURenderer implements RendererApi {
   private rebuildRushBindGroup(): void {
     if (this.sceneColorView === null || this.resolvedDepthView === null) return;
     if (this.aoTargetView === null) return;
-    this.rushBindGroup = this.buildRushBindGroup('post.rushBindGroup', this.sceneColorView);
+    this.rushBindGroup = this.buildRushBindGroup(
+      'post.rushBindGroup',
+      this.sceneColorView,
+      this.sceneColorView,
+    );
     /*
      * **And the reconstruction's twin, from the same three call sites.** A colour grade replaces
      * the lookup table and a resize replaces the depth and the occlusion target, and both groups
@@ -11493,12 +11730,21 @@ export class WebGPURenderer implements RendererApi {
      * come to read a stale view on exactly the frames a consumer changed something.
      */
     if (this.reconShownView !== null) {
-      this.reconRushGroup = this.buildRushBindGroup('recon.rushBindGroup', this.reconShownView);
+      this.reconRushGroup = this.buildRushBindGroup(
+        'recon.rushBindGroup',
+        this.reconShownView,
+        this.reconMotionView ?? this.reconShownView,
+      );
     }
   }
 
   /** The composite's group over one scene source. See `rebuildRushBindGroup`. */
-  private buildRushBindGroup(label: string, sceneView: GPUTextureView): GPUBindGroup | null {
+  private buildRushBindGroup(
+    label: string,
+    sceneView: GPUTextureView,
+    /** Each mover's own motion, or a stand-in the shader is told not to read. */
+    motionView: GPUTextureView,
+  ): GPUBindGroup | null {
     const { device } = this.surface;
     if (this.resolvedDepthView === null || this.aoTargetView === null) return null;
     const entry = (
@@ -11530,6 +11776,7 @@ export class WebGPURenderer implements RendererApi {
            and a declared binding still needs a complete texture, as the bloom fallback says. */
         ...entry(RUSH_TEXTURES.uExposureHeld, this.exposurePass?.heldView ?? sceneView),
         ...entry(RUSH_TEXTURES.uExposureLocal, this.exposurePass?.localView ?? sceneView),
+        ...entry(RUSH_TEXTURES.uMotion, motionView),
       ],
       layout: this.rushLayout,
     });
@@ -11813,7 +12060,11 @@ export class WebGPURenderer implements RendererApi {
       );
     }
     /* The composite's own group, over the resolved picture instead of the scene target. */
-    this.reconRushGroup = this.buildRushBindGroup('recon.rushBindGroup', this.reconShownView);
+    this.reconRushGroup = this.buildRushBindGroup(
+      'recon.rushBindGroup',
+      this.reconShownView,
+      this.reconMotionView ?? this.reconShownView,
+    );
     /* And the scene's, because `ensureComposite` built it before this one existed. */
     this.rebuildRushBindGroup();
     /* And the bloom's, which blooms the resolved picture: see `rebuildBloomGroups`. */
@@ -11927,7 +12178,7 @@ export class WebGPURenderer implements RendererApi {
     const depth = this.depthView;
     if (!this.reconstructing || late === null || shown === null || depth === null) return;
     const oitSet = this.oitActive && this.translucentQueue.length > 0;
-    if (late.pending === 0 && !oitSet) return;
+    if (late.pending === 0 && !oitSet && this.latePasses.length === 0) return;
     const width = Math.max(1, this.surface.canvas.width);
     const height = Math.max(1, this.surface.canvas.height);
     /* The order-independent set tests against this depth too, so it is made for either. */
@@ -11951,20 +12202,64 @@ export class WebGPURenderer implements RendererApi {
       this.refractSnapshotTaken = true;
     }
     this.lateRefractWanted = false;
-    if (late.pending === 0) return;
-    const pass = encoder.beginRenderPass({
-      label: 'recon.late',
-      timestampWrites: this.gpuTimer.writesFor(),
-      colorAttachments: [{ view: shown, loadOp: 'load', storeOp: 'store' }],
-      depthStencilAttachment: {
-        view: late.depthView(width, height),
-        depthLoadOp: 'load',
-        /* Kept: the order-independent set replays against it after this pass. */
-        depthStoreOp: 'store',
-      },
-    });
-    late.replay(pass, this.issueBound);
-    pass.end();
+    if (late.pending > 0) {
+      const pass = encoder.beginRenderPass({
+        label: 'recon.late',
+        timestampWrites: this.gpuTimer.writesFor(),
+        colorAttachments: [{ view: shown, loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: {
+          view: late.depthView(width, height),
+          depthLoadOp: 'load',
+          /* Kept: the order-independent set replays against it after this pass. */
+          depthStoreOp: 'store',
+        },
+      });
+      late.replay(pass, this.issueBound);
+      pass.end();
+    }
+    this.runLatePasses(encoder, shown, late.depthView(width, height));
+  }
+
+  /**
+   * The registered passes `drawPass` queued for after the upscale: each handed a fresh copy of the
+   * reconstructed picture with every late draw in it, in the output-size texture the late
+   * refraction keeps (its own reads are done by now: they were recorded before this copy), then
+   * drawn over the picture in a pass of its own.
+   */
+  private runLatePasses(
+    encoder: GPUCommandEncoder,
+    shown: GPUTextureView,
+    depth: GPUTextureView,
+  ): void {
+    const copy = this.refractSnapshot;
+    const source = this.reconShown;
+    for (const handle of this.latePasses) {
+      const definition = passAt(this.passes, handle);
+      if (definition === undefined) continue;
+      if (copy !== null && source !== null) {
+        encoder.copyTextureToTexture({ texture: source }, { texture: copy }, [
+          copy.width,
+          copy.height,
+        ]);
+      }
+      const pass = encoder.beginRenderPass({
+        label: 'recon.latePass',
+        timestampWrites: this.gpuTimer.writesFor(),
+        colorAttachments: [{ view: shown, loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: { view: depth, depthLoadOp: 'load', depthStoreOp: 'store' },
+      });
+      const context = this.passContext;
+      context.pass = pass;
+      context.outputTransform = this.gradeCode();
+      context.outputExposure = this.gradeExposure();
+      context.jitter = this.latePassJitter;
+      context.format = RECON_HISTORY_FORMAT;
+      context.depthFormat = DEPTH_FORMAT;
+      context.samples = 1;
+      definition.draw(context as PassContext);
+      context.jitter = this.passJitter;
+      pass.end();
+    }
   }
 
   /** Whether this draw lands in the reconstructed picture. See `lateRouting.ts`. */
@@ -12391,7 +12686,10 @@ export class WebGPURenderer implements RendererApi {
    * other is the disagreement the parity rule exists to prevent. Said once rather than dropped.
    */
   private runReflections(encoder: GPUCommandEncoder): void {
-    if (this.reflectionQueue.length === 0) return;
+    const frameReflections = this.frameReflections;
+    const surfaceHalf = this.reflectionSurface;
+    const materials = frameReflections !== null && surfaceHalf !== null;
+    if (this.reflectionQueue.length === 0 && !materials) return;
     const scene = this.sceneColorView;
     const reflection = this.ssrReflectionView;
     const group = this.ssrBindGroup;
@@ -12436,9 +12734,81 @@ export class WebGPURenderer implements RendererApi {
       f[base + at('uSsrThickness')] = surface.thicknessM;
       f[base + at('uSsrSteps')] = surface.steps;
       f[base + at('uSsrEdgeFade')] = REFLECTION_EDGE_FADE;
+      f[base + at('uSsrMaterial')] = 0;
       slot++;
     });
+    const regions = slot;
+    /* The frame's materials' trace takes the slot after the surfaces': the box, its axis and its
+       strength unread, the march and the ceiling its own. See `frameReflections.ts`. */
+    if (materials) {
+      const base = (slot * SSR_SLOT) / 4;
+      f.set(this.ssrDepthToWorld, base + at('uSsrDepthToWorld'));
+      f.set(this.ssrViewProj, base + at('uSsrViewProj'));
+      f.set(this.frameEye, base + at('uSsrEye'));
+      f.fill(0, base + at('uSsrAxis'), base + at('uSsrAxis') + 3);
+      f.fill(1, base + at('uSsrTint'), base + at('uSsrTint') + 3);
+      f[base + at('uSsrStrength')] = 1;
+      f[base + at('uSsrFresnel')] = 0;
+      f[base + at('uSsrFacingCos')] = -1;
+      f[base + at('uSsrReach')] = frameReflections.reachM;
+      f[base + at('uSsrThickness')] = frameReflections.thicknessM;
+      f[base + at('uSsrSteps')] = frameReflections.steps;
+      f[base + at('uSsrEdgeFade')] = REFLECTION_EDGE_FADE;
+      f[base + at('uSsrMaterial')] = 1;
+      f[base + at('uSsrMaxRoughness')] = frameReflections.maxRoughness;
+      slot++;
+    }
     device.queue.writeBuffer(this.ssrUniforms, 0, this.ssrStaging, 0, slot * SSR_SLOT);
+    const tracePipeline = postPipeline(
+      this.pipelines,
+      device,
+      this.ssrLayout,
+      'post.ssrTrace',
+      SSR_TRACE_FRAG_WGSL,
+      this.pipelines.format,
+      PREMULTIPLIED_OVER_BLEND,
+    );
+
+    if (materials && this.depthView !== null && this.ssrMaterialGroup !== null) {
+      /* The frame's opaque lit draws again, into what the trace and the resolve read. */
+      surfaceHalf.draw(encoder, this.depthView, this.issueBound);
+      const trace = encoder.beginRenderPass({
+        label: 'post.ssr.materialTrace',
+        colorAttachments: [
+          { view: reflection, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+        ],
+      });
+      trace.setPipeline(tracePipeline);
+      trace.setBindGroup(0, group, [regions * SSR_SLOT]);
+      trace.draw(3);
+      trace.end();
+      /* The blur's texel and its radius at roughness 1, as a share of the frame's height. */
+      const m = this.ssrMaterialFloats;
+      const blurAt = this.postField(SSR_MATERIAL_FIELDS, 'uSsrBlur');
+      m[blurAt] = 1 / Math.max(width, 1);
+      m[blurAt + 1] = 1 / Math.max(height, 1);
+      m[blurAt + 2] = frameReflections.blur * height;
+      device.queue.writeBuffer(this.ssrMaterialUniforms, 0, m);
+      const resolve = encoder.beginRenderPass({
+        label: 'post.ssr.materialResolve',
+        colorAttachments: [{ view: scene, loadOp: 'load', storeOp: 'store' }],
+      });
+      resolve.setPipeline(
+        postPipeline(
+          this.pipelines,
+          device,
+          this.ssrMaterialLayout,
+          'post.ssrMaterialResolve',
+          SSR_MATERIAL_RESOLVE_FRAG_WGSL,
+          this.pipelines.format,
+          FRAME_REFLECTION_BLEND,
+        ),
+      );
+      resolve.setBindGroup(0, this.ssrMaterialGroup, [0]);
+      resolve.draw(3);
+      resolve.end();
+    }
+    if (regions === 0) return;
 
     /* Cleared whole and then scissored per surface: the resolve reads every pixel, and one left
        from the last frame would composite that reflection over this frame's scene. */
@@ -12448,17 +12818,7 @@ export class WebGPURenderer implements RendererApi {
         { view: reflection, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
       ],
     });
-    trace.setPipeline(
-      postPipeline(
-        this.pipelines,
-        device,
-        this.ssrLayout,
-        'post.ssrTrace',
-        SSR_TRACE_FRAG_WGSL,
-        this.pipelines.format,
-        PREMULTIPLIED_OVER_BLEND,
-      ),
-    );
+    trace.setPipeline(tracePipeline);
     slot = 0;
     this.reflectionQueue.replay((surface) => {
       const index = slot++;
@@ -13222,6 +13582,90 @@ export class WebGPURenderer implements RendererApi {
     );
   }
 
+  /** Whether a draw now is the frame's own, and so has a surface half to keep. */
+  private reflectionSurfaceKeeps(): boolean {
+    return (
+      this.reflectionSurface !== null &&
+      !this.reflectionPassActive &&
+      !this.probePassActive &&
+      !this.capturePassActive &&
+      !this.framePresented &&
+      !this.overlayActive &&
+      this.oitMode === 'none'
+    );
+  }
+
+  /**
+   * An opaque lit draw's surface half, kept for the frame's materials' reflections: the draw again,
+   * with the same slots, buffers and bind group, through the pipeline with `REFLECTION_SURFACE` on —
+   * which writes what the pixel reflects of its environment into the two targets
+   * `reflectionSurfacePass.ts` holds and tests for the depth its frame draw wrote. Replayed when the
+   * frame's pass has ended, before the trace reads them. See `shaders/flat/reflectionSurface.ts`.
+   */
+  private keepReflectionSurface(
+    mesh: GpuMesh,
+    frameKey: string,
+    base: string,
+    skinned: boolean,
+    morphed: boolean,
+    deltas: GPUTextureView | null,
+    layer: number,
+    eight: boolean,
+    clothed: boolean,
+    modelKind: SurfaceModelKind | null,
+    slot: number,
+    material: number,
+    instanceBuffer: GPUBuffer | null,
+    instances: number,
+    indirect: GPUBuffer | null,
+  ): void {
+    const surface = this.reflectionSurface;
+    const present = this.meshPresent.get(base);
+    if (surface === null || present === undefined) return;
+    const key = `${frameKey}|rs`;
+    const pipeline =
+      this.pipelines.peek(key) ??
+      flatPipeline(
+        this.pipelines,
+        this.surface.device,
+        this.flatLayoutFor(skinned, morphed),
+        this.variant,
+        key,
+        present,
+        false,
+        skinned,
+        morphed,
+        true,
+        layer,
+        instanceBuffer !== null,
+        'none',
+        this.materialDoubleSided,
+        false,
+        eight,
+        clothed,
+        modelKind,
+        'whole',
+        true,
+      );
+    const command = surface.take();
+    command.pipeline = pipeline;
+    command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
+    command.offsetA = slot;
+    command.offsetB = material;
+    command.offsetCount = 2;
+    let index = 0;
+    for (; index < mesh.vertexBuffers.length; index++) {
+      command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
+    }
+    if (instanceBuffer !== null) command.vertexBuffers[index++] = instanceBuffer;
+    command.vertexCount = index;
+    command.indexBuffer = mesh.indexBuffer;
+    command.indexed = true;
+    command.count = mesh.indexCount;
+    command.instances = instances;
+    command.indirect = indirect;
+  }
+
   /**
    * A skin draw's diffuse and colour halves, kept for the spread: the frame's draw again, twice,
    * with the same slots, buffers and bind group, through the pipelines that write the diffuse's
@@ -13301,11 +13745,17 @@ export class WebGPURenderer implements RendererApi {
   private runSkinScatter(): void {
     const skin = this.skinScatter;
     if (skin === null || this.skinScattered) return;
+    /*
+     * **Not the frame's picture, so not the frame's moment**: a blended draw in a mirror, a probe
+     * bake or a scene capture lands over none of the frame's skin. Latching there switched the
+     * spread off for the frame, so a capture with a glowing sign in it left every face drawn after
+     * it flat. `scripts/capture-check.mjs`.
+     */
+    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return;
     /* Latched whether or not skin was kept: a skin drawn after this point is the whole surface. */
     this.skinScattered = true;
     if (!skin.pending) return;
-    if (this.reflectionPassActive || this.probePassActive || this.oitReplaying) return;
-    if (this.capturePassActive) return;
+    if (this.oitReplaying) return;
     const encoder = this.encoder;
     const depth = this.depthView;
     const resolved = this.resolvedDepthView;
@@ -13428,6 +13878,65 @@ export class WebGPURenderer implements RendererApi {
     });
     this.volumeDepthTaken = true;
     return true;
+  }
+
+  /** The colour copy a registered pass reads, at the scene's size and format. See `passColour`. */
+  private allocatePassColour(): void {
+    const source = this.sceneColor;
+    if (source === null || this.passColour !== null) return;
+    this.passColour = this.surface.device.createTexture({
+      label: 'pass.sceneColor',
+      size: [source.width, source.height],
+      format: this.pipelines.format,
+      usage: 0x4 | 0x2, // TEXTURE_BINDING | COPY_DST
+    });
+    this.passColourView = this.passColour.createView();
+  }
+
+  /**
+   * The frame's colour so far, into `passColour`, for a registered pass that reads it: the
+   * boundary `takeRefractSnapshot` describes — flush, end the pass, copy what its end resolved,
+   * reopen with `load` — and refused where that one is, in a mirror, a probe bake or a capture,
+   * whose pictures are not the frame's. **Not latched**, unlike refraction's: each reading pass
+   * sees the passes drawn before it, at a full-frame copy each.
+   */
+  private takePassColour(): void {
+    if (this.reflectionPassActive || this.probePassActive || this.capturePassActive) return;
+    const copy = this.passColour;
+    const source = this.sceneColor;
+    const encoder = this.encoder;
+    if (copy === null || source === null || encoder === null || this.pass === null) return;
+    if (this.quality.frameGraph) this.flushGraph();
+    this.pass.end();
+    encoder.copyTextureToTexture({ texture: source }, { texture: copy }, [copy.width, copy.height]);
+    this.pass = this.reopenFramePass('pass.colourTaken');
+  }
+
+  /**
+   * The frame's pass again after a copy between passes, loading everything already drawn: the same
+   * attachments the copy's caller ended, with nothing cleared.
+   */
+  private reopenFramePass(label: string): GPURenderPassEncoder | null {
+    const encoder = this.encoder;
+    const target = this.compositeTarget();
+    if (encoder === null || target === null) return null;
+    const multisampled = this.compositeMsaa() !== null;
+    return encoder.beginRenderPass({
+      label,
+      timestampWrites: this.gpuTimer.writesFor(),
+      colorAttachments: [
+        {
+          view: this.compositeMsaa() ?? target,
+          resolveTarget: multisampled ? target : undefined,
+          loadOp: 'load',
+          storeOp: resolvedStoreOp(multisampled, false, this.quality.discardResolvedAttachments),
+        },
+      ],
+      depthStencilAttachment:
+        this.depthView === null
+          ? undefined
+          : { view: this.depthView, depthLoadOp: 'load', depthStoreOp: 'store' },
+    });
   }
 
   /**
@@ -13621,6 +14130,8 @@ export class WebGPURenderer implements RendererApi {
       /* And a march reads the same copy, for the same reason and with the same failure if it is
          discarded: a depth of zero is the far plane reversed, so every ray finds nothing. */
       this.reflectionQueue.length > 0 ||
+      /* And the frame's materials' reflections, whose surface half tests against the depth too. */
+      this.reflectionSurface !== null ||
       /* And the medium's own march, which stops where the frame's depth says a surface is. Left
          out of this, every ray runs to `maxDistance` through the walls and the fog is drawn on
          top of the room rather than in it. */
@@ -14485,6 +14996,8 @@ export class WebGPURenderer implements RendererApi {
     const reads = maskOf(...(definition.reads ?? []));
     this.passReads.set(handle, reads);
     this.passReadsUnion |= reads;
+    /* The colour copy a reader needs, now rather than at its first draw: see `passColour`. */
+    if ((reads & COLOR_SNAPSHOT) !== 0 && this.passColour === null) this.allocatePassColour();
     if (definition.prepare !== undefined) this.preparingPasses++;
     definition.init?.(this.passDevice());
     return handle;
@@ -14504,12 +15017,16 @@ export class WebGPURenderer implements RendererApi {
     environment: PassEnvironment | null;
     distanceField: ComposedField | null;
     jitter: Float32Array;
+    sceneDepth: GPUTextureView | null;
+    sceneColor: GPUTextureView | null;
   } = {
     backend: 'webgpu',
     encoder: null,
     environment: null,
     distanceField: null,
     jitter: this.passJitter,
+    sceneDepth: null,
+    sceneColor: null,
   };
   /**
    * The object handed to a pass as `PrepareContext.environment`, rebuilt only when it changes.
@@ -14607,6 +15124,15 @@ export class WebGPURenderer implements RendererApi {
      * than merely what happens.
      */
     this.prepareContext.distanceField = this.fieldComposer?.field ?? null;
+    /* Settled for the frame: `ensureComposite` has run, so the view stays until the pass draws. */
+    this.prepareContext.sceneDepth = this.resolvedDepthView;
+    /*
+     * Under a reconstruction a colour reader draws after the upscale (see `drawPass`), so it reads
+     * the output-size copy the late refraction keeps rather than the render's.
+     */
+    this.prepareContext.sceneColor = this.reconstructionWanted
+      ? this.refractSnapshotView
+      : this.passColourView;
     for (const definition of this.passes.definitions) {
       definition?.prepare?.(this.prepareContext as PrepareContext);
     }
@@ -14623,20 +15149,42 @@ export class WebGPURenderer implements RendererApi {
     if (!this.canDraw()) return;
     const definition = passAt(this.passes, handle);
     if (definition === undefined) return;
+    const reads = this.passReads.get(handle) ?? 0;
+    /*
+     * **Under a reconstruction, a pass that reads the frame's colour draws after the blended draws
+     * do.** Those land after the upscale, at the output's size, so a pass drawn among them at the
+     * render's would read a frame without them and then be covered by them — a full-screen effect
+     * with the hit sparks drawn sharp over it. Queued instead, and drawn by `runLate` over the
+     * reconstructed picture, after every late draw, whatever order it was asked in.
+     */
+    if ((reads & COLOR_SNAPSHOT) !== 0 && this.drawsLate()) {
+      this.latePasses.push(handle);
+      return;
+    }
+    /*
+     * A pass that reads the depth copy gets it with everything drawn so far: the copy is taken
+     * here, once a frame, as a soft-edged sprite takes it. Before `openPass` below, because taking
+     * it ends the frame's pass and opens another.
+     */
+    if ((reads & DEPTH_SNAPSHOT) !== 0 && !this.framePresented && this.openPass() !== null) {
+      this.takeVolumeDepth();
+    }
+    /*
+     * And one that reads the colour gets it afresh, with everything drawn before it — a full-screen
+     * pass drawn last reads the whole frame and an effect drawn mid-frame reads the frame so far.
+     * A copy a reading pass, where the depth above is one a frame: what a colour reader draws is
+     * itself part of what the next one should see.
+     */
+    if ((reads & COLOR_SNAPSHOT) !== 0 && !this.framePresented && this.openPass() !== null) {
+      this.takePassColour();
+    }
     if (!this.quality.frameGraph) {
       const pass = this.openPass();
       if (pass === null) return;
       definition.draw(this.fillPassContext(pass));
       return;
     }
-    recordNode(
-      this.arena,
-      VERB_PASS,
-      this.passReads.get(handle) ?? 0,
-      this.currentTarget(),
-      handle,
-      0,
-    );
+    recordNode(this.arena, VERB_PASS, reads, this.currentTarget(), handle, 0);
     if (this.framePresented) this.queueOverlayFlush();
   }
 
@@ -14757,8 +15305,9 @@ export class WebGPURenderer implements RendererApi {
   ): void {
     const binner = this.clusterBinner;
     i[at('uClustered')] = binner === null ? 0 : 1;
-    if (binner === null) return;
 
+    /* Written whether or not the lights are clustered: a surface overlay's rim finds its place on
+       the screen through the same two (\`overlayScreen\`). */
     const p = camera.projection;
     const tanHalfFovY = 1 / (p[5] ?? 1);
     const aspect = (p[5] ?? 1) / (p[0] ?? 1);
@@ -14774,6 +15323,7 @@ export class WebGPURenderer implements RendererApi {
     f[frustumAt + 2] = tanHalfFovY;
     f[frustumAt + 3] = aspect;
     f.set(camera.view as Float32Array, at('uView'));
+    if (binner === null) return;
 
     /* The rectangles past the fixed arm's go into the table. See `ClusterLightSet.areas`. */
     const set = fillClusterLightSet(env, this.clusterLights, this.shadedAreaLights);
@@ -15098,6 +15648,49 @@ export class WebGPURenderer implements RendererApi {
   /** This frame's exposure into the tone curve. Starts at the profile's own. */
   private exposure: number;
 
+  /**
+   * The `filmic` curve every later frame is graded through, until it is set again. See
+   * `RendererApi.setFilmicCurve`; the constants are solved here once, not per frame or per pixel.
+   */
+  setFilmicCurve(curve: FilmicCurve): void {
+    this.filmCurve = curve;
+    if (resolveFilmicCurve(curve, this.filmConstants, this.headroom) && !this.warnedFilmClamped) {
+      this.warnedFilmClamped = true;
+      console.warn(FILMIC_CLAMPED);
+    }
+  }
+
+  private warnedFilmClamped = false;
+  /** The curve last set, so a new headroom can solve it again. */
+  private filmCurve: FilmicCurve = DEFAULT_FILMIC_CURVE;
+  /** The display's peak over paper white; 1 on a standard range. See `setDisplayLuminance`. */
+  private headroom = 1;
+
+  /** The range the frame goes out in. See `RendererApi.displayRange`. */
+  get displayRange(): DisplayRange {
+    return this.surface.displayRange;
+  }
+
+  /** Why it is that range, in words. */
+  get displayRangeReason(): string {
+    return this.surface.displayRangeReason;
+  }
+
+  /**
+   * How bright paper white and the display's peak are, in any one unit (nits, usually), held until
+   * changed: their ratio is how far above white the highlights may run on a high range display,
+   * and nothing changes on a standard one. See `RendererApi.setDisplayLuminance`.
+   */
+  setDisplayLuminance(paperWhite: number, peak: number): void {
+    this.headroom = displayHeadroom(this.surface.displayRange, paperWhite, peak);
+    resolveFilmicCurve(this.filmCurve, this.filmConstants, this.headroom);
+  }
+
+  /** The curve's eight constants, and the two views the composite uploads them through. */
+  private readonly filmConstants = new Float32Array(FILMIC_CONSTANTS);
+  private readonly filmA = this.filmConstants.subarray(0, 4);
+  private readonly filmB = this.filmConstants.subarray(4, 8);
+
   /*
    * -----------------------------------------------------------------------------------------
    * The three screen effects, which this backend cannot yet honour — and says so.
@@ -15142,6 +15735,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly veilColor: Vec3 = [0, 0, 0];
   private veilAlpha = 0;
   private vignette = 0;
+  /** The lens's colour fringe: red's and green's pull and where it begins. See `fringe.ts`. */
+  private readonly fringe = new Float32Array(FRINGE_FLOATS);
   private grain = 0;
   private grainSeed = 0;
   private warnedLookWithoutComposite = false;
@@ -15163,6 +15758,21 @@ export class WebGPURenderer implements RendererApi {
       return;
     }
     this.vignette = clampVignette(strength);
+  }
+
+  /**
+   * The lens's colour fringe, held until changed: `intensity` is a percentage, 0 is none, and red
+   * and green are pulled toward the centre by their wavelength's distance from blue, growing from
+   * `start` — a share of the half-frame, 0 the centre — to the whole of it at the edge. Applied to
+   * scene light at the composite's first read. Needs `screenEffects`, and says so once rather than
+   * doing nothing. See `shaders/fringe.ts`.
+   */
+  setChromaticAberration(intensity: number, start = 0): void {
+    if (!this.hasComposite) {
+      this.warnLookWithoutComposite(intensity);
+      return;
+    }
+    resolveFringe(intensity, start, this.fringe);
   }
 
   /**
@@ -15316,9 +15926,27 @@ export class WebGPURenderer implements RendererApi {
     this.rushStrength = Math.min(Math.max(strength, 0), 1);
   }
 
-  /** How much of the frame's camera motion blur to apply, 0 to 1. */
-  setCameraMotionBlur(scale: number): void {
+  /**
+   * How much of the frame's motion blur to apply, 0 to 1, and the longest smear as a share of the
+   * frame, both held until changed. See `RendererApi.setCameraMotionBlur`.
+   */
+  setCameraMotionBlur(scale: number, maxShare = MOTION_BLUR_MAX_UV): void {
     this.motionBlurScale = Math.min(Math.max(scale, 0), 1);
+    this.motionBlurMax = clampMotionShare(maxShare);
+  }
+
+  /** The longest smear, as a share of the frame. See `setCameraMotionBlur`. */
+  private motionBlurMax = MOTION_BLUR_MAX_UV;
+  private warnedObjectBlur = false;
+
+  /**
+   * Said once: a draw named where it was last frame while the frame blurs, and this frame keeps no
+   * motion target to blur it by — the camera's motion alone smears it. See `OBJECT_BLUR_UNKEPT`.
+   */
+  private warnObjectBlur(): void {
+    if (this.warnedObjectBlur) return;
+    this.warnedObjectBlur = true;
+    console.warn(OBJECT_BLUR_UNKEPT);
   }
   /**
    * The camera has cut: this frame is a new shot, not the next moment of the last one.
@@ -15927,17 +16555,18 @@ export class WebGPURenderer implements RendererApi {
      * `bindMeshPass` and `drawMesh`, which record into whatever `this.pass` is. That is the same
      * arrangement `bakeFace` uses for a point light's cube, and it is why a bake must not be
      * opened inside a frame's pass by a caller who then expects the frame to continue.
-     */
-    const savedPass = this.pass;
-    /*
+     *
      * **A bake is a boundary, and boundaries flush.** The mirror says why in its own words: what
      * has been recorded and not yet replayed belongs to the pass that is about to end, and leaving
      * it replays it into whichever pass opens next — a draw in the wrong target rather than a
      * missing one. This is the fourth such boundary in the backend and the only one that was never
      * given the treatment, which is what let a bake carry the frame's pending draws into a cube
-     * face.
+     * face. **The pass is saved after the flush**, which opens it where none was: saved before,
+     * the null given back left the flushed pass open and the frame's encoder locked. See
+     * `captureScene`.
      */
     if (this.quality.frameGraph) this.flushGraph();
+    const savedPass = this.pass;
     const savedEncoder = this.encoder;
     /*
      * **The rings are marked here and given back after the submit below**, because this bake is its
@@ -16629,6 +17258,7 @@ export class WebGPURenderer implements RendererApi {
       this.sceneColor,
       this.sceneColorMsaa,
       this.refractSnapshot,
+      this.passColour,
       this.resolvedDepth,
       this.aoTarget,
       this.aoScratch,
@@ -16698,6 +17328,9 @@ export class WebGPURenderer implements RendererApi {
       usage: 0x4 | 0x2 | 0x10, // TEXTURE_BINDING | COPY_DST | RENDER_ATTACHMENT
     });
     this.refractSnapshotView = this.refractSnapshot.createView();
+    this.passColour = null;
+    this.passColourView = null;
+    if ((this.passReadsUnion & COLOR_SNAPSHOT) !== 0) this.allocatePassColour();
     this.refractMips = new SnapshotMips(
       device,
       this.pipelines,
@@ -16926,6 +17559,10 @@ export class WebGPURenderer implements RendererApi {
       usage: USAGE,
     });
     this.ssrReflectionView = this.ssrReflection.createView();
+    /* The frame's materials, at the scene's size; a stand-in where nothing traces them. */
+    this.reflectionSurface?.size(width, height);
+    const probeMap = this.reflectionSurface?.probeView ?? this.blankView;
+    const tintMap = this.reflectionSurface?.tintView ?? this.blankView;
     this.ssrBindGroup =
       this.resolvedDepthView === null || this.sceneColorView === null
         ? null
@@ -16939,8 +17576,23 @@ export class WebGPURenderer implements RendererApi {
               },
               ...entry(SSR_TEXTURES.uSsrDepth, this.resolvedDepthView, true),
               ...entry(SSR_TEXTURES.uSsrScene, this.sceneColorView),
+              ...entry(SSR_TEXTURES.uSsrProbeMap, probeMap),
+              ...entry(SSR_TEXTURES.uSsrTintMap, tintMap),
             ],
           });
+    this.ssrMaterialGroup = device.createBindGroup({
+      label: 'post.ssrMaterialGroup',
+      layout: this.ssrMaterialLayout,
+      entries: [
+        {
+          binding: SSR_MATERIAL_UNIFORMS,
+          resource: { buffer: this.ssrMaterialUniforms, size: SSR_MATERIAL_SIZE },
+        },
+        ...entry(SSR_MATERIAL_TEXTURES.uSsrReflection, this.ssrReflectionView),
+        ...entry(SSR_MATERIAL_TEXTURES.uSsrProbeMap, probeMap),
+        ...entry(SSR_MATERIAL_TEXTURES.uSsrTintMap, tintMap),
+      ],
+    });
     this.ssrResolveGroup = device.createBindGroup({
       label: 'post.ssrResolveGroup',
       layout: this.ssrResolveLayout,

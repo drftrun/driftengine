@@ -61,7 +61,7 @@ source. A source the device cannot take is refused by name rather than decoded, 
 ships no decoder; the model loader in `@driftengine/assets` asks first and decodes at load where the
 answer is no, so an imported model's BC images reach every device. It decodes in a worker when you
 name one, `new DrftLoader(renderer, { bcWorker: spawnBcWorker })` with `spawnBcWorker` from
-`@driftengine/assets/src/bcWorkers.ts`, and on the main thread otherwise, saying so once: the
+`@driftengine/assets/bcWorkers`, and on the main thread otherwise, saying so once: the
 factory has a specifier of its own so that a game which never names it carries no worker in its
 build. On a phone, where every BC texture is decoded, name it. A two-channel BC5 normal map keeps its
 two channels and the lit stage rebuilds the third.
@@ -463,6 +463,68 @@ A few properties apply to the draws that follow, without a map:
   draw's own `fog` option still decides for that draw.
 
 Each resets with `bindMeshPass`, so a pass starts from the defaults.
+
+## Overlays: a rim, a dissolve, wrinkles
+
+`setSurfaceOverlay(overlay)` lays something over the surfaces of the draws that follow, beyond their
+materials: one character's whole set of materials changes together while another's does not. Like
+the dials above it is per draw and resets with `bindMeshPass`; pass `null` to take it off.
+
+```ts sample=snippets/overlays.ts#overlay
+/** A character in its heat: an orange rim over all of it, and its edges burning away. */
+export function drawInHeat(
+  renderer: RendererApi,
+  character: readonly Part[],
+  atlas: SurfaceTextureHandle,
+): void {
+  const noise = { scale: [0.5, 0.5], offset: [0, 0] } as const;
+  renderer.setSurfaceOverlay({
+    maps: atlas,
+    rim: {
+      colour: [1, 0.45, 0.1],
+      intensity: 2,
+      noise: { region: noise, scroll: [0, 0.2], tiling: 3 },
+      pulse: { rate: 1.257, low: 0.6, high: 1 },
+    },
+    dissolve: {
+      noise: { region: noise },
+      threshold: 0.4,
+      edgeColour: [0.3, 0.8, 1],
+      edgeIntensity: 4,
+    },
+  });
+  for (const part of character) renderer.drawMesh(part.mesh, part.model);
+  renderer.setSurfaceOverlay(null);
+}
+```
+
+- **`rim`** (`SurfaceRim`) glows along the silhouette: an edge `(1 − N·V)^falloff`, leaning toward
+  normals that face up, raised to a contrast, times a noise laid in screen space and scrolled, a slow
+  pulse on the environment's `surfaceTime`, and a mask in the mesh's uv that erases it. It is added
+  to what the surface emits and, unlike emission, is not gated on `nightFactor`.
+- **`dissolve`** (`SurfaceDissolve`) cuts the surface away where a noise in its uv falls under
+  `threshold`, with a glowing band of width `edge` just above it, and can lay a colour over the
+  surface through the same noise. 0 keeps everything and 1 cuts everything.
+- **`wrinkle`** (`SurfaceWrinkle`) blends a second normal map into the surface's by six region
+  weights, read through two masks: the first mask's red, green and blue carry regions 1 to 3, the
+  second's regions 4 to 6. A face's expressions, or veins brought up all over.
+
+**Every image is a region of one atlas**, `maps`, named by an `OverlayRegion`: its size and its
+corner in the atlas's uv. The lit stage has no sampler to spare for images of their own, so the
+atlas is read where the frame's refraction copy goes. Paint the noise, the masks and the wrinkle
+normal into one image, uploaded `colorSpace: 'linear'` with `mipmap: false`. Without `maps`, no image
+is read: a rim is smooth, and nothing dissolves or wrinkles.
+
+What it gives up:
+
+- **A draw that refracts or is glass reads none of the overlay's images**, because its own copy of
+  the frame takes that slot. It keeps its refraction, and the engine says so once.
+- **The dissolve cuts the lit pass only.** Shadows and depth-only passes still see the whole surface.
+- **The GPU-driven pipeline draws no overlay**; a character wearing one is drawn with `drawMesh`.
+- **On WebGL2 the overlay takes fifteen fragment uniform vectors**, which a part offering 256 has no
+  room for at the eight-light budget. There the overlay is refused, said once, and the draws wear
+  none; a lower `maxLights` makes the room. WebGL2 also cannot copy a compressed atlas into the 2D
+  image the stage reads, so upload the atlas from an image.
 
 ## Reflections
 

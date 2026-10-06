@@ -23,10 +23,15 @@
  *
  * ```ts
  * import { PhysicsWorld } from '@driftengine/physics';
- * import { createIslandPool } from '@driftengine/physics/src/workers.ts';
+ * import { createIslandPool } from '@driftengine/physics/workers';
  *
  * const world = new PhysicsWorld({ workers: 4, pool: createIslandPool });
  * ```
+ *
+ * **A declared subpath, so it resolves the way the barrel does**: to the build by default and to
+ * this file under `drift-source`. The path into `src/` documented until it was declared still
+ * resolves, through the manifest's `./*` passthrough, and hands every consumer TypeScript inside
+ * `node_modules`, which is the default the 2026-09-13 flip took away from the barrels.
  *
  * `scripts/worker-entry.test.mjs` bundles the barrel and asserts it names no worker, because every
  * gate in this repository passed while the chunk was shipping.

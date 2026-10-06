@@ -357,7 +357,7 @@ describe('every binding, as a set', () => {
    * **`drift/render` is bound, and it binds the dials rather than the profile.**
    *
    * `RenderQuality` has fifty fields and none of them are reachable from a script. What is
-   * here is the eight per-frame presentation dials — the split `renderQuality.ts` already argues for
+   * here is the nine per-frame presentation dials — the split `renderQuality.ts` already argues for
    * depth of field, where a ceiling says what a pass may cost and a dial says how much of it this
    * frame takes. A profile is chosen once from what a device can afford and is clamped against what
    * the adapter reports; a dial is what a game drives, and only the second is a script's business.
@@ -375,6 +375,7 @@ describe('every binding, as a set', () => {
       'bloom',
       'bloomAbove',
       'exposure',
+      'filmic',
       'focus',
       'medium',
       'motionBlur',
@@ -385,6 +386,22 @@ describe('every binding, as a set', () => {
       expect(dial.effects, `${dial.name} declares more than the view`).toEqual(['scene.write']);
       expect(dial.deterministic, `${dial.name} claims determinism`).toBe(false);
     }
+  });
+
+  /**
+   * **`filmic` hands over all five numbers, and in the order the curve names them.** A curve with
+   * one number defaulted is a curve a script author cannot read without the engine's source, and a
+   * slope and a toe swapped is a picture that is merely a little wrong.
+   */
+  it('FILMIC SETS THE CURVE WITH ALL FIVE OF ITS NUMBERS, BY NAME', async () => {
+    const { renderImplementation } = await import('./bindings/render.ts');
+    const calls: unknown[] = [];
+    const renderer = { setFilmicCurve: (curve: unknown) => calls.push(curve) };
+    const filmic = renderImplementation()['filmic'] as (...args: unknown[]) => void;
+    filmic(renderer, 0.9, 0.5, 0.3, 0.01, 0.05);
+    expect(calls).toEqual([
+      { slope: 0.9, toe: 0.5, shoulder: 0.3, blackClip: 0.01, whiteClip: 0.05 },
+    ]);
   });
 
   /**

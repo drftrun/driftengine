@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/physics",
-  "version": "4.8.7",
+  "version": "4.9.0",
   "description": "Collision shapes, spatial queries and swept kinematic collision",
   "license": "Apache-2.0",
   "type": "module",
@@ -11,6 +11,11 @@
       "drift-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./workers": {
+      "drift-source": "./src/workers.ts",
+      "types": "./dist/workers.d.ts",
+      "default": "./dist/workers.js"
     },
     "./package.json": "./package.json",
     "./*": "./*"

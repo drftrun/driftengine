@@ -14,7 +14,7 @@
  * Nothing here allocates per frame once the batches are bound.
  */
 import { DrftLoader, writePartMaterial } from '@driftengine/assets';
-import { spawnBcWorker } from '@driftengine/assets/src/bcWorkers.ts';
+import { spawnBcWorker } from '@driftengine/assets/bcWorkers';
 import type { DrftPart } from '@driftengine/assets';
 import type {
   RendererApi,

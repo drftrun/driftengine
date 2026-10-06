@@ -157,6 +157,11 @@ the sky, lines, plumes, bolts and particles. A translucent draw can opt out with
   like 0.05 makes a valley hazy and the view from the ridge clear.
 - `fogColor` is what distant things fade to. Match it to the sky's horizon, or the horizon line
   shows.
+- `fogStart` is how far along the view ray the haze begins, in metres; it is 0, at the camera,
+  unless set. Nearer than that the air is perfectly clear, and beyond it the haze is the same
+  extinction, integrated from that point on. A faint, bright fog starting ten metres out hazes a
+  far crowd and leaves the figures in front of the camera sharp, where the same fog from the eye
+  would veil the whole frame. It does nothing in `'linear'` mode, which has `fogNear`.
 
 `fogMode: 'linear'` is a different look: nothing at all nearer than `fogNear`, the fog colour
 completely at `fogFar`, and a straight ramp between. It cannot be had from the exponential curve at
