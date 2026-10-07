@@ -71,7 +71,7 @@ with `spawnBcWorker` from `@driftengine/assets/bcWorkers`; without one the decod
 thread and the loader says so once. **On a phone, the worker does more**: where the device samples
 ETC2 and not BC, a second worker re-encodes each decoded texture as ETC2 or EAC and swaps it in
 behind its handle, at half a byte a texel, or a byte with alpha, where the decoded image holds four.
-The picture arrives as soon as it did before; the encode follows on a core of its own, about 0.7 s
+The picture arrives when it did before; the encode follows on a core of its own, about 0.7 s
 for a 2048² image on a desktop processor and several times that on a phone's.
 
 Textures compressed for a phone ahead of time skip both steps. `readKtx2` from `@driftengine/assets`

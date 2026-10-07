@@ -281,8 +281,8 @@ export function recordStage(
 }
 ```
 
-`createStaticDraws` takes the same enumeration `drawSceneCasters` does — rigid meshes and instanced
-batches, each with its material — once, and keeps it. `drawStaticDraws(stage)` draws it into the
+`createStaticDraws` takes the same enumeration `drawSceneCasters` does, once, and keeps it: rigid
+meshes and instanced batches, each with its material. `drawStaticDraws(stage)` draws it into the
 open mesh pass under whatever camera, lights and fog `bindMeshPass` set, so the same list serves the
 frame, a mirror and a capture. On WebGPU a list is a render bundle for each view, replayed with one
 call and recorded again only when something it was recorded against changes; WebGL2 replays the
