@@ -142,44 +142,90 @@ export function hoistDefines(source) {
  *
  * Returns the bindings it assigned as well as the source, because the renderer has to bind
  * the same numbers and the only way those two agree is for one of them to be told.
+ *
+ * **A uniform marked `// wgsl:<kind>` goes into a block of its own, at `marked[kind]`.** A stage
+ * holds numbers that change at different rates, and one block uploads all of them whenever any
+ * changes. Two kinds are marked today. In the lit fragment stage, `material`: what a material sets
+ * per draw, apart from what a pass settles once — the lights, the fog, the camera — which are
+ * kilobytes, so a material change is the material's own few hundred bytes, and a material that has
+ * not changed since the last frame is nothing at all. In the lit vertex stage, `view`: the camera,
+ * the light's matrix and the wind, which are the pass's, apart from what is the draw's own, so a
+ * draw's block does not change when the camera moves and a list of draws can be kept across frames.
+ * Each block is anonymous, for the reason the first is, and named `<Kind>Uniforms`. A stage given no
+ * binding for a kind refuses its marker rather than dropping the uniform into the first block, where
+ * the renderer would write it at the wrong offset.
  */
-export function hoistUniformBlock(source, binding = 0) {
+export function hoistUniformBlock(source, binding = 0, marked = {}) {
   const members = [];
+  const kinds = Object.keys(marked);
+  const groups = Object.fromEntries(kinds.map((kind) => [kind, []]));
   const lines = source.split('\n');
   const rewritten = lines.map((line) => {
     const bare = line.replace(/\/\/.*$/, '').trim();
     const match = new RegExp(`^uniform\\s+${PRECISION}(.+);$`).exec(bare);
     if (match === null) return line;
     if (OPAQUE.test(match[1])) return line;
-    members.push(`  ${match[1]};`);
+    const marker = /\/\/\s*wgsl:(\w+)\b/.exec(line);
+    if (marker !== null && marker[1] !== 'override' && marker[1] !== 'share') {
+      const kind = marker[1];
+      if (groups[kind] === undefined) {
+        throw new Error(
+          `${match[1].trim().split(/\s+/).pop()?.replace(/\[.*$/, '')} is marked wgsl:${kind} ` +
+            `in a stage with no binding for a ${kind} block`,
+        );
+      }
+      groups[kind].push(`  ${match[1]};`);
+    } else {
+      members.push(`  ${match[1]};`);
+    }
     return `/*hoisted: ${match[1]}*/`;
   });
 
-  if (members.length === 0) return { source, bindings: { uniforms: null } };
+  const markedCount = kinds.reduce((sum, kind) => sum + groups[kind].length, 0);
+  if (members.length === 0 && markedCount === 0) return { source, bindings: { uniforms: null } };
+  if (members.length === 0) throw new Error('a marked block needs a first block beside it');
 
   /* A narrow array may not keep its natural stride in here. See `padNarrowArrays`. */
-  const padded = padNarrowArrays(members, rewritten.join('\n'));
-  members.length = 0;
-  members.push(...padded.members);
+  let padded = padNarrowArrays(members, rewritten.join('\n'));
+  const firstMembers = padded.members;
+  const paddedGroups = {};
+  for (const kind of kinds) {
+    padded = padNarrowArrays(groups[kind], padded.source);
+    paddedGroups[kind] = padded.members;
+  }
   const body = padded.source.split('\n');
 
   /*
    * The byte layout goes out with the bindings, because the renderer has to write each value
    * at exactly the offset the shader reads it from and nothing checks that at runtime.
    */
-  const layout = blockLayout(
-    members.map((member) => member.trim().replace(/;$/, '')),
-    numericDefines(source),
-  );
+  const defines = numericDefines(source);
+  const layoutOf = (list) =>
+    blockLayout(
+      list.map((member) => member.trim().replace(/;$/, '')),
+      defines,
+    );
+  const layout = layoutOf(firstMembers);
 
   const at = Math.max(
     body.findIndex((line) => line.startsWith('/*hoisted:')),
     0,
   );
-  const block = [`layout(binding=${binding}) uniform Uniforms {`, ...members, '};'];
+  const block = [`layout(binding=${binding}) uniform Uniforms {`, ...firstMembers, '};'];
+  const bindings = { uniforms: binding, uniformSize: layout.size, fields: layout.fields };
+  for (const kind of kinds) {
+    const list = paddedGroups[kind];
+    if (list.length === 0) continue;
+    const kindLayout = layoutOf(list);
+    const name = `${kind[0].toUpperCase()}${kind.slice(1)}Uniforms`;
+    block.push(`layout(binding=${marked[kind]}) uniform ${name} {`, ...list, '};');
+    bindings[`${kind}Uniforms`] = marked[kind];
+    bindings[`${kind}Size`] = kindLayout.size;
+    bindings[`${kind}Fields`] = kindLayout.fields;
+  }
   return {
     source: [...body.slice(0, at), ...block, ...body.slice(at)].join('\n'),
-    bindings: { uniforms: binding, uniformSize: layout.size, fields: layout.fields },
+    bindings,
   };
 }
 
@@ -500,8 +546,8 @@ export function overridableConstants(source) {
  * silently walk into the range next door.
  */
 const BINDING_BASE = {
-  vertex: { uniforms: 0, samplers: 16 },
-  fragment: { uniforms: 1, samplers: 32 },
+  vertex: { uniforms: 0, marked: { view: 3 }, samplers: 16 },
+  fragment: { uniforms: 1, marked: { material: 2 }, samplers: 32 },
 };
 
 /**
@@ -520,7 +566,11 @@ export function transform(source, stage = 'fragment') {
   const fetchable = requestSamplerlessExtension(separated);
   const { source: specialised, overrides } = overridableConstants(fetchable);
   const defined = hoistDefines(specialised);
-  const { source: blocked, bindings: uniformBindings } = hoistUniformBlock(defined, bases.uniforms);
+  const { source: blocked, bindings: uniformBindings } = hoistUniformBlock(
+    defined,
+    bases.uniforms,
+    bases.marked,
+  );
   return {
     source: mapLocations(blocked),
     /* Only where a shader has one, so no other shader's generated bindings change shape. */

@@ -29,8 +29,8 @@ import { SkinPaletteTexture } from './skinPaletteTexture.ts';
  * different rig at every set — the comparison is what tells the two apart.
  *
  * **It was capped at 128 until 4.8.6, and the cap declined draws.** A stage of three dozen idling
- * extras beside two fighters filled it in one frame and every skinned draw past it was refused, so
- * the consumer stood its crowd in the bind pose. The ring now holds as many palettes as a frame
+ * extras beside two characters filled it in one frame and every skinned draw past it was refused,
+ * so the consumer stood its crowd in the bind pose. The ring now holds as many palettes as a frame
  * holds draws (`RenderQuality.drawsPerFrame`), since no frame can bind more palettes than it draws;
  * a slot still allocates its texture only the first time a frame reaches it, so a scene with two
  * characters holds two. **What it costs** is a texture and a cached bind group a slot, 1.5 KB for a
@@ -46,8 +46,12 @@ import { SkinPaletteTexture } from './skinPaletteTexture.ts';
  */
 export class SkinPaletteRing {
   private readonly slots: SkinPaletteTexture[] = [];
-  /** What each slot was last written with, for the comparison that lets a pass reuse it. */
+  /**
+   * What each slot was last written with, for the comparison that lets a pass reuse it: a copy
+   * that grows with the largest rig the slot has held, and how much of it the last rig filled.
+   */
   private readonly held: Float32Array[] = [];
+  private readonly heldLength: number[] = [];
   /** The slot each palette array last went into, by identity. Weak, so a caller's array can go. */
   private readonly lastSlot = new WeakMap<Float32Array, number>();
   private used = 0;
@@ -119,12 +123,13 @@ export class SkinPaletteRing {
     slot.update(device, palette);
     this.uploads += 1;
     let copy = this.held[at];
-    if (copy === undefined || copy.length !== palette.length) {
-      /* Once per slot and joint count, the way the slot's own texture is: never per frame. */
+    if (copy === undefined || copy.length < palette.length) {
+      /* Once per slot and larger rig, the way the slot's own texture is: never per frame. */
       copy = new Float32Array(palette.length);
       this.held[at] = copy;
     }
     copy.set(palette);
+    this.heldLength[at] = palette.length;
     this.lastSlot.set(palette, at);
     return at;
   }
@@ -138,14 +143,15 @@ export class SkinPaletteRing {
     for (const slot of this.slots) slot.dispose();
     this.slots.length = 0;
     this.held.length = 0;
+    this.heldLength.length = 0;
     this.used = 0;
   }
 
   /** Whether a slot was last written with exactly these numbers. */
   private holds(slot: number, palette: Float32Array): boolean {
     const copy = this.held[slot];
-    if (copy === undefined || copy.length !== palette.length) return false;
-    for (let i = 0; i < copy.length; i++) if (copy[i] !== palette[i]) return false;
+    if (copy === undefined || this.heldLength[slot] !== palette.length) return false;
+    for (let i = 0; i < palette.length; i++) if (copy[i] !== palette[i]) return false;
     return true;
   }
 }

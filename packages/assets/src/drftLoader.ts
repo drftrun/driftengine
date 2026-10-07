@@ -2,7 +2,11 @@
 
 import type { MeshData } from '@driftengine/drft';
 import type { MeshHandle, RendererApi } from '@driftengine/core';
-import type { GlassOptions, SurfaceTextureHandle } from '@driftengine/core';
+import type {
+  CompressedTextureSource,
+  GlassOptions,
+  SurfaceTextureHandle,
+} from '@driftengine/core';
 import { MeshBuilder, concatMeshes, placeMesh } from '@driftengine/core';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { DrftSdfvEntry } from '@driftengine/drft';
@@ -11,6 +15,8 @@ import type { DrftFieldPlacement } from './fieldPlacement.ts';
 import type { DrftTexture } from '@driftengine/drft';
 import { TextureSet, textureColorSpaces } from './drftTextures.ts';
 import { bcPlan, createBcDecoder } from './bcLoad.ts';
+import { createEtc2Encoder, etc2Plan } from './etc2Load.ts';
+import type { Etc2Encoder } from './etc2Load.ts';
 import type { BcDecoder, BcWorker } from './bcLoad.ts';
 import { decodeBc } from './bcDecode.ts';
 import { isCompressedSource, uploadsCompressed } from '@driftengine/core';
@@ -87,6 +93,12 @@ export interface DrftLoaderOptions {
    * `spawnBcWorker`, from `@driftengine/assets/bcWorkers`. Absent, they decode on the main
    * thread and the loader says so once — the factory is behind its own specifier so a consumer that
    * never names it has no worker in its build. See `bcWorkers.ts`.
+   *
+   * **On a device that samples ETC2 and not BC**, which is a phone, a second worker from the same
+   * factory then re-encodes each such texture as ETC2 or EAC and swaps the chain in behind the
+   * handle its decoded image went up under, at half a byte a texel, or a byte with alpha, where the
+   * image holds four. Nothing arrives later for it; see `etc2Load.ts` for what it costs. Without a worker
+   * the textures stay RGBA.
    */
   readonly bcWorker?: () => BcWorker;
   /**
@@ -340,6 +352,15 @@ export class DrftLoader {
   /** Started at the first BC texture that has to be decoded, and only then. See `bcLoad.ts`. */
   private bcDecoder: BcDecoder | null = null;
   private warnedBc = false;
+  /** Started at the first BC texture this device takes better as ETC2. See `etc2Load.ts`. */
+  private etc2Encoder: Etc2Encoder | null = null;
+  private warnedEtc2 = false;
+  /** Encoded chains whose image has not gone up yet, swapped in by `update` once it has. */
+  private readonly swaps: {
+    readonly ordinal: number;
+    readonly blocks: CompressedTextureSource;
+    readonly source: BcImage;
+  }[] = [];
   private readonly chunks: DrftTexture[] = [];
   private materials: readonly DrftMaterial[] = [];
   /**
@@ -1008,6 +1029,18 @@ export class DrftLoader {
       begun++;
     }
 
+    /* An encoded chain whose image has gone up since it arrived; one a frame, as images go. */
+    if (this.swaps.length > 0 && mayBeginMore(begun, performance.now() - startedMs, msBudget)) {
+      for (let at = 0; at < this.swaps.length; at++) {
+        const swap = this.swaps[at] as (typeof this.swaps)[number];
+        if (!this.swapIn(swap.ordinal, swap.blocks, swap.source)) continue;
+        this.swaps.splice(at, 1);
+        changed = true;
+        begun++;
+        break;
+      }
+    }
+
     const revealSec = this.options.revealSec ?? DEFAULT_REVEAL_SEC;
     for (const part of this.revealed) {
       if (part.reveal >= 1) continue;
@@ -1069,6 +1102,9 @@ export class DrftLoader {
     this.regionStore.dispose();
     this.bcDecoder?.dispose();
     this.bcDecoder = null;
+    this.etc2Encoder?.dispose();
+    this.etc2Encoder = null;
+    this.swaps.length = 0;
     /*
      * Everything this class ever made, each disposed once.
      *
@@ -1543,8 +1579,59 @@ export class DrftLoader {
         }
         const pixels = imageDataOf(rgba, image.width, image.height);
         done(asImage ? await createImageBitmap(pixels, AS_AUTHORED) : pixels);
+        if (!asImage) this.encodeLater(image, ordinal, srgb);
       })
       .catch(failed);
+  }
+
+  /**
+   * A BC texture just decoded for the picture, re-encoded as ETC2 or EAC where this device samples
+   * that and not BC, and swapped in behind its handle when the chain comes back — at once where the
+   * image has gone up, and from `update` where it is still queued. See `etc2Load.ts`.
+   */
+  private encodeLater(image: BcImage, ordinal: number, srgb: boolean): void {
+    const spawn = this.options.bcWorker;
+    if (spawn === undefined || !etc2Plan(image, srgb, this.renderer.compressedFormats)) return;
+    if (this.etc2Encoder === null) this.etc2Encoder = createEtc2Encoder(spawn);
+    const encoder = this.etc2Encoder;
+    encoder
+      .encode(image, srgb)
+      .then((blocks) => {
+        if (this.disposed) return;
+        if (!this.swapIn(ordinal, blocks, image))
+          this.swaps.push({ ordinal, blocks, source: image });
+      })
+      .catch((error: unknown) => {
+        /* Said once: the texture stays the image it already is, which is a cost and not a fault. */
+        if (this.disposed || this.warnedEtc2) return;
+        this.warnedEtc2 = true;
+        console.warn(
+          `DrftLoader: ${encoder.reason !== '' ? encoder.reason : `image ${ordinal} did not re-encode as ETC2 and stays RGBA`}`,
+          error,
+        );
+      });
+  }
+
+  /**
+   * An encoded chain into the texture its image went up as: false where that texture is not made
+   * yet. **The decoded image is let go**, and the BC blocks it came from held in its place — a
+   * view over the file the loader keeps anyway — so a texture made again from them later decodes
+   * as it first did. A chain the texture refuses, where the slot came to read a colour space the
+   * blocks have no twin in, leaves the image where it is.
+   */
+  private swapIn(ordinal: number, blocks: CompressedTextureSource, source: BcImage): boolean {
+    const held = this.textureSet?.at(ordinal) ?? null;
+    if (held === null) return false;
+    try {
+      this.renderer.updateSurfaceTexture(held, blocks);
+      this.images[ordinal] = source;
+    } catch (error) {
+      if (!this.warnedEtc2) {
+        this.warnedEtc2 = true;
+        console.warn(`DrftLoader: image ${ordinal} stays RGBA`, error);
+      }
+    }
+    return true;
   }
 
   /**

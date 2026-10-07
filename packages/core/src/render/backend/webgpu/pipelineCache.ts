@@ -58,6 +58,12 @@ export class PipelineCache {
 
   /** How to describe each lit pipeline again, so `enable` can rebuild every one. */
   private readonly litDescribers = new Map<string, () => GPURenderPipelineDescriptor>();
+  /**
+   * Bumped when a switch's rebuilt set lands, which replaces pipelines already handed out: a holder
+   * of one — a recorded render bundle — compares this and records again rather than drawing on
+   * with the pipelines from before the switch.
+   */
+  version = 0;
   /** Bumped by every switch, so a lit build started before one is not kept after it. */
   private litGeneration = 0;
   /** The last rebuild, which the next one waits for so they land in the order they were asked. */
@@ -220,6 +226,7 @@ export class PipelineCache {
       for (const result of results) {
         if (result.status === 'fulfilled') this.pipelines.set(result.value[0], result.value[1]);
       }
+      this.version += 1;
     });
     return this.litRebuild;
   }

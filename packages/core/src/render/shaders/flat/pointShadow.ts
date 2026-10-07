@@ -13,7 +13,7 @@
  * picture and is its own change.
  */
 import { MAX_SHADOW_FILTER_TAPS } from '../../renderQuality.ts';
-import { OUTPUT_TRANSFORM_GLSL } from '../outputTransform.ts';
+import { LIT_OUTPUT_TRANSFORM_GLSL } from '../outputTransform.ts';
 import { LAMP_GLASS_GLSL } from './lampGlass.ts';
 
 export const POINTSHADOW_GLSL = `/**
@@ -344,7 +344,7 @@ ${LAMP_GLASS_GLSL}
 
 layout(location = 0) out vec4 outColor;
 
-${OUTPUT_TRANSFORM_GLSL}
+${LIT_OUTPUT_TRANSFORM_GLSL}
 
 /**
  * A fixed Poisson disk avoids the grid-shaped edge left by square 3x3 PCF.

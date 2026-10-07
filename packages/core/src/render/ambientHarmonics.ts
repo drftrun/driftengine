@@ -4,7 +4,7 @@
  *
  * **Why a draw needs its own.** The engine's diffuse ambient is one answer for a whole frame — the
  * sky-and-ground gradient, or the probe grid's irradiance — so everything standing in one place is
- * lit alike. A stage with a baked volume of indirect light (Unreal's volumetric lightmap) lights a
+ * lit alike. A stage with a baked volume of indirect light (a volumetric lightmap) lights a
  * character by sampling that volume where the character stands; a consumer that samples it each
  * frame hands the result here, around that character's draws, and the character takes the light of
  * the spot it is in rather than the frame's average.

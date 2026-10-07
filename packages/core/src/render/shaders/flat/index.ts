@@ -21,7 +21,8 @@ import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { overlayGlsl } from './overlay.ts';
 import { reflectionSurfaceGlsl } from './reflectionSurface.ts';
-import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from '../vertexChannel.ts';
+import { CHANNEL_BEND, LIT_CHANNEL_ATTRIBUTE } from '../vertexChannel.ts';
+import { BONE_ANIMATION_GLSL } from '../boneAnimation.ts';
 import { FULL_LIGHT_BUDGET, type LightBudget } from '../../uniformVectorBudget.ts';
 
 /**
@@ -56,10 +57,16 @@ layout(location = 10) in vec4 aTangent;
 ${SKINNING_GLSL}
 #endif
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -122,6 +129,9 @@ layout(location = 15) in vec4 aInstanceTint;
  * opacity of one. See lightmap.ts.
  */
 const bool LIGHTMAP_REGIONS = false; // wgsl:override
+#if ANIMATED
+${BONE_ANIMATION_GLSL}
+#endif
 #else
 uniform mat4 uModel;
 /**
@@ -147,7 +157,7 @@ uniform vec3 uTint;
  * agreeing about where the shared uniforms sit: the instanced variant drops these five along with
  * the two above it, and a dropped field moves nothing. flatPass.ts asserts exactly that.
  */
-${CHANNEL_ATTRIBUTE}
+${LIT_CHANNEL_ATTRIBUTE}
 ${CHANNEL_BEND}
 #endif
 
@@ -244,6 +254,10 @@ void main() {
   vec4 local = vec4(basePosition, 1.0);
   vec3 localNormal = aNormal;
   vec3 localTangent = aTangent.xyz;
+#endif
+#if ANIMATED
+  /* The clip's turn and place, in the mesh's own space, before the instance places it. */
+  local = vec4(boneAnimate(local.xyz, localNormal, localTangent), 1.0);
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
@@ -379,6 +393,12 @@ export interface FlatVertexOptions {
    * Excludes `skinned`: the joint attributes and the instance matrix want the same locations.
    */
   readonly instanced: boolean;
+  /**
+   * Whether an instanced variant follows a bone animation: \`shaders/boneAnimation.ts\`. A
+   * variant rather than a pipeline constant, because it declares three textures the other
+   * instanced pipelines would otherwise have to bind stand-ins for. Instanced only.
+   */
+  readonly animated?: boolean;
 }
 
 /**
@@ -401,9 +421,17 @@ export function flatVert(options: FlatVertexOptions): string {
         'so every instance of the batch would wear one expression between them.',
     );
   }
+  if (options.animated === true && !options.instanced) {
+    throw new Error('flatVert: a bone animation is played by an instanced variant alone.');
+  }
   return resolveConditionals(
     FLAT_VERT_SOURCE,
-    { SKINNED: options.skinned, MORPHED: options.morphed, INSTANCED: options.instanced },
+    {
+      SKINNED: options.skinned,
+      MORPHED: options.morphed,
+      INSTANCED: options.instanced,
+      ANIMATED: options.animated === true,
+    },
     'flatVert',
   );
 }

@@ -40,6 +40,33 @@ uniform vec2 uWindSpatialPhase;
 `;
 
 /**
+ * The same, for the lit stage, whose wind lives in its view block: the frame's and not the draw's,
+ * so a draw's own block does not change when the wind does. See `hoistUniformBlock` in
+ * `scripts/wgsl/transform.mjs`. Text otherwise identical, so WebGL2 runs the same program it always
+ * has; the depth stage keeps the unmarked chunk, having no view block.
+ */
+export const LIT_CHANNEL_ATTRIBUTE = `
+layout(location = 13) in vec4 aChannel;
+
+/*
+ * The frame's wind, already converted by \`resolveScatterDeform\` — a normalised direction, metres
+ * of bend, a gust amplitude and a scaled clock.
+ *
+ * **The same numbers the scatter batch reads, and that is the rule rather than an economy.** A
+ * second conversion here would be a second wind however identical its inputs, and the failure is
+ * not localised: it shows up as a scene that does not cohere, a canopy leaning one way while the
+ * grass beneath it leans another, with no single element looking wrong. See "One wind, sampled
+ * once" in AGENTS.md.
+ */
+uniform vec2 uWindDirection; // wgsl:view
+uniform float uWindSpeed; // wgsl:view
+uniform float uWindGust; // wgsl:view
+uniform float uWindTime; // wgsl:view
+/* Spatial frequency of the travelling gust, per metre. */
+uniform vec2 uWindSpatialPhase; // wgsl:view
+`;
+
+/**
  * Where the wind puts a vertex, given how much of it that vertex takes.
  *
  * Phase comes from world position, so neighbouring geometry is never in lockstep and a gust

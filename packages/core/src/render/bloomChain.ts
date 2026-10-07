@@ -86,7 +86,7 @@ export function bloomProfileWarning(quality: {
  * already takes. Absent, or a field absent, is the response every frame had before 4.8.6.
  *
  * **Why it exists: one band over the colour less the threshold washes a stage built for another
- * engine.** Unreal's standard bloom keeps `saturate((L − threshold) / 2)` of a colour rather than
+ * engine.** A ramped bloom keeps `saturate((L − threshold) / 2)` of a colour rather than
  * the colour less the threshold, and spreads it over six bands, each in a tint of its own. A
  * stage authored against that — a threshold of 0.1 and tints summing below one — came out white
  * here, because subtracting so low a threshold keeps nearly every light in the frame at full
@@ -96,8 +96,8 @@ export interface BloomResponse {
   /**
    * Scene units over which a colour comes in, from none of it at the threshold to all of it this
    * far past. **0, the default, subtracts instead**: a colour keeps what it has past the threshold,
-   * the response since bloom shipped. Unreal's is 2 after exposure, so a frame exposed by `e` that
-   * wants it passes `2 / e`, as it passes the threshold over the exposure.
+   * the response since bloom shipped. A ramped bloom's is 2 after exposure, so a frame exposed by
+   * `e` that wants it passes `2 / e`, as it passes the threshold over the exposure.
    *
    * Brightness is still the largest channel rather than luminance, for the reason
    * `shaders/bloom.ts` gives; on a neutral colour the two are equal.

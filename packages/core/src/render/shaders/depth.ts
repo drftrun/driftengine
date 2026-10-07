@@ -5,6 +5,7 @@ import { CUTOUT_DITHER_GLSL } from '../cutoutDither.ts';
 import { SKINNING_GLSL } from './skinning.ts';
 import { CLOTH_BINDING_GLSL } from './clothBinding.ts';
 import { CHANNEL_ATTRIBUTE, CHANNEL_BEND } from './vertexChannel.ts';
+import { BONE_ANIMATION_GLSL } from './boneAnimation.ts';
 
 /**
  * Depth-only shadow pass. Its optional peel mode rejects the first recorded
@@ -78,6 +79,17 @@ uniform vec2 uUvOffset;
 uniform vec2 uAlphaCutout;
 #endif
 
+#if ANIMATED
+/*
+ * **A bone animation's, after every other declaration** so no field of the variants before it
+ * moves: the grain lane the vertex's bone rides in, the scene's clock, and the chunk the colour
+ * pass runs — the same expression, or a crowd's shadow stands still while the crowd moves.
+ */
+layout(location = 8) in float aGrain;
+uniform float uSceneTime;
+${BONE_ANIMATION_GLSL}
+#endif
+
 out vec4 vLightPosition;
 #if CUTOUT
 /* The texture coordinate and, in z, the texture-array layer the face wears. */
@@ -98,6 +110,12 @@ void main() {
   vec4 local = skinMatrix() * vec4(aPosition, 1.0);
 #else
   vec4 local = vec4(aPosition, 1.0);
+#endif
+#if ANIMATED
+  /* Turned and placed as the colour pass turns and places it; its normal and tangent unused. */
+  vec3 animatedNormal = vec3(0.0, 1.0, 0.0);
+  vec3 animatedTangent = vec3(1.0, 0.0, 0.0);
+  local = vec4(boneAnimate(local.xyz, animatedNormal, animatedTangent), 1.0);
 #endif
 #if INSTANCED
   mat4 model = mat4(aInstanceModel0, aInstanceModel1, aInstanceModel2, aInstanceModel3);
@@ -148,14 +166,14 @@ void main() {
 /** The rigid variant: the world, a prop, a mesh with no rig behind it. */
 export const DEPTH_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: false },
+  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: false, ANIMATED: false },
   'depth',
 );
 
 /** The skinned variant, which reads a joint palette and moves the vertex by it. */
 export const DEPTH_SKINNED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: false },
+  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: false, ANIMATED: false },
   'depth-skinned',
 );
 
@@ -169,7 +187,7 @@ export const DEPTH_SKINNED_VERT = resolveConditionals(
  */
 export const DEPTH_INSTANCED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: false },
+  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: false, ANIMATED: false },
   'depth-instanced',
 );
 
@@ -185,14 +203,31 @@ export const DEPTH_INSTANCED_VERT = resolveConditionals(
  */
 export const DEPTH_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: false },
+  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: false, ANIMATED: false },
   'depth-cutout',
 );
 
 export const DEPTH_INSTANCED_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: false },
+  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: false, ANIMATED: false },
   'depth-instanced-cutout',
+);
+
+/**
+ * The variants a crowd casts through: an instanced batch playing a bone animation, its vertices
+ * where the clip puts them at each instance's moment. See `shaders/boneAnimation.ts`. No glass
+ * variant: a crowd is not glass, and a glass batch that animates casts its tint from rest.
+ */
+export const DEPTH_INSTANCED_ANIMATED_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: false, ANIMATED: true },
+  'depth-instanced-animated',
+);
+
+export const DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT = resolveConditionals(
+  DEPTH_VERT_SOURCE,
+  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: false, ANIMATED: true },
+  'depth-instanced-animated-cutout',
 );
 
 export const DEPTH_FRAG = `#version 300 es
@@ -269,27 +304,27 @@ void main() {
  */
 export const GLASS_TINT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: true },
+  { SKINNED: false, INSTANCED: false, CUTOUT: false, GLASS: true, ANIMATED: false },
   'glass-tint',
 );
 export const GLASS_TINT_SKINNED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: true },
+  { SKINNED: true, INSTANCED: false, CUTOUT: false, GLASS: true, ANIMATED: false },
   'glass-tint-skinned',
 );
 export const GLASS_TINT_INSTANCED_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: true },
+  { SKINNED: false, INSTANCED: true, CUTOUT: false, GLASS: true, ANIMATED: false },
   'glass-tint-instanced',
 );
 export const GLASS_TINT_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: true },
+  { SKINNED: false, INSTANCED: false, CUTOUT: true, GLASS: true, ANIMATED: false },
   'glass-tint-cutout',
 );
 export const GLASS_TINT_INSTANCED_CUTOUT_VERT = resolveConditionals(
   DEPTH_VERT_SOURCE,
-  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: true },
+  { SKINNED: false, INSTANCED: true, CUTOUT: true, GLASS: true, ANIMATED: false },
   'glass-tint-instanced-cutout',
 );
 

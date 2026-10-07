@@ -101,6 +101,87 @@ test('hoistUniformBlock reports no binding when a shader has no loose uniforms t
 });
 
 /*
+ * A material's numbers in a block of their own, so a draw changing material uploads that block
+ * and not the lights, the fog and the camera beside it. Laid out from zero like any block, and
+ * told to the renderer the same way the first one is.
+ */
+test('hoistUniformBlock MOVES A UNIFORM MARKED wgsl:material INTO A SECOND BLOCK AT THE NEXT BINDING', () => {
+  const { source, bindings } = hoistUniformBlock(
+    '#version 310 es\nprecision highp float;\n' +
+      'uniform mat4 uView;\n' +
+      'uniform float uOpacity; // wgsl:material\n' +
+      'uniform vec4 uOverlay[3]; // wgsl:material — the rim\n' +
+      'uniform vec3 uCameraPos;\n' +
+      'uniform float uGrain[2]; // wgsl:material\n' +
+      'void main() { float g = uGrain[1]; }\n',
+    1,
+    { material: 2 },
+  );
+  assert.match(
+    source,
+    /layout\(binding=1\) uniform Uniforms \{\n  mat4 uView;\n  vec3 uCameraPos;\n\};/,
+  );
+  assert.match(
+    source,
+    /layout\(binding=2\) uniform MaterialUniforms \{\n  float uOpacity;\n  vec4 uOverlay\[3\];\n  vec4 uGrain\[2\];\n\};/,
+  );
+  /* A narrow array in the second block is widened as it is in the first, and read the same way. */
+  assert.match(source, /float g = uGrain\[1\]\.x;/);
+  assert.equal(bindings.uniforms, 1);
+  assert.equal(bindings.uniformSize, 80);
+  assert.deepEqual(Object.keys(bindings.fields), ['uView', 'uCameraPos']);
+  assert.equal(bindings.materialUniforms, 2);
+  assert.equal(bindings.materialFields['uOpacity'].offset, 0);
+  assert.equal(bindings.materialFields['uOverlay'].offset, 16);
+  assert.equal(bindings.materialFields['uGrain'].offset, 64);
+  assert.equal(bindings.materialSize, 96);
+});
+
+test('hoistUniformBlock REFUSES A wgsl:material UNIFORM IN A STAGE GIVEN NO SECOND BINDING', () => {
+  assert.throws(
+    () =>
+      hoistUniformBlock(
+        '#version 310 es\nuniform float uTime;\nuniform float uOpacity; // wgsl:material\n',
+        0,
+      ),
+    /uOpacity is marked wgsl:material/,
+  );
+});
+
+/*
+ * The vertex stage's twin: what a pass settles — the camera, the light's matrix, the wind — in a
+ * block of its own, so a draw's own block holds only what is the draw's and a list of draws can be
+ * kept from one frame to the next while the camera moves.
+ */
+test('hoistUniformBlock MOVES A UNIFORM MARKED wgsl:view INTO A VIEW BLOCK AT ITS OWN BINDING', () => {
+  const { source, bindings } = hoistUniformBlock(
+    '#version 310 es\n' +
+      'uniform mat4 uViewProj; // wgsl:view\n' +
+      'uniform mat4 uModel;\n' +
+      'uniform float uWindTime; // wgsl:view\n',
+    0,
+    { view: 3 },
+  );
+  assert.match(source, /layout\(binding=0\) uniform Uniforms \{\n  mat4 uModel;\n\};/);
+  assert.match(
+    source,
+    /layout\(binding=3\) uniform ViewUniforms \{\n  mat4 uViewProj;\n  float uWindTime;\n\};/,
+  );
+  assert.equal(bindings.viewUniforms, 3);
+  assert.equal(bindings.viewFields['uWindTime'].offset, 64);
+  assert.equal(bindings.viewSize, 80);
+  assert.equal(bindings.materialUniforms, undefined);
+});
+
+test('hoistUniformBlock reports no second block where nothing is marked', () => {
+  const { source, bindings } = hoistUniformBlock('#version 310 es\nuniform float uTime;\n', 1, {
+    material: 2,
+  });
+  assert.doesNotMatch(source, /MaterialUniforms/);
+  assert.equal(bindings.materialUniforms, undefined);
+});
+
+/*
  * The only rule here whose error came from a device rather than a compiler on this machine.
  * WebKit refuses a uniform array that strides by less than sixteen and Dawn does not, so this
  * one shipped in 1.0.0 and rendered a black screen on every iPhone until somebody looked.

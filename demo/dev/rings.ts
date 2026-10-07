@@ -13,10 +13,12 @@
  *     /rings.html?quads=1200&frames=3&backend=webgpu   whole, because the ring grew
  *     /rings.html?quads=1200&frames=3                  WebGL2, whole either way — the control
  *
- * **Every quad takes a material slot of its own**, which is what `drawTranslucentMesh` with
- * `lit: false` does: it dirties the block and restores it, so the cached slot is invalid on both
- * sides of the call and the next draw takes a fresh one. That is the shape a scene of many small
- * differently-shaded pieces has, and it is the shape the reporting consumer's world has.
+ * **Every quad takes a material slot of its own**, which takes two things: `drawTranslucentMesh`
+ * with `lit: false` dirties the block and restores it, so each draw places a material, and each
+ * quad is a hair less opaque than the last, so no two of those materials are the same numbers —
+ * the store keeps one slot for identical numbers, as of 4.10.0, and would hold the whole grid in
+ * one. That is the shape a scene of many small differently-shaded pieces has, and it is the shape
+ * the reporting consumer's world has.
  *
  * **Opaque quads on a grid, each a flat colour, no overlap.** A missing draw is then a hole of
  * exactly known area rather than a change of shade, so the check can count pixels rather than
@@ -163,11 +165,11 @@ async function main(): Promise<void> {
       const x = (column - (columns - 1) / 2) * PITCH;
       const y = (row - (rows - 1) / 2) * PITCH;
       /*
-       * `lit: false` is what makes this a material change per draw rather than one for the whole
-       * grid — see the note at the top. The tint is a per-draw vertex uniform and would not have
-       * moved the material slot on its own.
+       * `lit: false` and an opacity of its own are what make this a material per draw rather than
+       * one for the whole grid — see the note at the top. The tint is a per-draw vertex uniform
+       * and would not have moved the material slot on its own.
        */
-      renderer.drawTranslucentMesh(quad, model(scratch, x, y), 1, {
+      renderer.drawTranslucentMesh(quad, model(scratch, x, y), 1 - (i + 1) / 65536, {
         lit: false,
         tint: tintFor(i, quads),
       });

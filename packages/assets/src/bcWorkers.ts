@@ -1,5 +1,7 @@
 /**
- * The BC decode worker, behind its own specifier, for the reason `physics/src/workers.ts` gives.
+ * The BC worker — the decode, and on a device that samples ETC2 and not BC the re-encode as ETC2
+ * (`etc2Load.ts`), each in a worker of its own from this factory — behind its own specifier, for
+ * the reason `physics/src/workers.ts` gives.
  *
  * **A bundler emits a worker before it decides the code reaching it is unreachable.** The loader's
  * decoder built its worker with `new Worker(new URL('./bcWorker.ts', import.meta.url))` inside the
@@ -30,7 +32,7 @@
  */
 import type { BcWorker } from './bcLoad.ts';
 
-/** A BC decode worker, as a bundler understands one. Throws where the runtime has no `Worker`. */
+/** A BC worker, as a bundler understands one. Throws where the runtime has no `Worker`. */
 export function spawnBcWorker(): BcWorker {
   // platform: browser default — `DrftLoaderOptions.bcWorker` is the seam a host supplies
   return new Worker(new URL('./bcWorker.ts', import.meta.url), {

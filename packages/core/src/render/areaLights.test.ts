@@ -133,7 +133,7 @@ describe('barn doors', () => {
     expect(doors[0], 'cos 60°').toBeCloseTo(0.5, 6);
     expect(doors[1]).toBeCloseTo(0.3, 6);
     expect(doors[2], 'the default length').toBeCloseTo(0.5, 6);
-    expect(doors[3], "Unreal's 20 cm").toBeCloseTo(0.2, 6);
+    expect(doors[3], 'the 20 cm default').toBeCloseTo(0.2, 6);
     expect(doors.slice(4), 'flat, absent, zero-length and NaN doors').toEqual([
       0, 0, 0, 0, 0, 0, 0, 0,
     ]);

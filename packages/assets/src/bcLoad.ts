@@ -20,6 +20,7 @@ import type { BcImage } from '@driftengine/drft';
 
 import { answerBcRequest } from './bcAnswer.ts';
 import type { BcReply, BcRequest } from './bcAnswer.ts';
+import type { Etc2Request } from './etc2Answer.ts';
 
 export type { BcReply, BcRequest } from './bcAnswer.ts';
 export { answerBcRequest } from './bcAnswer.ts';
@@ -39,9 +40,12 @@ export function bcPlan(
     : 'decode';
 }
 
-/** The part of a worker the decoder uses. A browser `Worker` satisfies it. */
+/**
+ * The part of a worker the decoder and the ETC2 encoder use (`etc2Load.ts`), each starting one of
+ * its own from the same factory. A browser `Worker` satisfies it.
+ */
 export interface BcWorker {
-  postMessage(request: BcRequest, transfer?: Transferable[]): void;
+  postMessage(request: BcRequest | Etc2Request, transfer?: Transferable[]): void;
   terminate(): void;
   onmessage: ((event: { data: unknown }) => void) | null;
   onerror?: ((event: unknown) => void) | null;
@@ -97,7 +101,8 @@ export function createBcDecoder(spawn: (() => BcWorker) | null = null): BcDecode
   if (spawn === null) {
     reason =
       'BC textures decode on the main thread: no worker was named. Pass `bcWorker: spawnBcWorker`, ' +
-      "exported by '@driftengine/assets/bcWorkers', to decode them off it";
+      "exported by '@driftengine/assets/bcWorkers', to decode them off it — and, on a device " +
+      'that samples ETC2 and not BC, to re-encode them as ETC2 rather than hold them as RGBA';
   } else {
     try {
       worker = spawn();

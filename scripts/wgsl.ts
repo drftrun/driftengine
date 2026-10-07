@@ -86,7 +86,7 @@ const PERMUTATIONS: Readonly<Record<string, Readonly<Record<string, readonly str
      * variants, for 1,674 more. One more fragment flag costs 246,925 because a
      * fragment permutation is larger than that window. See `FlatVertexOptions`.
      */
-    flatVert: ['skinned', 'morphed', 'instanced'],
+    flatVert: ['skinned', 'morphed', 'instanced', 'animated'],
   },
   'lightVolume.ts': { lightVolumeFrag: ['directionalShadows'] },
 };
@@ -116,6 +116,17 @@ const EXCLUSIONS: Readonly<Record<string, readonly (readonly string[])[]>> = {
 };
 
 /**
+ * Flags that mean nothing without another, per permuted function: a combination with the first on
+ * and the second off is not emitted. **A bone animation is played by an instanced variant alone**
+ * (`shaders/boneAnimation.ts`), so `animated` without `instanced` would compile the same shader as
+ * the variant without it under another name — a sixth string for nothing — and `flatVert` throws on
+ * it one level up. With the exclusions above, the axis adds one variant: `animated+instanced`.
+ */
+const REQUIRES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  flatVert: { animated: 'instanced' },
+};
+
+/**
  * A shader's name, whether it is a file or a directory with an `index.ts`.
  *
  * Used for the generated file's name *and* for its bindings export, which have to agree:
@@ -132,6 +143,7 @@ function stemOf(file: string): string {
 function combinations(
   flags: readonly string[],
   exclude: readonly (readonly string[])[] = [],
+  requires: Readonly<Record<string, string>> = {},
 ): Record<string, boolean>[] {
   const out: Record<string, boolean>[] = [];
   for (let mask = 0; mask < 1 << flags.length; mask += 1) {
@@ -140,6 +152,9 @@ function combinations(
       options[flag] = (mask & (1 << index)) !== 0;
     });
     if (exclude.some((pair) => pair.every((flag) => options[flag] === true))) continue;
+    if (Object.entries(requires).some(([flag, needs]) => options[flag] && !options[needs])) {
+      continue;
+    }
     out.push(options);
   }
   return out;
@@ -174,7 +189,7 @@ async function sourcesFrom(src: string, file: string): Promise<Source[]> {
     for (const [fn, flags] of Object.entries(permutations)) {
       const build = module[fn];
       if (typeof build !== 'function') throw new Error(`${file}: ${fn} is not exported`);
-      for (const options of combinations(flags, EXCLUSIONS[fn])) {
+      for (const options of combinations(flags, EXCLUSIONS[fn], REQUIRES[fn])) {
         found.push({
           name: fn,
           stage: stageOf(fn),

@@ -8,7 +8,7 @@ import type { Renderer, TranslucentMeshOptions } from './webgl2/renderer.ts';
 import type { InstancedOptions, MeshInstances } from '../instances.ts';
 import type { SurfaceMaterial } from '../surfaceTexture.ts';
 import type { SurfaceOverlay } from '../surfaceOverlay.ts';
-import type { SurfaceSource } from '../compressedSource.ts';
+import type { CompressedTextureSource, SurfaceSource } from '../compressedSource.ts';
 import type { LightmapPage } from '../lightmap.ts';
 import type { DeviceParticles } from '../particlePool.ts';
 import type { ClothBindingData } from '../clothBindingData.ts';
@@ -415,12 +415,22 @@ export type RendererApi = Omit<
   ): boolean;
 
   /**
-   * Replace a texture's pixels, keeping the GPU object and its sampler state.
+   * Replace a texture's pixels, keeping the handle and its sampler state.
    *
    * The binding a draw loop already holds stays valid, so the swap is a swap rather than a
    * rebuild. Not a hot path: it re-uploads the whole image and rebuilds the mip chain.
+   *
+   * **Blocks may replace an image**, at the format's own size and with the chain they carry: the
+   * same picture at a fraction of the memory, which is how a loader that first showed a decoded
+   * image hands the device the blocks it encoded afterwards. Read in the colour space the texture
+   * was made with, and refused as `createSurfaceTexture` refuses them where the device does not take
+   * that format (`compressedFormats`). **The way back is refused**: a texture holding blocks takes
+   * no image, since nothing could say what its chain should become.
    */
-  updateSurfaceTexture(texture: SurfaceTextureHandle, source: TexImageSource): void;
+  updateSurfaceTexture(
+    texture: SurfaceTextureHandle,
+    source: TexImageSource | CompressedTextureSource,
+  ): void;
 
   disposeSurfaceTexture(texture: SurfaceTextureHandle): void;
 

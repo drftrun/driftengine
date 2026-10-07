@@ -27,7 +27,10 @@ function stubGl() {
     texImage2D: vi.fn(),
     texImage3D: vi.fn(),
     texSubImage3D: vi.fn(),
+    TEXTURE_BASE_LEVEL: 33084,
+    TEXTURE_MAX_LEVEL: 33085,
     texParameteri: vi.fn(),
+    compressedTexImage3D: vi.fn(),
     generateMipmap: vi.fn(),
     deleteTexture: vi.fn(),
     activeTexture: vi.fn(),
@@ -155,5 +158,58 @@ describe('the filter an image is sampled with', () => {
       ['mag', raw.NEAREST],
       ['min', raw.NEAREST_MIPMAP_LINEAR],
     ]);
+  });
+});
+
+/**
+ * **Blocks replace an image behind the handle it already has**, as a loader that showed a decoded
+ * image first hands over the blocks it encoded afterwards. A new GL object rather than the image's
+ * levels respecified, so no level of the image's chain is left allocated past the blocks'.
+ */
+describe('blocks swapped in for an image', () => {
+  const chain = {
+    format: 'etc2-rgb8',
+    width: 8,
+    height: 8,
+    levels: [new Uint8Array(32), new Uint8Array(8), new Uint8Array(8), new Uint8Array(8)],
+  } as const;
+
+  it("UPLOAD INTO A NEW OBJECT IN THE IMAGE'S COLOUR SPACE, sampled as the image was, and the image is freed", () => {
+    const { gl, raw } = stubGl();
+    const texture = new SurfaceTexture(gl, SOURCE, { colorSpace: 'srgb', wrap: 'clamp' });
+    const image = raw.createTexture.mock.results[0]?.value as WebGLTexture;
+    raw.texParameteri.mockClear();
+
+    texture.update(gl, chain, ['etc2-rgb8', 'etc2-rgb8-srgb']);
+
+    const blocks = raw.createTexture.mock.results[1]?.value as WebGLTexture;
+    expect(raw.deleteTexture).toHaveBeenCalledWith(image);
+    /* COMPRESSED_SRGB8_ETC2, at each of the four levels the blocks carry. */
+    expect(raw.compressedTexImage3D.mock.calls.map((call) => [call[1], call[2], call[3]])).toEqual([
+      [0, 0x9275, 8],
+      [1, 0x9275, 4],
+      [2, 0x9275, 2],
+      [3, 0x9275, 1],
+    ]);
+    const set = raw.texParameteri.mock.calls.map(([, name, value]) => [name, value]);
+    expect(set, 'the wrap the image had').toContainEqual([raw.TEXTURE_WRAP_S, raw.CLAMP_TO_EDGE]);
+    expect(set, 'and its chain still blended').toContainEqual([
+      raw.TEXTURE_MIN_FILTER,
+      raw.LINEAR_MIPMAP_LINEAR,
+    ]);
+    raw.bindTexture.mockClear();
+    texture.bind(gl, 3);
+    expect(raw.bindTexture).toHaveBeenCalledWith(raw.TEXTURE_2D_ARRAY, blocks);
+    expect(() => texture.update(gl, SOURCE), 'and no image after them').toThrow(
+      /holds ETC2-RGB8 blocks/,
+    );
+  });
+
+  it('ARE REFUSED WHERE THE CONTEXT DOES NOT TAKE THEM, and the image is kept', () => {
+    const { gl, raw } = stubGl();
+    const texture = new SurfaceTexture(gl, SOURCE, { colorSpace: 'srgb' });
+    expect(() => texture.update(gl, chain, ['etc2-rgb8'])).toThrow(/ETC2-RGB8/);
+    expect(raw.deleteTexture).not.toHaveBeenCalled();
+    expect(raw.createTexture).toHaveBeenCalledTimes(1);
   });
 });

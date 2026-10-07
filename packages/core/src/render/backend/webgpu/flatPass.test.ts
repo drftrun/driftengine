@@ -156,13 +156,17 @@ test('the instanced variant is keyed the way the generator keys it', () => {
  * If a later change gives the instanced variant a channel, this fails and points at the write.
  */
 test('every variant that can bend declares the wind, and the instanced one declares none', () => {
+  /* In the view block, which is the pass's: the frame's wind, not the draw's. */
   const wind = ['uWindDirection', 'uWindSpeed', 'uWindGust', 'uWindTime', 'uWindSpatialPhase'];
+  const view = (key: string): string[] =>
+    Object.keys(
+      (FLAT_BINDINGS.flatVert as Record<string, { viewFields?: Record<string, unknown> }>)[key]
+        ?.viewFields ?? {},
+    );
   for (const key of ['none', 'skinned', 'morphed', 'morphed+skinned']) {
-    const fields = FLAT_BINDINGS.flatVert[key as keyof typeof FLAT_BINDINGS.flatVert].fields;
-    for (const name of wind) expect(Object.keys(fields)).toContain(name);
+    for (const name of wind) expect(view(key)).toContain(name);
   }
-  const instanced = FLAT_BINDINGS.flatVert.instanced.fields;
-  for (const name of wind) expect(Object.keys(instanced)).not.toContain(name);
+  for (const name of wind) expect(view('instanced')).not.toContain(name);
 });
 
 /*
@@ -416,7 +420,7 @@ test('A SKIN DRAWS ITS TWO HALVES THROUGH PIPELINES THAT SAY WHICH, the diffuse 
  * written; checked against all sixteen permutations, because a field one leaves out is one that
  * permutation writes over its neighbour.
  */
-test('every material field the WebGPU renderer names exists in every fragment permutation', async () => {
+test('EVERY MATERIAL FIELD THE WEBGPU RENDERER NAMES IS IN THE MATERIAL BLOCK OF EVERY PERMUTATION', async () => {
   /* Vite's `?raw` carries no type declaration; a variable path keeps TS quiet, as flat.test.ts does. */
   const path = './renderer.ts?raw';
   const source = (await import(/* @vite-ignore */ path)).default as string;
@@ -429,9 +433,16 @@ test('every material field the WebGPU renderer names exists in every fragment pe
       nightEmissive: (bits & 4) !== 0,
       pointShadows: (bits & 8) !== 0,
     });
-    const fields = flatFragmentBindings(variant).fields;
+    /*
+     * In the material block and not merely in the stage: a setter marks only the material changed,
+     * so a field it writes that sat in the pass's block would reach no draw until the next pass.
+     */
+    const fields = flatFragmentBindings(variant).materialFields ?? {};
     for (const name of names) {
-      expect(fields[name as string], `${name} in variant ${variant}`).toBeDefined();
+      expect(
+        fields[name as string],
+        `${name} in variant ${variant}'s material block`,
+      ).toBeDefined();
     }
   }
 });

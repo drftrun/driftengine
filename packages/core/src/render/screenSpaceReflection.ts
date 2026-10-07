@@ -370,7 +370,8 @@ export interface ReflectiveSurfaceOptions extends DecalBox {
    * box. Each pixel then returns `F0 · A + B` of what its ray finds, the split-sum environment BRDF
    * at its own view and `roughness` — Karis's fit, the one the lit stage reflects its environment
    * by — so a floor returns more toward the horizon than underfoot, and the share follows the
-   * camera as Unreal weighs its reflections. **False by default**, the one share as before.
+   * camera as a physically based renderer weighs its reflections. **False by default**, the one
+   * share as before.
    *
    * **What it gives up**: the pass has no material buffer, so the roughness and F0 are the box's,
    * not each pixel's, and nothing occludes the reflection where the lit stage's ambient occlusion

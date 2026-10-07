@@ -121,7 +121,11 @@ async function main(): Promise<void> {
       return renderer.createSurfaceTexture(source, { colorSpace });
     }
     paths.push(`${label} decoded`);
-    const rgba = await decoder.decode({ ...source, srgb }, false);
+    /* Every source on this page is BC, which is all the decoder takes. */
+    const rgba = await decoder.decode(
+      { ...source, srgb } as Parameters<typeof decoder.decode>[0],
+      false,
+    );
     const image = new ImageData(Uint8ClampedArray.from(rgba), width, height);
     return renderer.createSurfaceTexture(image, { colorSpace });
   };

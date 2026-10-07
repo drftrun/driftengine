@@ -199,10 +199,14 @@ import {
   resolveFrameReflections,
   type ResolvedFrameReflections,
 } from '../../frameReflections.ts';
-import { ReflectionSurfacePass } from './reflectionSurfacePass.ts';
+import { REFLECTION_SURFACE_FORMAT, ReflectionSurfacePass } from './reflectionSurfacePass.ts';
 import { validateClothBinding } from '../../clothBindingData.ts';
 import type { ClothBindingData } from '../../clothBindingData.ts';
-import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
+import type {
+  CompressedTextureFormat,
+  CompressedTextureSource,
+  SurfaceSource,
+} from '../../compressedSource.ts';
 import {
   createSdfTextBindGroup,
   createSdfTextBindGroupLayout,
@@ -412,16 +416,25 @@ import {
   SUN_STATIC_LAYER,
 } from '../../shadowMap.ts';
 import type { SceneCasterMaterial, ShadowCasterSink, ShadowCasters } from '../../shadowCasters.ts';
-import { VERTEX_LAYOUT, createGpuMesh, createGpuMeshIncremental, type GpuMesh } from './buffers.ts';
+import {
+  VERTEX_LAYOUT,
+  createGpuMesh,
+  createGpuMeshIncremental,
+  type GpuMesh,
+  type StagedRewrite,
+} from './buffers.ts';
 import type { GpuSurface } from './device.ts';
 import { SkinPaletteRing } from './skinPaletteRing.ts';
 import {
   DEPTH_FORMAT,
+  FLAT_ANIMATED_VERT_FIELDS,
   FLAT_VERT_FIELDS,
   FLAT_VERT_SIZE,
+  FLAT_VIEW_FIELDS,
+  FLAT_VIEW_SIZE,
   createFlatBindGroup,
   createFlatBindGroupLayout,
-  flatFragmentBindings,
+  flatFragmentScratch,
   flatVariant,
   flatVertexBindings,
   type FlatVariant,
@@ -429,7 +442,15 @@ import {
   flatPipelineAsync,
   probeStageCeilings,
 } from './flatPass.ts';
-import type { OitTarget } from './flatPass.ts';
+import type { AnimationViews, FlatFragmentScratch, OitTarget } from './flatPass.ts';
+import { GpuBoneAnimation } from './boneAnimations.ts';
+import { packBoneAnimation } from '../../boneAnimation.ts';
+import type { BoneAnimationClip, BoneAnimationHandle } from '../../boneAnimation.ts';
+import { MaterialStore, hashWords } from './materialStore.ts';
+import { GpuStaticDraws, encodeBundle, takeRecorded } from './staticBundles.ts';
+import type { StaticRecording } from './staticBundles.ts';
+import { captureStaticDraws, replayStaticDraws } from '../../staticDraws.ts';
+import type { StaticDrawsHandle } from '../../staticDraws.ts';
 import {
   DEPTH_FRAG_BINDING,
   DEPTH_FRAG_SIZE,
@@ -437,6 +458,8 @@ import {
   DEPTH_PREVIOUS_BINDING,
   DEPTH_CUTOUT_VERT_FIELDS,
   DEPTH_CUTOUT_VERT_SIZE,
+  DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT_FIELDS,
+  DEPTH_INSTANCED_ANIMATED_VERT_FIELDS,
   DEPTH_INSTANCED_CUTOUT_VERT_FIELDS,
   DEPTH_VERT_FIELDS,
   DEPTH_VERT_SIZE,
@@ -908,6 +931,14 @@ const MAX_WATER_BODIES_PER_FRAME = 16;
  * numbers, because that is precisely the defect the ring exists to end.
  */
 const MAX_BATCHES_PER_FRAME = 8;
+
+/**
+ * Mesh passes a frame may open before the ring grows: the frame's own, a mirror's, a capture's, and
+ * a probe face's, which gives its slot back once submitted. A frame past it loses the draws of the
+ * passes that found no slot, counted on the `materials` line, and the ring is grown for the next.
+ * Each slot is the pass's block, 3,328 to 6,656 bytes by variant, so the ring is 213 to 426 KB.
+ */
+const PASSES_PER_FRAME = 64;
 
 /** Buffer usage flags, from the specification. See `buffers.ts` for why they are not read off the global. */
 const USAGE_UNIFORM_DST = 0x0040 | 0x0008;
@@ -1423,6 +1454,15 @@ interface SunTintTarget {
   readonly mips: readonly [SnapshotMips, SnapshotMips];
 }
 
+/** A skinned or morphed flat group, and what it was built with, compared by identity. */
+interface SkinnedTwin {
+  readonly group: GPUBindGroup;
+  readonly palette: GPUTextureView | null;
+  readonly deltas: GPUTextureView | null;
+  readonly cloth: GPUTextureView | null;
+  readonly clothBinding: GPUTextureView | null;
+}
+
 export class WebGPURenderer implements RendererApi {
   /**
    * Real timestamp queries, where the adapter offers them.
@@ -1506,6 +1546,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly skinnedBindGroupLayout: GPUBindGroupLayout;
   private readonly morphedBindGroupLayout: GPUBindGroupLayout;
   private readonly bothBindGroupLayout: GPUBindGroupLayout;
+  /** The instanced layout of a batch playing a bone animation. See `animatedGroup`. */
+  private readonly animatedBindGroupLayout: GPUBindGroupLayout;
   /** The morph weights the following draws use, or null for none. */
   private morphWeights: Float32Array | null = null;
   /**
@@ -1518,14 +1560,15 @@ export class WebGPURenderer implements RendererApi {
    * group per character per frame — an allocation in the frame loop, which `AGENTS.md` forbids.
    * Keyed by slot instead, the groups are built once and reused for the life of the renderer.
    */
-  private readonly skinnedGroups: (GPUBindGroup | null)[] = [];
-  /** The unskinned group each was built beside, for identity-based invalidation. */
-  private readonly skinnedGroupsBeside: (GPUBindGroup | null)[] = [];
-  private readonly skinnedGroupsPalette: (GPUTextureView | null)[] = [];
-  private readonly skinnedGroupsDeltas: (GPUTextureView | null)[] = [];
-  /** The cloth views each skinned twin was built with, compared by identity like the palette. */
-  private readonly skinnedGroupsCloth: (GPUTextureView | null)[] = [];
-  private readonly skinnedGroupsClothBinding: (GPUTextureView | null)[] = [];
+  /*
+   * **And by material within a slot**, keyed by the unskinned group each was built beside. One
+   * group a slot was rebuilt whenever the material beside it changed, so a character drawn in
+   * thirty-odd sections, each its own material, built one a section a frame — about ninety a frame
+   * for two characters, reported by a consumer. A slot's map holds one entry a material its rigs
+   * are drawn in, and is emptied wherever the unskinned groups are, whose identities it is keyed
+   * by.
+   */
+  private readonly skinnedGroups: (Map<GPUBindGroup, SkinnedTwin> | undefined)[] = [];
   /** The cloth the next skinned draws are placed by, or null. See `setCloth`. */
   private cloth: { binding: GpuClothBinding; particles: GpuClothParticles } | null = null;
   private clothStandCache: { texture: GPUTexture; views: ClothViews } | null = null;
@@ -1595,22 +1638,51 @@ export class WebGPURenderer implements RendererApi {
   /** Every distinct cache above, so a mesh's pipelines are built for each. One entry when aliased. */
   private readonly pipelineTargets: readonly PipelineCache[];
   private readonly bindGroupLayout: GPUBindGroupLayout;
-  /** One slot per draw, uploaded once a frame. See `UniformRing`. */
-  private readonly perDraw: UniformRing;
-  /** The lights, fog and camera, settled once per frame by `bindMeshPass`. */
-  private readonly perFrame: UniformRing;
+  /** One slot per draw, uploaded once a frame. See `UniformRing`. Swapped while a static list records. */
+  private perDraw: UniformRing;
   /**
-   * The material block as the CPU holds it, patched by the setters and copied into a slot.
+   * The lights, fog and camera, a slot per mesh pass a frame opens: `bindMeshPass` writes them, and
+   * the first draw after it takes a slot. A ring rather than one buffer because a frame opens more
+   * than one pass — a mirror's, a capture's, a probe face's — and a queue write does not interleave
+   * with the draws recorded between them. See `UniformRing`.
+   */
+  private passRing: UniformRing;
+  /** Each material's block, kept across frames for as long as it does not change. */
+  private readonly materialStore: MaterialStore;
+  /**
+   * Both blocks as the CPU holds them, the pass's then the material's, patched by name and copied
+   * into a slot by the next draw after something changed them. See `FlatFragmentScratch`.
    *
    * Authoritative between draws: a setter changes one field here and marks the block dirty, and
-   * the next `drawMesh` takes a slot and copies the whole thing in. That keeps a setter free of
-   * any knowledge of slots, which is what lets it be called anywhere a scene wants.
+   * the next `drawMesh` places it. That keeps a setter free of any knowledge of slots, which is
+   * what lets it be called anywhere a scene wants.
    */
   private readonly perFrameStaging: ArrayBuffer;
   private readonly perFrameFloats: Float32Array;
   private readonly perFrameInts: Int32Array;
+  /** The two halves of the scratch, as the words a slot is written from. */
+  private readonly passInts: Int32Array;
+  private readonly materialInts: Int32Array;
   /** The slot the open material occupies, and whether the next draw must take a new one. */
   private readonly materials = new MaterialChanges();
+  /** The same for the pass's block: reopened by `bindMeshPass` and by nothing a material sets. */
+  private readonly passBlock = new MaterialChanges();
+  /**
+   * The vertex stage's view block — the camera, the light's matrix, the wind — a slot a pass, and a
+   * second, unjittered, for a blended draw landing after the upscale. Reopened with the pass, and by
+   * `setWind` and `beginShadowPass`, which change what it holds.
+   */
+  private viewRing: UniformRing;
+  private readonly viewBlock = new MaterialChanges();
+  private readonly lateViewBlock = new MaterialChanges();
+  /** The view slot the draw being submitted bound, read by the halves it keeps for later passes. */
+  private drawViewOffset = 0;
+  /** Pass slots asked for and refused this frame, and materials refused: what grows the two. */
+  private passesAsked = 0;
+  private passesRefused = 0;
+  private viewsAsked = 0;
+  private viewsRefused = 0;
+  private materialsRefused = 0;
 
   /*
    * The frame graph's recording, and the machinery that replays it.
@@ -1879,8 +1951,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly variant: FlatVariant;
   /** Whether this profile compiled the point-shadow path, and so has sentinels to write. */
   private readonly pointShadowsCompiled: boolean;
-  /** What the generator recorded about that permutation: sizes, offsets and bindings. */
-  private readonly fragment: ReturnType<typeof flatFragmentBindings>;
+  /** What the generator recorded about that permutation, as the renderer's scratch lays it out. */
+  private readonly fragment: FlatFragmentScratch;
 
   private depth: GPUTexture | null = null;
   private depthView: GPUTextureView | null = null;
@@ -2624,7 +2696,7 @@ export class WebGPURenderer implements RendererApi {
     if (this.quality.frameGraph) recordNode(this.arena, VERB_SCOPE, 0, MIRROR_TARGET, 0, 0);
     this.pass?.end();
     this.flushRings();
-    this.surface.device.queue.submit([this.encoder.finish()]);
+    this.submit([this.encoder.finish()]);
     this.encoder = this.surface.device.createCommandEncoder({ label: 'reflection' });
     /*
      * **Opened on demand, like the frame's own.** Nothing has been recorded into the mirror yet,
@@ -2684,7 +2756,8 @@ export class WebGPURenderer implements RendererApi {
       this.windStreakFrags,
       this.scatterVerts,
       this.scatterFrags,
-      this.perFrame,
+      this.passRing,
+      this.viewRing,
       this.filmVerts,
       this.filmFrags,
       this.insetUniforms,
@@ -2705,6 +2778,7 @@ export class WebGPURenderer implements RendererApi {
     /* Culls first: a submit that follows may carry a draw reading what they write. */
     this.instanceCulls?.flush();
     for (const ring of this.rings()) ring.flush();
+    this.materialStore.flush();
   }
 
   /** Where every ring stands before work that submits an encoder of its own. */
@@ -2724,6 +2798,8 @@ export class WebGPURenderer implements RendererApi {
   private rewindRings(skinMark: number): void {
     const rings = this.rings();
     for (let i = 0; i < rings.length; i++) (rings[i] as UniformRing).rewind(this.ringMarks[i] ?? 0);
+    /* The open pass may sit in a slot just given back, which the next pass would overwrite. */
+    this.reopenPass();
     this.skinPalettes.rewind(skinMark);
     if (this.skinPaletteSlot >= skinMark) this.skinPaletteSlot = -1;
   }
@@ -2926,7 +3002,7 @@ export class WebGPURenderer implements RendererApi {
    * ones that move something *every* group holds: the shadow cubemaps, the probe fence, the cookie
    * atlas and the IES rows. None of those is a frame path.
    */
-  private readonly flatBindGroups = new Map<
+  private flatBindGroups = new Map<
     GpuSurfaceTexture | null,
     Map<
       GpuSurfaceTexture | null,
@@ -3097,7 +3173,7 @@ export class WebGPURenderer implements RendererApi {
       pass.end();
       this.pass = null;
       this.flushRings();
-      device.queue.submit([encoder.finish()]);
+      this.submit([encoder.finish()]);
       this.rewindRings(skinMark);
       this.encoderEpoch = frameEpoch;
       this.encoder = savedEncoder;
@@ -3105,6 +3181,7 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameInts[this.materialField('uOutputTransform')] = heldGrade;
       this.perFrameFloats[this.materialField('uOutputExposure')] = heldExposure;
       this.materials.dirty();
+      this.reopenPass();
       this.capturePassActive = false;
     }
     return true;
@@ -3119,11 +3196,15 @@ export class WebGPURenderer implements RendererApi {
    */
   private readonly retiredTextures: GPUTexture[] = [];
 
-  updateSurfaceTexture(texture: GpuSurfaceTexture, source: TexImageSource): void {
+  updateSurfaceTexture(
+    texture: GpuSurfaceTexture,
+    source: TexImageSource | CompressedTextureSource,
+  ): void {
     if (this.surface.lost) return;
-    const replaced = texture.update(source);
+    const replaced = texture.update(source, this.compressedFormats);
     if (replaced === null) return;
-    /* A new size is a new view, so every group holding the old one is dropped — see below. */
+    /* A new size or format is a new view, so every group holding the old one is dropped — see
+       below. */
     this.retiredTextures.push(replaced);
     this.forgetBindingsOf(texture);
   }
@@ -3175,7 +3256,9 @@ export class WebGPURenderer implements RendererApi {
     /* Same reasoning, for whichever SDF labels were bound against this atlas. */
     this.sdfTextBindGroups.delete(texture);
     this.flatBindGroups.clear();
+    this.flatGroupEpoch += 1;
     this.overlayGroups.clear();
+    this.skinnedGroups.length = 0;
     /*
      * The blank one is built with the albedo held aside, because `buildFlatBindGroup` reads
      * `this.albedo` for that slot — leaving it in place would put a real colour map into the
@@ -3367,6 +3450,13 @@ export class WebGPURenderer implements RendererApi {
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
     const modelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
     this.materialModel = material?.model ?? null;
+    const reflectivity = material?.reflectivity;
+    const environmentGain = material?.environmentGain;
+    this.materialReflectivity =
+      reflectivity === undefined ? null : Math.min(1, Math.max(0, reflectivity));
+    this.materialEnvironmentGain =
+      environmentGain === undefined ? null : Math.max(0, environmentGain);
+    this.writeEnvironmentDials();
     /* What the blur spreads this skin by: the last material to name a profile says. */
     const model = material?.model;
     warnUnpagedLightmap(model, modelMap);
@@ -3395,7 +3485,8 @@ export class WebGPURenderer implements RendererApi {
       const cut = this.materialField('uCutout');
       f[cut] = cutoff;
       f[cut + 1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveStaged];
-      f[cut + 2] = this.cutoutFrame;
+      /* z unused: the dither's frame is the pass's, in `uHighlightMin.w`. See `uCutout`. */
+      f[cut + 2] = 0;
       /* The material's lighting channels, which the lamps' are compared with. See `uCutout`. */
       f[cut + 3] = lightChannelsOf(material?.lightChannels);
       i[flags + 3] = material?.doubleSided === true ? 1 : 0;
@@ -3585,15 +3676,31 @@ export class WebGPURenderer implements RendererApi {
 
   /** How reflective the surfaces drawn next are. Clamped, as `renderer.ts` clamps it. */
   setSurfaceReflectivity(amount: number): void {
-    this.material((f) => {
-      f[this.materialField('uEnvironmentDials') + 1] = Math.min(1, Math.max(0, amount));
-    });
+    this.passReflectivity = Math.min(1, Math.max(0, amount));
+    this.writeEnvironmentDials();
   }
 
   /** How bright the environment the surfaces drawn next reflect is. See `renderer.ts`. */
   setEnvironmentGain(gain: number): void {
+    this.passEnvironmentGain = Math.max(0, gain);
+    this.writeEnvironmentDials();
+  }
+
+  /**
+   * The reflectivity and environment gain the setters gave the pass, and the ones the material
+   * set now states, or null where it states none (`SurfaceMaterial.reflectivity`). A draw wears the
+   * material's where it has one and the pass's otherwise, the rule `renderer.ts` keeps too.
+   */
+  private passReflectivity = 0;
+  private passEnvironmentGain = 1;
+  private materialReflectivity: number | null = null;
+  private materialEnvironmentGain: number | null = null;
+
+  private writeEnvironmentDials(): void {
     this.material((f) => {
-      f[this.materialField('uEnvironmentDials') + 2] = Math.max(0, gain);
+      const dials = this.materialField('uEnvironmentDials');
+      f[dials + 1] = this.materialReflectivity ?? this.passReflectivity;
+      f[dials + 2] = this.materialEnvironmentGain ?? this.passEnvironmentGain;
     });
   }
 
@@ -4112,7 +4219,7 @@ export class WebGPURenderer implements RendererApi {
     }
     this.pass?.end();
     this.flushRings();
-    this.surface.device.queue.submit([this.encoder.finish()]);
+    this.submit([this.encoder.finish()]);
     this.encoder = this.surface.device.createCommandEncoder({ label: 'frame.resumed' });
     this.reflectionPassActive = false;
     this.reflectionReady = true;
@@ -5795,6 +5902,7 @@ export class WebGPURenderer implements RendererApi {
    */
   setWind(windX: number, windZ: number, windGust: number, timeSeconds: number): void {
     resolveScatterDeform(windX, windZ, windGust, timeSeconds, null, this.frameWind);
+    this.reopenViews();
   }
 
   /**
@@ -5812,22 +5920,6 @@ export class WebGPURenderer implements RendererApi {
     this.shadowDraws.writeFloat(slot, DEPTH_VERT_FIELDS.uWindGust.offset, d.gust);
     this.shadowDraws.writeFloat(slot, DEPTH_VERT_FIELDS.uWindTime.offset, d.time);
     this.shadowDraws.writeFloats(slot, DEPTH_VERT_FIELDS.uWindSpatialPhase.offset, d.spatialPhase);
-  }
-
-  /**
-   * The five wind fields of one per-draw slot.
-   *
-   * **Never called for an instanced draw.** That variant declares none of these, and
-   * `flatPass.ts` records what writing a field a variant does not declare costs: the block is
-   * shorter, so the write lands on whatever occupies that offset instead.
-   */
-  private writeWind(slot: number): void {
-    const d = this.frameWind;
-    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uWindDirection.offset, d.direction);
-    this.perDraw.writeFloat(slot, FLAT_VERT_FIELDS.uWindSpeed.offset, d.bend);
-    this.perDraw.writeFloat(slot, FLAT_VERT_FIELDS.uWindGust.offset, d.gust);
-    this.perDraw.writeFloat(slot, FLAT_VERT_FIELDS.uWindTime.offset, d.time);
-    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uWindSpatialPhase.offset, d.spatialPhase);
   }
 
   /** Refilled per frame rather than allocated; see `resolvePointLights`. */
@@ -5984,6 +6076,9 @@ export class WebGPURenderer implements RendererApi {
    * at submit, and a texture's view is new when an update changes its size.
    */
   private readonly shadowCutoutLayout: GPUBindGroupLayout;
+  /** A crowd's casters: the plain and cutout layouts with a bone animation's three textures. */
+  private readonly shadowAnimatedLayout: GPUBindGroupLayout;
+  private readonly shadowAnimatedCutoutLayout: GPUBindGroupLayout;
   private readonly cutoutGroups = new Map<GpuSurfaceTexture, GPUBindGroup>();
   private readonly cutoutPeelGroups = new Map<GpuSurfaceTexture, GPUBindGroup>();
   private shadowPeelPassUniforms: GPUBuffer | null = null;
@@ -6239,8 +6334,18 @@ export class WebGPURenderer implements RendererApi {
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
       const cutout = cutoutOf(material);
+      /* A crowd casts where its clip has moved it, through the animated variant. */
+      const animation = gpuBatch.animation === null ? null : this.animationViews(gpuBatch);
+      if (gpuBatch.animation !== null && animation === null) return;
+      const cutoutTexture =
+        cutout === null ? null : (cutout.albedo as unknown as GpuSurfaceTexture);
       const cutoutGroup =
-        cutout === null ? null : this.cutoutGroup(cutout.albedo as unknown as GpuSurfaceTexture);
+        animation !== null
+          ? this.animatedDepthGroup(gpuBatch, animation, cutoutTexture)
+          : cutoutTexture === null
+            ? null
+            : this.cutoutGroup(cutoutTexture);
+      if (animation !== null && cutoutGroup === null) return;
 
       const slot = this.shadowDraws.allocate();
       if (slot === null) return;
@@ -6251,23 +6356,43 @@ export class WebGPURenderer implements RendererApi {
         DEPTH_VERT_FIELDS.uLightViewProj.offset,
         this.correctedLightViewProj,
       );
-      if (cutout !== null && cutoutGroup !== null) {
+      const cuts = cutoutTexture !== null && cutoutGroup !== null;
+      if (cutout !== null && cuts) {
         this.writeCutout(slot, cutout, DEPTH_INSTANCED_CUTOUT_VERT_FIELDS);
       }
+      const clip = gpuBatch.animation;
+      if (animation !== null && clip !== null) {
+        const fields = cuts
+          ? DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT_FIELDS
+          : DEPTH_INSTANCED_ANIMATED_VERT_FIELDS;
+        this.shadowDraws.writeFloat(slot, fields.uSceneTime.offset, this.animationTime);
+        this.shadowDraws.writeFloat(slot, fields.uBoneClip.offset, clip.framesPerSecond);
+        this.shadowDraws.writeFloat(slot, fields.uBoneClip.offset + 4, clip.boneScale);
+      }
 
-      const cuts = cutoutGroup !== null;
       const cull = material?.doubleSided === true ? 'none' : this.depthCullMode;
+      const animated = animation !== null;
       pass.setPipeline(
         depthPipeline(
           this.pipelines,
           this.surface.device,
-          cuts ? this.shadowCutoutLayout : this.shadowLayout,
-          `${cuts ? 'depth-instanced-cutout' : 'depth-instanced'}|${cull}|${geometry.key ?? ''}`,
+          animated
+            ? cuts
+              ? this.shadowAnimatedCutoutLayout
+              : this.shadowAnimatedLayout
+            : cuts
+              ? this.shadowCutoutLayout
+              : this.shadowLayout,
+          `${cuts ? 'depth-instanced-cutout' : 'depth-instanced'}${animated ? '-animated' : ''}` +
+            `|${cull}|${geometry.key ?? ''}`,
           this.presentOf(geometry),
           cull,
           false,
           true,
           cuts,
+          false,
+          false,
+          animated,
         ),
       );
       pass.setBindGroup(0, cutoutGroup ?? this.shadowGroup(), [slot]);
@@ -6781,7 +6906,7 @@ export class WebGPURenderer implements RendererApi {
       pointShadows: quality.pointShadows,
     });
     this.pointShadowsCompiled = quality.pointShadows;
-    this.fragment = flatFragmentBindings(this.variant);
+    this.fragment = flatFragmentScratch(this.variant);
     this.bindGroupLayout = createFlatBindGroupLayout(device, this.variant);
     /*
      * The skinned twin, built eagerly because it is a descriptor rather than a compile — WebGPU
@@ -6791,6 +6916,14 @@ export class WebGPURenderer implements RendererApi {
     this.skinnedBindGroupLayout = createFlatBindGroupLayout(device, this.variant, true);
     this.morphedBindGroupLayout = createFlatBindGroupLayout(device, this.variant, false, true);
     this.bothBindGroupLayout = createFlatBindGroupLayout(device, this.variant, true, true);
+    /* And the instanced twin that plays a bone animation: its clip's and clocks' textures. */
+    this.animatedBindGroupLayout = createFlatBindGroupLayout(
+      device,
+      this.variant,
+      false,
+      false,
+      true,
+    );
     this.perDraw = new UniformRing(
       device,
       FLAT_VERT_SIZE,
@@ -6799,29 +6932,47 @@ export class WebGPURenderer implements RendererApi {
       'flat.vertRing',
       this.drawBudget,
     );
-    this.perFrameStaging = new ArrayBuffer(this.fragment.uniformSize);
+    const { passSize, materialSize } = this.fragment;
+    this.perFrameStaging = new ArrayBuffer(passSize + materialSize);
     this.perFrameFloats = new Float32Array(this.perFrameStaging);
     this.perFrameInts = new Int32Array(this.perFrameStaging);
+    this.passInts = new Int32Array(this.perFrameStaging, 0, passSize / 4);
+    this.materialInts = new Int32Array(this.perFrameStaging, passSize, materialSize / 4);
     /*
-     * **A ring, because the block holds material state and a material changes between draws.**
+     * **Two blocks, because they change at two rates.** `setSurfaceTexture`, `setSurfaceGrain` and
+     * their siblings are pass state on both backends — a material covers many draws — and on WebGL2
+     * each is a `uniform1f` that lands immediately. Here they live in a block, and
+     * `queue.writeBuffer` does not interleave with recorded commands, so one buffer rewritten between
+     * two draws gives *both* the second value: every surface would wear the last material set, which
+     * is bug 7's shape at pass scale. So each draw binds a slot.
      *
-     * `setSurfaceTexture`, `setSurfaceGrain` and their siblings are pass state on both backends
-     * — a material covers many draws, so the alternative is rebinding the same values twenty
-     * times to say the same thing. On WebGL2 each is a `uniform1f` that lands immediately. Here
-     * they live in this block, and `queue.writeBuffer` does not interleave with recorded
-     * commands, so one buffer rewritten between two draws gives *both* the second value. Every
-     * surface in a scene would wear the last material set, which is bug 7's shape at pass scale.
-     *
-     * A slot per *material change* rather than per draw: `drawMesh` reuses the open slot until
-     * something dirties it, so a scene drawing a hundred meshes of one material spends one.
+     * It was one block until 4.10.0, lights and all, copied whole into a ring slot per material
+     * change and uploaded every frame: a stage of four hundred materials sent 4.8 MB a frame to say
+     * what it had said the frame before. Now the pass's block takes a ring slot per pass, and a
+     * material's block a slot of the store, where an unchanged material stays from frame to frame.
      */
-    this.perFrame = new UniformRing(
+    this.passRing = new UniformRing(
       device,
-      this.fragment.uniformSize,
+      passSize,
+      PASSES_PER_FRAME,
+      USAGE_UNIFORM_DST,
+      'flat.passRing',
+    );
+    this.materialStore = new MaterialStore(
+      device,
+      materialSize,
       this.quality.materialChangesPerFrame,
       USAGE_UNIFORM_DST,
-      'flat.fragRing',
+      'flat.materials',
       this.materialBudget,
+    );
+    /* Two a pass at most: the jittered view and the unjittered one. */
+    this.viewRing = new UniformRing(
+      device,
+      FLAT_VIEW_SIZE,
+      2 * PASSES_PER_FRAME,
+      USAGE_UNIFORM_DST,
+      'flat.viewRing',
     );
 
     /*
@@ -6971,7 +7122,7 @@ export class WebGPURenderer implements RendererApi {
         })
         .end();
     }
-    device.queue.submit([clear.finish()]);
+    this.submit([clear.finish()]);
     /*
      * `nearest` on a depth texture sampled as an ordinary float, matching what
      * `shadowMap.ts` asks WebGL2 for. A filtering sampler cannot be used on a depth format
@@ -7584,6 +7735,8 @@ export class WebGPURenderer implements RendererApi {
     this.shadowLayout = createDepthBindGroupLayout(device);
     this.shadowSkinnedLayout = createDepthBindGroupLayout(device, true);
     this.shadowCutoutLayout = createDepthBindGroupLayout(device, false, true);
+    this.shadowAnimatedLayout = createDepthBindGroupLayout(device, false, false, true);
+    this.shadowAnimatedCutoutLayout = createDepthBindGroupLayout(device, false, true, true);
     this.shadowDraws = new UniformRing(
       device,
       /* The cutout block is the plain one and two fields more, and a slot must hold either. */
@@ -8095,9 +8248,18 @@ export class WebGPURenderer implements RendererApi {
     this.lineVerts.reset();
     this.lineFrags.reset();
     this.skyUniforms.reset();
-    /* The material ring, and the open slot with it: last frame's slots are gone. */
-    this.perFrame.reset();
+    /* The pass ring, and the open slots with it: last frame's pass slots are gone. Its materials
+       stay in the store, which a draw finds them in again. */
+    this.passRing.reset();
+    this.viewRing.reset();
+    this.materialStore.beginFrame();
+    this.passesAsked = 0;
+    this.passesRefused = 0;
+    this.viewsAsked = 0;
+    this.viewsRefused = 0;
+    this.materialsRefused = 0;
     this.materials.dirty();
+    this.reopenPass();
     /* Spent by `runMotion` at the end of the last frame; a frame states its movers afresh. */
     this.motionPass?.reset();
     this.latePass?.reset();
@@ -8433,6 +8595,40 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * The copies this frame's mesh rewrites owe (`StagedRewrite`), recorded since the last submit and
+   * sent at the head of the next one: one encoder however many meshes are rewritten. Null while
+   * nothing is owed.
+   */
+  private pendingRewrites: GPUCommandEncoder | null = null;
+  /** One record handed to every staged rewrite, refilled each call, so a rewrite allocates nothing. */
+  private readonly stagedRewrite: StagedRewrite = {
+    encoder: null as unknown as GPUCommandEncoder,
+    staging: null as unknown as GPUBuffer,
+    previous: null,
+  };
+
+  private rewriteCopies(): GPUCommandEncoder {
+    this.pendingRewrites ??= this.surface.device.createCommandEncoder({
+      label: 'mesh.rewriteCopies',
+    });
+    return this.pendingRewrites;
+  }
+
+  /**
+   * Submit `buffers`, led by any copies the frame's mesh rewrites owe. **Every submit of this
+   * renderer goes through here**, because any of them may draw a rewritten mesh — the frame's own,
+   * a mirror's, a shadow's, a probe's — and the copies must be ahead of the first that does.
+   */
+  private submit(buffers: GPUCommandBuffer[]): void {
+    const rewrites = this.pendingRewrites;
+    if (rewrites !== null) {
+      this.pendingRewrites = null;
+      buffers.unshift(rewrites.finish());
+    }
+    this.surface.device.queue.submit(buffers);
+  }
+
+  /**
    * Rewrite a mesh's positions, and its normals where the caller has them.
    *
    * Refused in words on a mesh that did not declare itself dynamic, because what makes an update
@@ -8454,20 +8650,35 @@ export class WebGPURenderer implements RendererApi {
      * `changeFrames.ts`.
      */
     const motion = mesh.motion;
-    let previous: GPUBuffer | null = null;
+    let staged: StagedRewrite | null = null;
     if (motion !== null && this.reconstructionWanted) {
       const frame = frameOfChange(this.moverFrame, this.inFrame);
+      const size = mesh.vertexBuffers[0]?.size ?? 0;
+      let previous: GPUBuffer | null = null;
       if (keepsPrevious(motion.changed, frame)) {
         motion.previous ??= this.surface.device.createBuffer({
           label: 'recon.dynamicPrevious',
-          size: mesh.vertexBuffers[0]?.size ?? 0,
+          size,
           usage: 0x0020 | 0x0008, // VERTEX | COPY_DST
         });
         previous = motion.previous;
       }
       motion.changed = frame;
+      /*
+       * **Staged, and copied in behind the copy aside, in an encoder the frame's next submit leads
+       * with**: no submit of the rewrite's own. See `StagedRewrite` and `submit`.
+       */
+      motion.staging ??= this.surface.device.createBuffer({
+        label: 'mesh.stagedPositions',
+        size,
+        usage: 0x0004 | 0x0008, // COPY_SRC | COPY_DST
+      });
+      staged = this.stagedRewrite;
+      staged.encoder = this.rewriteCopies();
+      staged.staging = motion.staging;
+      staged.previous = previous;
     }
-    mesh.update(this.surface.device, positions, normals, previous);
+    mesh.update(this.surface.device, positions, normals, staged);
   }
 
   /**
@@ -8671,6 +8882,11 @@ export class WebGPURenderer implements RendererApi {
      * number, so this is a copy and is marked as one; the two must move together.
      */
     f[at('uGrain')] = 1;
+    /* No reflection and an environment at its own brightness, from the pass and from no material. */
+    this.passReflectivity = 0;
+    this.passEnvironmentGain = 1;
+    this.materialReflectivity = null;
+    this.materialEnvironmentGain = null;
     f[at('uEnvironmentDials') + 1] = 0;
     /* No weighting and no dither until a pass or a crossfade asks. See `setDitherFade`. */
     f[at('uWriteMode')] = 0;
@@ -8785,6 +9001,8 @@ export class WebGPURenderer implements RendererApi {
      */
     if (this.quality.nightEmissive) f[at('uNightEmissive')] = env.nightEmissive ?? 0;
     f.set(env.highlightMin, at('uHighlightMin'));
+    /* The frame the cutout dither moves with, in the near corner's w. See `uHighlightMin`. */
+    f[at('uHighlightMin') + 3] = this.cutoutFrame;
     f.set(env.highlightMax, at('uHighlightMax'));
     /* The gain in the far corner's w. See `uHighlightMax`. */
     f[at('uHighlightMax') + 3] = env.highlightGain;
@@ -9057,6 +9275,7 @@ export class WebGPURenderer implements RendererApi {
      * same terms here, which is why a pass cannot inherit a material from the one before it.
      */
     this.materials.dirty();
+    this.reopenPass();
     /*
      * A pass starts with no material, exactly as `renderer.ts` resets these terms — **every map,
      * not the albedo alone**. `setMaterial` skips the lookup when the maps it is given are the ones
@@ -9081,31 +9300,114 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
-   * The slot the next draw's material lives in, taking a new one when something dirtied it.
+   * The slot the next draw's material lives in, placing it when something dirtied it, with the
+   * pass's slot taken first where `bindMeshPass` reopened it: `passOffset` is that one's offset.
    *
-   * **A copy per material change, not per draw.** A scene drawing a hundred meshes of one
-   * material spends one slot and one copy; a scene switching material every draw spends one
-   * each, which is what it asked for.
+   * **A placement per material change, not per draw.** A scene drawing a hundred meshes of one
+   * material places it once; a scene switching material every draw places one each, and a material
+   * the store already holds — the same numbers as a draw before it, this frame or an earlier one —
+   * is bound where it is and uploads nothing.
    */
   private materialSlotForDraw(): number | null {
-    if (this.materials.open) return this.materials.slot;
-    const slot = this.perFrame.allocate();
-    if (slot === null) {
-      if (!this.warnedMaterialsFull) {
-        this.warnedMaterialsFull = true;
-        console.warn(
-          `WebGPU: more than ${this.quality.materialChangesPerFrame} material changes in a frame; the draws asking for the rest are skipped. renderer.frameBudget names the line and the count.`,
-        );
+    if (!this.passBlock.open) {
+      this.passesAsked += 1;
+      const pass = this.passRing.allocate();
+      if (pass === null) {
+        this.passesRefused += 1;
+        this.materialBudget.ask();
+        this.materialBudget.drop();
+        if (!this.warnedPassesFull) {
+          this.warnedPassesFull = true;
+          console.warn(
+            `WebGPU: more than ${this.passRing.slots} mesh passes drew in one frame; the draws of the rest are skipped this frame and the ring grows for the next.`,
+          );
+        }
+        return null;
       }
+      this.passRing.writeBlock(pass, this.passInts);
+      this.passBlock.slot = pass;
+    }
+    if (this.materials.open) return this.materials.slot;
+    const slot = this.materialStore.place(this.materialInts);
+    if (slot === null) {
+      this.materialsRefused += 1;
+      this.warnMaterialsFull();
       return null;
     }
-    this.perFrame.writeBlock(slot, this.perFrameInts);
     this.materials.slot = slot;
     return slot;
   }
 
+  /** The pass slot `materialSlotForDraw` left open, read beside the material's by every lit draw. */
+  private get passOffset(): number {
+    return this.passBlock.slot;
+  }
+
+  /** A new pass: its block, and both its views, are taken afresh by the next draw. */
+  private reopenPass(): void {
+    this.passBlock.dirty();
+    this.reopenViews();
+  }
+
+  /** What a view holds changed — the wind, the light's matrix — so the next draw takes a new one. */
+  private reopenViews(): void {
+    this.viewBlock.dirty();
+    this.lateViewBlock.dirty();
+  }
+
+  /**
+   * The view slot a lit draw reads its camera from: the pass's, or its unjittered twin for a blended
+   * draw landing after the upscale. Taken by the first draw that needs it after the pass, the wind or
+   * the light's matrix changed, and shared by every draw until then. Null when the ring is full, which
+   * skips the draw and grows the ring for the next frame, as the pass ring does.
+   */
+  private viewSlotFor(late: boolean, viewProj: Float32Array): number | null {
+    const block = late ? this.lateViewBlock : this.viewBlock;
+    if (block.open) return block.slot;
+    this.viewsAsked += 1;
+    const slot = this.viewRing.allocate();
+    if (slot === null) {
+      this.viewsRefused += 1;
+      this.materialBudget.ask();
+      this.materialBudget.drop();
+      if (!this.warnedPassesFull) {
+        this.warnedPassesFull = true;
+        console.warn(
+          `WebGPU: more than ${this.viewRing.slots} views drew in one frame; the draws of the rest are skipped this frame and the ring grows for the next.`,
+        );
+      }
+      return null;
+    }
+    this.writeView(this.viewRing, slot, viewProj);
+    block.slot = slot;
+    return slot;
+  }
+
+  /** A view block: the camera, the light's matrix and the frame's wind, into `ring` at `slot`. */
+  private writeView(ring: UniformRing, slot: number, viewProj: Float32Array): void {
+    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uViewProj.offset, viewProj);
+    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uLightViewProj.offset, this.lightViewProj);
+    /* The scene's clock, which a bone animation's instances read their moment from. */
+    ring.writeFloat(slot, FLAT_VIEW_FIELDS.uSceneTime.offset, this.animationTime);
+    const d = this.frameWind;
+    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uWindDirection.offset, d.direction);
+    ring.writeFloat(slot, FLAT_VIEW_FIELDS.uWindSpeed.offset, d.bend);
+    ring.writeFloat(slot, FLAT_VIEW_FIELDS.uWindGust.offset, d.gust);
+    ring.writeFloat(slot, FLAT_VIEW_FIELDS.uWindTime.offset, d.time);
+    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uWindSpatialPhase.offset, d.spatialPhase);
+  }
+
+  private warnMaterialsFull(): void {
+    if (this.warnedMaterialsFull) return;
+    this.warnedMaterialsFull = true;
+    console.warn(
+      `WebGPU: more than ${this.quality.materialChangesPerFrame} distinct materials in a frame; the draws asking for the rest are skipped. renderer.frameBudget names the line and the count.`,
+    );
+  }
+
   /** Said once rather than every frame, for the reason `warnedFull` gives. */
   private warnedMaterialsFull = false;
+  private warnedPassesFull = false;
   private warnedSkyFull = false;
   private warnedParticlesTwice = false;
   /**
@@ -9146,7 +9448,14 @@ export class WebGPURenderer implements RendererApi {
      * What this saves is the GPU's share, which for a heavy mesh is most of the cost and for a
      * trivial one is very little.
      */
-    if (this.quality.cullDraws && !this.visible(mesh.bounds, model as ReadonlyMat4)) return;
+    /* A static list draws every entry in every view, since a bundle cannot leave one out. */
+    if (
+      this.quality.cullDraws &&
+      this.staticRecording === null &&
+      !this.visible(mesh.bounds, model as ReadonlyMat4)
+    ) {
+      return;
+    }
     /*
      * And the other half of the same question, where the profile asked for one. Gated on
      * `cullDraws` alongside the frustum test, because both are the renderer doing a consumer's
@@ -9337,21 +9646,16 @@ export class WebGPURenderer implements RendererApi {
        `TranslucentMeshOptions.reconstructed`. */
     const lands = blend && options.reconstructed !== true && this.drawsLate();
     const late = lands || (blend && this.oitReplaying && this.reconstructing);
-    this.perDraw.writeFloats(
-      slot,
-      FLAT_VERT_FIELDS.uViewProj.offset,
-      late ? this.correctedViewProj : this.viewProj,
-    );
+    /* The camera, the light's matrix and the wind are the pass's, in its view block. */
+    const view = this.viewSlotFor(late, late ? this.correctedViewProj : this.viewProj);
+    if (view === null) return;
+    this.drawViewOffset = view;
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uModel.offset, model);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uTint.offset, tint ?? WHITE);
-    /* The frame's wind, for a mesh carrying a sway lane. Written on this path and not the
-       instanced one, which declares none of these fields. */
-    this.writeWind(slot);
     /* The material's repeats, not a constant: geometry authored in metres is textured at
        whatever density the material asks for without rebuilding it. */
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvScale.offset, this.uvScale);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvOffset.offset, this.uvOffset);
-    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uLightViewProj.offset, this.lightViewProj);
     /*
      * Whether this mesh's tangent frame is real. WebGPU has no disabled attribute, so location 10
      * is always backed — by the caller's data or by the constant buffer — which makes the binding
@@ -9548,8 +9852,10 @@ export class WebGPURenderer implements RendererApi {
         command.pipeline = pipeline;
         command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
         command.offsetA = slot;
-        command.offsetB = material;
-        command.offsetCount = 2;
+        command.offsetB = this.passOffset;
+        command.offsetC = material;
+        command.offsetD = this.drawViewOffset;
+        command.offsetCount = 4;
         for (let index = 0; index < mesh.vertexBuffers.length; index++) {
           command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
         }
@@ -9561,7 +9867,12 @@ export class WebGPURenderer implements RendererApi {
         const pass = this.openPass();
         if (pass === null) return;
         pass.setPipeline(pipeline);
-        pass.setBindGroup(0, this.flatBindGroupFor(skinned, morphed, deltas), [slot, material]);
+        pass.setBindGroup(0, this.flatBindGroupFor(skinned, morphed, deltas), [
+          slot,
+          this.passOffset,
+          material,
+          this.drawViewOffset,
+        ]);
         for (let index = 0; index < mesh.vertexBuffers.length; index++) {
           pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
         }
@@ -9677,14 +9988,125 @@ export class WebGPURenderer implements RendererApi {
           'instanced pipeline.',
       );
     }
+    const animation = (options.animation ?? null) as GpuBoneAnimation | null;
+    /* The bone a vertex follows is its second coordinates' u, which a mesh carries in its grain
+       lane; a mesh with none has nothing to name a bone by. See `boneAnimation.ts`. */
+    if (animation !== null && !this.presentOf(mesh as GpuMesh & { key?: string })['grain']) {
+      throw new Error(
+        'WebGPU: a bone animation reads each vertex’s bone from the mesh’s second coordinates ' +
+          '(`MeshData.lightmapUvs`), and this mesh has none.',
+      );
+    }
     const batch = new GpuInstancedBatch(
       this.surface.device,
       mesh,
       capacity,
       `flat.instances:${(mesh as GpuMesh & { key?: string }).key ?? 'mesh'}`,
       options.cull ?? false,
+      animation,
     );
     return batch;
+  }
+
+  /** See `Renderer.setAnimationTime`. Every view taken after it reads the new clock. */
+  setAnimationTime(seconds: number): void {
+    if (!Number.isFinite(seconds) || seconds === this.animationTime) return;
+    this.animationTime = seconds;
+    this.reopenViews();
+  }
+
+  /** The clock `setAnimationTime` set, 0 until it is. */
+  private animationTime = 0;
+
+  /** See `Renderer.createBoneAnimation`. */
+  createBoneAnimation(clip: BoneAnimationClip): BoneAnimationHandle {
+    return new GpuBoneAnimation(this.surface.device, packBoneAnimation(clip));
+  }
+
+  /** See `Renderer.disposeBoneAnimation`. A batch still playing it draws nothing after. */
+  disposeBoneAnimation(animation: BoneAnimationHandle): void {
+    const clip = animation as GpuBoneAnimation;
+    if (!clip.disposed) clip.dispose();
+  }
+
+  /** An animated batch's clip and clocks, as its groups bind them. */
+  private animationViews(batch: GpuInstancedBatch): AnimationViews | null {
+    const animation = batch.animation;
+    const clocks = batch.clocks;
+    if (animation === null || clocks === null || animation.disposed) return null;
+    return { places: animation.placesView, turns: animation.turnsView, clocks: clocks.view };
+  }
+
+  /** An animated batch's groups, dropped wherever the renderer drops its own. */
+  private freshAnimatedGroups(batch: GpuInstancedBatch): void {
+    if (batch.groupEpoch === this.flatGroupEpoch) return;
+    batch.litGroups.clear();
+    batch.depthGroups.clear();
+    batch.depthPeelGroups.clear();
+    batch.groupEpoch = this.flatGroupEpoch;
+  }
+
+  /**
+   * The lit group an animated batch draws with: the material's group, or its overlay twin, again
+   * with the clip's and the clocks' textures — kept on the batch by the group it was built beside,
+   * as a skinned twin is kept by its palette slot.
+   */
+  private animatedGroup(batch: GpuInstancedBatch, views: AnimationViews): GPUBindGroup {
+    this.freshAnimatedGroups(batch);
+    const base = this.overlayGroup();
+    let group = batch.litGroups.get(base);
+    if (group === undefined) {
+      this.overlayBinding = base !== this.bindGroup;
+      group = createFlatBindGroup(
+        this.surface.device,
+        this.animatedBindGroupLayout,
+        this.variant,
+        this.perDraw.buffer,
+        this.passRing.buffer,
+        this.materialStore.buffer,
+        this.viewRing.buffer,
+        this.flatTextures,
+        null,
+        null,
+        null,
+        views,
+      );
+      this.overlayBinding = false;
+      this.bindGroupBudget.ask();
+      batch.litGroups.set(base, group);
+    }
+    return group;
+  }
+
+  /** An animated caster's shadow group, by what it cuts with and whether this is the peel. */
+  private animatedDepthGroup(
+    batch: GpuInstancedBatch,
+    views: AnimationViews,
+    cutout: GpuSurfaceTexture | null,
+  ): GPUBindGroup | null {
+    this.freshAnimatedGroups(batch);
+    const peel = this.shadowLayerIsPeel && this.shadowPeelPassUniforms !== null;
+    const groups = peel ? batch.depthPeelGroups : batch.depthGroups;
+    const held = groups.get(cutout);
+    if (held !== undefined) return held;
+    const passUniforms = peel ? this.shadowPeelPassUniforms : this.shadowPassUniforms;
+    const previousView = peel ? this.sunStaticArrayView : this.shadowBlankView;
+    const previousSampler = peel ? this.shadowPeelSampler : this.shadowBlankSampler;
+    if (passUniforms === null || previousView === null || previousSampler === null) return null;
+    const group = createDepthBindGroup(
+      this.surface.device,
+      cutout === null ? this.shadowAnimatedLayout : this.shadowAnimatedCutoutLayout,
+      this.shadowDraws.buffer,
+      passUniforms,
+      previousView,
+      previousSampler,
+      null,
+      cutout === null ? null : { view: cutout.view, sampler: cutout.sampler },
+      null,
+      views,
+    );
+    groups.set(cutout, group);
+    return group;
   }
 
   /** The device instance culls, built on the first culling draw. See `InstanceCullPass`. */
@@ -9720,7 +10142,12 @@ export class WebGPURenderer implements RendererApi {
     this.submitInstanced(batch, data, 1, false, {});
     /* A batch that moved this frame pairs each slot with last frame's; the batch is the identity. */
     const previous = batch.previousBuffer;
-    if (previous !== null && batch.changed === this.moverFrame && this.tracksMotionNow()) {
+    if (
+      previous !== null &&
+      this.staticRecording === null &&
+      batch.changed === this.moverFrame &&
+      this.tracksMotionNow()
+    ) {
       const paired = pairedInstances(batch.previousCount, Math.min(data.count, batch.capacity));
       if (paired > 0) this.motionPass?.recordInstanced(batch.mesh, batch.buffer, previous, paired);
     }
@@ -9767,6 +10194,8 @@ export class WebGPURenderer implements RendererApi {
     this.perFrameFloats[tintAt] = refractTint?.[0] ?? 1;
     this.perFrameFloats[tintAt + 1] = refractTint?.[1] ?? 1;
     this.perFrameFloats[tintAt + 2] = refractTint?.[2] ?? 1;
+    /* w: this framebuffer's first row is the top, so up the screen is down the rows. */
+    this.perFrameFloats[tintAt + 3] = -1;
     const glassTintAt = this.materialField('uGlassTint');
     this.perFrameFloats[glassTintAt] = glass.tint[0];
     this.perFrameFloats[glassTintAt + 1] = glass.tint[1];
@@ -9842,10 +10271,16 @@ export class WebGPURenderer implements RendererApi {
     /* A culling batch's camera draw: the whole batch against the view and the occluders on the CPU,
        then instance by instance on the device into an indirect draw. Blended draws keep every
        instance and their order. See `InstancedOptions.cull`. */
-    const culling = !blend && batch.cull;
+    const culling = !blend && batch.cull && this.staticRecording === null;
     if (culling && !batchBoxVisible(batch.box, this.frustum, this.occlusion)) return;
+    /* A batch playing a bone animation reads its clocks by instance index, which a compaction
+       would reorder: it is culled whole and never instance by instance. */
+    const animation = batch.animation === null ? null : this.animationViews(batch);
+    if (batch.animation !== null && animation === null) return;
     const cut =
-      culling && cullsInstances(count, mesh.indexCount) ? this.takeCullSlot(batch, count) : null;
+      culling && animation === null && cullsInstances(count, mesh.indexCount)
+        ? this.takeCullSlot(batch, count)
+        : null;
     const instanceBuffer = cut === null ? batch.buffer : cut.instances;
 
     const slot = this.perDraw.allocate();
@@ -9861,15 +10296,22 @@ export class WebGPURenderer implements RendererApi {
 
     /* Late unless it moves with what it lies on. See `TranslucentMeshOptions.reconstructed`. */
     const lands = blend && options.reconstructed !== true && this.drawsLate();
-    this.perDraw.writeFloats(
-      slot,
-      FLAT_VERT_FIELDS.uViewProj.offset,
-      lands ? this.correctedViewProj : this.viewProj,
-    );
+    const view = this.viewSlotFor(lands, lands ? this.correctedViewProj : this.viewProj);
+    if (view === null) return;
+    this.drawViewOffset = view;
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvScale.offset, this.uvScale);
     this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uUvOffset.offset, this.uvOffset);
-    this.perDraw.writeFloats(slot, FLAT_VERT_FIELDS.uLightViewProj.offset, this.lightViewProj);
     this.perDraw.writeInt(slot, FLAT_VERT_FIELDS.uHasTangents.offset, mesh.hasTangents ? 1 : 0);
+    /* The clip's speed and bone scale, read by the animated variant's own field. */
+    const clip = batch.animation;
+    if (animation !== null && clip !== null) {
+      this.perDraw.writeFloat(
+        slot,
+        FLAT_ANIMATED_VERT_FIELDS.uBoneClip.offset,
+        clip.framesPerSecond,
+      );
+      this.perDraw.writeFloat(slot, FLAT_ANIMATED_VERT_FIELDS.uBoneClip.offset + 4, clip.boneScale);
+    }
 
     const dimmed = opacity < 1;
     if (dimmed) {
@@ -9907,7 +10349,7 @@ export class WebGPURenderer implements RendererApi {
        plain one would hand a draw the wrong layout. */
     const adds = blend && options.additive === true;
     const key =
-      `${base}|inst${blend ? (adds ? '|add' : '|blend') : ''}` +
+      `${base}|inst${animation === null ? '' : '|anim'}${blend ? (adds ? '|add' : '|blend') : ''}` +
       `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
       `${this.materialDoubleSided ? '|2s' : ''}${coverage ? '|a2c' : ''}` +
       `${modelKind === null ? '' : `|m:${modelKind}`}`;
@@ -9922,7 +10364,7 @@ export class WebGPURenderer implements RendererApi {
       pipeline = flatPipeline(
         pipelines,
         this.surface.device,
-        this.flatLayoutFor(false, false),
+        animation === null ? this.flatLayoutFor(false, false) : this.animatedBindGroupLayout,
         this.variant,
         key,
         present,
@@ -9938,6 +10380,9 @@ export class WebGPURenderer implements RendererApi {
         false,
         false,
         modelKind,
+        'whole',
+        false,
+        animation !== null,
       );
     }
 
@@ -9948,10 +10393,15 @@ export class WebGPURenderer implements RendererApi {
         : this.recordDraw(0, this.currentTarget());
       if (command !== null) {
         command.pipeline = pipeline;
-        command.bindGroup = this.flatBindGroupFor(false, false, null);
+        command.bindGroup =
+          animation === null
+            ? this.flatBindGroupFor(false, false, null)
+            : this.animatedGroup(batch, animation);
         command.offsetA = slot;
-        command.offsetB = material;
-        command.offsetCount = 2;
+        command.offsetB = this.passOffset;
+        command.offsetC = material;
+        command.offsetD = this.drawViewOffset;
+        command.offsetCount = 4;
         let index = 0;
         for (; index < mesh.vertexBuffers.length; index++) {
           command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
@@ -9967,7 +10417,13 @@ export class WebGPURenderer implements RendererApi {
         const pass = this.openPass();
         if (pass === null) return;
         pass.setPipeline(pipeline);
-        pass.setBindGroup(0, this.flatBindGroupFor(false, false, null), [slot, material]);
+        pass.setBindGroup(
+          0,
+          animation === null
+            ? this.flatBindGroupFor(false, false, null)
+            : this.animatedGroup(batch, animation),
+          [slot, this.passOffset, material, this.drawViewOffset],
+        );
         let index = 0;
         for (; index < mesh.vertexBuffers.length; index++) {
           pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
@@ -9995,6 +10451,7 @@ export class WebGPURenderer implements RendererApi {
           instanceBuffer,
           count,
           cut === null ? null : cut.args,
+          animation === null ? null : batch,
         );
       }
     }
@@ -10207,6 +10664,7 @@ export class WebGPURenderer implements RendererApi {
     if (view === null) return false;
 
     this.lightViewProj.set(lightViewProj as Float32Array);
+    this.reopenViews();
     mat4.multiply(this.correctedLightViewProj, SHADOW_CLIP_CORRECTION, lightViewProj);
     this.shadowLayerIsPeel = peel;
     this.shadowLayerIsDynamic = dynamic;
@@ -10318,6 +10776,264 @@ export class WebGPURenderer implements RendererApi {
     this.sceneCasterMaterial = undefined;
     casters(this.sceneCasterSink);
   }
+
+  /* -- Static draws ---------------------------------------------------------------- */
+
+  /** See `Renderer.createStaticDraws`. Recorded on its first draw, into each view it is drawn in. */
+  createStaticDraws(casters: ShadowCasters): StaticDrawsHandle {
+    return new GpuStaticDraws(
+      this.surface.device,
+      captureStaticDraws(casters),
+      this.fragment.passSize,
+      FLAT_VIEW_SIZE,
+      FLAT_VERT_SIZE,
+    );
+  }
+
+  /**
+   * See `Renderer.drawStaticDraws`. One bundle executed, after a pass block and a view block are
+   * written for this view; the list is recorded first where it has no recording that is current for
+   * this target and starting state. See `staticBundles.ts`.
+   */
+  drawStaticDraws(draws: StaticDrawsHandle): void {
+    if (this.surface.lost) return;
+    const list = draws as GpuStaticDraws;
+    if (list.disposed) {
+      this.warnStaticDisposed();
+      return;
+    }
+    if (!this.canDraw() || this.viewProj === null) return;
+    /* A list's draws are rigid and wear no overlay: put back to none, as `bindMeshPass` does. */
+    this.setSkinPalette(null);
+    this.setMorphWeights(null);
+    this.setCloth(null);
+    this.setSurfaceOverlay(null);
+    this.setMaterial(null);
+    this.sceneCasterMaterial = undefined;
+    /* A probe face gives its slots back after every face; a list replays there draw by draw. */
+    if (this.probePassActive) {
+      this.replayStaticImmediately(list);
+      return;
+    }
+    /* The copy first: taking one may grow the list's rings, which no recording before can bind. */
+    const copy = list.takeCopy(this.moverFrame);
+    const current = this.staticRecordingFor(list);
+    if (current === null || current.immediate) {
+      this.replayStaticImmediately(list);
+      return;
+    }
+    current.usedIn = this.moverFrame;
+    list.writePass(copy, this.passInts);
+    this.writeView(list.views, list.viewOffset(copy), this.viewProj);
+    list.uploadCopy(copy);
+
+    const cache = current.cache;
+    let frame = current.frameBundles[copy];
+    if (frame === undefined || frame === null) {
+      frame = encodeBundle(
+        this.surface.device,
+        {
+          colorFormats: [cache.format],
+          depthStencilFormat: DEPTH_FORMAT,
+          sampleCount: cache.sampleCount,
+          depthReadOnly: false,
+        },
+        current.frame,
+        list.passOffset(copy),
+        list.viewOffset(copy),
+        'static.frame',
+      );
+      current.frameBundles[copy] = frame;
+    }
+    const command = this.recordDraw(0, this.currentTarget());
+    if (command !== null) {
+      command.bundles = frame;
+      command.pipeline = null;
+      command.bindGroup = null;
+    } else {
+      this.openPass()?.executeBundles(frame);
+    }
+    const surface = this.reflectionSurface;
+    if (current.surfaceKept && surface !== null && current.surface.taken > 0) {
+      let halves = current.surfaceBundles[copy];
+      if (halves === undefined || halves === null) {
+        halves = encodeBundle(
+          this.surface.device,
+          {
+            colorFormats: [null, REFLECTION_SURFACE_FORMAT, REFLECTION_SURFACE_FORMAT],
+            depthStencilFormat: DEPTH_FORMAT,
+            sampleCount: 1,
+            depthReadOnly: true,
+          },
+          current.surface,
+          list.passOffset(copy),
+          list.viewOffset(copy),
+          'static.surface',
+        );
+        current.surfaceBundles[copy] = halves;
+      }
+      const kept = surface.take();
+      kept.bundles = halves;
+    }
+    /* Counted as the draws would have been, so a frame reports the same on both backends. */
+    for (let draw = 0; draw < current.frame.taken; draw++) this.drawBudget.ask();
+    if (!this.staticJustRecorded) {
+      for (let ask = 0; ask < current.materialAsks; ask++) this.materialBudget.ask();
+    }
+    this.staticJustRecorded = false;
+  }
+
+  /** A list drawn the way `drawSceneCasters` draws, a draw at a time, for where a bundle cannot be. */
+  private replayStaticImmediately(list: GpuStaticDraws): void {
+    this.staticJustRecorded = false;
+    replayStaticDraws(list, this.sceneCasterSink);
+    this.setMaterial(null);
+    this.sceneCasterMaterial = undefined;
+  }
+
+  /** See `Renderer.disposeStaticDraws`. Its pins let go; its meshes and materials are the caller's. */
+  disposeStaticDraws(draws: StaticDrawsHandle): void {
+    const list = draws as GpuStaticDraws;
+    if (list.disposed) return;
+    list.dispose(this.unpinFor(list));
+  }
+
+  /** The recording to replay `list` from here, made now if none is current; null if it cannot be. */
+  private staticRecordingFor(list: GpuStaticDraws): StaticRecording | null {
+    /* Geometry still arriving is not drawn yet, so a recording now would leave it out for good. */
+    for (const entry of list.entries) {
+      const mesh = entry.kind === 'mesh' ? entry.mesh : (entry.batch as GpuInstancedBatch).mesh;
+      if (!mesh.complete) return null;
+    }
+    const cache = this.targetPipelines();
+    const start = this.materialInts;
+    const startHash = hashWords(start, start.length);
+    const surfaceKept = this.reflectionSurfaceKeeps();
+    let recording = list.find(cache, start, startHash, this.cutoutResolveStaged, surfaceKept);
+    if (
+      recording !== null &&
+      recording.cacheVersion === cache.version &&
+      recording.groupEpoch === this.flatGroupEpoch &&
+      recording.storeEpoch === this.materialStore.epoch &&
+      recording.ringEpoch === list.ringEpoch
+    ) {
+      return recording;
+    }
+    const unpin = this.unpinFor(list);
+    if (recording === null) {
+      recording = list.open(cache, start, startHash, this.cutoutResolveStaged, surfaceKept, unpin);
+    } else {
+      list.clear(recording, recording.storeEpoch === this.materialStore.epoch ? unpin : () => {});
+    }
+    this.recordStatic(list, recording);
+    return recording;
+  }
+
+  /** How a list's pins are let go: through the store, unless it has forgotten them since. */
+  private unpinFor(list: GpuStaticDraws): (offset: number) => void {
+    const epoch = this.materialStore.epoch;
+    return (offset) => {
+      if (this.materialStore.epoch === epoch && list.pinEpoch === epoch) {
+        this.materialStore.unpin(offset);
+      }
+    };
+  }
+
+  /**
+   * Record `list` into `recording`: its entries through the scene-caster path, with the list's
+   * rings and group cache swapped in for the frame's and the pass and view slots held at the list's
+   * first copy, so every command the path records binds the list's buffers and offsets the bundle
+   * can rewrite per copy. Everything swapped is put back, whatever the path throws.
+   */
+  private recordStatic(list: GpuStaticDraws, recording: StaticRecording): void {
+    if (list.groupEpoch !== this.flatGroupEpoch) {
+      list.groups = new Map();
+      list.blank = null;
+      list.groupEpoch = this.flatGroupEpoch;
+    }
+    list.drawRing.reset();
+    const perDraw = this.perDraw;
+    const passRing = this.passRing;
+    const viewRing = this.viewRing;
+    const groups = this.flatBindGroups;
+    const blank = this.blankAlbedoBindGroup;
+    const bindGroup = this.bindGroup;
+    const passSlot = this.passBlock.slot;
+    const viewSlot = this.viewBlock.slot;
+    const lateSlot = this.lateViewBlock.slot;
+    const asked = this.materialBudget.used;
+    this.perDraw = list.drawRing;
+    this.passRing = list.passes;
+    this.viewRing = list.views;
+    this.flatBindGroups = list.groups as typeof groups;
+    /* The blank group over the list's rings, built as the frame's is: with no maps held. */
+    list.blank ??= this.buildFlatBindGroup();
+    this.blankAlbedoBindGroup = list.blank;
+    this.bindGroup = this.flatGroupForMaps(null, null, null, null, null);
+    this.passBlock.slot = list.passOffset(0);
+    this.viewBlock.slot = list.viewOffset(0);
+    this.lateViewBlock.slot = list.viewOffset(0);
+    this.materials.dirty();
+    this.staticRecording = recording;
+    try {
+      this.sceneCasterMaterial = undefined;
+      replayStaticDraws(list, this.sceneCasterSink);
+    } finally {
+      this.staticRecording = null;
+      this.perDraw = perDraw;
+      this.passRing = passRing;
+      this.viewRing = viewRing;
+      this.flatBindGroups = groups;
+      this.blankAlbedoBindGroup = blank;
+      this.bindGroup = bindGroup;
+      this.passBlock.slot = passSlot;
+      this.viewBlock.slot = viewSlot;
+      this.lateViewBlock.slot = lateSlot;
+      this.materials.dirty();
+      this.sceneCasterMaterial = undefined;
+      this.setMaterial(null);
+    }
+    recording.materialAsks = this.materialBudget.used - asked;
+    const store = this.materialStore;
+    recording.cacheVersion = recording.cache.version;
+    recording.groupEpoch = this.flatGroupEpoch;
+    recording.storeEpoch = store.epoch;
+    recording.ringEpoch = list.ringEpoch;
+    /* A skin split into halves is replayed draw by draw, so nothing recorded is kept or pinned. */
+    if (recording.immediate) {
+      resetPool(recording.frame);
+      resetPool(recording.surface);
+      return;
+    }
+    /* Every material the commands bind, pinned once, so nothing displaces what a bundle bakes. */
+    for (const pool of [recording.frame, recording.surface]) {
+      for (let i = 0; i < pool.taken; i++) {
+        const offset = (pool.commands[i] as DrawCommand).offsetC;
+        if (!recording.pins.includes(offset)) {
+          store.pin(offset);
+          recording.pins.push(offset);
+        }
+      }
+    }
+    list.pinEpoch = store.epoch;
+    list.uploadDraws();
+    this.staticJustRecorded = true;
+  }
+
+  /** The recording under way, which `recordDraw` and the side passes take their commands into. */
+  private staticRecording: StaticRecording | null = null;
+  /** Whether the replay about to count its material changes recorded them, and so counted them. */
+  private staticJustRecorded = false;
+
+  /** A disposed list drawn, said once: the frame loop does not throw. */
+  private warnStaticDisposed(): void {
+    if (this.warnedStaticDisposed) return;
+    this.warnedStaticDisposed = true;
+    console.warn('drawStaticDraws: this list was disposed, and draws nothing.');
+  }
+  private warnedStaticDisposed = false;
+  /** Bumped wherever the lit groups are dropped, which a static list's own groups follow. */
+  private flatGroupEpoch = 0;
 
   drawShadowCasters(casters: ShadowCasters): void {
     if (this.surface.lost || this.shadowPass === null) return;
@@ -10664,7 +11380,7 @@ export class WebGPURenderer implements RendererApi {
     }
     this.shadowDraws.flush();
     this.scatterDepthDraws.flush();
-    this.surface.device.queue.submit([this.shadowEncoder.finish()]);
+    this.submit([this.shadowEncoder.finish()]);
     /* A growth's old texture, copied out of by what was just submitted and needed no longer. */
     this.retiredSunTexture?.destroy();
     this.retiredSunTexture = null;
@@ -10954,7 +11670,7 @@ export class WebGPURenderer implements RendererApi {
        * its own slot.
        */
       this.pointShadowArray?.flush();
-      this.surface.device.queue.submit([this.shadowEncoder.finish()]);
+      this.submit([this.shadowEncoder.finish()]);
       this.shadowEncoder = null;
       this.shadowPass = null;
       this.gpuTimer.end();
@@ -11161,7 +11877,9 @@ export class WebGPURenderer implements RendererApi {
       this.bindGroupLayout,
       this.variant,
       this.perDraw.buffer,
-      this.perFrame.buffer,
+      this.passRing.buffer,
+      this.materialStore.buffer,
+      this.viewRing.buffer,
       this.flatTextures,
     );
   }
@@ -11206,11 +11924,11 @@ export class WebGPURenderer implements RendererApi {
   /**
    * The bind group a draw uses, skinned or not.
    *
-   * **The skinned twin is cached against the two things that can invalidate it**, rather than
-   * against a flag somebody has to remember to clear at six call sites: the unskinned group it was
-   * built beside — which is rebuilt whenever the material or a shadow slot moves — and the palette
-   * view, which changes only when the texture is reallocated. Comparing object identity means a
-   * missed invalidation is not possible rather than merely unlikely, and it is why
+   * **The skinned twin is kept by palette slot and by the unskinned group it was built beside**,
+   * which is one a material, and compared against the views it holds — the palette's, which
+   * changes only when the slot's texture grows, the morph deltas and the cloth's — rather than
+   * against a flag somebody has to remember to clear at six call sites. Comparing object identity
+   * means a missed invalidation is not possible rather than merely unlikely, and it is why
    * `SkinPaletteTexture.view()` caches: a fresh view every call never compares equal and would
    * rebuild this every draw.
    */
@@ -11227,35 +11945,45 @@ export class WebGPURenderer implements RendererApi {
     const at = skinned ? this.skinPaletteSlot + 1 : 0;
     /* A skinned group carries the cloth's views, or the stand-in's: see `clothViews`. */
     const cloth = skinned ? this.clothViews() : null;
+    let byMaterial = this.skinnedGroups[at];
+    if (byMaterial === undefined) {
+      byMaterial = new Map();
+      this.skinnedGroups[at] = byMaterial;
+    }
+    let twin = byMaterial.get(base);
     if (
-      (this.skinnedGroups[at] ?? null) === null ||
-      this.skinnedGroupsBeside[at] !== base ||
-      this.skinnedGroupsPalette[at] !== palette ||
-      this.skinnedGroupsDeltas[at] !== deltas ||
-      this.skinnedGroupsCloth[at] !== (cloth?.particles ?? null) ||
-      this.skinnedGroupsClothBinding[at] !== (cloth?.binding ?? null)
+      twin === undefined ||
+      twin.palette !== palette ||
+      twin.deltas !== deltas ||
+      twin.cloth !== (cloth?.particles ?? null) ||
+      twin.clothBinding !== (cloth?.binding ?? null)
     ) {
       /* Built from the live material, with the overlay's atlas where `base` is its twin. */
       this.overlayBinding = base !== this.bindGroup;
-      this.skinnedGroups[at] = createFlatBindGroup(
+      const group = createFlatBindGroup(
         this.surface.device,
         this.flatLayoutFor(skinned, morphed),
         this.variant,
         this.perDraw.buffer,
-        this.perFrame.buffer,
+        this.passRing.buffer,
+        this.materialStore.buffer,
+        this.viewRing.buffer,
         this.flatTextures,
         palette,
         deltas,
         cloth,
       );
       this.overlayBinding = false;
-      this.skinnedGroupsBeside[at] = base;
-      this.skinnedGroupsPalette[at] = palette;
-      this.skinnedGroupsDeltas[at] = deltas;
-      this.skinnedGroupsCloth[at] = cloth?.particles ?? null;
-      this.skinnedGroupsClothBinding[at] = cloth?.binding ?? null;
+      twin = {
+        group,
+        palette,
+        deltas,
+        cloth: cloth?.particles ?? null,
+        clothBinding: cloth?.binding ?? null,
+      };
+      byMaterial.set(base, twin);
     }
-    return this.skinnedGroups[at] as GPUBindGroup;
+    return twin.group;
   }
 
   /** The layout matching a pair of vertex flags. A pipeline and its bind group must agree. */
@@ -11293,8 +12021,14 @@ export class WebGPURenderer implements RendererApi {
     if (this.drawBudget.dropped > 0) {
       grew = this.perDraw.growTo(roomFor(this.drawBudget.used)) || grew;
     }
-    if (this.materialBudget.dropped > 0) {
-      grew = this.perFrame.growTo(roomFor(this.materialBudget.used)) || grew;
+    if (this.materialsRefused > 0) {
+      grew = this.materialStore.growTo(roomFor(this.materialBudget.used)) || grew;
+    }
+    if (this.passesRefused > 0) {
+      grew = this.passRing.growTo(roomFor(this.passesAsked)) || grew;
+    }
+    if (this.viewsRefused > 0) {
+      grew = this.viewRing.growTo(roomFor(this.viewsAsked)) || grew;
     }
     if (grew) this.rebuildFlatGroupsForNewRings();
   }
@@ -11315,9 +12049,10 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatGroupsForNewRings(): void {
     this.flatBindGroups.clear();
+    this.flatGroupEpoch += 1;
     this.overlayGroups.clear();
-    this.flatEnvironment = this.flatTextures('uEnvironment').view;
     this.skinnedGroups.length = 0;
+    this.flatEnvironment = this.flatTextures('uEnvironment').view;
 
     const albedo = this.albedo;
     const normalMap = this.normalMap;
@@ -11345,6 +12080,7 @@ export class WebGPURenderer implements RendererApi {
     );
     /* The open material lives in a slot of a buffer that no longer exists. */
     this.materials.dirty();
+    this.reopenPass();
   }
 
   /**
@@ -11379,7 +12115,9 @@ export class WebGPURenderer implements RendererApi {
    */
   private rebuildFlatBindGroup(): void {
     this.flatBindGroups.clear();
+    this.flatGroupEpoch += 1;
     this.overlayGroups.clear();
+    this.skinnedGroups.length = 0;
     this.flatEnvironment = this.flatTextures('uEnvironment').view;
     if (
       this.albedo === null &&
@@ -13618,17 +14356,20 @@ export class WebGPURenderer implements RendererApi {
     instanceBuffer: GPUBuffer | null,
     instances: number,
     indirect: GPUBuffer | null,
+    /** A batch playing a bone animation, whose surface half moves as its draw does. */
+    animated: GpuInstancedBatch | null = null,
   ): void {
     const surface = this.reflectionSurface;
     const present = this.meshPresent.get(base);
     if (surface === null || present === undefined) return;
+    const animation = animated === null ? null : this.animationViews(animated);
     const key = `${frameKey}|rs`;
     const pipeline =
       this.pipelines.peek(key) ??
       flatPipeline(
         this.pipelines,
         this.surface.device,
-        this.flatLayoutFor(skinned, morphed),
+        animation === null ? this.flatLayoutFor(skinned, morphed) : this.animatedBindGroupLayout,
         this.variant,
         key,
         present,
@@ -13646,13 +14387,21 @@ export class WebGPURenderer implements RendererApi {
         modelKind,
         'whole',
         true,
+        animation !== null,
       );
-    const command = surface.take();
+    /* A static list's surface halves go into its own pool, beside its draws. */
+    const command =
+      this.staticRecording === null ? surface.take() : takeRecorded(this.staticRecording.surface);
     command.pipeline = pipeline;
-    command.bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
+    command.bindGroup =
+      animated === null || animation === null
+        ? this.flatBindGroupFor(skinned, morphed, deltas)
+        : this.animatedGroup(animated, animation);
     command.offsetA = slot;
-    command.offsetB = material;
-    command.offsetCount = 2;
+    command.offsetB = this.passOffset;
+    command.offsetC = material;
+    command.offsetD = this.drawViewOffset;
+    command.offsetCount = 4;
     let index = 0;
     for (; index < mesh.vertexBuffers.length; index++) {
       command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
@@ -13685,6 +14434,11 @@ export class WebGPURenderer implements RendererApi {
     slot: number,
     material: number,
   ): void {
+    /* A skin's halves are not bundled: a static list holding one replays draw by draw. */
+    if (this.staticRecording !== null) {
+      this.staticRecording.immediate = true;
+      return;
+    }
     const skin = this.skinScatter;
     const pipelines = this.skinPipelines;
     const present = this.meshPresent.get(base);
@@ -13720,8 +14474,10 @@ export class WebGPURenderer implements RendererApi {
       command.pipeline = pipeline;
       command.bindGroup = bindGroup;
       command.offsetA = slot;
-      command.offsetB = material;
-      command.offsetCount = 2;
+      command.offsetB = this.passOffset;
+      command.offsetC = material;
+      command.offsetD = this.drawViewOffset;
+      command.offsetCount = 4;
       for (let index = 0; index < mesh.vertexBuffers.length; index++) {
         command.vertexBuffers[index] = mesh.vertexBuffers[index] as GPUBuffer;
       }
@@ -14167,6 +14923,8 @@ export class WebGPURenderer implements RendererApi {
    * site reads as one `if` either way.
    */
   private recordDraw(reads: number, writes: number): DrawCommand | null {
+    /* A static list recording takes its draws into its own pool, never the frame graph's. */
+    if (this.staticRecording !== null) return takeRecorded(this.staticRecording.frame);
     /* The order-independent replay owns its pass and issues directly into it; a recorded command
        would be replayed into the frame's passes instead, which is not where these belong. */
     if (this.oitEncoder !== null) return null;
@@ -14209,9 +14967,23 @@ export class WebGPURenderer implements RendererApi {
 
   /** One recorded draw, issued into an open pass. Shared by the graph's replay and `runLate`. */
   private issueCommand(pass: GPURenderPassEncoder, command: DrawCommand): void {
+    /* A static list, recorded once: one call, and the pass's bindings are its to set again. */
+    if (command.bundles !== null) {
+      pass.executeBundles(command.bundles);
+      return;
+    }
     if (command.pipeline === null || command.bindGroup === null) return;
     pass.setPipeline(command.pipeline);
-    if (command.offsetCount === 2) {
+    if (command.offsetCount === 4) {
+      pass.setBindGroup(0, command.bindGroup, [
+        command.offsetA,
+        command.offsetB,
+        command.offsetC,
+        command.offsetD,
+      ]);
+    } else if (command.offsetCount === 3) {
+      pass.setBindGroup(0, command.bindGroup, [command.offsetA, command.offsetB, command.offsetC]);
+    } else if (command.offsetCount === 2) {
       pass.setBindGroup(0, command.bindGroup, [command.offsetA, command.offsetB]);
     } else if (command.offsetCount === 1) {
       pass.setBindGroup(0, command.bindGroup, [command.offsetA]);
@@ -14473,7 +15245,7 @@ export class WebGPURenderer implements RendererApi {
     this.flushRings();
     this.pass?.end();
     this.pass = null;
-    if (!this.surface.lost) this.surface.device.queue.submit([this.encoder.finish()]);
+    if (!this.surface.lost) this.submit([this.encoder.finish()]);
     this.encoder = null;
   }
 
@@ -14533,7 +15305,7 @@ export class WebGPURenderer implements RendererApi {
      * there would have nothing to ride on. See `GpuTimestamps.resolve`.
      */
     this.gpuTimer.resolve(this.encoder);
-    this.surface.device.queue.submit([this.encoder.finish()]);
+    this.submit([this.encoder.finish()]);
     this.encoder = null;
     this.framePresented = true;
     /* Latched rather than assigned: `framePresented` goes back to false every `beginFrame`. */
@@ -15275,7 +16047,7 @@ export class WebGPURenderer implements RendererApi {
     definition.dispatch(this.computeContext as ComputeContext);
     pass.end();
     this.flushRings();
-    device.queue.submit([encoder.finish()]);
+    this.submit([encoder.finish()]);
   }
 
   /** Let go of a definition. A handle kept past this dispatches nothing; see `ComputeHandle`. */
@@ -16434,7 +17206,7 @@ export class WebGPURenderer implements RendererApi {
           .end();
       }
     }
-    device.queue.submit([clear.finish()]);
+    this.submit([clear.finish()]);
   }
 
   /**
@@ -16665,7 +17437,7 @@ export class WebGPURenderer implements RendererApi {
     const whole = endFace === PROBE_FACES.length;
     if (whole) this.buildProbeChain(encoder, probe, this.probeSweeps?.writeLayer(layer) ?? layer);
     this.flushRings();
-    device.queue.submit([encoder.finish()]);
+    this.submit([encoder.finish()]);
     this.rewindRings(skinMark);
     this.encoderEpoch = frameEpoch;
 
@@ -16675,6 +17447,7 @@ export class WebGPURenderer implements RendererApi {
     this.perFrameInts[this.materialField('uOutputTransform')] = heldGrade;
     this.perFrameFloats[this.materialField('uOutputExposure')] = heldExposure;
     this.materials.dirty();
+    this.reopenPass();
     this.probePassActive = false;
     this.probeBounce = false;
     this.rebindEnvironment();
@@ -16732,7 +17505,7 @@ export class WebGPURenderer implements RendererApi {
     this.uploadProbeFaces(probe, image);
     const encoder = device.createCommandEncoder({ label: 'probe.environmentImage' });
     this.buildProbeChain(encoder, probe, 0);
-    device.queue.submit([encoder.finish()]);
+    this.submit([encoder.finish()]);
 
     this.markProbeFilled(0);
     this.probeAmbient = options?.irradiance ?? true;
@@ -16770,7 +17543,7 @@ export class WebGPURenderer implements RendererApi {
     const { device } = this.surface;
     const encoder = device.createCommandEncoder({ label: 'probe.layerImage' });
     this.buildProbeChain(encoder, probe, this.probeSweeps?.writeLayer(layer) ?? layer);
-    device.queue.submit([encoder.finish()]);
+    this.submit([encoder.finish()]);
     this.markProbeFilled(layer);
     this.probeAmbient = options?.irradiance ?? true;
     this.rebuildFlatBindGroup();

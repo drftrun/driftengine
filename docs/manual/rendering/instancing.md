@@ -1,8 +1,8 @@
 ---
 title: Instancing
-description: Thousands of copies of one mesh in one call, batches and single instances culled, instances moved every frame, and foliage in the wind.
+description: Thousands of copies of one mesh in one call, culled, moved every frame or played as a crowd, still draws recorded once, and foliage in the wind.
 packages: ['@driftengine/core']
-covers: ['Instancing that culls', 'Draws']
+covers: ['Instancing that culls', 'Draws', 'Static draws', 'Crowds from bone textures']
 ---
 
 # Instancing
@@ -225,7 +225,74 @@ An instanced batch can cast shadows: the shadow caster sink accepts instanced ba
 meshes.
 
 Instancing gives up skinning and morph targets on the instanced mesh, because every instance would
-share one pose. An animated crowd draws each character.
+share one pose. A crowd plays a bone animation instead.
+
+## A crowd: bone animation in the vertex stage
+
+```ts sample=snippets/instancing.ts#crowd
+/** One figure placed many times, each copy playing `clip` from a phase and at a rate of its own. */
+export function createCrowd(
+  renderer: RendererApi,
+  figure: MeshHandle,
+  clip: BoneAnimationClip,
+  places: readonly Float32Array[],
+) {
+  const animation = renderer.createBoneAnimation(clip);
+  const batch = renderer.createInstanced(figure, places.length, { animation });
+  const crowd = {
+    ...createMeshInstances(places.length),
+    clocks: new Float32Array(places.length * 2),
+  };
+  places.forEach((model, i) => {
+    crowd.models.set(model, i * 16);
+    crowd.clocks[i * 2] = i * 0.37; // a phase, in seconds
+    crowd.clocks[i * 2 + 1] = 0.9 + (i % 5) * 0.05; // a rate: 1 is the clip's own speed
+  });
+  crowd.count = places.length;
+  renderer.uploadInstanced(batch, crowd);
+  return { animation, batch, crowd };
+}
+```
+
+`createBoneAnimation(clip)` takes a clip as a turn and a place for each bone at each of its frames,
+and `InstancedOptions.animation` plays it on every instance of a batch. Each vertex follows one bone:
+the one its mesh's second coordinates name, u times the clip's `boneScale`, so the figure's mesh
+must carry `lightmapUvs`. `MeshInstances.clocks` holds a phase in seconds and a rate an instance,
+and `setAnimationTime(seconds)` sets the clock they all read. Set it once a frame **before the
+shadows are drawn**, as the wind is set, or a figure and its shadow play different moments.
+
+Every instance then moves at the frame's rate and out of step with its neighbours, in the colour
+pass and in every shadow, with nothing on the processor. What it gives up against skinning is the
+blend, since a vertex follows one bone; an animated batch is culled whole rather than instance by
+instance; and under DriftTR or temporal antialiasing a crowd's own movement is not in the frame's
+motion, so a fast clip seen large softens a little. `disposeBoneAnimation` releases the clip.
+
+## Static draws: recorded once, replayed every frame
+
+```ts sample=snippets/instancing.ts#static
+/** A stage's props that never move, enumerated once and kept: replay it each frame instead. */
+export function recordStage(
+  renderer: RendererApi,
+  props: readonly { mesh: MeshHandle; model: Float32Array; material: SceneCasterMaterial }[],
+): StaticDrawsHandle {
+  return renderer.createStaticDraws((sink) => {
+    for (const prop of props) sink.mesh(prop.mesh, prop.model, prop.material);
+  });
+}
+```
+
+`createStaticDraws` takes the same enumeration `drawSceneCasters` does — rigid meshes and instanced
+batches, each with its material — once, and keeps it. `drawStaticDraws(stage)` draws it into the
+open mesh pass under whatever camera, lights and fog `bindMeshPass` set, so the same list serves the
+frame, a mirror and a capture. On WebGPU a list is a render bundle for each view, replayed with one
+call and recorded again only when something it was recorded against changes; WebGL2 replays the
+entries itself, and the picture is the same. 412 draws cost a frame 0.65 ms of main thread drawn
+one by one and 0.13 ms as a list.
+
+A list draws whole in every view, so it culls by list: split a world into lists by region and draw
+the ones in view. A skinned mesh or a scatter batch is refused, since both change every frame. The
+meshes, batches and materials stay yours: dispose the list, or make it again, before anything it
+holds, and make it again when a material it holds changes. `disposeStaticDraws` releases it.
 
 ## Foliage: scatter batches
 

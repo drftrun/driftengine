@@ -146,3 +146,47 @@ test('AN ARRAY COPIES EVERY IMAGE TO ITS OWN LAYER and is read as one 2d-array v
   expect(array.layers).toBe(3);
   expect(() => array.update(images[0] as TexImageSource)).toThrow(/array of 3 layers/);
 });
+
+/**
+ * **Blocks replace an image behind the handle it already has.** A model loader shows a decoded
+ * image the moment it has one and swaps in the blocks it encoded afterwards, and every draw loop is
+ * holding the handle from the first frame — a second handle would put the blocks on a texture
+ * nothing draws. Eight texels square in ETC2: four blocks at level 0, then one a level to 1x1.
+ */
+const ETC2_CHAIN = {
+  format: 'etc2-rgb8',
+  width: 8,
+  height: 8,
+  levels: [new Uint8Array(32), new Uint8Array(8), new Uint8Array(8), new Uint8Array(8)],
+} as const;
+
+test('BLOCKS REPLACE AN IMAGE in a texture of their format and chain, read in its colour space', () => {
+  const { device } = fakeDevice();
+  (device.queue as unknown as { writeTexture: unknown }).writeTexture = vi.fn();
+  const texture = new GpuSurfaceTexture(device, PIPELINES, SOURCE, { colorSpace: 'srgb' });
+  const create = device.createTexture as unknown as ReturnType<typeof vi.fn>;
+  const first = create.mock.results[0]?.value as GPUTexture;
+  const view = texture.view;
+
+  const replaced = texture.update(ETC2_CHAIN, ['etc2-rgb8', 'etc2-rgb8-srgb']);
+
+  const descriptor = create.mock.calls.at(-1)?.[0] as GPUTextureDescriptor;
+  expect(descriptor.format, 'the sRGB twin, since the image was colour').toBe(
+    'etc2-rgb8unorm-srgb',
+  );
+  expect(descriptor.size).toEqual([8, 8, 1]);
+  expect(descriptor.mipLevelCount, 'the chain the blocks carry').toBe(4);
+  expect(replaced, 'the image, for the renderer to retire').toBe(first);
+  expect(texture.view).not.toBe(view);
+  expect(() => texture.update(SOURCE), 'and no image after them').toThrow(/holds ETC2-RGB8 blocks/);
+});
+
+test('BLOCKS THE DEVICE DOES NOT TAKE ARE REFUSED, and the image stays where it was', () => {
+  const { device } = fakeDevice();
+  const texture = new GpuSurfaceTexture(device, PIPELINES, SOURCE, { colorSpace: 'srgb' });
+  const view = texture.view;
+  expect(() => texture.update(ETC2_CHAIN, ['bc1', 'bc1-srgb'])).toThrow(/ETC2-RGB8/);
+  expect(device.createTexture).toHaveBeenCalledTimes(1);
+  expect(texture.view).toBe(view);
+  expect(texture.update(SOURCE), 'still an image, updated in place').toBeNull();
+});

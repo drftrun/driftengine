@@ -4,7 +4,7 @@ The editor's panels, as something a shipped game can carry: an inspector, a cons
 a network panel, with the command stack that makes their edits undoable, and the overlay that puts
 them on screen on a key.
 
-**5,780 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**5,782 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/tools-only.ts`. Optional — nothing in `@driftengine/core` imports it, so a
 game that never asks for these pays nothing.
 

@@ -15,7 +15,7 @@
  *     light = irradiance(uv) * max(0, dot(d.xyz, n) + d.w)
  *     diffuse += albedo * (1 - metal) * light
  *
- * Unreal's high-quality lightmap read, `GetLightMapColorHQ`, once its own vectors have decoded the
+ * A directional lightmap read, once its own vectors have decoded the
  * page — the first-order spherical harmonic its direction carries, in this engine's axes. **Added
  * to what the dynamic lights give**, and to the ambient: a consumer whose bake already holds the
  * sky's light zeroes the ambient for those draws itself, with `setAmbientSH` and nine zeros.

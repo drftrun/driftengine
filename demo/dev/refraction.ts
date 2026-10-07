@@ -15,6 +15,14 @@
  *     /refraction.html?variant=ramp      thickness ramped across the pane by the channel's .w lane
  *     /refraction.html?variant=nolane    the same absorbing pane carrying no channel array at all
  *
+ * `&roll=<degrees>` turns the scene about the camera's line of sight, the camera held: at 90 the bars
+ * run across the screen and the pane leans up or down, so the bend runs up the screen, which is the
+ * direction the two backends count rows in opposite ways — the pair must still agree.
+ *
+ * `&yaw=<degrees>` turns the whole scene, the bars, the pane and the camera together, about the
+ * vertical: an unlit bend must not change by a pixel, since nothing the eye sees has changed, and a
+ * bend taken from the normal's world x and y, as it was until 4.10.0, moves with the world's axes.
+ *
  * Any of them with `&map=1` wears a normal map of ripples, which the bending follows rather than
  * the flat sheet's own normal; `&lit=1` draws the bending variants lit, where the lit block's
  * shading normal is the one taken. `&map=1` against `&map=1&lit=1` is the pair that must agree: the
@@ -46,6 +54,7 @@ import {
   createRenderer,
 } from '../../packages/core/src/index';
 import type { MeshData, RendererApi, Vec3 } from '../../packages/core/src/index';
+import { mat4 } from 'gl-matrix';
 import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 /** Dark, and nothing in the scene is near it, so a subject pixel is unambiguous. */
@@ -254,8 +263,6 @@ function ripples(): HTMLCanvasElement {
   return canvas;
 }
 
-const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
 /** The pane turned about Y, so `edge` presents a grazing angle and `face` does not. */
 function turned(radians: number): Float32Array {
   const c = Math.cos(radians);
@@ -288,7 +295,10 @@ async function main(): Promise<void> {
   env.ambient = [0.3, 0.3, 0.3];
   env.ambientGround = [0.3, 0.3, 0.3];
   env.directionalColor = [0.5, 0.5, 0.5];
-  env.directionalDir = [0, 0, 1];
+  /* Turned with the scene by `&yaw`, so the bars are lit the same whichever way the world faces. */
+  const yawRadians = (Number(asked.get('yaw') ?? '0') * Math.PI) / 180;
+  const lean = Number.isFinite(yawRadians) ? yawRadians : 0;
+  env.directionalDir = [Math.sin(lean), 0, Math.cos(lean)];
   /*
    * For glass, the light is placed where the tilted pane reflects it into the camera — the
    * reflection of the view about the pane's normal, (sin 0.35, 0, cos 0.35) — so the highlight a
@@ -306,13 +316,23 @@ async function main(): Promise<void> {
     env.lightRadii[0] = 3;
   }
 
+  /* The whole scene turned about the vertical, camera included: see `&yaw` in the header. */
+  const yaw = (Number(asked.get('yaw') ?? '0') * Math.PI) / 180;
+  const turnedWorld = turned(Number.isFinite(yaw) ? yaw : 0);
+  const roll = (Number(asked.get('roll') ?? '0') * Math.PI) / 180;
+  const world = mat4.multiply(
+    new Float32Array(16),
+    mat4.fromZRotation(mat4.create(), Number.isFinite(roll) ? roll : 0),
+    turnedWorld,
+  ) as Float32Array;
+  const placedModel = new Float32Array(16);
   const camera = new Camera();
   camera.fovYDeg = 45;
   camera.near = 0.5;
   camera.far = 100;
-  camera.position[0] = 0;
+  camera.position[0] = 5 * (turnedWorld[8] ?? 0);
   camera.position[1] = 0;
-  camera.position[2] = 5;
+  camera.position[2] = 5 * (turnedWorld[10] ?? 1);
   camera.lookAt(0, 0, 0);
 
   /*
@@ -461,7 +481,7 @@ async function main(): Promise<void> {
     renderer.bindMeshPass(camera, env);
     /* The backdrop is opaque and drawn first, which is what puts it in the snapshot the pane
        reads. Draw the world, then the glass. */
-    renderer.drawMesh(bars, IDENTITY);
+    renderer.drawMesh(bars, world);
     if (glass !== null) {
       /*
        * One tilt for every variant that measures bending, so the displacement is the shader's; two
@@ -469,7 +489,7 @@ async function main(): Promise<void> {
        * same tint and same thickness at two angles.
        */
       const tilt = variant === 'face' ? 0.15 : variant === 'edge' ? 1.15 : 0.35;
-      const model = turned(tilt);
+      const model = mat4.multiply(placedModel, world, turned(tilt)) as Float32Array;
       const strength = variant === 'off' ? 0 : variant === 'strong' ? 0.05 : 0.025;
       const absorbing =
         variant === 'tinted' ||

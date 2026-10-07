@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "30bb546c:256138",
-  "directionalShadows+environmentProbe": "b4c4013c:282149",
-  "directionalShadows+environmentProbe+nightEmissive": "4a8cdb3e:284635",
-  "directionalShadows+nightEmissive": "a1372220:258624",
-  "environmentProbe": "04546daf:262186",
-  "environmentProbe+nightEmissive": "b48bea81:264672",
-  "nightEmissive": "e1aa2b75:238661",
-  "none": "722b64fd:236175",
-  "pointShadows": "14df8cf1:275383",
-  "pointShadows+directionalShadows": "b81742e0:295346",
-  "pointShadows+directionalShadows+environmentProbe": "6dfbc470:321357",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "07f0e6fa:323843",
-  "pointShadows+directionalShadows+nightEmissive": "5187fd1c:297832",
-  "pointShadows+environmentProbe": "de72575b:301394",
-  "pointShadows+environmentProbe+nightEmissive": "a6e5937d:303880",
-  "pointShadows+nightEmissive": "35c80f69:277869",
+  "directionalShadows": "2fe7a838:258069",
+  "directionalShadows+environmentProbe": "310b3bce:284080",
+  "directionalShadows+environmentProbe+nightEmissive": "e34f8d60:286566",
+  "directionalShadows+nightEmissive": "a9f54754:260555",
+  "environmentProbe": "05569bb1:264117",
+  "environmentProbe+nightEmissive": "516eb83b:266603",
+  "nightEmissive": "a54378ad:240592",
+  "none": "3e80618d:238106",
+  "pointShadows": "2f4b9e99:277314",
+  "pointShadows+directionalShadows": "684526b4:297277",
+  "pointShadows+directionalShadows+environmentProbe": "3de532ba:323288",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "acf972f4:325774",
+  "pointShadows+directionalShadows+nightEmissive": "af59f2d0:299763",
+  "pointShadows+environmentProbe": "8a820575:303325",
+  "pointShadows+environmentProbe+nightEmissive": "5ad1fc17:305811",
+  "pointShadows+nightEmissive": "f6d09c49:279800",
 }
 `;
 
@@ -105,9 +105,15 @@ uniform sampler2D uRefractScene;
  * gives up, and four separate floats cost half the shadowed lights such a device can have. The tints
  * stay colours of their own. Zero transmission is not glass — see glass.ts.
  */
-uniform vec4 uSeeThrough;
-uniform vec3 uRefractTint;
-uniform vec3 uGlassTint;
+uniform vec4 uSeeThrough; // wgsl:material
+/*
+ * What a metre of the medium leaves of each channel (rgb), and in w which way this frame's rows run
+ * up the screen: +1 where the first row is the bottom (WebGL2), -1 where it is the top (WebGPU). The
+ * bend is taken in view space, whose y is up whatever the framebuffer says, so it is turned here to
+ * the rows a screen coordinate counts. A vec4 where a vec3 already spent the row.
+ */
+uniform vec4 uRefractTint; // wgsl:material
+uniform vec3 uGlassTint; // wgsl:material
 flat in int vHasTangents;
 
 /**
@@ -138,7 +144,7 @@ uniform mediump sampler2DArray uAlbedo;
  *   card. Its draw culls nothing, and a back face is lit as a front, with the shading normal turned
  *   toward the viewer.
  */
-uniform ivec4 uMaterialFlags;
+uniform ivec4 uMaterialFlags; // wgsl:material
 /**
  * Alpha below which a textured fragment is thrown away entirely, 0 to disable.
  *
@@ -152,13 +158,17 @@ uniform ivec4 uMaterialFlags;
  * else changes.
  *
  * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
- * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
- * frame the dither's pattern is offset by, w the material's lighting channels — a mask a light
- * shades it only where its own shares a bit with (\`SurfaceMaterial.lightChannels\`, 1 unless a
- * material names others). One vector rather than a float and three more, because every loose
- * scalar is a row of WebGL2's 224 that the light budget gives up.
+ * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z unused,
+ * w the material's lighting channels — a mask a light shades it only where its own shares a bit
+ * with (\`SurfaceMaterial.lightChannels\`, 1 unless a material names others). One vector rather than
+ * a float and three more, because every loose scalar is a row of WebGL2's 224 that the light budget
+ * gives up.
+ *
+ * **z was the frame the dither's pattern is offset by until 4.10.0**, and that made every material
+ * new every frame: a material is kept on WebGPU by its numbers, and one of them changed with the
+ * clock. The frame is the pass's, in \`uHighlightMin.w\`.
  */
-uniform vec4 uCutout;
+uniform vec4 uCutout; // wgsl:material
 /**
  * A draw's own ambient, as nine spherical-harmonic coefficients of incoming radiance, red green blue
  * in turn, twenty-seven floats, and in the last of the twenty-eight a 1 where they are on — 0 is the
@@ -166,7 +176,7 @@ uniform vec4 uCutout;
  * and the basis, and its tests hold this to it. Seven rows of the material block, which is per draw
  * as far as anything here is: \`setAmbientSH\` moves it between two draws as \`setMaterial\` does.
  */
-uniform vec4 uAmbientSH[7];
+uniform vec4 uAmbientSH[7]; // wgsl:material
 
 /** The ambient a surface facing \`n\` receives from \`uAmbientSH\`: \`ambientFromSH\`'s arithmetic. */
 vec3 ambientHarmonics(vec3 n) {
@@ -213,7 +223,7 @@ uniform highp sampler2DArray uNormalMap;
  * shadow samplers, where a profile with shadows off should declare none of them; it is the wrong
  * tool for one image on a shader that already declares one.
  */
-uniform float uNormalStrength;
+uniform float uNormalStrength; // wgsl:material
 
 /**
  * Occlusion, roughness and metallic in one image. glTF's packing, because that is what an import
@@ -234,7 +244,7 @@ uniform highp sampler2DArray uOrmMap;
  * occlusionTexture.strength is: 1 + strength * (texel - 1). A multiply at 0 means fully occluded,
  * which is the opposite of what a caller asking for no occlusion means.
  */
-uniform vec3 uOrmScale;
+uniform vec3 uOrmScale; // wgsl:material
 /**
  * 1 when \`uEnvironment\` holds the GGX-prefiltered cube, 0 when it holds the capture's box chain.
  *
@@ -250,7 +260,7 @@ uniform vec3 uOrmScale;
  * (\`uniformVectorBudget.ts\`). y is how much of the environment the material mirrors, z how
  * bright what it mirrors is.
  */
-uniform vec3 uEnvironmentDials;
+uniform vec3 uEnvironmentDials; // wgsl:material
 
 /**
  * Where a surface glows, and in what colour.
@@ -272,7 +282,7 @@ uniform highp sampler2DArray uEmissiveMap;
  * The counterpart of \`uOrmScale\`: a factor that multiplies a texture is not a value, and this is
  * where the multiplier lives once an image supplies the shape.
  */
-uniform vec3 uEmissiveScale;
+uniform vec3 uEmissiveScale; // wgsl:material
 
 /*
  * The share marker below is what lets the environment probe exist, and it costs nothing.
@@ -425,7 +435,7 @@ uniform vec4 uSurfaceScene;
  * draw moves it), y the night factor emission is gated on. One row where two floats were two
  * (\`uniformVectorBudget.ts\`).
  */
-uniform vec2 uEmission;
+uniform vec2 uEmission; // wgsl:material
 /**
  * Emission that only shows where the dominant light does not reach. 0 is off and is the default.
  *
@@ -448,7 +458,7 @@ uniform float uNightEmissive;
  * of that to change one channel is how a renderer ends up with two shaders that
  * disagree about the sun. The caller owns the blend state; this owns the number.
  */
-uniform float uOpacity;
+uniform float uOpacity; // wgsl:material
 
 /**
  * Two per-draw switches on how a fragment is *written* rather than what colour it is, sharing one
@@ -480,7 +490,7 @@ uniform float uOpacity;
  * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
  * draw that asks for it is dithered too, since the test is a discard.
  */
-uniform vec2 uWriteMode;
+uniform vec2 uWriteMode; // wgsl:material
 
 /** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
 bool ditherKeeps(float amount) {
@@ -513,7 +523,7 @@ bool ditherKeeps(float amount) {
  * one uniform skips the untaken side rather than computing both and discarding one, which is
  * only true because nothing here reads it through a *varying*-dependent branch.
  */
-uniform int uLightingEnabled;
+uniform int uLightingEnabled; // wgsl:material
 /**
  * How this draw meets the medium: the atmospheric haze and the underwater tint both, folded
  * together because both are the *camera's* medium rather than a property of the surface — see
@@ -535,7 +545,7 @@ uniform int uLightingEnabled;
  * is what "exactly as its colour says" has to mean for it; the cost is that such a draw will
  * not tint if the camera goes under water, unlike everything else in the frame.
  */
-uniform int uFogEnabled;
+uniform int uFogEnabled; // wgsl:material
 
 /**
  * A pass-level scale over the grain the geometry declared, 0 to 1.
@@ -545,7 +555,7 @@ uniform int uFogEnabled;
  * imported model that declares nothing is drawn with the pass's own answer, and a scene
  * can dial a whole draw down without rebuilding its geometry.
  */
-uniform float uGrain;
+uniform float uGrain; // wgsl:material
 /*
  * The material's own relief: how strong, and how many bumps to a metre.
  *
@@ -554,7 +564,7 @@ uniform float uGrain;
  * between them, and the geometry carrying them is identical in all three cases. See
  * Renderer.setSurfaceRelief. x is the strength and y the bumps to a metre, in one row.
  */
-uniform vec2 uRelief;
+uniform vec2 uRelief; // wgsl:material
 /**
  * How hard the bound surface texture's own luminance turns the shading normal, 0 for not at all.
  *
@@ -577,7 +587,7 @@ uniform vec2 uRelief;
  * 0..1 like its neighbours for the same reason: this is an amplitude against a luminance
  * gradient, not a fraction of anything.
  */
-uniform float uTextureRelief;
+uniform float uTextureRelief; // wgsl:material
 
 /**
  * How much of the environment this material mirrors, 0 to 1.
@@ -710,8 +720,12 @@ uniform vec3 uProbeGridSets;
 /**
  * A world-space box that lights up regardless of time of day: its corners, and in the far corner's
  * w the gain — one row where a loose float was another (\`uniformVectorBudget.ts\`).
+ *
+ * **And in the near corner's w the frame the cutout dither's pattern is offset by**, for the same
+ * reason: a row the lit stage already pays for, holding a number the pass sets and no material does.
+ * See \`uCutout\`.
  */
-uniform vec3 uHighlightMin;
+uniform vec4 uHighlightMin;
 uniform vec4 uHighlightMax;
 
 /*
@@ -2091,9 +2105,9 @@ layout(location = 0) out vec4 outColor;
 
 
 /** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
-uniform int uOutputTransform;
+uniform int uOutputTransform; // wgsl:material
 /** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
-uniform float uOutputExposure;
+uniform float uOutputExposure; // wgsl:material
 
 /*
  * ACES: the reference fit, not the cheap one.
@@ -3097,7 +3111,7 @@ const bool PHYSICAL_SPECULAR = true;  // wgsl:override
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
  * (surfaceModel.ts) — and whether a model map is bound, in the last component.
  */
-uniform vec4 uModelParams[2];
+uniform vec4 uModelParams[2]; // wgsl:material
 /* The model's own channels, in the albedo's layout: what each means is each model's to say. */
 uniform highp sampler2DArray uModelMap;
 
@@ -3720,7 +3734,7 @@ float modelReflectance(float standard) {
 /* Whether this program carries a draw's overlay. Off but where one has been set: overlay.ts. */
 const bool SURFACE_OVERLAY = true;  // wgsl:override
 /* The overlay's fifteen vectors; packSurfaceOverlay in surfaceOverlay.ts says what each holds. */
-uniform vec4 uOverlay[15];
+uniform vec4 uOverlay[15]; // wgsl:material
 
 /* Whether the atlas is what the refraction slot holds: not where this draw refracts or is glass. */
 bool overlayImagesBound() {
@@ -4062,7 +4076,7 @@ void main() {
          */
         float share = cutoutShare(tested, uCutout.x);
         if (uCutout.y == 1.0) {
-          if (!cutoutKeeps(share, gl_FragCoord.xy, uCutout.z)) discard;
+          if (!cutoutKeeps(share, gl_FragCoord.xy, uHighlightMin.w)) discard;
           kept = 1.0;
         } else {
           kept = share;
@@ -5248,7 +5262,7 @@ void main() {
        */
       float falloff;
       /*
-       * **A light may name its own falloff, and then it is Unreal's for a light without
+       * **A light may name its own falloff, and then it is the usual one for a light without
        * inverse-square falloff**: \`(1 - (d/R)^2)^n\` with no distance term, so a fill authored to
        * light a whole hall across a hundred metres does, where the inverse square would have it
        * gone a few metres out. Zero is the frame's own rule below, which every light was before.
@@ -5953,7 +5967,7 @@ void main() {
     // finishing a run reads the same at noon and at midnight. Costs one compare
     // per fragment and no extra draw call — the box is a uniform, not geometry.
     if (uHighlightMax.w > 0.0) {
-      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
+      vec3 inside = step(uHighlightMin.xyz, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
       lit += albedo * uHighlightMax.w * inside.x * inside.y * inside.z;
     }
   }
@@ -6057,7 +6071,17 @@ void main() {
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
-    vec2 bent = clamp(screenUv + refractN.xy * uSeeThrough.x, vec2(0.0), vec2(1.0));
+    /*
+     * **The normal's sideways part as the eye sees it**: the shading normal in view space, its x
+     * and y across the screen, y turned to the way this frame's rows run (w of the tint). It was the
+     * normal's world x and y until 4.10.0, which on a quad facing the camera is the quad's own lean
+     * against the world's axes: one offset over the whole quad, a lens, with a normal map's tilt a
+     * small change on top. In view space a quad facing the eye bends by nothing but its map, which
+     * is a shimmer, and a pane bends by how it leans toward the eye wherever the eye stands.
+     */
+    vec3 seenN = mat3(uView) * refractN;
+    vec2 bend = vec2(seenN.x, seenN.y * uRefractTint.w);
+    vec2 bent = clamp(screenUv + bend * uSeeThrough.x, vec2(0.0), vec2(1.0));
     /*
      * **An explicit level, and frost is what picks it** — the 2026-08-07 rule, and the reason a
      * frosted pane blurs rather than fades: the copy carries a mip chain on a frame that draws glass,
@@ -6071,7 +6095,7 @@ void main() {
     /* Unsigned: a pane passes the same light seen from either side, and so does its Fresnel. */
     float cosView = max(abs(dot(refractN, refractV)), 0.05);
     float pathLength = uSeeThrough.y * vThickness / cosView;
-    vec3 seen = behind * pow(uRefractTint, vec3(pathLength));
+    vec3 seen = behind * pow(uRefractTint.rgb, vec3(pathLength));
     if (glassTransmission > 0.0) {
       /*
        * **Glass keeps its own surface and shows what is behind over it**, by how much it lets
@@ -6151,10 +6175,16 @@ layout(location = 9) in float aRelief;
  */
 layout(location = 10) in vec4 aTangent;
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -6368,10 +6398,16 @@ layout(location = 9) in float aRelief;
  */
 layout(location = 10) in vec4 aTangent;
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -6439,12 +6475,12 @@ layout(location = 13) in vec4 aChannel;
  * grass beneath it leans another, with no single element looking wrong. See "One wind, sampled
  * once" in AGENTS.md.
  */
-uniform vec2 uWindDirection;
-uniform float uWindSpeed;
-uniform float uWindGust;
-uniform float uWindTime;
+uniform vec2 uWindDirection; // wgsl:view
+uniform float uWindSpeed; // wgsl:view
+uniform float uWindGust; // wgsl:view
+uniform float uWindTime; // wgsl:view
 /* Spatial frequency of the travelling gust, per metre. */
-uniform vec2 uWindSpatialPhase;
+uniform vec2 uWindSpatialPhase; // wgsl:view
 
 
 vec3 channelBend(vec3 worldPos, float sway) {
@@ -6652,10 +6688,16 @@ mat4 skinMatrix() {
 
 
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -6723,12 +6765,12 @@ layout(location = 13) in vec4 aChannel;
  * grass beneath it leans another, with no single element looking wrong. See "One wind, sampled
  * once" in AGENTS.md.
  */
-uniform vec2 uWindDirection;
-uniform float uWindSpeed;
-uniform float uWindGust;
-uniform float uWindTime;
+uniform vec2 uWindDirection; // wgsl:view
+uniform float uWindSpeed; // wgsl:view
+uniform float uWindGust; // wgsl:view
+uniform float uWindTime; // wgsl:view
 /* Spatial frequency of the travelling gust, per metre. */
-uniform vec2 uWindSpatialPhase;
+uniform vec2 uWindSpatialPhase; // wgsl:view
 
 
 vec3 channelBend(vec3 worldPos, float sway) {
@@ -6951,10 +6993,16 @@ layout(location = 9) in float aRelief;
  */
 layout(location = 10) in vec4 aTangent;
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -7022,12 +7070,12 @@ layout(location = 13) in vec4 aChannel;
  * grass beneath it leans another, with no single element looking wrong. See "One wind, sampled
  * once" in AGENTS.md.
  */
-uniform vec2 uWindDirection;
-uniform float uWindSpeed;
-uniform float uWindGust;
-uniform float uWindTime;
+uniform vec2 uWindDirection; // wgsl:view
+uniform float uWindSpeed; // wgsl:view
+uniform float uWindGust; // wgsl:view
+uniform float uWindTime; // wgsl:view
 /* Spatial frequency of the travelling gust, per metre. */
-uniform vec2 uWindSpatialPhase;
+uniform vec2 uWindSpatialPhase; // wgsl:view
 
 
 vec3 channelBend(vec3 worldPos, float sway) {
@@ -7270,10 +7318,16 @@ mat4 skinMatrix() {
 
 
 
-uniform mat4 uViewProj;
+uniform mat4 uViewProj; // wgsl:view
 /** 1 when the mesh carries a tangent frame. See vHasTangents. */
 uniform int uHasTangents;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj; // wgsl:view
+/**
+ * The scene's clock, what \`setAnimationTime\` set: what a bone animation's instances read
+ * their moment from. In the view block, before the wind, so every variant's view block is the
+ * plain one's or a prefix of it — the instanced variant declares no wind and keeps this.
+ */
+uniform float uSceneTime; // wgsl:view
 /**
  * How often the surface texture repeats across this mesh's UV range, per axis.
  *
@@ -7341,12 +7395,12 @@ layout(location = 13) in vec4 aChannel;
  * grass beneath it leans another, with no single element looking wrong. See "One wind, sampled
  * once" in AGENTS.md.
  */
-uniform vec2 uWindDirection;
-uniform float uWindSpeed;
-uniform float uWindGust;
-uniform float uWindTime;
+uniform vec2 uWindDirection; // wgsl:view
+uniform float uWindSpeed; // wgsl:view
+uniform float uWindGust; // wgsl:view
+uniform float uWindTime; // wgsl:view
 /* Spatial frequency of the travelling gust, per metre. */
-uniform vec2 uWindSpatialPhase;
+uniform vec2 uWindSpatialPhase; // wgsl:view
 
 
 vec3 channelBend(vec3 worldPos, float sway) {

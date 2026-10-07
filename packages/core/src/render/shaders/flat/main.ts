@@ -82,7 +82,7 @@ export const MAIN_GLSL = `void main() {
          */
         float share = cutoutShare(tested, uCutout.x);
         if (uCutout.y == 1.0) {
-          if (!cutoutKeeps(share, gl_FragCoord.xy, uCutout.z)) discard;
+          if (!cutoutKeeps(share, gl_FragCoord.xy, uHighlightMin.w)) discard;
           kept = 1.0;
         } else {
           kept = share;
@@ -1281,7 +1281,7 @@ export const MAIN_GLSL = `void main() {
        */
       float falloff;
       /*
-       * **A light may name its own falloff, and then it is Unreal's for a light without
+       * **A light may name its own falloff, and then it is the usual one for a light without
        * inverse-square falloff**: \`(1 - (d/R)^2)^n\` with no distance term, so a fill authored to
        * light a whole hall across a hundred metres does, where the inverse square would have it
        * gone a few metres out. Zero is the frame's own rule below, which every light was before.
@@ -1997,7 +1997,7 @@ export const MAIN_GLSL = `void main() {
     // finishing a run reads the same at noon and at midnight. Costs one compare
     // per fragment and no extra draw call — the box is a uniform, not geometry.
     if (uHighlightMax.w > 0.0) {
-      vec3 inside = step(uHighlightMin, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
+      vec3 inside = step(uHighlightMin.xyz, vWorldPos) * step(vWorldPos, uHighlightMax.xyz);
       lit += albedo * uHighlightMax.w * inside.x * inside.y * inside.z;
     }
   }
@@ -2101,7 +2101,17 @@ export const MAIN_GLSL = `void main() {
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
-    vec2 bent = clamp(screenUv + refractN.xy * uSeeThrough.x, vec2(0.0), vec2(1.0));
+    /*
+     * **The normal's sideways part as the eye sees it**: the shading normal in view space, its x
+     * and y across the screen, y turned to the way this frame's rows run (w of the tint). It was the
+     * normal's world x and y until 4.10.0, which on a quad facing the camera is the quad's own lean
+     * against the world's axes: one offset over the whole quad, a lens, with a normal map's tilt a
+     * small change on top. In view space a quad facing the eye bends by nothing but its map, which
+     * is a shimmer, and a pane bends by how it leans toward the eye wherever the eye stands.
+     */
+    vec3 seenN = mat3(uView) * refractN;
+    vec2 bend = vec2(seenN.x, seenN.y * uRefractTint.w);
+    vec2 bent = clamp(screenUv + bend * uSeeThrough.x, vec2(0.0), vec2(1.0));
     /*
      * **An explicit level, and frost is what picks it** — the 2026-08-07 rule, and the reason a
      * frosted pane blurs rather than fades: the copy carries a mip chain on a frame that draws glass,
@@ -2115,7 +2125,7 @@ export const MAIN_GLSL = `void main() {
     /* Unsigned: a pane passes the same light seen from either side, and so does its Fresnel. */
     float cosView = max(abs(dot(refractN, refractV)), 0.05);
     float pathLength = uSeeThrough.y * vThickness / cosView;
-    vec3 seen = behind * pow(uRefractTint, vec3(pathLength));
+    vec3 seen = behind * pow(uRefractTint.rgb, vec3(pathLength));
     if (glassTransmission > 0.0) {
       /*
        * **Glass keeps its own surface and shows what is behind over it**, by how much it lets

@@ -218,6 +218,8 @@ import {
   DEPTH_CUTOUT_FRAG,
   DEPTH_CUTOUT_VERT,
   DEPTH_FRAG,
+  DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT,
+  DEPTH_INSTANCED_ANIMATED_VERT,
   DEPTH_INSTANCED_CUTOUT_VERT,
   DEPTH_INSTANCED_VERT,
   DEPTH_SKINNED_VERT,
@@ -232,6 +234,8 @@ import { GlassCasterList, type GlassReplaySink } from '../../glassCasters.ts';
 import { SunGlassTint } from '../../sunGlassTint.ts';
 import { GlassTintPrograms, type GlassTintProgram } from './glassTintPrograms.ts';
 import type { SceneCasterMaterial, ShadowCasterSink, ShadowCasters } from '../../shadowCasters.ts';
+import { captureStaticDraws, replayStaticDraws } from '../../staticDraws.ts';
+import type { StaticDrawsHandle, StaticDrawsList } from '../../staticDraws.ts';
 import { FACE_COUNT, PointShadowMap, type PointGlassDraw } from '../../pointShadowMap.ts';
 import { createResolvedPointShadows, DEFAULT_SOURCE_RADIUS } from '../../pointShadowImage.ts';
 import {
@@ -277,7 +281,11 @@ import { SurfaceTexture } from '../../surfaceTexture.ts';
 import { sceneCaptureTexels } from '../../sceneCapture.ts';
 import { GlSceneCaptureTarget } from './sceneCaptureTarget.ts';
 import { glCompressedFormats } from '../../glCompressed.ts';
-import type { CompressedTextureFormat, SurfaceSource } from '../../compressedSource.ts';
+import type {
+  CompressedTextureFormat,
+  CompressedTextureSource,
+  SurfaceSource,
+} from '../../compressedSource.ts';
 import type { SurfaceMaterial, SurfaceTextureOptions } from '../../surfaceTexture.ts';
 import { PlumeRenderer } from '../../plumeRenderer.ts';
 import { createScatterDeform, resolveScatterDeform } from '../../scatterDeform.ts';
@@ -335,6 +343,14 @@ import type { WindStreakOptions } from '../../windStreakRenderer.ts';
 import type { WindField } from '../../windField.ts';
 import type { FlockParams } from '../../flockRenderer.ts';
 import { InstancedBatch } from './instanced.ts';
+import { GlBoneAnimation } from './boneAnimations.ts';
+import { packBoneAnimation } from '../../boneAnimation.ts';
+import type { BoneAnimationClip, BoneAnimationHandle } from '../../boneAnimation.ts';
+import {
+  BONE_PLACES_TEXTURE_UNIT,
+  BONE_TURNS_TEXTURE_UNIT,
+  INSTANCE_CLOCKS_TEXTURE_UNIT,
+} from '../../lightBudget.ts';
 import type { InstancedOptions, MeshInstances } from '../../instances.ts';
 import { cutoutOf } from '../../cutoutCaster.ts';
 import { CUTOUT_RESOLVE_CODE, resolveCutout } from '../../cutoutDither.ts';
@@ -1582,6 +1598,11 @@ export class WebGL2Renderer implements RendererApi {
   private readonly depthCutoutUniforms: Record<string, WebGLUniformLocation>;
   private readonly depthInstancedCutoutProgram: WebGLProgram;
   private readonly depthInstancedCutoutUniforms: Record<string, WebGLUniformLocation>;
+  /** A crowd's casters: the instanced depth programs that play a bone animation. */
+  private readonly depthAnimatedProgram: WebGLProgram;
+  private readonly depthAnimatedUniforms: Record<string, WebGLUniformLocation>;
+  private readonly depthAnimatedCutoutProgram: WebGLProgram;
+  private readonly depthAnimatedCutoutUniforms: Record<string, WebGLUniformLocation>;
   private readonly scatterDepthProgram: WebGLProgram;
   private readonly scatterDepthUniforms: Record<string, WebGLUniformLocation>;
   /** The sun's static, moving and peeled maps, as layers of one array. See `shadowMap.ts`. */
@@ -2002,24 +2023,33 @@ export class WebGL2Renderer implements RendererApi {
       const gpuBatch = batch as InstancedBatch;
       const count = Math.min(data.count, gpuBatch.capacity);
       if (count === 0) return;
+      const clip = gpuBatch.animation;
+      if (clip !== null && clip.disposed) return;
       this.shadowDrawBudget.ask();
       const twoSided = material?.doubleSided === true;
       if (twoSided) gl.disable(gl.CULL_FACE);
       const cutout = cutoutOf(material);
       if (cutout !== null) {
-        gl.useProgram(this.depthInstancedCutoutProgram);
-        this.bindCutoutDepth(this.depthInstancedCutoutUniforms, cutout);
+        /* A crowd casts where its clip has moved it, through the animated variant. */
+        const uniforms =
+          clip === null ? this.depthInstancedCutoutUniforms : this.depthAnimatedCutoutUniforms;
+        gl.useProgram(
+          clip === null ? this.depthInstancedCutoutProgram : this.depthAnimatedCutoutProgram,
+        );
+        this.bindCutoutDepth(uniforms, cutout);
+        if (clip !== null) this.bindAnimation(uniforms, gpuBatch);
         gpuBatch.draw(gl, count);
         if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
         gl.useProgram(this.depthProgram);
         this.restoreSurfaceTextureUnit();
         return;
       }
-      const u = this.depthInstancedUniforms;
-      gl.useProgram(this.depthInstancedProgram);
+      const u = clip === null ? this.depthInstancedUniforms : this.depthAnimatedUniforms;
+      gl.useProgram(clip === null ? this.depthInstancedProgram : this.depthAnimatedProgram);
       gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, this.activeDepthViewProj);
       gl.uniform1i(u['uPeelShadowLayer'] ?? null, this.activeDepthPeel ? 1 : 0);
       if (this.activeDepthPeel) gl.uniform1i(u['uPreviousShadowMap'] ?? null, 0);
+      if (clip !== null) this.bindAnimation(u, gpuBatch);
       gpuBatch.draw(gl, count);
       if (twoSided && this.depthPassCullsFaces) gl.enable(gl.CULL_FACE);
       gl.useProgram(this.depthProgram);
@@ -3182,10 +3212,33 @@ export class WebGL2Renderer implements RendererApi {
       this.depthInstancedCutoutProgram,
       'depth-instanced-cutout',
     );
+    this.depthAnimatedProgram = compileProgram(
+      gl,
+      DEPTH_INSTANCED_ANIMATED_VERT,
+      DEPTH_FRAG,
+      'depth-instanced-animated',
+    );
+    this.depthAnimatedUniforms = uniformLocations(
+      gl,
+      this.depthAnimatedProgram,
+      'depth-instanced-animated',
+    );
+    this.depthAnimatedCutoutProgram = compileProgram(
+      gl,
+      DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT,
+      DEPTH_CUTOUT_FRAG,
+      'depth-instanced-animated-cutout',
+    );
+    this.depthAnimatedCutoutUniforms = uniformLocations(
+      gl,
+      this.depthAnimatedCutoutProgram,
+      'depth-instanced-animated-cutout',
+    );
     /* The cutout map is always read from the surface unit, which the draw borrows and gives back. */
     for (const [program, uniforms] of [
       [this.depthCutoutProgram, this.depthCutoutUniforms],
       [this.depthInstancedCutoutProgram, this.depthInstancedCutoutUniforms],
+      [this.depthAnimatedCutoutProgram, this.depthAnimatedCutoutUniforms],
     ] as const) {
       gl.useProgram(program);
       gl.uniform1i(uniforms['uCutoutMap'] ?? null, SURFACE_TEXTURE_UNIT);
@@ -3379,6 +3432,8 @@ export class WebGL2Renderer implements RendererApi {
         this.lightVolumeProgram,
         this.depthCutoutProgram,
         this.depthInstancedCutoutProgram,
+        this.depthAnimatedProgram,
+        this.depthAnimatedCutoutProgram,
       ]) {
         gl.deleteProgram(program);
       }
@@ -3725,9 +3780,12 @@ export class WebGL2Renderer implements RendererApi {
    *
    * Not a hot path — it re-uploads the whole image and regenerates the mip chain.
    */
-  updateSurfaceTexture(texture: SurfaceTexture, source: TexImageSource): void {
+  updateSurfaceTexture(
+    texture: SurfaceTexture,
+    source: TexImageSource | CompressedTextureSource,
+  ): void {
     if (this.contextLost) return;
-    texture.update(this.gl, source);
+    texture.update(this.gl, source, this.compressedFormats);
     /* New pixels are a new copy for the overlay's slot: see `SurfaceTexture.flatLayer`. */
     if (texture === this.overlayMaps) this.bindOverlayMaps(texture);
   }
@@ -3964,6 +4022,13 @@ export class WebGL2Renderer implements RendererApi {
     this.materialDoubleSided = material?.doubleSided === true;
     this.materialHasMaps = materialHasMaps(material);
     this.currentMaterial = material;
+    const reflectivity = material?.reflectivity;
+    const environmentGain = material?.environmentGain;
+    this.materialReflectivity =
+      reflectivity === undefined ? null : Math.min(1, Math.max(0, reflectivity));
+    this.materialEnvironmentGain =
+      environmentGain === undefined ? null : Math.max(0, environmentGain);
+    this.writeEnvironmentDials();
     /* What the blur spreads this skin by: the last material to name a profile says. */
     const model = material?.model;
     warnUnpagedLightmap(model, material?.modelMap);
@@ -4011,7 +4076,8 @@ export class WebGL2Renderer implements RendererApi {
     const v = this.cutoutVector;
     v[0] = material?.cutout ?? 0;
     v[1] = CUTOUT_RESOLVE_CODE[this.cutoutResolveNow(material, translucent)];
-    v[2] = this.cutoutFrame;
+    /* z unused: the dither's frame is the pass's, in `uHighlightMin.w`. See `uCutout`. */
+    v[2] = 0;
     /* The material's lighting channels, which the lamps' are compared with. See `uCutout`. */
     v[3] = lightChannelsOf(material?.lightChannels);
     return v;
@@ -4225,8 +4291,24 @@ export class WebGL2Renderer implements RendererApi {
    */
   setSurfaceReflectivity(amount: number): void {
     if (this.contextLost) return;
+    this.passReflectivity = Math.min(1, Math.max(0, amount));
+    this.writeEnvironmentDials();
+  }
+
+  /**
+   * The reflectivity and environment gain the setters gave the pass, and the ones the material
+   * set now states, or null where it states none (`SurfaceMaterial.reflectivity`). A draw wears the
+   * material's where it has one and the pass's otherwise.
+   */
+  private passReflectivity = 0;
+  private passEnvironmentGain = 1;
+  private materialReflectivity: number | null = null;
+  private materialEnvironmentGain: number | null = null;
+
+  private writeEnvironmentDials(): void {
     this.materials.dirty();
-    this.environmentDials[1] = Math.min(1, Math.max(0, amount));
+    this.environmentDials[1] = this.materialReflectivity ?? this.passReflectivity;
+    this.environmentDials[2] = this.materialEnvironmentGain ?? this.passEnvironmentGain;
     this.writeFlatVector('uEnvironmentDials', this.environmentDials);
   }
 
@@ -4314,9 +4396,8 @@ export class WebGL2Renderer implements RendererApi {
    */
   setEnvironmentGain(gain: number): void {
     if (this.contextLost) return;
-    this.materials.dirty();
-    this.environmentDials[2] = Math.max(0, gain);
-    this.writeFlatVector('uEnvironmentDials', this.environmentDials);
+    this.passEnvironmentGain = Math.max(0, gain);
+    this.writeEnvironmentDials();
   }
 
   /**
@@ -4599,8 +4680,104 @@ export class WebGL2Renderer implements RendererApi {
           'locations the joint indices and weights occupy, and this mesh supplies them.',
       );
     }
+    const animation = (options.animation ?? null) as GlBoneAnimation | null;
+    /* The bone a vertex follows is its second coordinates' u, which a mesh carries in its grain
+       lane; a mesh with none has nothing to name a bone by. See `boneAnimation.ts`. */
+    if (animation !== null && !mesh.hasGrain) {
+      throw new Error(
+        'WebGL2: a bone animation reads each vertex’s bone from the mesh’s second coordinates ' +
+          '(`MeshData.lightmapUvs`), and this mesh has none.',
+      );
+    }
     this.ensureInstancedProgram();
-    return new InstancedBatch(this.gl, mesh, capacity, options.cull ?? false);
+    if (animation !== null) this.ensureAnimatedProgram();
+    return new InstancedBatch(this.gl, mesh, capacity, options.cull ?? false, animation);
+  }
+
+  /**
+   * A bone animation an instanced batch can play (`InstancedOptions.animation`): per frame, a turn
+   * and a place for each bone, which every vertex of the batch's mesh follows — the bone its second
+   * coordinates' u names, times `boneScale` — at each instance's own moment of the clip. What a
+   * crowd is made of: every instance moves at the frame's rate on its own clock, in the colour pass
+   * and in every shadow, with nothing on the processor after this. See `boneAnimation.ts` for the
+   * clip's layout and the arithmetic, which both backends run.
+   *
+   * What it gives up against skinning is the blend: a vertex follows one bone. Refused, with what
+   * was wrong, for a clip whose numbers are not its size, or past 2,048 bones or frames.
+   */
+  createBoneAnimation(clip: BoneAnimationClip): BoneAnimationHandle {
+    return new GlBoneAnimation(this.gl, packBoneAnimation(clip));
+  }
+
+  /** Release a clip. A batch still playing it draws nothing, and casts nothing, after. */
+  disposeBoneAnimation(animation: BoneAnimationHandle): void {
+    const clip = animation as GlBoneAnimation;
+    if (this.contextLost || clip.disposed) return;
+    clip.dispose(this.gl);
+  }
+
+  /**
+   * The clock a bone animation plays by this frame, in seconds on the caller's clock: an instance's
+   * moment is this times its rate plus its phase (`MeshInstances.clocks`). **Set it before the
+   * shadows are drawn**, once a frame, as the wind is set: a shadow drawn under one clock and its
+   * caster under another come apart at the frame's rate. 0 until set, which holds every crowd at
+   * the moment its phases name.
+   */
+  setAnimationTime(seconds: number): void {
+    if (Number.isFinite(seconds)) this.animationTime = seconds;
+  }
+
+  /** The clock `setAnimationTime` set. */
+  private animationTime = 0;
+
+  /**
+   * An animated batch's clip, clocks and numbers into whichever program is bound: the three vertex
+   * textures on units of their own (`lightBudget.ts`), the clip's speed and bone scale, the clock.
+   */
+  private bindAnimation(u: Record<string, WebGLUniformLocation>, batch: InstancedBatch): void {
+    const clip = batch.animation;
+    const clocks = batch.clocks;
+    if (clip === null || clocks === null) return;
+    const { gl } = this;
+    gl.activeTexture(gl.TEXTURE0 + BONE_PLACES_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, clip.places);
+    gl.activeTexture(gl.TEXTURE0 + BONE_TURNS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, clip.turns);
+    gl.activeTexture(gl.TEXTURE0 + INSTANCE_CLOCKS_TEXTURE_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, clocks.texture);
+    gl.uniform1i(u['uBonePlaces'] ?? null, BONE_PLACES_TEXTURE_UNIT);
+    gl.uniform1i(u['uBoneTurns'] ?? null, BONE_TURNS_TEXTURE_UNIT);
+    gl.uniform1i(u['uInstanceClocks'] ?? null, INSTANCE_CLOCKS_TEXTURE_UNIT);
+    gl.uniform2f(u['uBoneClip'] ?? null, clip.framesPerSecond, clip.boneScale);
+    gl.uniform1f(u['uSceneTime'] ?? null, this.animationTime);
+  }
+
+  /** The animated instanced program, compiled on first use. See `ensureInstancedProgram`. */
+  private flatAnimatedProgram: WebGLProgram | null = null;
+  private flatAnimatedUniforms: Record<string, WebGLUniformLocation> | null = null;
+
+  /** Compile the animated variant, once, and feed it this frame's pass state. */
+  private ensureAnimatedProgram(): void {
+    if (this.contextLost || this.flatAnimatedProgram !== null) return;
+    const { gl } = this;
+    const program = compileProgram(
+      gl,
+      flatVert({ skinned: false, morphed: false, instanced: true, animated: true }),
+      this.flatFragSource,
+      'flat.animated',
+    );
+    const uniforms = uniformLocations(gl, program, 'flat.animated');
+    this.flatAnimatedProgram = program;
+    this.flatAnimatedUniforms = uniforms;
+    this.flatTargets.push({ program, uniforms });
+    const camera = this.lastPassCamera;
+    const env = this.lastPassEnv;
+    if (camera !== null && env !== null) {
+      gl.useProgram(program);
+      this.writeMeshPassState(uniforms, camera, env);
+      this.writeMaterialState(uniforms, this.currentMaterial);
+      this.useFlatProgram();
+    }
   }
 
   /** Push placement and colour. Only the live prefix. */
@@ -4663,18 +4840,29 @@ export class WebGL2Renderer implements RendererApi {
        order. See `InstancedOptions.cull`. */
     const culling = !blend && batch.cull;
     if (culling && !batchBoxVisible(batch.box, this.frustum, this.occlusion)) return;
+    /* A batch playing a bone animation takes the animated variant; a disposed clip draws nothing. */
+    const clip = batch.animation;
+    if (clip !== null && clip.disposed) return;
     this.drawBudget.ask();
     this.ensureInstancedProgram();
+    if (clip !== null) this.ensureAnimatedProgram();
     /* A material with a model takes that model's instanced program; see `modelProgram`. */
     const modelKind = this.currentMaterial?.model?.kind ?? null;
-    const modelled = modelKind === null ? null : this.modelProgram('instanced', modelKind);
-    const program = modelled?.program ?? this.flatInstancedProgram;
-    const u = modelled?.uniforms ?? this.flatInstancedUniforms;
+    const modelled =
+      modelKind === null
+        ? null
+        : this.modelProgram(clip === null ? 'instanced' : 'animated', modelKind);
+    const program =
+      modelled?.program ?? (clip === null ? this.flatInstancedProgram : this.flatAnimatedProgram);
+    const u =
+      modelled?.uniforms ??
+      (clip === null ? this.flatInstancedUniforms : this.flatAnimatedUniforms);
     if (program === null || u === null) return;
 
     const { gl } = this;
     gl.useProgram(program);
     gl.uniform1i(u['uHasTangents'] ?? null, mesh.hasTangents ? 1 : 0);
+    if (clip !== null) this.bindAnimation(u, batch);
 
     const lit = options.lit ?? true;
     /* Added light fades in the medium rather than receding into it. See `drawFog.ts`. */
@@ -4737,8 +4925,13 @@ export class WebGL2Renderer implements RendererApi {
       gl.uniform4fv(u['uCutout'] ?? null, this.cutoutUniform(this.currentMaterial, true));
     const keeps = !blend && this.reflectionKeeps();
     if (keeps) this.reflectionTargets?.on();
-    if (culling && cullsInstances(count, mesh.indexCount)) batch.drawCulled(gl, data, this.frustum);
-    else batch.draw(gl, count);
+    /* An animated batch reads its clocks by instance index, which the culled copy would reorder:
+       it is culled whole and never instance by instance. */
+    if (culling && clip === null && cullsInstances(count, mesh.indexCount)) {
+      batch.drawCulled(gl, data, this.frustum);
+    } else {
+      batch.draw(gl, count);
+    }
     if (keeps) this.reflectionTargets?.off();
     if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
     if (ditheredBlend)
@@ -4800,7 +4993,9 @@ export class WebGL2Renderer implements RendererApi {
       glass.transmission,
       glass.frost,
     );
-    gl.uniform3fv(u['uRefractTint'] ?? null, options.refractTint ?? WHITE_TINT);
+    /* w: this framebuffer's first row is the bottom, so up the screen is up the rows. */
+    const tint = options.refractTint ?? WHITE_TINT;
+    gl.uniform4f(u['uRefractTint'] ?? null, tint[0] ?? 1, tint[1] ?? 1, tint[2] ?? 1, 1);
     gl.uniform3fv(u['uGlassTint'] ?? null, glass.tint);
     return true;
   }
@@ -6112,6 +6307,71 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Draws that do not change between frames, enumerated once and kept: what a stage, a set or any
+   * world that stands still draws, recorded so a frame replays it rather than issuing it.
+   *
+   * **The same enumeration `drawSceneCasters` takes**, called once, here: rigid meshes and instanced
+   * batches, each with its material. A skinned mesh or a scatter batch is refused by name, since
+   * both change every frame. What it captures is what the enumeration said at the time — the
+   * matrices and the instance counts are copied, so a caller's scratch is free to move on — while
+   * the meshes, batches, textures and materials stay the caller's: a list must be disposed, or made
+   * again, before anything it holds is, and made again when a material it holds is changed.
+   *
+   * **What it is for is the frame's processor time.** WebGPU records the list into a render bundle
+   * per view and replays it with one call, where a draw issued a frame at a time costs its encoding
+   * every frame and again for every view that draws it. This backend has no bundles and replays the
+   * entries through the scene-caster path every frame, at the cost a frame drawing them itself pays;
+   * the picture is the same.
+   *
+   * What a list gives up against drawing each frame is culling: every entry is drawn in every view,
+   * because a bundle cannot leave one out. A world split into lists by region culls by list.
+   */
+  createStaticDraws(casters: ShadowCasters): StaticDrawsHandle {
+    return captureStaticDraws(casters);
+  }
+
+  /**
+   * Draw a list into the open mesh pass, under the camera, the lights and the fog `bindMeshPass`
+   * set — the frame's, a mirror's, a capture's. Opaque draws, through each entry's material.
+   *
+   * **Its draws are rigid and wear no overlay**, so a skin palette, morph weights, cloth or a surface
+   * overlay set before it is put back to none, as `bindMeshPass` puts an overlay back; and no
+   * material is left set after it, which is what `setMaterial(null)` leaves. The state a pass set —
+   * the grain, the relief, the fog, the grade — is the list's to draw with, as it is any draw's, and
+   * a list drawn under a different one is recorded again for it on WebGPU.
+   */
+  drawStaticDraws(draws: StaticDrawsHandle): void {
+    if (this.contextLost) return;
+    const list = draws as StaticDrawsList;
+    if (list.disposed) {
+      this.warnStaticDisposed();
+      return;
+    }
+    this.setSkinPalette(null);
+    this.setMorphWeights(null);
+    this.setCloth(null);
+    this.setSurfaceOverlay(null);
+    this.setMaterial(null);
+    this.sceneCasterMaterial = undefined;
+    replayStaticDraws(list, this.sceneCasterSink);
+    this.setMaterial(null);
+    this.sceneCasterMaterial = undefined;
+  }
+
+  /** Release a list. Its meshes, batches and materials are the caller's and are not released. */
+  disposeStaticDraws(draws: StaticDrawsHandle): void {
+    (draws as StaticDrawsList).disposed = true;
+  }
+
+  /** A disposed list drawn, said once: the frame loop does not throw. */
+  private warnStaticDisposed(): void {
+    if (this.warnedStaticDisposed) return;
+    this.warnedStaticDisposed = true;
+    console.warn('drawStaticDraws: this list was disposed, and draws nothing.');
+  }
+  private warnedStaticDisposed = false;
+
+  /**
    * Draw the pass's glass twice: where the nearest pane is, and what the panes let through.
    *
    * After the opaque casters, in the pass's own light matrix. A layer that has held glass is
@@ -6339,9 +6599,10 @@ export class WebGL2Renderer implements RendererApi {
       instanced: boolean,
       label: string,
       eight = false,
+      animated = false,
     ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } | null => {
       if (old === null) return null;
-      const vertex = flatVert({ skinned, morphed, instanced });
+      const vertex = flatVert({ skinned, morphed, instanced, animated });
       const program = compileProgram(
         gl,
         eight ? skinEight(vertex) : vertex,
@@ -6374,6 +6635,17 @@ export class WebGL2Renderer implements RendererApi {
     const instanced = recompile(this.flatInstancedProgram, false, false, true, 'flat.instanced');
     this.flatInstancedProgram = instanced?.program ?? null;
     this.flatInstancedUniforms = instanced?.uniforms ?? null;
+    const animated = recompile(
+      this.flatAnimatedProgram,
+      false,
+      false,
+      true,
+      'flat.animated',
+      false,
+      true,
+    );
+    this.flatAnimatedProgram = animated?.program ?? null;
+    this.flatAnimatedUniforms = animated?.uniforms ?? null;
 
     for (const [key, entry] of this.clothFlat) {
       const eight = key.startsWith('8');
@@ -6404,7 +6676,7 @@ export class WebGL2Renderer implements RendererApi {
     }
 
     this.flatTargets.length = 0;
-    for (const target of [plain, skinned, morphed, both, skinned8, both8, instanced]) {
+    for (const target of [plain, skinned, morphed, both, skinned8, both8, instanced, animated]) {
       if (target !== null) this.flatTargets.push(target);
     }
     for (const target of this.clothFlat.values()) this.flatTargets.push(target);
@@ -8438,6 +8710,10 @@ export class WebGL2Renderer implements RendererApi {
     /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
     this.ambientSH.fill(0);
     /* No reflection and an environment at its own brightness; the emission the world asks for. */
+    this.passReflectivity = 0;
+    this.passEnvironmentGain = 1;
+    this.materialReflectivity = null;
+    this.materialEnvironmentGain = null;
     this.environmentDials[1] = 0;
     this.environmentDials[2] = 1;
     this.emission[0] = env.emissiveGain;
@@ -8598,7 +8874,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Neither refracting nor glass, which is every draw that does not say otherwise. See
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
-    gl.uniform3fv(u['uRefractTint'] ?? null, WHITE_TINT);
+    gl.uniform4f(u['uRefractTint'] ?? null, 1, 1, 1, 1);
     gl.uniform3fv(u['uGlassTint'] ?? null, WHITE_TINT);
     gl.uniform3fv(u['uDirectionalDir'] ?? null, env.directionalDir);
     gl.uniform3fv(u['uDirectionalColor'] ?? null, env.directionalColor);
@@ -8721,7 +8997,16 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
     gl.uniform1f(u['uShadowMaxSlope'] ?? null, this.quality.directionalShadowMaxSlope);
     gl.uniform1i(u['uShadowFilterTaps'] ?? null, this.quality.shadowFilterTaps);
-    gl.uniform3fv(u['uHighlightMin'] ?? null, env.highlightMin);
+    /* The near corner, and in its w the frame the cutout dither moves with. See `uHighlightMin`.
+       An environment written by hand may leave the box out, as the far corner says below. */
+    const min = env.highlightMin as ArrayLike<number> | undefined;
+    gl.uniform4f(
+      u['uHighlightMin'] ?? null,
+      min?.[0] ?? 0,
+      min?.[1] ?? 0,
+      min?.[2] ?? 0,
+      this.cutoutFrame,
+    );
     /* The far corner, and the gain in its w. See `uHighlightMax`. */
     /* An environment written by hand may leave the box out; then there is none, as before. */
     const max = env.highlightMax ?? NO_HIGHLIGHT;
@@ -10183,6 +10468,12 @@ function litVertexOf(variant: string): string {
   }
   const skinned = variant.startsWith('skinned') || variant.startsWith('both');
   const morphed = variant === 'morphed' || variant.startsWith('both');
-  const vertex = flatVert({ skinned, morphed, instanced: variant === 'instanced' });
+  const animated = variant === 'animated';
+  const vertex = flatVert({
+    skinned,
+    morphed,
+    instanced: variant === 'instanced' || animated,
+    animated,
+  });
   return variant.endsWith('8') ? skinEight(vertex) : vertex;
 }

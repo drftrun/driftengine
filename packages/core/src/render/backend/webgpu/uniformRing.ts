@@ -23,7 +23,7 @@ export const DYNAMIC_ALIGNMENT = 256;
  * is five thousand material changes in one frame. The device buffer matches the staging, so a ring
  * at this ceiling holds 128 MiB in total and only ever reaches it by being asked to.
  */
-const MAX_RING_BYTES = 64 * 1024 * 1024;
+export const MAX_RING_BYTES = 64 * 1024 * 1024;
 
 /**
  * Per-draw uniforms, in slots, written once and bound by offset.
@@ -266,6 +266,15 @@ export class UniformRing {
     const from = this.clean;
     this.device.queue.writeBuffer(this.buffer, from, this.staging, from, end - from);
     this.clean = end;
+  }
+
+  /**
+   * Upload one slot now, and nothing else: for a ring whose slots are all claimed once and written
+   * one at a time — a static list's copies — where `flush` would send every slot above the lowest
+   * one written. Leaves the watermark as it was, so a later `flush` still owes what it owed.
+   */
+  uploadSlot(slot: number): void {
+    this.device.queue.writeBuffer(this.buffer, slot, this.staging, slot, this.slotSize);
   }
 
   dispose(): void {

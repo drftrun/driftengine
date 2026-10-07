@@ -4,6 +4,8 @@ import { destroySlot } from './instanceCullPass.ts';
 import type { CullSlot } from './instanceCullPass.ts';
 import type { MeshInstances } from '../../instances.ts';
 import type { GpuMesh } from './buffers.ts';
+import { packInstanceClocks } from '../../boneAnimation.ts';
+import { GpuInstanceClocks, type GpuBoneAnimation } from './boneAnimations.ts';
 
 /** VERTEX | COPY_DST, spelled the way every other pass here spells it. */
 const USAGE_VERTEX = 0x0020 | 0x0008;
@@ -36,10 +38,34 @@ export class GpuInstancedBatch {
   slotFrame = -1;
   slotsTaken = 0;
 
-  constructor(device: GPUDevice, mesh: GpuMesh, capacity: number, label: string, cull = false) {
+  /** The bone animation every instance plays, and its clocks; null for a batch that plays none. */
+  readonly animation: GpuBoneAnimation | null;
+  readonly clocks: GpuInstanceClocks | null;
+  /**
+   * An animated batch's own groups — its lit twins by the material group they were built beside, its
+   * shadow groups by what they cut with — and the renderer's group epoch they were built in, after
+   * which every one is dropped. See `WebGPURenderer.animatedGroup`.
+   */
+  readonly litGroups = new Map<GPUBindGroup, GPUBindGroup>();
+  readonly depthGroups = new Map<unknown, GPUBindGroup>();
+  readonly depthPeelGroups = new Map<unknown, GPUBindGroup>();
+  groupEpoch = -1;
+
+  constructor(
+    device: GPUDevice,
+    mesh: GpuMesh,
+    capacity: number,
+    label: string,
+    cull = false,
+    animation: GpuBoneAnimation | null = null,
+  ) {
     this.mesh = mesh;
     this.capacity = capacity;
+    /* An animated batch is culled whole and never by instance: see `submitInstanced`. */
     this.cull = cull;
+    this.animation = animation;
+    this.clocks =
+      animation === null ? null : new GpuInstanceClocks(device, capacity, `${label}.clocks`);
     this.staging = new Float32Array(capacity * INSTANCE_FLOATS);
     this.buffer = device.createBuffer({
       /*
@@ -83,11 +109,16 @@ export class GpuInstancedBatch {
     if (count === 0) return;
     packInstances(data, this.staging);
     queue.writeBuffer(this.buffer, 0, this.staging, 0, count * INSTANCE_FLOATS);
+    if (this.clocks !== null) {
+      packInstanceClocks(data, this.clocks.staging);
+      this.clocks.upload(queue, count);
+    }
   }
 
   dispose(): void {
     this.previousBuffer?.destroy();
     this.buffer.destroy();
+    this.clocks?.dispose();
     for (const slot of this.slots) destroySlot(slot);
   }
 }

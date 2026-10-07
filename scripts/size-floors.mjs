@@ -161,6 +161,32 @@
  * put about 400 more bytes on every entry, because a comment in a template literal is part of the
  * string a consumer ships; it lives on `blurWeight` in `ambientOcclusion.ts` now, where it is stripped.
  */
+/**
+ * **Every entry re-measured 2026-10-07 for 4.10.0, written to the byte.**
+ *
+ * | `core-only` | |
+ * | --- | --- |
+ * | Floor as recorded | 879,365 |
+ * | 4.10.0, measured | **894,247**: 14,882 bytes |
+ *
+ * Apportioned by bundling `core-only` at each of the release's commits, with a command-line gzip that
+ * reads 800 to 2,000 bytes above this file's, so the steps compare and the totals do not: the fixes
+ * to skin palettes, skinned groups, mesh rewrites and the refraction bend, 2,078; the lit block split
+ * into a pass's and a material's with the store that keeps materials across frames, −317; the vertex
+ * stage's view block, 557; static draws recorded once into render bundles, 3,152; crowds played from
+ * bone textures, **8,902** — two backends' textures and binding, the packing and its CPU twin, and an
+ * instanced animated vertex stage with its two depth twins in both shading languages; and BC's
+ * neighbours for phones, ETC2, EAC and ASTC, 1,362; and a material's own reflectivity and environment
+ * gain, 310, measured on this file's own gzip. **The crowds are the step worth a sentence**:
+ * every consumer pays them whether or not it draws one, because a method on the renderer keeps its
+ * module reachable, which is the reason 2026-09-28 gives for DriftLight. What would change that is
+ * the bone animation registering with the renderer from a package of its own.
+ *
+ * `core-and-assets` moved 639 bytes more than core: the loader's ETC2 client and its swap. The
+ * encoder and the KTX2 reader reach a bundle only where a consumer imports them, and the encoder
+ * otherwise lives in the BC worker's chunk. The small packages moved by at most 0.24%, none of it
+ * this release's.
+ */
 export const FLOORS = {
   /*
    * Raised 2026-08-22 by MATL's four texture indices: three more `setInt32`, three more guarded
@@ -858,7 +884,7 @@ export const FLOORS = {
    * TypeScript and the trace's material mode. Both sit behind lit switches, so a frame that sets no
    * overlay and asks for no reflections compiles neither in on a device.
    */
-  'core-only': 879365,
+  'core-only': 894247,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -878,7 +904,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-gizmo': 884009,
+  'core-and-gizmo': 899066,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -891,7 +917,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`, 4.8.4; the cloth's own share is 14,638 over core. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-cloth': 893575,
+  'core-and-cloth': 909207,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -911,7 +937,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-audio': 885734,
+  'core-and-audio': 900640,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -940,7 +966,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-animation': 885437,
+  'core-and-animation': 900593,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -982,7 +1008,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-script': 920143,
+  'core-and-script': 935587,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1062,7 +1088,7 @@ export const FLOORS = {
    * border changes what it faces are now held in every outline through them and each stretch is
    * simplified in one canonical direction.
    */
-  'nav-only': 9058,
+  'nav-only': 9051,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the
@@ -1098,7 +1124,7 @@ export const FLOORS = {
    * console's scroll reaching the node that is drawn; an `f32` shown as the decimal it stores; and
    * a lockstep session read through `rewindDepth` as well as a hand-built loop.
    */
-  'tools-only': 5780,
+  'tools-only': 5782,
   /*
    * **`@driftengine/capture` as it first ships: one model's definition.** Depth Anything 3's
    * backbone, head and camera decoder as functions of their weights, the rotary and positional
@@ -1175,7 +1201,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-splats': 896550,
+  'core-and-splats': 911501,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1199,7 +1225,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-terrain': 880752,
+  'core-and-terrain': 895674,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1232,7 +1258,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-ui2d': 889658,
+  'core-and-ui2d': 904663,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1243,7 +1269,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-and-assets': 905898,
+  'core-and-assets': 922545,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1261,7 +1287,7 @@ export const FLOORS = {
   /* Raised 2026-10-05 with `core-only`: 4.8.4's cutout, influences, BC, cloth and shading models. */
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
-  'core-audio-spatial': 887888,
+  'core-audio-spatial': 902832,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *
@@ -1471,7 +1497,7 @@ export const FLOORS = {
    * and `physics-only` and `core-only` are unmoved by it existing.
    */
   /* Re-measured 2026-10-01, 2 bytes under: drift through its imports, not this package. */
-  'xr-only': 10848,
+  'xr-only': 10872,
   /* Raised 2026-10-01 by +240: a kerb a character steps off, and scenery colliding by region. */
   /*
    * **Re-measured 2026-10-04 at 48,153, and 1,052 of the 1,639 predate the change that tripped it.**
@@ -1481,7 +1507,7 @@ export const FLOORS = {
    * 48,153 with a bone too short for a body made transparent to jointing and collision, the
    * resolution table and the exact rest anchors (+371).
    */
-  'physics-only': 48153,
+  'physics-only': 48163,
   /**
    * **821 bytes, 2026-09-03, up from 633 when the rewind snapshot landed.**
    *
@@ -1538,7 +1564,7 @@ export const FLOORS = {
    * `flatFrag` already carries at 283.4 KB.
    */
   /* Re-measured 2026-10-01, 1 byte over: drift through its imports, not this package. */
-  'editor-only': 10653,
+  'editor-only': 10662,
   /*
    * **Measured 2026-08-26 on the commit that created the package**, Track P's CH-0: fifteen
    * elements and their atomic weights, the species registry, the species-by-element matrix,
@@ -1679,7 +1705,7 @@ export const FLOORS = {
    * every one of the seven measured identical across this change, which is those fixtures saying
    * what they are for.
    */
-  'chemistry-only': 18517,
+  'chemistry-only': 18547,
 
   /*
    * **`present/`, added 2026-08-26 by CH-9, at 19,163 — 2,354 over the model alone.**
@@ -1693,7 +1719,7 @@ export const FLOORS = {
    * A headless server simulating fire wants none of it, and the number here is what that consumer
    * saves. Nothing in it names a core type, so the split costs nothing to maintain.
    */
-  'chemistry-present': 20901,
+  'chemistry-present': 20940,
 
   /*
    * **CH-7's eight fixtures, and they exist to make one sentence a number.**
@@ -1757,12 +1783,12 @@ export const FLOORS = {
    * the model surface it needs, not the whole engine — and comparing them to each other is what they
    * are for.
    */
-  'chemistry-library-none': 11733,
-  'chemistry-library-organic': 13018,
-  'chemistry-library-food': 12798,
-  'chemistry-library-fuel': 12663,
-  'chemistry-library-polymer': 12471,
-  'chemistry-library-mineral': 12440,
-  'chemistry-library-metal': 12361,
-  'chemistry-library-biological': 12581,
+  'chemistry-library-none': 11760,
+  'chemistry-library-organic': 13040,
+  'chemistry-library-food': 12829,
+  'chemistry-library-fuel': 12686,
+  'chemistry-library-polymer': 12493,
+  'chemistry-library-mineral': 12464,
+  'chemistry-library-metal': 12379,
+  'chemistry-library-biological': 12605,
 };

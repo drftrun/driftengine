@@ -133,7 +133,7 @@ for (const backend of ['webgl2', 'webgpu']) {
    * left pointing at the old one is a Dawn validation error, loudly, on the next draw.
    */
   const complaints = [...one.complaints, ...settled.complaints].filter(
-    (line) => !line.includes('material changes in a frame'),
+    (line) => !line.includes('distinct materials in a frame'),
   );
   check(
     `${backend}: draws 1,200 quads without a validation error`,

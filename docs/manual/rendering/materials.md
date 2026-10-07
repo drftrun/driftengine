@@ -1,6 +1,6 @@
 ---
 title: Materials
-description: Surfaces from vertex values or image maps, images and BC blocks, shading models for brushed metal, hair, skin and eyes, baked lightmaps, and surface dials.
+description: Surfaces from vertex values or image maps, compressed blocks for every device, shading models for metal, hair, skin and eyes, lightmaps and surface dials.
 packages: ['@driftengine/core']
 plain: ['TexImageSource']
 ---
@@ -50,21 +50,35 @@ face picks; see [Texture arrays](texture-arrays.md).
 
 ## Compressed images
 
-`createSurfaceTexture` also takes BC blocks as they are: a `CompressedTextureSource` names its
-`format` (`'bc1'` to `'bc5'`, or `'bc7'`), its size and its `levels`, the stored mip chain from level 0. Uploaded as blocks, a BC7 image costs a byte a texel on the GPU and BC1 half of one, against four
-for the same image decoded, and keeps the chain its author built. `colorSpace` decides between a
-format and its sRGB twin, as it does for an image.
+`createSurfaceTexture` also takes compressed blocks as they are: a `CompressedTextureSource` names
+its `format`, its size and its `levels`, the stored mip chain from level 0. BC (`'bc1'` to `'bc5'`,
+and `'bc7'`) is what desktops sample; ETC2 (`'etc2-rgb8'`, `'etc2-rgb8a1'`, `'etc2-rgba8'`), EAC
+(`'eac-r11'`, `'eac-rg11'`) and ASTC (`'astc-4x4'` to `'astc-12x12'`) are what phones sample. A
+block texture costs a byte a texel or less on the GPU, against four for the same image decoded, and
+keeps the chain its author built. `colorSpace` decides between a format and its sRGB twin, as it
+does for an image; the one- and two-channel formats have none.
 
-Not every device samples BC: most phones have ASTC and ETC2 instead. `renderer.compressedFormats`
-says which this one takes, and `uploadsCompressed(source, formats, colorSpace)` answers for one
-source. A source the device cannot take is refused by name rather than decoded, because the engine
-ships no decoder; the model loader in `@driftengine/assets` asks first and decodes at load where the
-answer is no, so an imported model's BC images reach every device. It decodes in a worker when you
-name one, `new DrftLoader(renderer, { bcWorker: spawnBcWorker })` with `spawnBcWorker` from
-`@driftengine/assets/bcWorkers`, and on the main thread otherwise, saying so once: the
-factory has a specifier of its own so that a game which never names it carries no worker in its
-build. On a phone, where every BC texture is decoded, name it. A two-channel BC5 normal map keeps its
-two channels and the lit stage rebuilds the third.
+`renderer.compressedFormats` lists what this device samples, and
+`uploadsCompressed(format, srgb, width, height, renderer.compressedFormats)` answers for one source.
+A source the device cannot take is refused by name, because core ships no decoder.
+`updateSurfaceTexture` takes blocks as well as an image: they replace the image behind the handle
+every draw already holds.
+
+The model loader in `@driftengine/assets` asks before it uploads. A BC texture goes up as its blocks
+where the device samples BC, and is decoded at load where it does not, so an imported model's images
+reach every device. Name a worker for that, `new DrftLoader(renderer, { bcWorker: spawnBcWorker })`
+with `spawnBcWorker` from `@driftengine/assets/bcWorkers`; without one the decode runs on the main
+thread and the loader says so once. **On a phone, the worker does more**: where the device samples
+ETC2 and not BC, a second worker re-encodes each decoded texture as ETC2 or EAC and swaps it in
+behind its handle, at half a byte a texel, or a byte with alpha, where the decoded image holds four.
+The picture arrives as soon as it did before; the encode follows on a core of its own, about 0.7 s
+for a 2048² image on a desktop processor and several times that on a phone's.
+
+Textures compressed for a phone ahead of time skip both steps. `readKtx2` from `@driftengine/assets`
+reads an uncompressed KTX2 file of ASTC, ETC2, EAC or BC as the blocks it carries, and says which
+colour space its format names. `encodeEtc2Chain` makes ETC2 or EAC blocks and their chain from
+pixels you hold; run it in a worker. A two-channel BC5 or EAC normal map keeps its two channels and
+the lit stage rebuilds the third.
 
 ## Metalness and roughness
 
@@ -463,6 +477,12 @@ A few properties apply to the draws that follow, without a map:
   draw's own `fog` option still decides for that draw.
 
 Each resets with `bindMeshPass`, so a pass starts from the defaults.
+
+A material can state the first two for its own draws: `reflectivity` and `environmentGain` on a
+`SurfaceMaterial` override what the setters say for every draw under that material, and a material
+stating neither leaves its draws to the setters. That is how a static list carries them, since a
+list keeps each entry's material and none of the renderer's state between draws: a stage whose
+batches each mirror their own share of a baked reflection gives each its own material.
 
 ## Overlays: a rim, a dissolve, wrinkles
 

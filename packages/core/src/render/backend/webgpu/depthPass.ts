@@ -3,6 +3,8 @@ import {
   DEPTH_CUTOUT_FRAG_WGSL,
   DEPTH_CUTOUT_VERT_WGSL,
   DEPTH_FRAG_WGSL,
+  DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT_WGSL,
+  DEPTH_INSTANCED_ANIMATED_VERT_WGSL,
   DEPTH_INSTANCED_CUTOUT_VERT_WGSL,
   DEPTH_INSTANCED_VERT_WGSL,
   DEPTH_SKINNED_VERT_WGSL,
@@ -13,6 +15,7 @@ import { vertexConstants } from './flatPass.ts';
 import type { PipelineCache } from './pipelineCache.ts';
 import { shaderModule } from './shaderModules.ts';
 import type { ClothViews } from './clothTextures.ts';
+import type { AnimationViews } from './flatPass.ts';
 
 /**
  * The shadow pass: the world drawn from the light, into a depth map.
@@ -52,6 +55,17 @@ const CLOTH_TEXTURES = [
   DEPTH_BINDINGS.DEPTH_SKINNED_VERT.textures.uClothRest,
 ] as const;
 
+/** A bone animation's three textures, at the bindings both animated depth variants declare them. */
+const ANIMATION_TEXTURES = [
+  DEPTH_BINDINGS.DEPTH_INSTANCED_ANIMATED_VERT.textures.uBonePlaces,
+  DEPTH_BINDINGS.DEPTH_INSTANCED_ANIMATED_VERT.textures.uBoneTurns,
+  DEPTH_BINDINGS.DEPTH_INSTANCED_ANIMATED_VERT.textures.uInstanceClocks,
+] as const;
+export const DEPTH_INSTANCED_ANIMATED_VERT_FIELDS =
+  DEPTH_BINDINGS.DEPTH_INSTANCED_ANIMATED_VERT.fields;
+export const DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT_FIELDS =
+  DEPTH_BINDINGS.DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT.fields;
+
 const VISIBILITY_VERTEX = 0x1;
 const VISIBILITY_FRAGMENT = 0x2;
 
@@ -82,10 +96,19 @@ export function createDepthBindGroupLayout(
    * no cutout caster pays nothing.
    */
   cutout = false,
+  /** An instanced caster playing a bone animation: its three vertex textures. */
+  animated = false,
 ): GPUBindGroupLayout {
   return device.createBindGroupLayout({
-    label: skinned ? 'depth.layout.skinned' : cutout ? 'depth.layout.cutout' : 'depth.layout',
+    label: `${skinned ? 'depth.layout.skinned' : cutout ? 'depth.layout.cutout' : 'depth.layout'}${animated ? '.animated' : ''}`,
     entries: [
+      ...(animated
+        ? ANIMATION_TEXTURES.map((binding) => ({
+            binding: binding.texture,
+            visibility: VISIBILITY_VERTEX,
+            texture: { sampleType: 'unfilterable-float' as GPUTextureSampleType },
+          }))
+        : []),
       /* The texture and no sampler: the shader reads the palette with `textureLoad`, an integer
          coordinate with nothing to filter, which is what `flatPass.ts` binds for the same
          palette. naga declares a sampler for it and nothing ever reads one. */
@@ -174,6 +197,8 @@ export function createDepthBindGroup(
   cutout: { readonly view: GPUTextureView; readonly sampler: GPUSampler } | null = null,
   /** A skinned group's cloth views: the caster's, or the stand-in where it has none. */
   cloth: ClothViews | null = null,
+  /** An animated caster's clip and clocks. See `AnimationViews`. */
+  animation: AnimationViews | null = null,
 ): GPUBindGroup {
   return device.createBindGroup({
     label:
@@ -206,6 +231,13 @@ export function createDepthBindGroup(
         ? [
             { binding: CUTOUT_MAP.texture, resource: cutout.view },
             { binding: CUTOUT_MAP.sampler, resource: cutout.sampler },
+          ]
+        : []),
+      ...(animation !== null
+        ? [
+            { binding: ANIMATION_TEXTURES[0].texture, resource: animation.places },
+            { binding: ANIMATION_TEXTURES[1].texture, resource: animation.turns },
+            { binding: ANIMATION_TEXTURES[2].texture, resource: animation.clocks },
           ]
         : []),
     ],
@@ -256,6 +288,8 @@ export function depthPipeline(
   skinEight = false,
   /** Whether a skinned caster is placed by a cloth binding, as its visible draw is. The key carries it. */
   cloth = false,
+  /** An instanced caster playing a bone animation. The key must carry it. */
+  animated = false,
 ): GPURenderPipeline {
   return cache.get(key, () => ({
     label: key,
@@ -263,15 +297,22 @@ export function depthPipeline(
     vertex: {
       module: shaderModule(
         device,
-        cutout
-          ? instanced
-            ? { label: 'depth.instanced.cutout.vert', code: DEPTH_INSTANCED_CUTOUT_VERT_WGSL }
-            : { label: 'depth.cutout.vert', code: DEPTH_CUTOUT_VERT_WGSL }
-          : instanced
-            ? { label: 'depth.instanced.vert', code: DEPTH_INSTANCED_VERT_WGSL }
-            : skinned
-              ? { label: 'depth.skinned.vert', code: DEPTH_SKINNED_VERT_WGSL }
-              : { label: 'depth.vert', code: DEPTH_VERT_WGSL },
+        animated
+          ? cutout
+            ? {
+                label: 'depth.instanced.animated.cutout.vert',
+                code: DEPTH_INSTANCED_ANIMATED_CUTOUT_VERT_WGSL,
+              }
+            : { label: 'depth.instanced.animated.vert', code: DEPTH_INSTANCED_ANIMATED_VERT_WGSL }
+          : cutout
+            ? instanced
+              ? { label: 'depth.instanced.cutout.vert', code: DEPTH_INSTANCED_CUTOUT_VERT_WGSL }
+              : { label: 'depth.cutout.vert', code: DEPTH_CUTOUT_VERT_WGSL }
+            : instanced
+              ? { label: 'depth.instanced.vert', code: DEPTH_INSTANCED_VERT_WGSL }
+              : skinned
+                ? { label: 'depth.skinned.vert', code: DEPTH_SKINNED_VERT_WGSL }
+                : { label: 'depth.vert', code: DEPTH_VERT_WGSL },
       ),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),

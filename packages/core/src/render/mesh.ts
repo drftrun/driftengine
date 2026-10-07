@@ -149,6 +149,11 @@ export class Mesh {
   readonly isSkinnedEight: boolean;
   /** Whether it has texture coordinates, without which a material's maps read one texel. */
   readonly hasUvs: boolean;
+  /**
+   * Whether it carries a grain lane, which is where second coordinates ride (`lightmap.ts`): what
+   * a bone animation reads each vertex's bone from.
+   */
+  readonly hasGrain: boolean;
   /** How many vertices it has, which a cloth binding is checked against. */
   readonly vertexCount: number;
 
@@ -319,6 +324,7 @@ export class Mesh {
       this.attachAttribute(gl, ATTR_TANGENT, data.tangents, 4);
     }
 
+    this.hasGrain = data.grain !== undefined;
     if (data.grain === undefined) {
       gl.disableVertexAttribArray(ATTR_GRAIN);
       this.constants.push({ location: ATTR_GRAIN, value: ABSENT_ATTRIBUTE['grain'] });

@@ -246,6 +246,17 @@ export { decodeBc } from './bcDecode.ts';
 export { decodeBcImage } from './bcImage.ts';
 export { flipBc5Green } from './bcFlip.ts';
 /*
+ * Blocks a phone samples. `readKtx2` takes a texture compressed offline — ASTC, ETC2 or BC — as the
+ * blocks it carries, for `createSurfaceTexture`; `encodeEtc2Chain` makes ETC2 or EAC blocks and
+ * their chain from pixels a caller holds, which is what the loader's worker does with a BC texture
+ * on a device that samples ETC2 and not BC. A 2048² image is 262,144 blocks: call it in a worker.
+ */
+export { readKtx2 } from './ktx2.ts';
+export type { Ktx2Texture } from './ktx2.ts';
+export { encodeEtc2 } from './etc2Encode.ts';
+export type { Etc2Format } from './etc2Encode.ts';
+export { encodeEtc2Chain } from './etc2Chain.ts';
+/*
  * **The offline half of the GPU-driven pipeline, which nothing outside this package could reach.**
  *
  * `bake/cluster.ts` and `bake/clusterLod.ts` produce exactly what `@driftengine/core`'s

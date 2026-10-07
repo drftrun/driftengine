@@ -204,10 +204,10 @@ export interface PointLightSource {
   inLightField?: boolean;
   /**
    * How the light fades with distance when it names its own way: `(1 - (d/R)^2)^n` with no distance
-   * term, `R` its radius and `n` this. Unreal's falloff for a light without inverse-square falloff,
-   * so a rig authored there — a fill of brightness 160 across 164 m, a key at exponent 8 — lights
-   * the space it was authored for rather than one that ends a few metres out. Absent or 0, the
-   * frame's own falloff (`pointLightFalloff`), which is every light before 4.8.7.
+   * term, `R` its radius and `n` this. The usual falloff for a light without inverse-square
+   * falloff, so a rig authored that way — a fill of brightness 160 across 164 m, a key at exponent
+   * 8 — lights the space it was authored for rather than one that ends a few metres out. Absent or
+   * 0, the frame's own falloff (`pointLightFalloff`), which is every light before 4.8.7.
    */
   falloffExponent?: number;
 }

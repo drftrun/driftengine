@@ -96,4 +96,49 @@ describe('SkinPaletteRing', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
+
+  /*
+   * **A smaller rig keeps the slot's texture.** A frame's draws take slots in draw order, so a
+   * stage whose small skinned props and large characters are culled differently frame to frame
+   * hands one slot a 10-joint rig, then a 296-joint one, then the 10 again. The texture was
+   * replaced at every change of joint count, and every bind group over it with it — about ten
+   * textures a frame in a consumer's stage. The shader reads joints by index, so a texture wider
+   * than the rig is read exactly as one that fits: only a larger rig than the slot has held makes a
+   * new one.
+   */
+  it('A SLOT KEEPS ITS TEXTURE WHEN A SMALLER RIG TAKES IT, AND GROWS ONLY FOR A LARGER ONE', () => {
+    const { device } = fakeDevice();
+    const ring = new SkinPaletteRing(8);
+    const rig = (joints: number, name: number): Float32Array => {
+      const p = new Float32Array(joints * 16);
+      p[0] = name;
+      return p;
+    };
+    ring.take(device, rig(4, 1));
+    ring.reset();
+    ring.take(device, rig(2, 2));
+    ring.reset();
+    ring.take(device, rig(4, 3));
+    expect(
+      device.createTexture,
+      'one texture for the 4, the 2 and the 4 again',
+    ).toHaveBeenCalledTimes(1);
+    /* And the 2-joint upload writes two joints' texels, not the texture's four. */
+    const sizes = vi.mocked(device.queue.writeTexture).mock.calls.map((call) => call[3]);
+    expect(sizes[1]).toEqual({ width: 8, height: 1 });
+    ring.reset();
+    ring.take(device, rig(6, 4));
+    expect(device.createTexture, 'a larger rig grows the slot').toHaveBeenCalledTimes(2);
+  });
+
+  it('a slot that held a larger rig is not taken for a smaller one with the same leading numbers', () => {
+    const { device } = fakeDevice();
+    const ring = new SkinPaletteRing(8);
+    const big = new Float32Array(4 * 16);
+    const small = new Float32Array(2 * 16);
+    big[0] = 7;
+    small[0] = 7;
+    const first = ring.take(device, big);
+    expect(ring.take(device, small), 'a different rig, a different slot').not.toBe(first);
+  });
 });

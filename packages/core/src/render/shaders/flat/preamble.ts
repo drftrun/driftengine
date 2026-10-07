@@ -121,9 +121,15 @@ uniform sampler2D uRefractScene;
  * gives up, and four separate floats cost half the shadowed lights such a device can have. The tints
  * stay colours of their own. Zero transmission is not glass — see glass.ts.
  */
-uniform vec4 uSeeThrough;
-uniform vec3 uRefractTint;
-uniform vec3 uGlassTint;
+uniform vec4 uSeeThrough; // wgsl:material
+/*
+ * What a metre of the medium leaves of each channel (rgb), and in w which way this frame's rows run
+ * up the screen: +1 where the first row is the bottom (WebGL2), -1 where it is the top (WebGPU). The
+ * bend is taken in view space, whose y is up whatever the framebuffer says, so it is turned here to
+ * the rows a screen coordinate counts. A vec4 where a vec3 already spent the row.
+ */
+uniform vec4 uRefractTint; // wgsl:material
+uniform vec3 uGlassTint; // wgsl:material
 flat in int vHasTangents;
 
 /**
@@ -154,7 +160,7 @@ uniform mediump sampler2DArray uAlbedo;
  *   card. Its draw culls nothing, and a back face is lit as a front, with the shading normal turned
  *   toward the viewer.
  */
-uniform ivec4 uMaterialFlags;
+uniform ivec4 uMaterialFlags; // wgsl:material
 /**
  * Alpha below which a textured fragment is thrown away entirely, 0 to disable.
  *
@@ -168,13 +174,17 @@ uniform ivec4 uMaterialFlags;
  * else changes.
  *
  * **Four numbers in one row**: x is the cutoff, y how this frame resolves the edge (0 the hard test,
- * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z the
- * frame the dither's pattern is offset by, w the material's lighting channels — a mask a light
- * shades it only where its own shares a bit with (\`SurfaceMaterial.lightChannels\`, 1 unless a
- * material names others). One vector rather than a float and three more, because every loose
- * scalar is a row of WebGL2's 224 that the light budget gives up.
+ * 1 a dither the temporal resolve averages, 2 alpha-to-coverage; see \`cutoutDither.ts\`), z unused,
+ * w the material's lighting channels — a mask a light shades it only where its own shares a bit
+ * with (\`SurfaceMaterial.lightChannels\`, 1 unless a material names others). One vector rather than
+ * a float and three more, because every loose scalar is a row of WebGL2's 224 that the light budget
+ * gives up.
+ *
+ * **z was the frame the dither's pattern is offset by until 4.10.0**, and that made every material
+ * new every frame: a material is kept on WebGPU by its numbers, and one of them changed with the
+ * clock. The frame is the pass's, in \`uHighlightMin.w\`.
  */
-uniform vec4 uCutout;
+uniform vec4 uCutout; // wgsl:material
 /**
  * A draw's own ambient, as nine spherical-harmonic coefficients of incoming radiance, red green blue
  * in turn, twenty-seven floats, and in the last of the twenty-eight a 1 where they are on — 0 is the
@@ -182,7 +192,7 @@ uniform vec4 uCutout;
  * and the basis, and its tests hold this to it. Seven rows of the material block, which is per draw
  * as far as anything here is: \`setAmbientSH\` moves it between two draws as \`setMaterial\` does.
  */
-uniform vec4 uAmbientSH[7];
+uniform vec4 uAmbientSH[7]; // wgsl:material
 
 /** The ambient a surface facing \`n\` receives from \`uAmbientSH\`: \`ambientFromSH\`'s arithmetic. */
 vec3 ambientHarmonics(vec3 n) {
@@ -229,7 +239,7 @@ uniform highp sampler2DArray uNormalMap;
  * shadow samplers, where a profile with shadows off should declare none of them; it is the wrong
  * tool for one image on a shader that already declares one.
  */
-uniform float uNormalStrength;
+uniform float uNormalStrength; // wgsl:material
 
 /**
  * Occlusion, roughness and metallic in one image. glTF's packing, because that is what an import
@@ -250,7 +260,7 @@ uniform highp sampler2DArray uOrmMap;
  * occlusionTexture.strength is: 1 + strength * (texel - 1). A multiply at 0 means fully occluded,
  * which is the opposite of what a caller asking for no occlusion means.
  */
-uniform vec3 uOrmScale;
+uniform vec3 uOrmScale; // wgsl:material
 /**
  * 1 when \`uEnvironment\` holds the GGX-prefiltered cube, 0 when it holds the capture's box chain.
  *
@@ -266,7 +276,7 @@ uniform vec3 uOrmScale;
  * (\`uniformVectorBudget.ts\`). y is how much of the environment the material mirrors, z how
  * bright what it mirrors is.
  */
-uniform vec3 uEnvironmentDials;
+uniform vec3 uEnvironmentDials; // wgsl:material
 
 /**
  * Where a surface glows, and in what colour.
@@ -288,7 +298,7 @@ uniform highp sampler2DArray uEmissiveMap;
  * The counterpart of \`uOrmScale\`: a factor that multiplies a texture is not a value, and this is
  * where the multiplier lives once an image supplies the shape.
  */
-uniform vec3 uEmissiveScale;
+uniform vec3 uEmissiveScale; // wgsl:material
 
 #if DIRECTIONAL_SHADOWS
 /*
@@ -375,7 +385,7 @@ uniform vec4 uSurfaceScene;
  * draw moves it), y the night factor emission is gated on. One row where two floats were two
  * (\`uniformVectorBudget.ts\`).
  */
-uniform vec2 uEmission;
+uniform vec2 uEmission; // wgsl:material
 #if NIGHT_EMISSIVE
 /**
  * Emission that only shows where the dominant light does not reach. 0 is off and is the default.
@@ -400,7 +410,7 @@ uniform float uNightEmissive;
  * of that to change one channel is how a renderer ends up with two shaders that
  * disagree about the sun. The caller owns the blend state; this owns the number.
  */
-uniform float uOpacity;
+uniform float uOpacity; // wgsl:material
 
 /**
  * Two per-draw switches on how a fragment is *written* rather than what colour it is, sharing one
@@ -432,7 +442,7 @@ uniform float uOpacity;
  * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
  * draw that asks for it is dithered too, since the test is a discard.
  */
-uniform vec2 uWriteMode;
+uniform vec2 uWriteMode; // wgsl:material
 
 /** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
 bool ditherKeeps(float amount) {
@@ -465,7 +475,7 @@ bool ditherKeeps(float amount) {
  * one uniform skips the untaken side rather than computing both and discarding one, which is
  * only true because nothing here reads it through a *varying*-dependent branch.
  */
-uniform int uLightingEnabled;
+uniform int uLightingEnabled; // wgsl:material
 /**
  * How this draw meets the medium: the atmospheric haze and the underwater tint both, folded
  * together because both are the *camera's* medium rather than a property of the surface — see
@@ -487,7 +497,7 @@ uniform int uLightingEnabled;
  * is what "exactly as its colour says" has to mean for it; the cost is that such a draw will
  * not tint if the camera goes under water, unlike everything else in the frame.
  */
-uniform int uFogEnabled;
+uniform int uFogEnabled; // wgsl:material
 
 /**
  * A pass-level scale over the grain the geometry declared, 0 to 1.
@@ -497,7 +507,7 @@ uniform int uFogEnabled;
  * imported model that declares nothing is drawn with the pass's own answer, and a scene
  * can dial a whole draw down without rebuilding its geometry.
  */
-uniform float uGrain;
+uniform float uGrain; // wgsl:material
 /*
  * The material's own relief: how strong, and how many bumps to a metre.
  *
@@ -506,7 +516,7 @@ uniform float uGrain;
  * between them, and the geometry carrying them is identical in all three cases. See
  * Renderer.setSurfaceRelief. x is the strength and y the bumps to a metre, in one row.
  */
-uniform vec2 uRelief;
+uniform vec2 uRelief; // wgsl:material
 /**
  * How hard the bound surface texture's own luminance turns the shading normal, 0 for not at all.
  *
@@ -529,7 +539,7 @@ uniform vec2 uRelief;
  * 0..1 like its neighbours for the same reason: this is an amplitude against a luminance
  * gradient, not a fraction of anything.
  */
-uniform float uTextureRelief;
+uniform float uTextureRelief; // wgsl:material
 
 /**
  * How much of the environment this material mirrors, 0 to 1.
@@ -664,8 +674,12 @@ uniform vec3 uProbeGridSets;
 /**
  * A world-space box that lights up regardless of time of day: its corners, and in the far corner's
  * w the gain — one row where a loose float was another (\`uniformVectorBudget.ts\`).
+ *
+ * **And in the near corner's w the frame the cutout dither's pattern is offset by**, for the same
+ * reason: a row the lit stage already pays for, holding a number the pass sets and no material does.
+ * See \`uCutout\`.
  */
-uniform vec3 uHighlightMin;
+uniform vec4 uHighlightMin;
 uniform vec4 uHighlightMax;
 
 /*

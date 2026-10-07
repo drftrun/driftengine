@@ -568,6 +568,10 @@ export type {
   ShadowCasterSink,
   ShadowCasters,
 } from './render/shadowCasters.ts';
+/* What `createStaticDraws` hands back, so a consumer can hold one in a field it declares. */
+export type { StaticDrawsHandle } from './render/staticDraws.ts';
+/* A bone animation's clip as a caller hands it over, and the handle `createBoneAnimation` returns. */
+export type { BoneAnimationClip, BoneAnimationHandle } from './render/boneAnimation.ts';
 export type { Atmosphere, UnderwaterAtmosphere } from './render/atmosphere.ts';
 /*
  * Reading an image's texels back exactly, which no canvas and no `VideoFrame` will do.
@@ -660,12 +664,14 @@ export { MAX_CLUSTERED_LIGHTS } from './render/clusteredLights.ts';
 export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
 /*
- * BC compressed textures: the source `createSurfaceTexture` takes as blocks, and the one question to
- * ask before handing one over — whether this device takes its format (`renderer.compressedFormats`).
+ * Compressed textures — BC, ETC2 and EAC, ASTC: the source `createSurfaceTexture` takes as blocks,
+ * the one question to ask before handing one over — whether this device takes its format
+ * (`renderer.compressedFormats`) — and the bytes a level of it holds, for a reader checking a file.
  */
 export {
   compressedFormatName,
   isCompressedSource,
+  levelBytes,
   uploadsCompressed,
 } from './render/compressedSource.ts';
 export type {

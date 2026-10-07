@@ -1395,7 +1395,7 @@ test('refraction is a uniform and a branch rather than a permutation', () => {
   /* Strength, thickness, glass transmission and frost share one vector: see the preamble's note on
      the uniform budget at the WebGL2 floor. */
   expect(source).toContain('uniform vec4 uSeeThrough;');
-  expect(source).toContain('uniform vec3 uRefractTint;');
+  expect(source).toContain('uniform vec4 uRefractTint;');
   expect(source).toContain('uniform vec3 uGlassTint;');
   expect(source).not.toContain('#if REFRACTION');
 });
@@ -1408,7 +1408,7 @@ test('refraction is a uniform and a branch rather than a permutation', () => {
 test('the path length divides by the view angle and is clamped off the silhouette', () => {
   const source = flatFrag(REFRACT_BASE);
   expect(source).toContain('max(abs(dot(refractN, refractV)), 0.05)');
-  expect(source).toContain('pow(uRefractTint, vec3(pathLength))');
+  expect(source).toContain('pow(uRefractTint.rgb, vec3(pathLength))');
 });
 
 /*
@@ -1416,7 +1416,7 @@ test('the path length divides by the view angle and is clamped off the silhouett
  * pane at the border, which reads as a tear rather than as an approximation running out.
  */
 test('the refracted sample is clamped inside the frame', () => {
-  expect(flatFrag(REFRACT_BASE)).toContain('clamp(screenUv + refractN.xy * uSeeThrough.x');
+  expect(flatFrag(REFRACT_BASE)).toContain('clamp(screenUv + bend * uSeeThrough.x');
 });
 
 /*

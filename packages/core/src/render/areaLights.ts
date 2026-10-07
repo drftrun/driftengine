@@ -94,14 +94,14 @@ export interface AreaLightSource {
    * others. **Read only where the rectangle is shaded through the froxel table** — the ones past
    * `maxAreaLights` with `clusteredLights` on; the fixed four light everything they face, as they
    * always have. Absent, it is where the rectangle's irradiance on its axis falls to a thousandth
-   * of a scene unit, and never inside the rectangle itself. Unreal's `AttenuationRadius`, in metres.
+   * of a scene unit, and never inside the rectangle itself. An attenuation radius, in metres.
    */
   range?: number;
   /**
    * Barn doors: a flap hinged at each of the rectangle's four edges, standing this many degrees from
    * its normal. 90, or absent, folds them flat and they hide nothing; smaller closes them, so the
    * light narrows to the opening they leave — a rectangle at 50° throws a beam rather than filling
-   * its hemisphere. Unreal's `BarnDoorAngle`, whose default of 88° is nearly flat.
+   * its hemisphere. 88° is the usual default, nearly flat.
    *
    * What a fragment sees past the doors is the part of the rectangle no door's tip hides, one axis
    * at a time, and the rectangle then shades as that smaller rectangle, its highlight included.
@@ -111,7 +111,7 @@ export interface AreaLightSource {
    * rectangle's back face has none.
    */
   barnDoorAngle?: number;
-  /** The barn doors' length in metres. Absent, 0.2: Unreal's default of 20 cm. */
+  /** The barn doors' length in metres. Absent, 0.2: the usual default of 20 cm. */
   barnDoorLength?: number;
 }
 
@@ -150,7 +150,7 @@ export function createAreaLightBuffer(capacity: number = MAX_AREA_LIGHTS): AreaL
   };
 }
 
-/** Unreal's default barn door length, in metres. See `AreaLightSource.barnDoorLength`. */
+/** The usual default barn door length, in metres. See `AreaLightSource.barnDoorLength`. */
 export const DEFAULT_BARN_DOOR_LENGTH = 0.2;
 
 /**

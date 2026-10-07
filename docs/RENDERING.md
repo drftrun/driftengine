@@ -646,7 +646,7 @@ it** was the one meant to prove the units: a page of one value against the same 
 ## 4j. Bloom that answers, and the subtraction that washed a stage
 
 **Subtracting the threshold is fine at a threshold of 1 and wrong at 0.1.** A stage authored for
-Unreal's bloom sets a low threshold because Unreal brings a colour in over a ramp,
+a ramped bloom sets a low threshold because that bloom brings a colour in over a ramp,
 `saturate((L - t) / 2)`, and weights six bands by tints that sum below one. Subtracting 0.1 keeps
 nearly every light in the frame at full strength, and one band at the scale given washed the stage
 white. `BloomResponse` states both differences as numbers: a `ramp` in place of the subtraction, and
@@ -671,8 +671,9 @@ direction's four bytes, in one array of two `rgba8` layers: eight bytes a texel.
 its own**, though WebGPU samples and filters `rgb9e5ufloat`: the two layers must be one array,
 because WebGL2 has no unit left for a second sampler, and an array has one format. So the lit stage
 fetches the four texels around a sample, decodes each and filters them itself. A bake that arrives
-packed, as Unreal's does, uploads where it lies. Measured: a page of one value is still 0 pixels from
-the same ambient raised by `setAmbientSH`, and the room within one level of the half-float page.
+packed, as many bakers write it, uploads where it lies. Measured: a page of one value is still 0
+pixels from the same ambient raised by `setAmbientSH`, and the room within one level of the
+half-float page.
 
 ## 4m. A light's own falloff, in a lane it had already paid for
 
@@ -698,12 +699,13 @@ nothing changes inside the box the tips leave whole and nothing is lit past wher
 
 **The engine's highlight is a look: a peak of one times the specular attribute.** GGX's own
 `pi * D * Vis * F * N.L` peaks at `1 / (4 alpha^2)` and reads the attribute as F0, which is what a
-model authored in Unreal expects. It is an opt-in a material makes, `physicalSpecular`, carried in a
-lane of the model's uniforms the standard, lightmap and anisotropic models leave free, and its code is
-a lit switch declared after the models' so every shipped override keeps its id: compiled into the lit
-programs the first time a material asks, absent before. What every pipeline does compile this release,
-the exponent and the doors, was measured on RADV at a phone's viewport: 2.8 to 6.4% more instructions
-and the same registers, where 4.8.2's regression was the registers.
+model authored for a physically based renderer expects. It is an opt-in a material makes,
+`physicalSpecular`, carried in a lane of the model's uniforms the standard, lightmap and anisotropic
+models leave free, and its code is a lit switch declared after the models' so every shipped override
+keeps its id: compiled into the lit programs the first time a material asks, absent before. What
+every pipeline does compile this release, the exponent and the doors, was measured on RADV at a
+phone's viewport: 2.8 to 6.4% more instructions and the same registers, where 4.8.2's regression was
+the registers.
 
 ## 4p. A skin's radius, measured before it was changed
 

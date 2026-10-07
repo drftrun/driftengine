@@ -8,6 +8,8 @@ import {
 import type { MeshInstances } from '../../instances.ts';
 import type { Mesh } from '../../mesh.ts';
 import type { FrustumPlanes } from '../../../math/frustum.ts';
+import { packInstanceClocks } from '../../boneAnimation.ts';
+import { GlInstanceClocks, type GlBoneAnimation } from './boneAnimations.ts';
 
 /**
  * One batch of a mesh: its per-instance buffer and a vertex array of its own.
@@ -42,10 +44,22 @@ export class InstancedBatch {
     readonly instances: MeshInstances;
   } | null;
 
-  constructor(gl: WebGL2RenderingContext, mesh: Mesh, capacity: number, cull = false) {
+  /** The bone animation every instance plays, and its clocks; null for a batch that plays none. */
+  readonly animation: GlBoneAnimation | null;
+  readonly clocks: GlInstanceClocks | null;
+
+  constructor(
+    gl: WebGL2RenderingContext,
+    mesh: Mesh,
+    capacity: number,
+    cull = false,
+    animation: GlBoneAnimation | null = null,
+  ) {
     this.mesh = mesh;
     this.capacity = capacity;
     this.cull = cull;
+    this.animation = animation;
+    this.clocks = animation === null ? null : new GlInstanceClocks(gl, capacity);
     this.staging = new Float32Array(capacity * INSTANCE_FLOATS);
     this.buffer = allocate(gl, capacity);
     this.vao = mesh.createInstanceArray(gl, this.buffer, INSTANCE_STRIDE);
@@ -68,6 +82,10 @@ export class InstancedBatch {
     packInstances(data, this.staging);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.staging, 0, count * INSTANCE_FLOATS);
+    if (this.clocks !== null) {
+      packInstanceClocks(data, this.clocks.staging);
+      this.clocks.upload(gl, count);
+    }
   }
 
   /** Draw the first `count` uploaded instances: every draw but a culling camera draw. */
@@ -102,6 +120,7 @@ export class InstancedBatch {
   dispose(gl: WebGL2RenderingContext): void {
     gl.deleteVertexArray(this.vao);
     gl.deleteBuffer(this.buffer);
+    this.clocks?.dispose(gl);
     if (this.kept !== null) {
       gl.deleteVertexArray(this.kept.vao);
       gl.deleteBuffer(this.kept.buffer);

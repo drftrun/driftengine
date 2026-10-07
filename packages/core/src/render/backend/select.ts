@@ -248,12 +248,17 @@ async function acquireWebGpu(
       features.push('timestamp-query');
     }
     /*
-     * BC compressed textures, on the same terms: asked for wherever the adapter offers it, because
-     * a device without it still draws — the loader decodes for it — and one with it samples a BC7
-     * texture at a byte a texel instead of four. See `compressedUpload.ts`.
+     * The three block families, on the same terms: each asked for wherever the adapter offers it,
+     * because a device without one still draws — the loader decodes, or encodes ETC2, for it — and
+     * one with it samples a texture at a byte a texel or half of one instead of four. Desktops
+     * offer BC; phones ETC2 and ASTC. See `compressedUpload.ts`.
      */
-    if (adapter.features?.has('texture-compression-bc') === true) {
-      features.push('texture-compression-bc');
+    for (const family of [
+      'texture-compression-bc',
+      'texture-compression-etc2',
+      'texture-compression-astc',
+    ] as const) {
+      if (adapter.features?.has(family) === true) features.push(family);
     }
     const descriptor: GPUDeviceDescriptor = {};
     if (Object.keys(required).length > 0) descriptor.requiredLimits = required;

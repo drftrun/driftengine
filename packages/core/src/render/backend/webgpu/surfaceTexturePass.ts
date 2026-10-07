@@ -6,7 +6,12 @@ import type { LightmapTexels } from '../../lightmap.ts';
 import { isSceneCaptureTexels } from '../../sceneCapture.ts';
 import type { SceneCaptureTexels } from '../../sceneCapture.ts';
 import { layerSize, refuseArrayUpdate, sourceSize } from '../../textureSource.ts';
-import { compressedLayers, planBlocks, refuseBlockUpdate } from '../../compressedSource.ts';
+import {
+  compressedLayers,
+  isCompressedSource,
+  planBlocks,
+  refuseBlockUpdate,
+} from '../../compressedSource.ts';
 import type {
   BlockFormat,
   CompressedTextureFormat,
@@ -192,7 +197,9 @@ export class GpuSurfaceTexture {
   /** Its view, which the flat group binds beside this image when it is a material's albedo. */
   effectsView: GPUTextureView | null = null;
   /** The block format a compressed texture holds, or null for one uploaded from images. */
-  private readonly blockFormat: BlockFormat | null;
+  private blockFormat: BlockFormat | null;
+  /** Whether the image is colour, decoded from sRGB as it is sampled: what blocks swapped in keep. */
+  private readonly srgb: boolean;
 
   constructor(
     private readonly device: GPUDevice,
@@ -210,6 +217,7 @@ export class GpuSurfaceTexture {
     ) as readonly SurfaceSource[];
     const blocks = compressedLayers(listed);
     const srgb = (options.colorSpace ?? 'linear') === 'srgb';
+    this.srgb = srgb;
     /* `SRGB8_ALPHA8`'s equivalent. Decoded in the sampler, before filtering, which is the only
        place it is correct — `surfaceTexture.ts` makes the argument in full. A capture takes the
        world's own format, which its pass resolves into. */
@@ -358,11 +366,29 @@ export class GpuSurfaceTexture {
    * hit that whenever the preview's decode won the race. The view is new then, and the texture it
    * replaced is handed back rather than destroyed: a draw recorded earlier in this frame may still
    * read it, so the renderer destroys it once nothing can, and drops every binding of the old view.
+   *
+   * **Blocks replace an image the same way**, at any size: a texture of their format holds them,
+   * read in the colour space this one was made for, and the image's is handed back. Refused, as a
+   * texture made from them would be, where `compressed` — the formats the device samples — does not
+   * take them. The way back is refused: an image cannot replace blocks.
    */
-  update(source: TexImageSource): GPUTexture | null {
+  update(
+    source: TexImageSource | CompressedTextureSource,
+    compressed: readonly CompressedTextureFormat[] = [],
+  ): GPUTexture | null {
     const replaced = this.texture;
     if (replaced === null) return null;
     refuseArrayUpdate(this.layers);
+    if (isCompressedSource(source)) {
+      const plan = planBlocks([source], this.srgb, compressed);
+      this.blockFormat = source.format;
+      this.width = source.width;
+      this.height = source.height;
+      this.levels = this.mipmapped ? plan.levels : 1;
+      this.texture = createCompressedTexture(this.device, plan.name, [source], this.levels);
+      this.current = this.arrayView(this.texture);
+      return replaced;
+    }
     refuseBlockUpdate(this.blockFormat);
     const { width, height } = sourceSize(source);
     if (width === this.width && height === this.height) {

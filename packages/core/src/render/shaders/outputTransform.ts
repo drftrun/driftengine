@@ -48,20 +48,8 @@ vec3 highlightShoulder(vec3 c) {
 }
 `;
 
-/**
- * `uOutputTransform` and `uOutputExposure`, the fit, and `applyOutputTransform`.
- *
- * Declares its own two uniforms, so including it is the whole of what a fragment stage has to
- * do besides calling it. Both are ints and floats rather than defines because the choice is a
- * caller's, per draw, and a permutation per output transform would double a pipeline count for
- * a branch that costs one compare.
- */
-export const OUTPUT_TRANSFORM_GLSL = `
-/** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
-uniform int uOutputTransform;
-/** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
-uniform float uOutputExposure;
-
+/** The fit and `applyOutputTransform`, below whichever declaration of the two uniforms. */
+const OUTPUT_TRANSFORM_BODY_GLSL = `
 /*
  * ACES: the reference fit, not the cheap one.
  *
@@ -128,3 +116,31 @@ vec3 applyOutputTransform(vec3 c) {
   return linearToSrgb(c);
 }
 `;
+
+/**
+ * `uOutputTransform` and `uOutputExposure`, the fit, and `applyOutputTransform`.
+ *
+ * Declares its own two uniforms, so including it is the whole of what a fragment stage has to
+ * do besides calling it. Both are ints and floats rather than defines because the choice is a
+ * caller's, per draw, and a permutation per output transform would double a pipeline count for
+ * a branch that costs one compare.
+ */
+export const OUTPUT_TRANSFORM_GLSL = `
+/** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
+uniform int uOutputTransform;
+/** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
+uniform float uOutputExposure;
+${OUTPUT_TRANSFORM_BODY_GLSL}`;
+
+/**
+ * The same, for the lit stage, whose two uniforms live in its material block: a draw that opts out
+ * of the grade sets them, so they change with the material and not with the pass. See
+ * `hoistUniformBlock` in `scripts/wgsl/transform.mjs`. Text otherwise identical, so WebGL2 runs
+ * the same program it always has.
+ */
+export const LIT_OUTPUT_TRANSFORM_GLSL = `
+/** 0 none, 1 sRGB, 2 ACES then sRGB, 3 the highlight shoulder then sRGB. See renderQuality.ts. */
+uniform int uOutputTransform; // wgsl:material
+/** Scales the scene into the tone curve. 1 is the reference grade. See renderQuality.ts. */
+uniform float uOutputExposure; // wgsl:material
+${OUTPUT_TRANSFORM_BODY_GLSL}`;

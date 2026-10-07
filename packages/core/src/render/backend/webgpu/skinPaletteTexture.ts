@@ -22,6 +22,12 @@ const TEXTURE_USAGE = {
 
 export class SkinPaletteTexture {
   private texture: GPUTexture | null = null;
+  /**
+   * How many joints the texture has room for, which is the most any rig in this slot has had.
+   * **It grows and never shrinks**: the shader reads a joint by index, so a texture wider than the
+   * rig is read exactly as one that fits, and a slot that a 10-joint prop and a 296-joint character
+   * take in turn keeps one texture rather than making one at every change of rig.
+   */
   private joints = 0;
   /**
    * The view, cached rather than created per call.
@@ -38,7 +44,7 @@ export class SkinPaletteTexture {
     const joints = palette.length / 16;
     const width = paletteTextureWidth(joints);
 
-    if (this.texture === null || this.joints !== joints) {
+    if (this.texture === null || joints > this.joints) {
       this.texture?.destroy();
       this.cachedView = null;
       this.texture = device.createTexture({

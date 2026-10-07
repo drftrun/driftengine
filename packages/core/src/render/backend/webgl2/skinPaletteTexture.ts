@@ -22,16 +22,18 @@ export class SkinPaletteTexture {
   /**
    * Upload a palette, reallocating only when the joint count changes.
    *
-   * A rig's joint count is fixed for its life, so the reallocation path runs once per skeleton and
-   * the steady state is one `texSubImage2D`. Reallocating per frame would be a GPU allocation in
-   * the frame loop, which is the same class of mistake as allocating on the CPU there.
+   * **The texture grows and never shrinks**, so the steady state is one `texSubImage2D` whatever
+   * mix of rigs a frame draws. It was rebuilt whenever the joint count changed, which with one
+   * texture for every skinned draw meant a character and a prop drawn in turn reallocated it at
+   * every draw: a GPU allocation in the frame loop. The shader reads joints by index, so a texture
+   * wider than the rig is read exactly as one that fits.
    */
   update(gl: WebGL2RenderingContext, palette: Float32Array): void {
     validateSkinPalette(palette);
     const joints = palette.length / 16;
     const width = paletteTextureWidth(joints);
 
-    if (this.texture === null || this.joints !== joints) {
+    if (this.texture === null || joints > this.joints) {
       if (this.texture !== null) gl.deleteTexture(this.texture);
       const created = gl.createTexture();
       if (created === null) throw new Error('skin palette: failed to create the palette texture');

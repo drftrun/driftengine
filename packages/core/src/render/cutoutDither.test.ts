@@ -84,7 +84,7 @@ test('THE SURFACE AND ITS CASTERS KEEP A DITHERED PIXEL BY THE SAME TEST', async
     environmentProbe: true,
     nightEmissive: true,
   }).replace(/\s+/g, ' ');
-  expect(lit).toContain('if (!cutoutKeeps(share, gl_FragCoord.xy, uCutout.z)) discard;');
+  expect(lit).toContain('if (!cutoutKeeps(share, gl_FragCoord.xy, uHighlightMin.w)) discard;');
   expect(lit, 'a coverage frame hands the share on as alpha').toContain('kept = share;');
   for (const caster of [DEPTH_CUTOUT_FRAG, GLASS_TINT_CUTOUT_FRAG]) {
     const source = caster.replace(/\s+/g, ' ');

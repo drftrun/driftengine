@@ -202,7 +202,7 @@ test('a lookAt shot leans toward its anchor without losing the character', () =>
    *
    * The pull toward an anchor is now bounded by the shot's own camera distance
    * (`LOOK_AT_ANCHOR_PULL`), so the assertion is the shape of the behaviour rather than a
-   * number that only an unreal anchor can reach: it tilts up, and the character stays framed.
+   * number that only an impossible anchor can reach: it tilts up, and the character stays framed.
    */
   const cam = new CinematicCamera(EMPTY);
   cam.cut(shot({ kind: 'lookAt', anchor: [0, 20, 0] }), 0);

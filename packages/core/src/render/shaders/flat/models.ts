@@ -59,7 +59,7 @@ const bool PHYSICAL_SPECULAR = PHYSICAL_SPECULAR_ON;  // wgsl:override
  * A model's numbers, two vectors a material — the lit stage's uniform budget has no more room
  * (surfaceModel.ts) — and whether a model map is bound, in the last component.
  */
-uniform vec4 uModelParams[2];
+uniform vec4 uModelParams[2]; // wgsl:material
 /* The model's own channels, in the albedo's layout: what each means is each model's to say. */
 uniform highp sampler2DArray uModelMap;
 

@@ -99,6 +99,20 @@ export interface StageBindings {
   readonly textures: Readonly<Record<string, TextureBinding>>;
   /** Each pipeline-overridable constant's id, by the GLSL name it was declared under. */
   readonly overrides?: Readonly<Record<string, number>>;
+  /**
+   * The second block, of the uniforms marked `// wgsl:material`: its binding, size and fields.
+   * Absent from a stage that marks none, which is every stage but the lit fragment's.
+   */
+  readonly materialUniforms?: number;
+  readonly materialSize?: number;
+  readonly materialFields?: StageBindings['fields'];
+  /**
+   * The vertex stage's view block, of the uniforms marked `// wgsl:view`: the camera, the light's
+   * matrix and the wind, which a pass settles. Absent from every stage but the lit vertex one.
+   */
+  readonly viewUniforms?: number;
+  readonly viewSize?: number;
+  readonly viewFields?: StageBindings['fields'];
 }
 
 /*
@@ -130,9 +144,16 @@ const VERTEX_BINDINGS = FLAT_BINDINGS.flatVert as unknown as Readonly<
 >;
 
 /** The key for a set of vertex flags: the same rule `variantKey` uses, flags on, sorted, joined. */
-export function flatVertexKey(skinned: boolean, morphed: boolean, instanced = false): string {
+export function flatVertexKey(
+  skinned: boolean,
+  morphed: boolean,
+  instanced = false,
+  /** Whether an instanced variant plays a bone animation. See `shaders/boneAnimation.ts`. */
+  animated = false,
+): string {
   const on: string[] = [];
   /* Alphabetical, because the generator's own `variantKey` sorts and the two keys must agree. */
+  if (animated) on.push('animated');
   if (instanced) on.push('instanced');
   if (morphed) on.push('morphed');
   if (skinned) on.push('skinned');
@@ -144,8 +165,9 @@ export function flatVertexBindings(
   skinned: boolean,
   morphed = false,
   instanced = false,
+  animated = false,
 ): StageBindings {
-  const key = flatVertexKey(skinned, morphed, instanced);
+  const key = flatVertexKey(skinned, morphed, instanced, animated);
   const found = VERTEX_BINDINGS[key];
   if (found === undefined) throw new Error(`flatPass: no vertex bindings for variant "${key}"`);
   return found;
@@ -221,6 +243,8 @@ for (const [key, bindings] of Object.entries(VERTEX_BINDINGS)) {
 }
 
 export const FLAT_VERT_FIELDS = FLAT_BINDINGS.flatVert.none.fields;
+/** The animated instanced variant's block: the instanced fields, and the clip's `uBoneClip`. */
+export const FLAT_ANIMATED_VERT_FIELDS = FLAT_BINDINGS.flatVert['animated+instanced'].fields;
 /**
  * The **largest** variant's block, because one ring serves every draw.
  *
@@ -232,6 +256,35 @@ export const FLAT_VERT_SIZE = Math.max(
   ...Object.values(VERTEX_BINDINGS).map((bindings) => bindings.uniformSize),
 );
 const FLAT_VERT_BINDING = PLAIN_VERTEX.uniforms;
+
+/*
+ * **The view block may be shorter in a variant, never different.** One slot serves every lit draw
+ * of a pass, plain and instanced alike, so every field a variant's view block declares must sit
+ * where the plain variant has it. The instanced variant declares no wind, and its block is the plain
+ * one's first two matrices.
+ */
+const PLAIN_VIEW_FIELDS = PLAIN_VERTEX.viewFields ?? {};
+for (const [key, bindings] of Object.entries(VERTEX_BINDINGS)) {
+  if (bindings.viewUniforms !== PLAIN_VERTEX.viewUniforms) {
+    throw new Error(`flatPass: vertex variant "${key}" binds its view block elsewhere`);
+  }
+  for (const [field, here] of Object.entries(bindings.viewFields ?? {})) {
+    if (PLAIN_VIEW_FIELDS[field]?.offset !== here.offset) {
+      throw new Error(
+        `flatPass: vertex variant "${key}" puts view field ${field} at ${here.offset} where the ` +
+          `plain variant has it at ${PLAIN_VIEW_FIELDS[field]?.offset}.`,
+      );
+    }
+  }
+}
+
+/** The view block's fields, binding and size: the largest variant's, as `FLAT_VERT_SIZE` is. */
+export const FLAT_VIEW_FIELDS = PLAIN_VIEW_FIELDS;
+export const FLAT_VIEW_SIZE = Math.max(
+  ...Object.values(VERTEX_BINDINGS).map((bindings) => bindings.viewSize ?? 0),
+);
+const FLAT_VIEW_BINDING = PLAIN_VERTEX.viewUniforms ?? -1;
+if (FLAT_VIEW_BINDING < 0) throw new Error('flatPass: the lit vertex stage declares no view block');
 
 /**
  * The most sampled textures and distinct samplers any lit variant carrying the environment probe
@@ -258,6 +311,46 @@ export function flatFragmentBindings(variant: FlatVariant): StageBindings {
   const found = FRAGMENT_BINDINGS[variant];
   if (found === undefined) throw new Error(`flatPass: no bindings for variant "${variant}"`);
   return found;
+}
+
+/**
+ * The lit fragment stage's two blocks as the renderer keeps them on the CPU: the pass's, then the
+ * material's straight after it, in one scratch, with every field at its offset in that scratch.
+ *
+ * **One scratch rather than two, so no setter has to know which block its field is in.** A setter
+ * writes by name, as it always has; the draw copies the material's bytes — `passSize` onwards — into
+ * the store and the pass's bytes into a ring slot, each only when something has changed it.
+ */
+export interface FlatFragmentScratch {
+  readonly fields: StageBindings['fields'];
+  /** Bytes of the pass's block, which is where the material's starts in the scratch. */
+  readonly passSize: number;
+  readonly passBinding: number;
+  readonly materialSize: number;
+  readonly materialBinding: number;
+}
+
+export function flatFragmentScratch(variant: FlatVariant): FlatFragmentScratch {
+  const bindings = flatFragmentBindings(variant);
+  const { materialUniforms, materialSize, materialFields } = bindings;
+  if (
+    materialUniforms === undefined ||
+    materialSize === undefined ||
+    materialFields === undefined
+  ) {
+    throw new Error(`flatPass: variant "${variant}" has no material block`);
+  }
+  const fields: Record<string, StageBindings['fields'][string]> = { ...bindings.fields };
+  for (const [name, field] of Object.entries(materialFields)) {
+    fields[name] = { ...field, offset: bindings.uniformSize + field.offset };
+  }
+  return {
+    fields,
+    passSize: bindings.uniformSize,
+    passBinding: bindings.uniforms,
+    materialSize,
+    materialBinding: materialUniforms,
+  };
 }
 
 /**
@@ -306,6 +399,14 @@ function flatFragmentConstants(
   return constants;
 }
 
+/** The material block's binding, which every lit variant declares. */
+function materialBinding(fragment: StageBindings): number {
+  if (fragment.materialUniforms === undefined) {
+    throw new Error('flatPass: the lit fragment stage declares no material block');
+  }
+  return fragment.materialUniforms;
+}
+
 /** The depth format both backends compare with. */
 /* Re-exported so the twenty passes that already import it from here do not each learn a new
    module; `depthConvention.ts` is where the decision lives and why. */
@@ -317,15 +418,19 @@ const VISIBILITY_FRAGMENT = 0x2;
 /**
  * The layout this variant binds against.
  *
- * The vertex block is **dynamic**, because every draw supplies its own model matrix and tint
- * from its own slot of one buffer. The fragment block is not: it holds the lights, the fog
- * and the camera, settled once by `bindMeshPass` and unchanged between draws.
+ * All four blocks are **dynamic**: the vertex block because every draw supplies its own model
+ * matrix and tint from its own slot of one buffer; the fragment stage's pass block — the lights, the
+ * fog, the camera — and the vertex stage's view block because a frame binds more than one pass; and
+ * the material block because a material changes between draws. Their dynamic offsets go in binding
+ * order: the draw's, the pass's, the material's, the view's.
  */
 export function createFlatBindGroupLayout(
   device: GPUDevice,
   variant: FlatVariant,
   skinned = false,
   morphed = false,
+  /** The instanced variant that plays a bone animation: its three vertex textures. */
+  animated = false,
 ): GPUBindGroupLayout {
   const fragment = flatFragmentBindings(variant);
   const entries: GPUBindGroupLayoutEntry[] = [
@@ -335,13 +440,29 @@ export function createFlatBindGroupLayout(
       buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: FLAT_VERT_SIZE },
     },
     {
+      binding: FLAT_VIEW_BINDING,
+      visibility: VISIBILITY_VERTEX,
+      /* Dynamic, a slot a pass, for the reason the fragment stage's pass block is. */
+      buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: FLAT_VIEW_SIZE },
+    },
+    {
       binding: fragment.uniforms,
       visibility: VISIBILITY_FRAGMENT,
       /*
-       * Dynamic, because this block carries the material and a material changes between draws.
-       * See `WebGPURenderer.perFrame` for why one buffer cannot hold two answers.
+       * Dynamic, because a pass's lights and camera change between passes of one frame — a
+       * mirror's, a capture's — and one buffer cannot hold two answers. See `WebGPURenderer.passRing`.
        */
       buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: fragment.uniformSize },
+    },
+    {
+      binding: materialBinding(fragment),
+      visibility: VISIBILITY_FRAGMENT,
+      /* Dynamic, because a material changes between draws. See `MaterialStore`. */
+      buffer: {
+        type: 'uniform',
+        hasDynamicOffset: true,
+        minBindingSize: fragment.materialSize ?? 0,
+      },
     },
   ];
 
@@ -489,10 +610,41 @@ export function createFlatBindGroupLayout(
     }
   }
 
+  /* A bone animation's places, turns and the batch's clocks, read by index as the palette is. */
+  if (animated) {
+    for (const binding of animationBindings()) {
+      entries.push({
+        binding,
+        visibility: VISIBILITY_VERTEX,
+        texture: { sampleType: 'unfilterable-float' },
+      });
+    }
+  }
+
   return device.createBindGroupLayout({
-    label: `flat.layout:${variant}|${flatVertexKey(skinned, morphed)}`,
+    label: `flat.layout:${variant}|${flatVertexKey(skinned, morphed, animated, animated)}`,
     entries,
   });
+}
+
+/** The three textures a bone animation binds, in the order `AnimationViews` holds them. */
+function animationBindings(): [number, number, number] {
+  const textures = flatVertexBindings(false, false, true, true).textures;
+  const at = (name: string): number => {
+    const found = textures[name];
+    if (found === undefined) {
+      throw new Error(`flatPass: the animated vertex shader declares no ${name}`);
+    }
+    return found.texture;
+  };
+  return [at('uBonePlaces'), at('uBoneTurns'), at('uInstanceClocks')];
+}
+
+/** What an animated draw binds besides its material: the clip's two textures and its batch's clocks. */
+export interface AnimationViews {
+  readonly places: GPUTextureView;
+  readonly turns: GPUTextureView;
+  readonly clocks: GPUTextureView;
 }
 
 /**
@@ -509,7 +661,9 @@ export function createFlatBindGroup(
   layout: GPUBindGroupLayout,
   variant: FlatVariant,
   perDraw: GPUBuffer,
-  perFrame: GPUBuffer,
+  passes: GPUBuffer,
+  materials: GPUBuffer,
+  views: GPUBuffer,
   resolve: (name: string) => { view: GPUTextureView; sampler: GPUSampler },
   /** The palette view for a skinned bind group, or null for an unskinned one. */
   palette: GPUTextureView | null = null,
@@ -517,6 +671,8 @@ export function createFlatBindGroup(
   deltas: GPUTextureView | null = null,
   /** A skinned bind group's cloth views — the draw's, or the stand-in where it sets none. */
   cloth: ClothViews | null = null,
+  /** An animated instanced group's views. See `AnimationViews`. */
+  animation: AnimationViews | null = null,
 ): GPUBindGroup {
   const fragment = flatFragmentBindings(variant);
   const entries: GPUBindGroupEntry[] = [
@@ -524,7 +680,12 @@ export function createFlatBindGroup(
       binding: FLAT_VERT_BINDING,
       resource: { buffer: perDraw, size: FLAT_VERT_SIZE },
     },
-    { binding: fragment.uniforms, resource: { buffer: perFrame, size: fragment.uniformSize } },
+    { binding: FLAT_VIEW_BINDING, resource: { buffer: views, size: FLAT_VIEW_SIZE } },
+    { binding: fragment.uniforms, resource: { buffer: passes, size: fragment.uniformSize } },
+    {
+      binding: materialBinding(fragment),
+      resource: { buffer: materials, size: fragment.materialSize ?? 0 },
+    },
   ];
 
   /* The same dedupe the layout does, and for the same reason: the shadow bindings share one
@@ -563,8 +724,15 @@ export function createFlatBindGroup(
     entries.push({ binding: restAt, resource: cloth.rest });
   }
 
+  if (animation !== null) {
+    const [places, turns, clocks] = animationBindings();
+    entries.push({ binding: places, resource: animation.places });
+    entries.push({ binding: turns, resource: animation.turns });
+    entries.push({ binding: clocks, resource: animation.clocks });
+  }
+
   return device.createBindGroup({
-    label: `flat.bindGroup:${variant}|${flatVertexKey(palette !== null, deltas !== null)}`,
+    label: `flat.bindGroup:${variant}|${flatVertexKey(palette !== null, deltas !== null, animation !== null, animation !== null)}`,
     layout,
     entries,
   });
@@ -641,6 +809,8 @@ export function flatPipeline(
    * targets `reflectionSurfacePass.ts` holds. The key must carry it: `|rs`.
    */
   reflectionSurface = false,
+  /** An instanced pipeline that plays a bone animation. The key must carry it: `|anim`. */
+  animated = false,
 ): GPURenderPipeline {
   return cache.get(
     key,
@@ -666,6 +836,7 @@ export function flatPipeline(
         model,
         skinPass,
         reflectionSurface,
+        animated,
       ),
     true,
   );
@@ -799,6 +970,8 @@ function flatDescriptor(
   model: SurfaceModelKind | null = null,
   skinPass: SkinHalf = 'whole',
   reflectionSurface = false,
+  /** An instanced pipeline that plays a bone animation. See `shaders/boneAnimation.ts`. */
+  animated = false,
 ): GPURenderPipelineDescriptor {
   const offset = depthOffsetForLayer(depthLayer);
   /* The diffuse and colour halves are the same surface again, into the blur's targets; and so is
@@ -814,13 +987,13 @@ function flatDescriptor(
        * layout validates, draws, and is wrong, exactly as this file's header says.
        */
       module: shaderModule(device, {
-        label: `flat.vert:${flatVertexKey(skinned, morphed, instanced)}`,
-        code: FLAT_VERT_WGSL[flatVertexKey(skinned, morphed, instanced)] ?? '',
+        label: `flat.vert:${flatVertexKey(skinned, morphed, instanced, animated)}`,
+        code: FLAT_VERT_WGSL[flatVertexKey(skinned, morphed, instanced, animated)] ?? '',
       }),
       entryPoint: 'main',
       buffers: vertexBufferLayouts(present, instanced),
       constants: vertexConstants(
-        flatVertexBindings(skinned, morphed, instanced),
+        flatVertexBindings(skinned, morphed, instanced, animated),
         skinEight,
         cloth,
         model === 'lightmap',

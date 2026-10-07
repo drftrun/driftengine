@@ -12,8 +12,11 @@ import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
 import { resolveRenderQuality } from '../../renderQuality.ts';
 import type { PassContext } from '../../pass.ts';
 import {
+  BONE_PLACES_TEXTURE_UNIT,
+  BONE_TURNS_TEXTURE_UNIT,
   CLOTH_PARTICLES_TEXTURE_UNIT,
   EMISSIVE_TEXTURE_UNIT,
+  INSTANCE_CLOCKS_TEXTURE_UNIT,
   NORMAL_TEXTURE_UNIT,
   ORM_TEXTURE_UNIT,
   SURFACE_TEXTURE_UNIT,
@@ -1378,6 +1381,40 @@ test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears 
 });
 
 /**
+ * **A material may state its own reflectivity and environment gain**, and its draws wear them
+ * whatever the setters say; one stating neither wears the setters', as every material did before.
+ * What WebGPU's twin asserts from its blocks, asserted here from the uploads.
+ */
+test("A MATERIAL STATING ITS REFLECTIVITY AND ENVIRONMENT GAIN WEARS THEM, AND ONE STATING NEITHER WEARS THE PASS'S", () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uEnvironmentDials'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  /** The reflectivity and gain the last upload of `uEnvironmentDials` carried. */
+  const dials = (): number[] => {
+    const call = calls
+      .filter(
+        (c) =>
+          c.name === 'uniform3fv' &&
+          (c.args[0] as { name?: string } | null)?.name === 'uEnvironmentDials',
+      )
+      .at(-1);
+    const value = call?.args[1] as Float32Array | undefined;
+    return value === undefined ? [] : [value[1] as number, value[2] as number];
+  };
+  renderer.setSurfaceReflectivity(0.25);
+  renderer.setEnvironmentGain(2);
+  renderer.setMaterial({ reflectivity: 0.75, environmentGain: 4 });
+  expect(dials()).toEqual([0.75, 4]);
+  renderer.setMaterial({ roughnessScale: 0.5 });
+  expect(dials()).toEqual([0.25, 2]);
+  renderer.setMaterial({ reflectivity: 0.5 });
+  expect(dials()).toEqual([0.5, 2]);
+  renderer.setSurfaceReflectivity(0.125);
+  expect(dials(), 'the material keeps its own against a setter after it').toEqual([0.5, 2]);
+  renderer.setMaterial(null);
+  expect(dials()).toEqual([0.125, 2]);
+});
+
+/**
  * **A material with no maps leaves an array bound on every surface unit, not nothing.**
  *
  * Every surface map has been a `sampler2DArray` since texture arrays landed, and a sampler reads the
@@ -1991,4 +2028,63 @@ test('REFUSES A SURFACE OVERLAY WHERE ITS VECTORS DO NOT FIT, IN WORDS, AND BUIL
     }
     vi.restoreAllMocks();
   }
+});
+
+/**
+ * **A crowd plays its clip through the animated variant**, its three textures on their own units,
+ * the clip's numbers and the clock beside them — and casts through the animated depth variant with
+ * the same, so its shadow moves as it does. The twin of the WebGPU suite's `bone animation`.
+ */
+test('AN ANIMATED BATCH BINDS ITS CLIP, CLOCKS AND CLOCK, IN ITS DRAW AND ITS SHADOW', () => {
+  const { canvas, calls } = recordingGl({
+    uniforms: ['uBonePlaces', 'uBoneTurns', 'uInstanceClocks', 'uBoneClip', 'uSceneTime'],
+  });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const env = createEnvironment();
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  const mesh = renderer.createMesh({
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+    colors: new Float32Array(9).fill(1),
+    emissive: new Float32Array(3),
+    indices: new Uint32Array([0, 1, 2]),
+    lightmapUvs: new Float32Array([0, 0, 1 / 64, 0, 2 / 64, 0]),
+  } as never);
+  const clip = renderer.createBoneAnimation({
+    bones: 3,
+    frames: 2,
+    framesPerSecond: 30,
+    places: new Float32Array(18),
+    turns: new Float32Array(24),
+    boneScale: 64,
+  });
+  const batch = renderer.createInstanced(mesh, 4, { animation: clip });
+  const data = createMeshInstances(4);
+  data.count = 4;
+  renderer.uploadInstanced(batch, data);
+  renderer.setAnimationTime(1.5);
+
+  const named = (from: number, uniform: string) =>
+    calls
+      .slice(from)
+      .filter((call) => (call.args[0] as { name?: string } | null)?.name === uniform)
+      .map((call) => call.args.slice(1));
+
+  let start = calls.length;
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, env);
+  renderer.drawInstanced(batch, data);
+  expect(named(start, 'uBonePlaces')).toEqual([[BONE_PLACES_TEXTURE_UNIT]]);
+  expect(named(start, 'uBoneTurns')).toEqual([[BONE_TURNS_TEXTURE_UNIT]]);
+  expect(named(start, 'uInstanceClocks')).toEqual([[INSTANCE_CLOCKS_TEXTURE_UNIT]]);
+  expect(named(start, 'uBoneClip')).toEqual([[30, 64]]);
+  expect(named(start, 'uSceneTime')).toEqual([[1.5]]);
+
+  start = calls.length;
+  renderer.beginShadowPass(mat4.create(), 'static');
+  renderer.drawShadowCasters((sink) => sink.instanced?.(batch, data));
+  renderer.endShadowPass();
+  expect(named(start, 'uSceneTime'), 'the shadow by the same clock').toEqual([[1.5]]);
+  expect(named(start, 'uBonePlaces')).toEqual([[BONE_PLACES_TEXTURE_UNIT]]);
 });

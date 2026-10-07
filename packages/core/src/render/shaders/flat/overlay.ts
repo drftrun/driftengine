@@ -26,7 +26,7 @@ vec3 overlayGlow(vec2 uv, vec3 n) { return vec3(0.0); }
 /* Whether this program carries a draw's overlay. Off but where one has been set: overlay.ts. */
 const bool SURFACE_OVERLAY = true;  // wgsl:override
 /* The overlay's fifteen vectors; packSurfaceOverlay in surfaceOverlay.ts says what each holds. */
-uniform vec4 uOverlay[15];
+uniform vec4 uOverlay[15]; // wgsl:material
 
 /* Whether the atlas is what the refraction slot holds: not where this draw refracts or is glass. */
 bool overlayImagesBound() {

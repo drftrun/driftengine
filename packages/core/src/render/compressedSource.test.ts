@@ -65,3 +65,38 @@ test('a compressed source is checked level by level before an upload, and refuse
   expect(isCompressedSource(ok)).toBe(true);
   expect(isCompressedSource({ width: 1, height: 1 })).toBe(false);
 });
+
+/*
+ * **A phone's two families**, under the same rule: blocks where the device offers the format, at
+ * whole blocks — and an ASTC block is not always four texels across, so a 12x12 image is whole
+ * blocks of 6x6 and of 12x12 and not of 5x5.
+ */
+test('ETC2, EAC AND ASTC UPLOAD AS BLOCKS WHERE OFFERED, AT WHOLE BLOCKS OF THEIR OWN SIZE', () => {
+  const phone: readonly CompressedTextureFormat[] = [
+    'etc2-rgb8',
+    'etc2-rgba8-srgb',
+    'eac-rg11',
+    'astc-6x6',
+    'astc-6x6-srgb',
+  ];
+  expect(uploadsCompressed('etc2-rgb8', false, 8, 8, phone)).toBe(true);
+  expect(uploadsCompressed('etc2-rgba8', true, 8, 8, phone)).toBe(true);
+  expect(uploadsCompressed('etc2-rgba8', false, 8, 8, phone), 'not offered linear').toBe(false);
+  expect(uploadsCompressed('eac-rg11', false, 8, 8, phone)).toBe(true);
+  expect(compressedFormatName('eac-rg11', true), 'two channels of data have no sRGB').toBeNull();
+  expect(uploadsCompressed('astc-6x6', false, 12, 12, phone)).toBe(true);
+  expect(uploadsCompressed('astc-6x6', false, 8, 8, phone), 'not whole 6x6 blocks').toBe(false);
+  expect(uploadsCompressed('bc7', false, 8, 8, phone), 'no BC on a phone').toBe(false);
+});
+
+test('a level of ASTC is counted in its own blocks, sixteen bytes each', () => {
+  /* 12x12 in 6x6 blocks is four; level 1 is 6x6, one; level 2 is 3x3, still one. */
+  const source = {
+    format: 'astc-6x6',
+    width: 12,
+    height: 12,
+    levels: [new Uint8Array(64), new Uint8Array(16), new Uint8Array(16)],
+  } as const;
+  expect(compressedLevels([source])).toBe(3);
+  expect(() => compressedLevels([{ ...source, levels: [new Uint8Array(16)] }])).toThrow(/64 bytes/);
+});

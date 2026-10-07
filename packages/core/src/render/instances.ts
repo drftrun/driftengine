@@ -66,6 +66,14 @@ export interface MeshInstances {
    */
   readonly uvRegions?: Float32Array;
   /** How many instances the arrays hold. Fixed at creation; the buffers are sized from it. */
+  /**
+   * Two floats each, the instance's clock for a batch that plays a bone animation
+   * (`InstancedOptions.animation`): its phase in seconds, added to the scene's time once the rate has
+   * scaled it, and its rate, 1 for the clip's own speed. **Absent, or an instance past its end, is
+   * `(0, 1)`** — every instance at the clip's speed and in step. Read by `uploadInstanced`, as the
+   * matrices are; a batch with no animation ignores it.
+   */
+  readonly clocks?: Float32Array;
   readonly capacity: number;
   /** How many are live. The rest of the buffer is neither uploaded nor drawn. */
   count: number;
@@ -140,6 +148,8 @@ export function packInstances(instances: MeshInstances, out: Float32Array): void
   }
 }
 
+import type { BoneAnimationHandle } from './boneAnimation.ts';
+
 /** How a batch made by `createInstanced` behaves. */
 export interface InstancedOptions {
   /**
@@ -154,4 +164,21 @@ export interface InstancedOptions {
    * place gains only the whole-batch test, which it could as well do itself.
    */
   readonly cull?: boolean;
+  /**
+   * A bone animation every instance plays (`createBoneAnimation`): each vertex follows the bone its
+   * mesh's second coordinates name, at the instance's own moment of the clip (`MeshInstances.clocks`
+   * and the clock `setAnimationTime` sets), in the colour pass and in every shadow. The mesh must
+   * carry second coordinates. See `boneAnimation.ts`.
+   *
+   * **An animated batch is culled whole, never instance by instance**: its instances read their
+   * clocks by index, which a cull that compacts the survivors would reorder. And its bounds are the
+   * rest pose's, so a clip that carries vertices far from it wants a mesh whose bounds hold them.
+   *
+   * **What it gives up**: under reconstruction or the temporal resolve, a crowd's own movement is not
+   * in the frame's motion — the motion pass places a batch by its matrices, not by its clip — so its
+   * moving parts are reprojected as though still, which softens a fast clip a little; and a glass
+   * batch's coloured shadow is cast from rest. What would make the first wrong is a clip fast enough
+   * at the size it is seen to smear, which is then the motion pass's to learn.
+   */
+  readonly animation?: BoneAnimationHandle;
 }

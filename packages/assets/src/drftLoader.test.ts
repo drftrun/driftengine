@@ -4,6 +4,11 @@ import { CODEC_JPEG, CODEC_PNG, CODEC_RAW, CODEC_WEBP, SDFV_WHOLE_FILE } from '@
 import { CODEC_BC, writeBcPayload } from '@driftengine/drft';
 import { decodeBc } from './bcDecode.ts';
 import { decodeBcImage } from './bcImage.ts';
+import { answerBcRequest } from './bcAnswer.ts';
+import type { BcRequest } from './bcAnswer.ts';
+import type { BcWorker } from './bcLoad.ts';
+import { answerEtc2Request } from './etc2Answer.ts';
+import type { Etc2Request } from './etc2Answer.ts';
 import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
 import type { DrftLoaderOptions } from './drftLoader.ts';
 import { writeDrft } from '@driftengine/drft';
@@ -676,6 +681,111 @@ test('A BC TEXTURE GOES UP AS ITS BLOCKS WHERE THE DEVICE TAKES THEM, AND DECODE
     );
   } finally {
     warn.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+/*
+ * **On a device that samples ETC2 and not BC, the picture first and the blocks after it.** The same
+ * 8x8 BC1 albedo through a renderer offering ETC2 and EAC and no BC, with a worker — the worker's own
+ * two functions, answering a turn later as a real one would. The texture goes up decoded, exactly
+ * as it does on a phone without this; then its ETC2 chain replaces it **behind the handle it was
+ * made as**, opaque so in `etc2-rgb8`, every level to 1x1. Through a renderer offering neither, the
+ * image is all there is.
+ */
+test('A BC TEXTURE ON AN ETC2 DEVICE GOES UP DECODED, THEN ITS ETC2 CHAIN REPLACES IT BEHIND THE SAME HANDLE', async () => {
+  vi.stubGlobal(
+    'ImageData',
+    class {
+      constructor(
+        readonly data: Uint8ClampedArray,
+        readonly width: number,
+        readonly height: number,
+      ) {}
+    },
+  );
+  try {
+    /* Four blocks red to blue in four-colour mode, so the decode is opaque. */
+    const level0 = new Uint8Array(32);
+    for (let b = 0; b < 4; b++) level0.set([0x00, 0xf8, 0x1f, 0x00, 0x1b, 0xe4, 0x1b, 0xe4], b * 8);
+    const drft = writeDrft({
+      head: { name: 'phone' },
+      meshes: [triangle()],
+      materials: [material({ name: 'painted', albedo: 0 })],
+      textures: [
+        {
+          name: 'paint.dds',
+          codec: CODEC_BC,
+          width: 8,
+          height: 8,
+          bytes: writeBcPayload({
+            format: 'bc1',
+            srgb: true,
+            width: 8,
+            height: 8,
+            levels: [level0],
+          }),
+        },
+      ],
+    });
+    const spawn = (): BcWorker => {
+      const worker: BcWorker = {
+        onmessage: null,
+        postMessage: (request) => {
+          const reply =
+            'kind' in request
+              ? answerEtc2Request(request as Etc2Request)
+              : answerBcRequest(request as BcRequest);
+          setTimeout(() => worker.onmessage?.({ data: reply }), 0);
+        },
+        terminate: () => undefined,
+      };
+      return worker;
+    };
+    const run = async (formats: string[]) => {
+      const created: unknown[] = [];
+      const updated: [unknown, { format: string; levels: Uint8Array[] }][] = [];
+      const renderer = {
+        ...fakeRenderer(),
+        compressedFormats: formats,
+        createSurfaceTexture: (source: unknown) => {
+          created.push(source);
+          return { id: created.length };
+        },
+        updateSurfaceTexture: (handle: unknown, source: { format: string; levels: Uint8Array[] }) =>
+          updated.push([handle, source]),
+      } as unknown as RendererApi;
+      const loader = new DrftLoader(renderer, { bcWorker: spawn });
+      await loader.consume(new Response(drft.slice(0)), { footprint: 1, height: 1, baseY: 0 });
+      for (let turn = 0; turn < 4; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        for (let frame = 0; frame < 4; frame++) loader.update(1 / 60);
+      }
+      return { created, updated };
+    };
+
+    const phone = await run([
+      'etc2-rgb8',
+      'etc2-rgb8-srgb',
+      'etc2-rgba8',
+      'etc2-rgba8-srgb',
+      'eac-r11',
+      'eac-rg11',
+    ]);
+    expect(phone.created).toHaveLength(1);
+    expect(Array.from((phone.created[0] as { data: Uint8ClampedArray }).data)).toEqual(
+      Array.from(decodeBc('bc1', 8, 8, level0)),
+    );
+    expect(phone.updated).toHaveLength(1);
+    const [handle, chain] = phone.updated[0] as [unknown, { format: string; levels: Uint8Array[] }];
+    expect(handle, 'the handle the image went up as').toEqual({ id: 1 });
+    expect(chain.format).toBe('etc2-rgb8');
+    expect(chain.levels.map((level) => level.length)).toEqual([32, 8, 8, 8]);
+
+    const neither = await run([]);
+    expect(neither.created).toHaveLength(1);
+    expect(neither.updated, 'nothing to swap to').toEqual([]);
+  } finally {
     vi.unstubAllGlobals();
   }
 });

@@ -4,8 +4,19 @@ import { mat4, vec4 } from 'gl-matrix';
 
 import { maskOf, resourceBit } from '../../frame/index.ts';
 import { nodeCount } from '../../frame/arena.ts';
-import { DEPTH_CUTOUT_VERT_FIELDS, DEPTH_VERT_FIELDS } from './depthPass.ts';
-import { flatFragmentBindings, flatVariant, flatVertexBindings } from './flatPass.ts';
+import {
+  DEPTH_CUTOUT_VERT_FIELDS,
+  DEPTH_INSTANCED_ANIMATED_VERT_FIELDS,
+  DEPTH_VERT_FIELDS,
+} from './depthPass.ts';
+import {
+  FLAT_ANIMATED_VERT_FIELDS,
+  FLAT_VIEW_FIELDS,
+  flatFragmentBindings,
+  flatFragmentScratch,
+  flatVariant,
+  flatVertexBindings,
+} from './flatPass.ts';
 import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
 import { BLOOM_PREFILTER_FIELDS, BLOOM_UPSAMPLE_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
@@ -24,6 +35,8 @@ import type { ParticleInstances } from '../../particlePool.ts';
 import { WebGPURenderer } from './renderer.ts';
 import type { RendererApi } from '../api.ts';
 import { WebGL2Renderer } from '../webgl2/renderer.ts';
+import type { Environment, TranslucentMeshOptions } from '../webgl2/renderer.ts';
+import type { ShadowCasters } from '../../shadowCasters.ts';
 import { recordingGl } from '../../rendererHarness.ts';
 import { createLineSegments } from '../../linePoints.ts';
 import { createWindField } from '../../windField.ts';
@@ -77,7 +90,24 @@ function stubSurface(limits: Record<string, number> = {}, features: string[] = [
     setViewport: vi.fn(),
     setScissorRect: vi.fn(),
     setBlendConstant: vi.fn(),
+    /* What a static list replays as. */
+    executeBundles: vi.fn(),
   };
+  /*
+   * Every render bundle encoder made, in order, each recording what was encoded into it, so a test
+   * reads a list's recording the way it reads a pass.
+   */
+  const bundleEncoders: {
+    descriptor: GPURenderBundleEncoderDescriptor;
+    setPipeline: ReturnType<typeof vi.fn>;
+    setBindGroup: ReturnType<typeof vi.fn>;
+    setVertexBuffer: ReturnType<typeof vi.fn>;
+    setIndexBuffer: ReturnType<typeof vi.fn>;
+    drawIndexed: ReturnType<typeof vi.fn>;
+    drawIndexedIndirect: ReturnType<typeof vi.fn>;
+    draw: ReturnType<typeof vi.fn>;
+    finish: ReturnType<typeof vi.fn>;
+  }[] = [];
   /* A compute pass records nothing but a pipeline, a bind group and a dispatch. */
   const computePass = {
     end: vi.fn(),
@@ -187,6 +217,21 @@ function stubSurface(limits: Record<string, number> = {}, features: string[] = [
       label: descriptor.label ?? 'computePipeline',
       getBindGroupLayout: vi.fn(() => ({ label: 'implicit-layout' })),
     })),
+    createRenderBundleEncoder: vi.fn((descriptor: GPURenderBundleEncoderDescriptor) => {
+      const bundle = {
+        descriptor,
+        setPipeline: vi.fn(),
+        setBindGroup: vi.fn(),
+        setVertexBuffer: vi.fn(),
+        setIndexBuffer: vi.fn(),
+        drawIndexed: vi.fn(),
+        drawIndexedIndirect: vi.fn(),
+        draw: vi.fn(),
+        finish: vi.fn(() => ({ label: descriptor.label ?? 'bundle' })),
+      };
+      bundleEncoders.push(bundle);
+      return bundle;
+    }),
     queue: {
       submit: vi.fn(),
       writeBuffer: vi.fn(),
@@ -233,6 +278,7 @@ function stubSurface(limits: Record<string, number> = {}, features: string[] = [
     encoder,
     pass,
     computePass,
+    bundleEncoders,
     canvas,
     /*
      * Put the drawing buffer and the CSS box at the same size.
@@ -360,12 +406,39 @@ function ringUpload(
 }
 
 /**
- * The material block as the device receives it, which now takes a draw to exist.
+ * The lit fragment stage's two blocks as the device received them for the draw just made, laid end
+ * to end as the renderer's scratch lays them out: the pass's block from the ring slot that draw
+ * bound, then the material's from its slot of the store. Read by `flatFragmentScratch`'s fields.
  *
- * **`bindMeshPass` no longer uploads it.** The block carries material state, a material changes
- * between draws, and one buffer rewritten mid-frame gives every draw the last write — so it is
- * a ring, filled when a draw takes a slot and uploaded once at flush. These tests assert the
- * same values they always did; the only thing that moved is where they are read from.
+ * Read at the slots the renderer holds open rather than at slot zero, because the store keeps a
+ * material where it was first placed: a draw repeating an earlier frame's material uploads nothing
+ * and binds that earlier slot.
+ */
+function litBlocks(
+  renderer: WebGPURenderer,
+  device: { queue: { writeBuffer: { mock: { calls: unknown[][] } } } },
+): ArrayBuffer {
+  const inside = renderer as unknown as {
+    variant: string;
+    materials: { slot: number };
+    passBlock: { slot: number };
+  };
+  const scratch = flatFragmentScratch(inside.variant);
+  const out = new Uint8Array(scratch.passSize + scratch.materialSize);
+  const pass = ringUpload(device, 'flat.passRing');
+  const material = ringUpload(device, 'flat.materials');
+  out.set(new Uint8Array(pass, inside.passBlock.slot, scratch.passSize), 0);
+  out.set(new Uint8Array(material, inside.materials.slot, scratch.materialSize), scratch.passSize);
+  return out.buffer;
+}
+
+/**
+ * Both blocks as the device receives them, which takes a draw to exist.
+ *
+ * **`bindMeshPass` does not upload them.** The pass's block reaches its ring when the first draw
+ * after the pass takes a slot, and a material's reaches the store when a draw places it; both are
+ * uploaded at flush. These tests assert the same values they always did; the only thing that moved
+ * is where they are read from.
  */
 function materialBlock(
   renderer: WebGPURenderer,
@@ -375,7 +448,48 @@ function materialBlock(
   renderer.beginFrame([0, 0, 0]);
   renderer.drawMesh(mesh, mat4.create());
   renderer.endFrame();
-  return ringUpload(device, 'flat.fragRing');
+  return litBlocks(renderer, device);
+}
+
+/**
+ * One material field as each lit draw read it, in the order the pass received the draws.
+ *
+ * Read at the material offset each draw bound — the third of its three — rather than at "the next
+ * slot", because the store keeps one slot per distinct block: two draws with the same numbers share
+ * one, and a draw whose material an earlier one already placed uploads nothing.
+ */
+function drawnMaterial(
+  stub: ReturnType<typeof stubSurface>,
+  variant: string,
+  name: string,
+  read: 'float' | 'int' = 'float',
+  component = 0,
+  binds: readonly unknown[][] = stub.pass.setBindGroup.mock.calls,
+): number[] {
+  const field = flatFragmentBindings(variant).materialFields?.[name];
+  if (field === undefined) throw new Error(`${name} is not in the material block`);
+  const upload = ringUpload(stub.device, 'flat.materials');
+  const words = read === 'int' ? new Int32Array(upload) : new Float32Array(upload);
+  return binds
+    .map((call) => call[2] as number[] | undefined)
+    .filter((offsets): offsets is number[] => offsets?.length === 4)
+    .map((offsets) => words[((offsets[2] as number) + field.offset) / 4 + component] as number);
+}
+
+/**
+ * `count` draws that are each a material of their own: unlit, and each at its own opacity, which
+ * is what makes their blocks differ. Identical draws would share one block of the store and never
+ * reach a ceiling, which is the point of the store and no use to a test of what happens past one.
+ */
+function drawDistinct(
+  renderer: WebGPURenderer,
+  mesh: ReturnType<typeof stubMesh>,
+  count: number,
+  options: TranslucentMeshOptions = { lit: false },
+): void {
+  for (let i = 0; i < count; i++) {
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1 - (i + 1) / 65536, options);
+  }
 }
 
 /**
@@ -1780,6 +1894,8 @@ describe('the webgpu renderer', () => {
     const bindings = flatFragmentBindings(variant);
     const at = bindings.fields['uEnvironmentEnabled']?.offset;
     /*
+     * A pass's term, so out of the pass ring, whose slot is the pass's block alone.
+     *
      * Read out of *every* slot rather than the first. The ring is not reset between bakes, so
      * the second one's draws take slots after the first one's and slot 0 still holds the first
      * bake's answer — which is a reading that agrees with the fix whether or not it is there.
@@ -1809,7 +1925,7 @@ describe('the webgpu renderer', () => {
           renderer.drawMesh(mesh, mat4.create());
         }),
       );
-      seen.push(...everySlot(ringUpload(stub.device, 'flat.fragRing')));
+      seen.push(...everySlot(ringUpload(stub.device, 'flat.passRing')));
     }
 
     /* The control: a bake that declined would leave the term at whatever the slot held, and
@@ -1827,7 +1943,7 @@ describe('the webgpu renderer', () => {
     renderer.endFrame();
     /* And on afterwards in at least one slot, or the guard would have turned the feature off
        rather than fenced it to the bake. */
-    expect(everySlot(ringUpload(stub.device, 'flat.fragRing'))).toContain(1);
+    expect(everySlot(ringUpload(stub.device, 'flat.passRing'))).toContain(1);
   });
 
   /**
@@ -2520,7 +2636,7 @@ describe('the webgpu renderer', () => {
 
     renderer.bindMeshPass(camera, { ...(env as object), nightEmissive: 0.63 } as never);
 
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const term = fields['uNightEmissive'];
     if (term === undefined) throw new Error('this variant does not declare the term');
     const floats = new Float32Array(materialBlock(renderer, device));
@@ -2613,7 +2729,7 @@ describe('the webgpu renderer', () => {
     renderer.bindMeshPass(camera, env);
 
     const staging = materialBlock(renderer, stub.device);
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const enabled = fields['uPeeledShadowEnabled'];
     if (enabled === undefined) throw new Error('the peel flag is not in this variant');
     expect(new Int32Array(staging)[enabled.offset / 4]).toBe(1);
@@ -2646,7 +2762,7 @@ describe('the webgpu renderer', () => {
 
     const staging = materialBlock(renderer, device);
     const floats = new Float32Array(staging);
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const read = (name: string): number => floats[(fields[name]?.offset ?? -4) / 4] as number;
 
     expect(read('uShadowMaxSlope')).toBe(9);
@@ -2775,7 +2891,7 @@ describe('the webgpu renderer', () => {
     const staging = materialBlock(renderer, device);
     const floats = new Float32Array(staging);
     const ints = new Int32Array(staging);
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const off = (name: string): number => (fields[name]?.offset ?? -4) / 4;
 
     /* From the environment, not from a constant. */
@@ -2838,7 +2954,7 @@ describe('the webgpu renderer', () => {
     const staging = materialBlock(renderer, device);
     const floats = new Float32Array(staging);
     const ints = new Int32Array(staging);
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const pos = fields['uLightPos']!;
     const radius = fields['uLightRadius']!;
     if (pos.stride === undefined || radius.stride === undefined) throw new Error('no stride');
@@ -3125,7 +3241,7 @@ describe('the webgpu renderer', () => {
     renderer.bindMeshPass(camera, env);
 
     const staging = materialBlock(renderer, device);
-    const fields = flatFragmentBindings(variantFor(quality)).fields;
+    const fields = flatFragmentScratch(variantFor(quality)).fields;
     const layers = fields['uPointShadowLayer'];
     const weights = fields['uPointShadowWeight'];
     if (layers?.stride === undefined || weights?.stride === undefined) {
@@ -3197,8 +3313,8 @@ describe('the webgpu renderer', () => {
    * So the block is a ring and a draw binds its own slot. Two draws, two grains, two values.
    */
   it('gives two draws their own material, not the last one set', () => {
-    const { surface, device } = stubSurface();
-    const renderer = new WebGPURenderer(surface, resolveRenderQuality({}));
+    const stub = stubSurface();
+    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({}));
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
 
@@ -3210,17 +3326,45 @@ describe('the webgpu renderer', () => {
     renderer.drawMesh(mesh, mat4.create());
     renderer.endFrame();
 
-    const upload = device.queue.writeBuffer.mock.calls
-      .filter((call: unknown[]) => (call[0] as { label?: string }).label === 'flat.fragRing')
-      .at(-1);
-    const floats = new Float32Array(upload?.[2] as ArrayBuffer);
-    const bindings = flatFragmentBindings(variantFor(resolveRenderQuality({})));
-    const grain = (bindings.fields['uGrain']?.offset ?? 0) / 4;
-    /* Slots are 256-byte aligned, so the second draw's block starts a whole slot along. */
-    const slotFloats = (Math.ceil(bindings.uniformSize / 256) * 256) / 4;
+    const grain = drawnMaterial(stub, variantFor(resolveRenderQuality({})), 'uGrain');
+    expect(grain[0]).toBeCloseTo(0.25);
+    expect(grain[1]).toBeCloseTo(0.75);
+  });
 
-    expect(floats[grain]).toBeCloseTo(0.25);
-    expect(floats[slotFloats + grain]).toBeCloseTo(0.75);
+  /*
+   * **A material may state its own reflectivity and environment gain**, and its draws wear them
+   * whatever `setSurfaceReflectivity` and `setEnvironmentGain` say; a material stating neither
+   * leaves its draws to those, as every material did before. Each is the material's own: one
+   * stated and one not takes the setter's for the other.
+   */
+  it("A MATERIAL STATING ITS REFLECTIVITY AND ENVIRONMENT GAIN WEARS THEM, AND ONE STATING NEITHER WEARS THE PASS'S", () => {
+    const stub = stubSurface();
+    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({}));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setSurfaceReflectivity(0.25);
+    renderer.setEnvironmentGain(2);
+    renderer.setMaterial({ reflectivity: 0.75, environmentGain: 4 });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ roughnessScale: 0.5 });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ reflectivity: 0.5 });
+    renderer.drawMesh(mesh, mat4.create());
+    /* The material's own is kept against a setter called after it, and the setter's taken back at null. */
+    renderer.setSurfaceReflectivity(0.125);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial(null);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+
+    const variant = variantFor(resolveRenderQuality({}));
+    expect(drawnMaterial(stub, variant, 'uEnvironmentDials', 'float', 1)).toEqual([
+      0.75, 0.25, 0.5, 0.5, 0.125,
+    ]);
+    expect(drawnMaterial(stub, variant, 'uEnvironmentDials', 'float', 2)).toEqual([4, 2, 2, 2, 2]);
   });
 
   /**
@@ -3231,9 +3375,9 @@ describe('the webgpu renderer', () => {
    * back for the draw after.
    */
   it('ADDS LIGHT THAT FADES IN THE MEDIUM, single and instanced, and puts the surface rule back', () => {
-    const { surface, device } = stubSurface();
+    const stub = stubSurface();
     const quality = resolveRenderQuality({});
-    const renderer = new WebGPURenderer(surface, quality);
+    const renderer = new WebGPURenderer(stub.surface, quality);
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
     const batch = renderer.createInstanced(mesh, 2);
@@ -3249,16 +3393,9 @@ describe('the webgpu renderer', () => {
     renderer.drawTranslucentMesh(mesh, mat4.create(), 1);
     renderer.endFrame();
 
-    const upload = device.queue.writeBuffer.mock.calls
-      .filter((call: unknown[]) => (call[0] as { label?: string }).label === 'flat.fragRing')
-      .at(-1);
-    const ints = new Int32Array(upload?.[2] as ArrayBuffer);
-    const bindings = flatFragmentBindings(variantFor(quality));
-    const fog = (bindings.fields['uFogEnabled']?.offset ?? 0) / 4;
-    const slotInts = (Math.ceil(bindings.uniformSize / 256) * 256) / 4;
-    /* Each draw with options of its own takes a slot, and so does the plain draw after it. */
+    /* Each draw with options of its own takes a material, and so does the plain draw after it. */
     expect(
-      [0, 1, 2, 3, 4].map((slot) => ints[slot * slotInts + fog]),
+      drawnMaterial(stub, variantFor(quality), 'uFogEnabled', 'int'),
       'faded, out of the medium, a surface, faded, a surface',
     ).toEqual([2, 0, 1, 2, 1]);
   });
@@ -3288,25 +3425,21 @@ describe('the webgpu renderer', () => {
     const renderer = new WebGPURenderer(surface, quality);
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
-    const bindings = flatFragmentBindings(variantFor(quality));
-    const uLightingEnabled = (bindings.fields['uLightingEnabled']?.offset ?? 0) / 4;
+    const uLightingEnabled =
+      (flatFragmentScratch(variantFor(quality)).fields['uLightingEnabled']?.offset ?? -4) / 4;
 
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
     /*
-     * 256 distinct unlit draws, one slot each: the dirty-then-restore pair invalidates the
-     * cached slot both before and after every call, so each takes a fresh one rather than
-     * reusing the last — exactly the shape 39 cover quads at four frame boxes each, the glow
-     * shells and the backdrop planes take, per the reviewer's count.
+     * As many distinct unlit draws as the store holds, one slot each — exactly the shape 39 cover
+     * quads at four frame boxes each, the glow shells and the backdrop planes take, per the
+     * reviewer's count.
      */
-    const materialRingCapacity = materialCeiling(renderer);
-    for (let i = 0; i < materialRingCapacity; i++) {
-      renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
-    }
-    /* The 257th: the ring has nothing left, `materialSlotForDraw` returns null, and this draw's
+    drawDistinct(renderer, mesh, materialCeiling(renderer));
+    /* One more: the store has nothing left, `materialSlotForDraw` returns null, and this draw's
        own dirtying (`uLightingEnabled` set to 0) is the one that has to be put back regardless
        of whether a slot existed to draw it with. */
-    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { lit: false });
 
     const scratch = (renderer as unknown as { perFrameInts: Int32Array }).perFrameInts;
     expect(
@@ -3337,15 +3470,13 @@ describe('the webgpu renderer', () => {
     const renderer = new WebGPURenderer(surface, quality);
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
-    const bindings = flatFragmentBindings(variantFor(quality));
-    const uOutputTransform = (bindings.fields['uOutputTransform']?.offset ?? 0) / 4;
+    const uOutputTransform =
+      (flatFragmentScratch(variantFor(quality)).fields['uOutputTransform']?.offset ?? -4) / 4;
 
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
-    for (let i = 0; i < materialCeiling(renderer); i++) {
-      renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { toneMapped: false });
-    }
-    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { toneMapped: false });
+    drawDistinct(renderer, mesh, materialCeiling(renderer), { toneMapped: false });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { toneMapped: false });
 
     const scratch = (renderer as unknown as { perFrameInts: Int32Array }).perFrameInts;
     expect(
@@ -3427,6 +3558,56 @@ describe('the webgpu renderer', () => {
  * device would refuse every draw of one of them.
  */
 describe('a dynamic mesh', () => {
+  /*
+   * **A rewrite under reconstruction submits nothing of its own.** Last frame's positions are
+   * copied aside on the device before the new ones land, and a `writeBuffer` runs ahead of anything
+   * not yet submitted, so the copy was submitted there and then, one command buffer a call: a
+   * consumer's crowd rewriting a quarter of its moving sections a frame paid about eight
+   * milliseconds a frame with reconstruction against under three without. The new positions now land
+   * in a staging buffer of the mesh's own, and both copies — the live positions aside, the staged
+   * ones in — are recorded into one encoder that goes out at the head of the frame's next submit.
+   */
+  it('REWRITES MESHES UNDER RECONSTRUCTION WITH NO SUBMIT OF THEIR OWN, THE COPIES GOING OUT WITH THE FRAME', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const data = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const meshes = Array.from({ length: 8 }, () =>
+      renderer.createMesh(data as never, { dynamic: true }),
+    );
+    const positions = new Float32Array(9);
+    const label = (buffer: unknown): string => String((buffer as { label?: string }).label ?? '');
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      stub.device.queue.submit.mockClear();
+      stub.encoder.copyBufferToBuffer.mockClear();
+      for (const mesh of meshes) renderer.updateMesh(mesh, positions);
+      expect(
+        stub.device.queue.submit,
+        'nothing is submitted while meshes are rewritten',
+      ).not.toHaveBeenCalled();
+      for (const mesh of meshes) renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+      const copies = stub.encoder.copyBufferToBuffer.mock.calls.map(
+        ([from, , to]) => `${label(from)}>${label(to)}`,
+      );
+      const aside = copies.filter((copy) => copy.endsWith('>recon.dynamicPrevious')).length;
+      const staged = copies.filter((copy) => copy.startsWith('mesh.stagedPositions>')).length;
+      expect(aside, 'every mesh’s positions copied aside before the rewrite').toBe(8);
+      expect(staged, 'and its new ones copied in').toBe(8);
+    }
+  });
+
   it('IS KEYED APART FROM ITS STATIC TWIN, AND ITS PIPELINES READ FOUR BUFFERS', () => {
     const stub = stubSurface();
     const renderer = freshRenderer(stub);
@@ -6048,6 +6229,38 @@ function paletteTextures(device: StubDevice): string[] {
  * `demo/dev/skinning.ts` had a single character until `?pair=1` was added beside this.
  */
 describe('the skin palette', () => {
+  /*
+   * **A character in several materials builds no bind group on a frame like the last.** The skinned
+   * group was cached one a palette slot and rebuilt whenever the material beside it changed, so a
+   * character drawn in thirty-odd sections, each its own material, built one a section a frame —
+   * about ninety `createBindGroup` a frame for two characters, reported by a consumer, with the
+   * garbage they leave. Kept by slot and material, the second frame builds none.
+   */
+  it('KEEPS A SKINNED DRAW’S GROUP BY MATERIAL AS WELL AS BY PALETTE SLOT', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const { camera, env } = stubScene();
+    const mesh = skinnedStubMesh(renderer);
+    const make = () =>
+      renderer.createSurfaceTexture({ width: 4, height: 4 } as unknown as TexImageSource, {});
+    const materials = [{ albedo: make() }, { albedo: make() }, { albedo: make() }];
+    const rig = onePalette(1);
+    let built = 0;
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setSkinPalette(rig);
+      stub.device.createBindGroup.mockClear();
+      for (const material of materials) {
+        renderer.setMaterial(material);
+        renderer.drawMesh(mesh, mat4.create());
+      }
+      built = stub.device.createBindGroup.mock.calls.length;
+      renderer.endFrame();
+    }
+    expect(built, 'the second frame’s three sections build nothing').toBe(0);
+  });
+
   it('gives two skinned draws in one frame their own palette', () => {
     const stub = stubSurface();
     const { device } = stub;
@@ -6336,8 +6549,9 @@ describe('a shading model', () => {
       .filter((c) => c !== undefined);
     expect(lit).toEqual([1, 0]);
     const field =
-      (flatFragmentBindings(variantFor(quality)).fields['uModelParams']?.offset ?? -4) / 4;
-    const floats = new Float32Array(ringUpload(stub.device, 'flat.fragRing'));
+      (flatFragmentBindings(variantFor(quality)).materialFields?.['uModelParams']?.offset ?? -4) /
+      4;
+    const floats = new Float32Array(ringUpload(stub.device, 'flat.materials'));
     expect(holdsAt(floats, field, [-0.125, 0.25, 2])).toBe(true);
   });
 
@@ -6359,8 +6573,9 @@ describe('a shading model', () => {
     renderer.drawMesh(mesh, mat4.create());
     renderer.endFrame();
     const field =
-      (flatFragmentBindings(variantFor(quality)).fields['uModelParams']?.offset ?? -4) / 4;
-    const floats = new Float32Array(ringUpload(stub.device, 'flat.fragRing'));
+      (flatFragmentBindings(variantFor(quality)).materialFields?.['uModelParams']?.offset ?? -4) /
+      4;
+    const floats = new Float32Array(ringUpload(stub.device, 'flat.materials'));
     expect(holdsAt(floats, field + 4, [1, 0, 0]), 'the turned draw').toBe(true);
     expect(holdsAt(floats, field + 4, [0, 0, 1]), 'the unturned draw').toBe(true);
   });
@@ -6482,9 +6697,7 @@ describe('the frame budget', () => {
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
     const ceiling = materialCeiling(renderer);
-    for (let i = 0; i < ceiling + 40; i++) {
-      renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
-    }
+    drawDistinct(renderer, mesh, ceiling + 40);
 
     const materials = renderer.frameBudget.lines.find((line) => line.name === 'materials');
     expect(materials?.used, 'asked for, not fitted').toBe(ceiling + 40);
@@ -6509,13 +6722,10 @@ describe('the frame budget', () => {
 
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
-    const ceiling = materialCeiling(renderer);
-    for (let i = 0; i < ceiling; i++) {
-      renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
-    }
+    drawDistinct(renderer, mesh, materialCeiling(renderer));
     const drawnWhenFull = pass.drawIndexed.mock.calls.length;
 
-    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5, { lit: false });
     expect(
       pass.drawIndexed.mock.calls.length,
       'the draw past the ceiling is skipped, not drawn with another material',
@@ -6544,8 +6754,7 @@ describe('the frame budget', () => {
       const mesh = stubMesh(renderer);
       renderer.beginFrame([0, 0, 0]);
       renderer.bindMeshPass(camera, env);
-      for (let i = 0; i < 1100; i++)
-        renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
+      drawDistinct(renderer, mesh, 1100);
       const materials = renderer.frameBudget.lines.find((line) => line.name === 'materials');
       expect(materials?.ceiling).toBe(ceiling);
       expect(materials?.dropped, `dropped on a ring of ${ceiling}`).toBe(dropped);
@@ -6669,9 +6878,7 @@ describe('rings that grow', () => {
     const { camera, env } = stubScene();
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
-    for (let i = 0; i < count; i++) {
-      renderer.drawTranslucentMesh(mesh, mat4.create(), 1, { lit: false });
-    }
+    drawDistinct(renderer, mesh, count);
   }
 
   it('draws whole the frame after one that ran out of material slots', () => {
@@ -6700,8 +6907,8 @@ describe('rings that grow', () => {
     drawMaterials(renderer, mesh, ceiling + 1);
     /* Growth is the next frame's first act, not this one's last: see `growRings`. */
     renderer.beginFrame([0, 0, 0]);
-    const ring = (renderer as unknown as { perFrame: { slots: number } }).perFrame;
-    expect(ring.slots, 'one past 1024 takes 2048, not 1025').toBe(ceiling * 2);
+    const store = (renderer as unknown as { materialStore: { slots: number } }).materialStore;
+    expect(store.slots, 'one past 1024 takes 2048, not 1025').toBe(ceiling * 2);
 
     /* And the frames after it, up to the new size, do not grow again. */
     const created = (surface.device.createBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -6725,16 +6932,16 @@ describe('rings that grow', () => {
       blankAlbedoBindGroup: GPUBindGroup;
       flatBindGroups: Map<unknown, unknown>;
       skinnedGroups: unknown[];
-      perFrame: { buffer: GPUBuffer };
+      materialStore: { buffer: GPUBuffer };
     };
 
-    const beforeBuffer = inner.perFrame.buffer;
+    const beforeBuffer = inner.materialStore.buffer;
     const beforeBlank = inner.blankAlbedoBindGroup;
 
     drawMaterials(renderer, mesh, materialCeiling(renderer) + 1);
     renderer.beginFrame([0, 0, 0]);
 
-    expect(inner.perFrame.buffer, 'the ring took a new buffer').not.toBe(beforeBuffer);
+    expect(inner.materialStore.buffer, 'the store took a new buffer').not.toBe(beforeBuffer);
     expect(inner.blankAlbedoBindGroup, 'and the blank group was rebuilt over it').not.toBe(
       beforeBlank,
     );
@@ -6745,9 +6952,653 @@ describe('rings that grow', () => {
   it('stops growing at its memory ceiling and goes back to reporting what it drops', () => {
     const { surface } = stubSurface();
     const renderer = new WebGPURenderer(surface, resolveRenderQuality({}));
-    const ring = (renderer as unknown as { perFrame: { growTo: (n: number) => boolean } }).perFrame;
-    expect(ring.growTo(1_000_000_000), 'refused, rather than allocating a gigabyte').toBe(false);
+    const inner = renderer as unknown as {
+      materialStore: { growTo: (n: number) => boolean };
+      passRing: { growTo: (n: number) => boolean };
+    };
+    expect(inner.materialStore.growTo(1_000_000_000), 'refused, not a gigabyte').toBe(false);
+    expect(inner.passRing.growTo(1_000_000_000), 'and the pass ring too').toBe(false);
   });
+});
+
+/**
+ * **A material is kept across frames.** The lit fragment block was one block of lights, fog, camera
+ * and material, copied whole into a ring slot per material change and uploaded every frame: a stage
+ * of four hundred materials sent 4.8 MB a frame, reported from a consumer as the largest single cost
+ * of its frame. Split, the pass's block is uploaded once a pass, and a material's only when its
+ * numbers are new to the store.
+ */
+describe('materials kept across frames', () => {
+  /** Bytes sent to one labelled buffer, from the `from`th write on. */
+  const sent = (stub: ReturnType<typeof stubSurface>, label: string, from = 0): number =>
+    stub.device.queue.writeBuffer.mock.calls
+      .slice(from)
+      .filter((call) => (call[0] as { label?: string }).label === label)
+      .reduce((sum, call) => sum + ((call[4] as number | undefined) ?? 0), 0);
+
+  function frame(renderer: WebGPURenderer, mesh: ReturnType<typeof stubMesh>, grains: number[]) {
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    for (const grain of grains) {
+      renderer.setSurfaceGrain(grain);
+      renderer.drawMesh(mesh, mat4.create());
+    }
+    renderer.endFrame();
+  }
+
+  it('A FRAME DRAWING THE LAST FRAME\u2019S MATERIALS AGAIN UPLOADS NONE OF THEM', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const grains = Array.from({ length: 40 }, (_, i) => (i + 1) / 64);
+    const slot = (bytes: number) => Math.ceil(bytes / 256) * 256;
+    const scratch = flatFragmentScratch(variantFor(resolveRenderQuality({})));
+
+    frame(renderer, mesh, grains);
+    expect(sent(stub, 'flat.materials'), 'forty materials, placed once each').toBe(
+      40 * slot(scratch.materialSize),
+    );
+    expect(sent(stub, 'flat.passRing'), 'and the pass once').toBe(slot(scratch.passSize));
+
+    const second = stub.device.queue.writeBuffer.mock.calls.length;
+    stub.pass.setBindGroup.mockClear();
+    frame(renderer, mesh, grains);
+    expect(sent(stub, 'flat.materials', second), 'the same forty, held where they were').toBe(0);
+    expect(sent(stub, 'flat.passRing', second), 'the pass, once').toBe(slot(scratch.passSize));
+    /* And each draw still reads its own grain, from where the first frame put it. */
+    expect(drawnMaterial(stub, variantFor(resolveRenderQuality({})), 'uGrain')).toEqual(grains);
+  });
+
+  /*
+   * **Set again every frame, as a frame sets them.** The cutout dither's frame lived in the material
+   * block, so every `setMaterial` wrote a number that changed every frame and every material was new
+   * to the store every frame. It is the pass's now.
+   */
+  it('A MATERIAL SET AGAIN EVERY FRAME UPLOADS NOTHING AFTER THE FIRST', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const { camera, env } = stubScene();
+    const draw = () => {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      for (const strength of [0.25, 0.5, 0.75]) {
+        renderer.setMaterial({ normalStrength: strength });
+        renderer.drawMesh(mesh, mat4.create());
+      }
+      renderer.endFrame();
+    };
+    draw();
+    const second = stub.device.queue.writeBuffer.mock.calls.length;
+    draw();
+    expect(sent(stub, 'flat.materials', second)).toBe(0);
+  });
+
+  it('uploads a material whose numbers changed, and only that one', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const scratch = flatFragmentScratch(variantFor(resolveRenderQuality({})));
+    frame(renderer, mesh, [0.25, 0.5, 0.75]);
+    const second = stub.device.queue.writeBuffer.mock.calls.length;
+    frame(renderer, mesh, [0.25, 0.625, 0.75]);
+    expect(sent(stub, 'flat.materials', second)).toBe(Math.ceil(scratch.materialSize / 256) * 256);
+  });
+
+  /*
+   * A pass is reopened by `bindMeshPass` and by nothing a material sets: the lights a frame binds
+   * reach every draw after them, and a material set between two draws of one pass takes no pass
+   * slot of its own.
+   */
+  it('TAKES A PASS SLOT PER PASS, NOT PER MATERIAL', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const { camera, env } = stubScene();
+    renderer.beginFrame([0, 0, 0]);
+    for (let pass = 0; pass < 3; pass++) {
+      renderer.bindMeshPass(camera, env);
+      for (let draw = 0; draw < 4; draw++) {
+        renderer.setSurfaceGrain(draw / 8);
+        renderer.drawMesh(mesh, mat4.create());
+      }
+    }
+    renderer.endFrame();
+    const passes = stub.pass.setBindGroup.mock.calls
+      .map((call) => call[2] as number[] | undefined)
+      .filter((offsets): offsets is number[] => offsets?.length === 4)
+      .map((offsets) => offsets[1]);
+    expect(passes).toHaveLength(12);
+    expect(new Set(passes).size, 'three passes, three slots').toBe(3);
+  });
+
+  it('draws whole the frame after one that opened more passes than its ring holds', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const { camera, env } = stubScene();
+    const ring = (renderer as unknown as { passRing: { slots: number } }).passRing;
+    const passes = ring.slots + 1;
+    const open = () => {
+      renderer.beginFrame([0, 0, 0]);
+      for (let pass = 0; pass < passes; pass++) {
+        renderer.bindMeshPass(camera, env);
+        renderer.drawMesh(mesh, mat4.create());
+      }
+      return renderer.frameBudget.lines.find((line) => line.name === 'materials');
+    };
+    expect(open()?.dropped, 'the pass past the ring loses its draw').toBe(1);
+    renderer.endFrame();
+    expect(open()?.dropped, 'and the next frame has the room').toBe(0);
+    renderer.endFrame();
+    expect(ring.slots).toBe(2 * (passes - 1));
+  });
+});
+
+/**
+ * **The camera is the pass's.** The lit vertex block carried the view, the light's matrix and the
+ * wind in every draw's slot, so a draw's slot changed whenever the camera moved and nothing drawn
+ * could be kept from one frame to the next. They live in a view block now, a slot a pass, and a
+ * draw's own slot holds only what is the draw's.
+ */
+describe("a pass's view block", () => {
+  const views = (stub: ReturnType<typeof stubSurface>): number[] =>
+    stub.pass.setBindGroup.mock.calls
+      .map((call) => call[2] as number[] | undefined)
+      .filter((offsets): offsets is number[] => offsets?.length === 4)
+      .map((offsets) => offsets[3] as number);
+  const viewProjAt = (stub: ReturnType<typeof stubSurface>, offset: number): number[] =>
+    Array.from(
+      new Float32Array(
+        ringUpload(stub.device, 'flat.viewRing'),
+        offset + FLAT_VIEW_FIELDS.uViewProj.offset,
+        16,
+      ),
+    );
+  const inside = (renderer: WebGPURenderer) =>
+    renderer as unknown as { viewProj: Float32Array; correctedViewProj: Float32Array };
+
+  it('EVERY DRAW OF A PASS READS ONE VIEW, WRITTEN ONCE, HOLDING THE PASS\u2019S CAMERA', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setSurfaceGrain(0.5);
+    renderer.drawMesh(mesh, mat4.fromTranslation(mat4.create(), [2, 0, 0]));
+    renderer.endFrame();
+    const bound = views(stub);
+    expect(bound).toHaveLength(2);
+    expect(new Set(bound).size, 'a material change takes no view of its own').toBe(1);
+    expect(viewProjAt(stub, bound[0] as number)).toEqual(Array.from(inside(renderer).viewProj));
+  });
+
+  it('THE WIND REOPENS THE VIEW, AND THE NEXT DRAW READS THE NEW ONE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setWind(1, 0, 0, 2);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setWind(1, 0, 0, 3);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const bound = views(stub);
+    expect(new Set(bound).size).toBe(2);
+    const time = (offset: number) =>
+      new Float32Array(ringUpload(stub.device, 'flat.viewRing'))[
+        (offset + FLAT_VIEW_FIELDS.uWindTime.offset) / 4
+      ];
+    expect(time(bound[1] as number)).not.toBe(time(bound[0] as number));
+  });
+
+  /*
+   * A blended draw of a reconstructing frame lands after the upscale, on a picture with no jitter in
+   * it, so it reads the unjittered twin of the pass's view while the world beside it reads the
+   * jittered one.
+   */
+  it('A BLENDED DRAW LANDING AFTER THE UPSCALE READS THE UNJITTERED VIEW', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    const { viewProj, correctedViewProj } = inside(renderer);
+    expect(Array.from(viewProj), 'the frame is jittered, or this asserts nothing').not.toEqual(
+      Array.from(correctedViewProj),
+    );
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+    renderer.endFrame();
+    const bound = views(stub);
+    expect(bound).toHaveLength(2);
+    expect(viewProjAt(stub, bound[0] as number), 'the world, jittered').toEqual(
+      Array.from(viewProj),
+    );
+    expect(viewProjAt(stub, bound[1] as number), 'the pane, unjittered').toEqual(
+      Array.from(correctedViewProj),
+    );
+  });
+});
+
+/**
+ * **Static draws, recorded once.** A stage drawn the same every frame was encoded again every frame,
+ * and again for every view of it a frame took — a consumer's stage of about four hundred instanced
+ * draws, each its own material, was the largest processor cost of its frame. A list records its
+ * draws once, through the renderer's own path, and replays them as one render bundle per view.
+ */
+describe('static draws', () => {
+  const counted = (renderer: RendererApi, names: readonly string[]): [string, number][] =>
+    names.map((name) => [
+      name,
+      renderer.frameBudget.lines.find((line) => line.name === name)?.used ?? -1,
+    ]);
+  const TRIANGLE = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+    colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+    emissive: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+  } as never;
+
+  function stage(renderer: WebGPURenderer, mesh: ReturnType<typeof stubMesh>) {
+    return renderer.createStaticDraws((sink) => {
+      sink.mesh(mesh, mat4.create(), { lightChannels: 2 });
+      sink.mesh(mesh, mat4.fromTranslation(mat4.create(), [3, 0, 0]), { lightChannels: 4 });
+      sink.mesh(mesh, mat4.fromTranslation(mat4.create(), [6, 0, 0]), null);
+    });
+  }
+
+  function frames(
+    renderer: WebGPURenderer,
+    count: number,
+    draw: (camera: Camera, env: Environment) => void,
+  ): void {
+    const { camera, env } = stubScene();
+    for (let frame = 0; frame < count; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      draw(camera, env);
+      renderer.endFrame();
+    }
+  }
+
+  it('RECORDS A LIST ONCE, AND EVERY FRAME AFTER EXECUTES ONE BUNDLE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const list = stage(renderer, mesh);
+    expect(list.draws).toBe(3);
+    stub.pass.drawIndexed.mockClear();
+    frames(renderer, 3, () => renderer.drawStaticDraws(list));
+    expect(stub.bundleEncoders, 'recorded once, for the one view').toHaveLength(1);
+    expect(stub.bundleEncoders[0]?.drawIndexed).toHaveBeenCalledTimes(3);
+    expect(stub.pass.executeBundles, 'replayed once a frame').toHaveBeenCalledTimes(3);
+    expect(stub.pass.drawIndexed, 'and drawn one by one never').not.toHaveBeenCalled();
+  });
+
+  /*
+   * **A list keeps each entry's reflectivity and environment gain**, because they ride the entry's
+   * material: a stage whose batches each mirror their own share of the environment, at their own
+   * brightness, records them once and replays them as recorded, whatever the setters say by then.
+   */
+  it("KEEPS THE REFLECTIVITY AND ENVIRONMENT GAIN EACH ENTRY'S MATERIAL STATES", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const list = renderer.createStaticDraws((sink) => {
+      sink.mesh(mesh, mat4.create(), { reflectivity: 0.75, environmentGain: 4 });
+      sink.mesh(mesh, mat4.create(), { environmentGain: 0.5 });
+      sink.mesh(mesh, mat4.create(), null);
+    });
+    frames(renderer, 1, () => {
+      renderer.setSurfaceReflectivity(0.25);
+      renderer.setEnvironmentGain(2);
+      renderer.drawStaticDraws(list);
+    });
+    const variant = variantFor(resolveRenderQuality({}));
+    const binds = (stub.bundleEncoders[0]?.setBindGroup.mock.calls ?? []) as unknown[][];
+    expect(drawnMaterial(stub, variant, 'uEnvironmentDials', 'float', 1, binds)).toEqual([
+      0.75, 0.25, 0.25,
+    ]);
+    expect(drawnMaterial(stub, variant, 'uEnvironmentDials', 'float', 2, binds)).toEqual([
+      4, 0.5, 2,
+    ]);
+  });
+
+  /* The bundle holds what the same draws issued one at a time would have issued. */
+  it('ENCODES THE PIPELINES AND DRAWS THE SAME ENTRIES DRAWN ONE BY ONE ISSUE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const casters: ShadowCasters = (sink) => {
+      sink.mesh(mesh, mat4.create(), { lightChannels: 2, doubleSided: true });
+      sink.mesh(mesh, mat4.create(), null);
+    };
+    stub.pass.setPipeline.mockClear();
+    stub.pass.drawIndexed.mockClear();
+    frames(renderer, 1, () => renderer.drawSceneCasters(casters));
+    const lit = (pipeline: unknown) =>
+      String((pipeline as { label?: string }).label).includes('|flat');
+    const issued = stub.pass.setPipeline.mock.calls.map(([p]) => p).filter(lit);
+    const drawn = stub.pass.drawIndexed.mock.calls.slice(0, issued.length);
+    const list = renderer.createStaticDraws(casters);
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    const bundle = stub.bundleEncoders[0];
+    expect(bundle?.setPipeline.mock.calls.map(([p]) => p)).toEqual(issued);
+    expect(bundle?.drawIndexed.mock.calls).toEqual(drawn);
+    expect(bundle?.descriptor.colorFormats).toHaveLength(1);
+  });
+
+  /*
+   * A capture of the frame, or a mirror, draws the same list from another camera in the same frame,
+   * and a queue write does not interleave with recorded draws: each view writes a block of its own.
+   */
+  it('A SECOND VIEW IN ONE FRAME TAKES A COPY OF ITS OWN, AND THE NEXT FRAME RECORDS NOTHING', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const list = stage(renderer, mesh);
+    frames(renderer, 2, (camera, env) => {
+      renderer.drawStaticDraws(list);
+      renderer.bindMeshPass(camera, env);
+      renderer.drawStaticDraws(list);
+    });
+    expect(stub.bundleEncoders, 'a bundle a view, recorded in the first frame').toHaveLength(2);
+    const offsets = stub.bundleEncoders.map(
+      (bundle) => bundle.setBindGroup.mock.calls[0]?.[2] as number[],
+    );
+    expect(offsets[0]?.[0], 'the draw’s own slot is shared').toBe(offsets[1]?.[0]);
+    expect(offsets[0]?.[2], 'and its material’s').toBe(offsets[1]?.[2]);
+    expect(offsets[0]?.[1], 'the pass block is the view’s').not.toBe(offsets[1]?.[1]);
+    expect(offsets[0]?.[3], 'and the view block').not.toBe(offsets[1]?.[3]);
+    expect(stub.pass.executeBundles).toHaveBeenCalledTimes(4);
+  });
+
+  /*
+   * A material's block starts from the pass's state — the grain, the fog, the grade — and an entry's
+   * material patches it, so a list drawn under different state draws different numbers.
+   */
+  it('RECORDS AGAIN WHEN THE STATE IT STARTS FROM CHANGES, AND NOT OTHERWISE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const mesh = stubMesh(renderer);
+    const list = stage(renderer, mesh);
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    frames(renderer, 1, () => {
+      renderer.setSurfaceGrain(0.5);
+      renderer.drawStaticDraws(list);
+    });
+    expect(stub.bundleEncoders).toHaveLength(2);
+    frames(renderer, 2, () => {
+      renderer.setSurfaceGrain(0.5);
+      renderer.drawStaticDraws(list);
+    });
+    expect(stub.bundleEncoders, 'a state seen before is replayed').toHaveLength(2);
+  });
+
+  /* What a bundle binds by offset must still be there however the frame's own materials churn. */
+  it('KEEPS ITS MATERIALS WHERE ITS BUNDLE BINDS THEM WHILE THE FRAME’S CHURN', () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = freshRenderer(stub, quality);
+    const mesh = stubMesh(renderer);
+    const list = stage(renderer, mesh);
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    const bound = stub.bundleEncoders[0]?.setBindGroup.mock.calls.map(
+      (call) => (call[2] as number[])[2] as number,
+    );
+    /* A material's lighting channels, the cutout row's w: written whatever maps it has. */
+    const cutout = flatFragmentBindings(variantFor(quality)).materialFields?.['uCutout'];
+    if (cutout === undefined) throw new Error('no uCutout in the material block');
+    const channels = cutout.offset + 12;
+    const ceiling = materialCeiling(renderer);
+    for (let frame = 0; frame < 4; frame++) {
+      frames(renderer, 1, () =>
+        drawDistinct(renderer, mesh, ceiling - 3, { lit: frame % 2 === 0 }),
+      );
+    }
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    expect(stub.bundleEncoders, 'nothing it baked moved').toHaveLength(1);
+    const floats = new Float32Array(ringUpload(stub.device, 'flat.materials'));
+    expect(floats[((bound?.[0] as number) + channels) / 4]).toBe(2);
+    expect(floats[((bound?.[1] as number) + channels) / 4]).toBe(4);
+  });
+
+  /*
+   * Under frame reflections every opaque lit draw is drawn again into the reflection pass, its
+   * surface half; a list's are recorded beside its draws and replayed there as a bundle of their own.
+   */
+  it('REPLAYS ITS SURFACE HALVES INTO THE REFLECTION PASS AS A BUNDLE OF THEIR OWN', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, hdrScene: true, screenSpaceReflections: true }),
+    );
+    const list = stage(renderer, stubMesh(renderer));
+    frames(renderer, 2, () => renderer.drawStaticDraws(list));
+    const surface = stub.bundleEncoders.filter(
+      (bundle) => bundle.descriptor.depthReadOnly === true,
+    );
+    expect(stub.bundleEncoders, 'the frame’s and the surface’s, once').toHaveLength(2);
+    expect(surface).toHaveLength(1);
+    expect(surface[0]?.descriptor.colorFormats).toEqual([null, 'rgba16float', 'rgba16float']);
+    expect(surface[0]?.drawIndexed).toHaveBeenCalledTimes(3);
+    expect(stub.pass.executeBundles, 'two a frame, two frames').toHaveBeenCalledTimes(4);
+  });
+
+  /* Two copies claimed and one drawn: the frame sends that one's blocks and not the other's. */
+  it('A VIEW SENDS ITS OWN COPY’S BLOCKS AND NO OTHER’S', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const list = stage(renderer, stubMesh(renderer));
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    const from = stub.device.queue.writeBuffer.mock.calls.length;
+    frames(renderer, 1, () => renderer.drawStaticDraws(list));
+    const sent = (label: string) =>
+      stub.device.queue.writeBuffer.mock.calls
+        .slice(from)
+        .filter((call) => (call[0] as { label?: string }).label === label)
+        .map((call) => call[4] as number);
+    const slot = (bytes: number) => Math.ceil(bytes / 256) * 256;
+    expect(sent('static.passes')).toEqual([
+      slot(flatFragmentScratch(variantFor(resolveRenderQuality({}))).passSize),
+    ]);
+    expect(sent('static.views')).toEqual([256]);
+    expect(sent('static.draws'), 'and the draws, recorded once, nothing').toEqual([]);
+  });
+
+  it('A DISPOSED LIST DRAWS NOTHING, AND SAYS SO ONCE', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const list = stage(renderer, stubMesh(renderer));
+    renderer.disposeStaticDraws(list);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    frames(renderer, 2, () => renderer.drawStaticDraws(list));
+    expect(stub.pass.executeBundles).not.toHaveBeenCalled();
+    expect(warn.mock.calls.filter(([line]) => String(line).includes('disposed'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('COUNTS A LIST AS ITS DRAWS ON BOTH BACKENDS, the frame it records and the frames after', () => {
+    const quality = resolveRenderQuality({});
+    const gpu = new WebGPURenderer(stubSurface().surface, quality);
+    const gl = new WebGL2Renderer(recordingGl().canvas, quality);
+    const lines: [string, number][][] = [];
+    for (const renderer of [gpu, gl] as RendererApi[]) {
+      const { camera, env } = stubScene();
+      const mesh = renderer.createMesh(TRIANGLE);
+      const list = renderer.createStaticDraws((sink) => {
+        sink.mesh(mesh, mat4.create(), { lightChannels: 2 });
+        sink.mesh(mesh, mat4.create(), { lightChannels: 4 });
+      });
+      for (let frame = 0; frame < 2; frame++) {
+        renderer.beginFrame([0, 0, 0]);
+        renderer.bindMeshPass(camera, env);
+        renderer.drawStaticDraws(list);
+        lines.push(counted(renderer, ['draws', 'materials']));
+      }
+    }
+    expect(lines.slice(0, 2), 'WebGPU, as WebGL2').toEqual(lines.slice(2));
+    expect(lines[1]).toEqual([
+      ['draws', 2],
+      ['materials', 2],
+    ]);
+  });
+});
+
+/**
+ * **A crowd plays a clip on the device.** An instanced batch given a bone animation draws through
+ * the animated variant: the clip's two textures and the batch's clocks bound beside its material,
+ * the clip's numbers in its draw's block and the clock in its pass's view — and its shadow through
+ * the animated depth variant, with the same three, so the shadow moves as the crowd does.
+ */
+describe('bone animation', () => {
+  /** A triangle whose vertices follow bones 0, 1 and 2: its second coordinates' u, a 64th each. */
+  function crowdMesh(renderer: WebGPURenderer) {
+    return renderer.createMesh({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+      lightmapUvs: new Float32Array([0, 0, 1 / 64, 0, 2 / 64, 0]),
+    } as never);
+  }
+
+  function crowd(renderer: WebGPURenderer) {
+    const clip = renderer.createBoneAnimation({
+      bones: 3,
+      frames: 2,
+      framesPerSecond: 30,
+      places: new Float32Array(18),
+      turns: new Float32Array([
+        0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1,
+      ]),
+      boneScale: 64,
+    });
+    const batch = renderer.createInstanced(crowdMesh(renderer), 64, {
+      animation: clip,
+      cull: true,
+    });
+    const data = { ...createMeshInstances(64), clocks: new Float32Array([0.5, 2, 0.25, 1]) };
+    data.count = 64;
+    renderer.uploadInstanced(batch, data);
+    return { clip, batch, data };
+  }
+
+  it('AN ANIMATED BATCH DRAWS THROUGH THE ANIMATED VARIANT, ITS CLIP IN ITS BLOCK AND THE CLOCK IN ITS VIEW', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const { batch, data } = crowd(renderer);
+    const { camera, env } = stubScene();
+    renderer.setAnimationTime(1.5);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawInstanced(batch, data);
+    renderer.endFrame();
+    const labels = stub.pass.setPipeline.mock.calls.map(([p]) =>
+      String((p as { label?: string }).label),
+    );
+    expect(labels.filter((label) => label.includes('|inst|anim'))).toHaveLength(1);
+    const draw = new Float32Array(ringUpload(stub.device, 'flat.vertRing'));
+    const clip = FLAT_ANIMATED_VERT_FIELDS.uBoneClip.offset / 4;
+    expect([draw[clip], draw[clip + 1]], 'frames a second, bones a unit of u').toEqual([30, 64]);
+    const view = new Float32Array(ringUpload(stub.device, 'flat.viewRing'));
+    expect(view[FLAT_VIEW_FIELDS.uSceneTime.offset / 4]).toBe(1.5);
+    const clocks = stub.device.queue.writeTexture.mock.calls.find(([target]) =>
+      String((target as { texture: { label?: string } }).texture.label).endsWith('.clocks'),
+    );
+    expect(
+      Array.from(clocks?.[1] as Float32Array).slice(0, 6),
+      'two an instance, (0, 1) unsaid',
+    ).toEqual([0.5, 2, 0.25, 1, 0, 1]);
+    expect(
+      stub.computePass.dispatchWorkgroups,
+      'culled whole, never by instance',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('AND ITS SHADOW CASTS THROUGH THE ANIMATED DEPTH VARIANT, BY THE SAME CLOCK', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const { batch, data } = crowd(renderer);
+    renderer.setAnimationTime(2.25);
+    renderer.beginFrame([0, 0, 0]);
+    stub.pass.setPipeline.mockClear();
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => sink.instanced?.(batch, data));
+    renderer.endShadowPass();
+    const labels = stub.pass.setPipeline.mock.calls.map(([p]) =>
+      String((p as { label?: string }).label),
+    );
+    expect(labels.filter((label) => label.startsWith('depth-instanced-animated|'))).toHaveLength(1);
+    const upload = stub.device.queue.writeBuffer.mock.calls.find(
+      (call) => (call[0] as { label?: string }).label === 'shadow.drawRing',
+    );
+    const floats = new Float32Array(upload?.[2] as ArrayBuffer);
+    expect(floats[DEPTH_INSTANCED_ANIMATED_VERT_FIELDS.uSceneTime.offset / 4]).toBe(2.25);
+    expect(floats[DEPTH_INSTANCED_ANIMATED_VERT_FIELDS.uBoneClip.offset / 4]).toBe(30);
+  });
+
+  it('REFUSES A MESH THAT NAMES NO BONES, ON BOTH BACKENDS', () => {
+    const gpu = freshRenderer(stubSurface(), resolveRenderQuality({}));
+    const gl = new WebGL2Renderer(recordingGl().canvas, resolveRenderQuality({}));
+    for (const renderer of [gpu, gl] as RendererApi[]) {
+      const clip = renderer.createBoneAnimation({
+        bones: 1,
+        frames: 1,
+        framesPerSecond: 30,
+        places: new Float32Array(3),
+        turns: new Float32Array([0, 0, 0, 1]),
+      });
+      const mesh = renderer.createMesh({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+        colors: new Float32Array(9).fill(1),
+        emissive: new Float32Array(3),
+        indices: new Uint32Array([0, 1, 2]),
+      } as never);
+      expect(() => renderer.createInstanced(mesh, 4, { animation: clip })).toThrow(
+        /second coordinates/,
+      );
+    }
+  });
+});
+
+/**
+ * **A phone's block families, offered where the device grants them.** A device with ETC2 and not
+ * BC takes the ETC2 and EAC formats and nothing of BC's; the WebGL2 twin reads the same from its
+ * extensions, so one device answers alike on both.
+ */
+it('OFFERS THE BLOCK FAMILIES THE DEVICE GRANTS, AND ONLY THOSE, ON BOTH BACKENDS', () => {
+  const gpu = freshRenderer(
+    stubSurface({}, ['texture-compression-etc2', 'texture-compression-astc']),
+    resolveRenderQuality({}),
+  );
+  const gl = new WebGL2Renderer(
+    recordingGl({ extensions: ['WEBGL_compressed_texture_etc', 'WEBGL_compressed_texture_astc'] })
+      .canvas,
+    resolveRenderQuality({}),
+  );
+  for (const renderer of [gpu, gl] as RendererApi[]) {
+    const offered = renderer.compressedFormats;
+    expect(offered).toContain('etc2-rgb8');
+    expect(offered).toContain('etc2-rgba8-srgb');
+    expect(offered).toContain('eac-r11');
+    expect(offered).toContain('astc-4x4');
+    expect(offered).toContain('astc-12x12-srgb');
+    expect(offered.filter((format) => format.startsWith('bc'))).toEqual([]);
+  }
 });
 
 /**
@@ -7467,8 +8318,9 @@ describe('the probes a frame traces', () => {
                 String((entry.resource as { label?: string }).label ?? '') === 'probe.array',
             ),
         );
+      /* A pass's term, so in the pass ring's upload. */
       const upload = stub.device.queue.writeBuffer.mock.calls.find(
-        (call) => (call[0] as { label?: string }).label === 'flat.fragRing',
+        (call) => (call[0] as { label?: string }).label === 'flat.passRing',
       );
       const enabled = new Float32Array(upload?.[2] as ArrayBuffer)[(at ?? 0) / 4];
       return { bound, enabled };
@@ -8014,14 +8866,15 @@ describe('refraction under order-independent transparency', () => {
     const mesh = stubMesh(renderer);
     const field =
       /* The strength is the first of the four numbers `uSeeThrough` carries. */
-      (flatFragmentBindings(variantFor(quality)).fields['uSeeThrough']?.offset ?? -4) / 4;
+      (flatFragmentBindings(variantFor(quality)).materialFields?.['uSeeThrough']?.offset ?? -4) / 4;
+    /* Every material a draw placed, as the store was handed it. */
     const submitted: number[] = [];
-    const ring = (renderer as unknown as { perFrame: { writeBlock: (...a: never[]) => void } })
-      .perFrame;
-    const write = ring.writeBlock.bind(ring);
-    ring.writeBlock = ((slot: number, ints: Int32Array) => {
+    const store = (renderer as unknown as { materialStore: { place: (...a: never[]) => unknown } })
+      .materialStore;
+    const place = store.place.bind(store);
+    store.place = ((ints: Int32Array) => {
       submitted.push(new Float32Array(ints.buffer, ints.byteOffset)[field] ?? Number.NaN);
-      write(slot as never, ints as never);
+      return place(ints as never);
     }) as never;
 
     renderer.beginFrame([0, 0, 0]);

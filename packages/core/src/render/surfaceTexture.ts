@@ -10,7 +10,12 @@
  */
 import type { SurfaceModel } from './surfaceModel.ts';
 import { layerSize, refuseArrayUpdate, sourceSize } from './textureSource.ts';
-import { compressedLayers, planBlocks, refuseBlockUpdate } from './compressedSource.ts';
+import {
+  compressedLayers,
+  isCompressedSource,
+  planBlocks,
+  refuseBlockUpdate,
+} from './compressedSource.ts';
 import type {
   BlockFormat,
   CompressedTextureFormat,
@@ -119,7 +124,7 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * which is every light's default too, so a scene that names no channel is lit as it always was.
    *
    * A point or spot light shades this surface only where its `PointLightSet.lightChannels` and this
-   * share a bit — Unreal's lighting channels. A character's own key and rim lights on channel 2,
+   * share a bit — lighting channels. A character's own key and rim lights on channel 2,
    * and the character's materials on 3, light the character and leave the floor around it as the
    * stage's lights alone have it. **What it does not reach**: the sun, the sky and the probes, area
    * lights, DriftLight's volume and the GPU-driven pipeline light every surface whatever its mask.
@@ -154,6 +159,22 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    */
   occlusionStrength?: number;
   /**
+   * How much of the environment this material's draws mirror, 0 to 1: the number
+   * `setSurfaceReflectivity` sets for every draw, stated by the material for its own. Absent, its
+   * draws wear the setter's, as every material's did before this existed.
+   *
+   * **Here so a static list can carry it.** A list keeps each entry's material and none of the
+   * renderer's state between draws (`createStaticDraws`), so a stage whose batches each mirror their
+   * own share of a baked reflection says so in the material it records. What it gives up is nothing a
+   * setter could do: one called after this material is set is ignored for the material's draws.
+   */
+  reflectivity?: number;
+  /**
+   * How bright the environment this material's draws reflect is: `setEnvironmentGain`'s number,
+   * stated by the material for its own, and absent the setter's. Held non-negative.
+   */
+  environmentGain?: number;
+  /**
    * Scales the emissive map, per channel. Default 1.
    *
    * The counterpart of `roughnessScale` and `metallicScale`: a factor that multiplies a texture is
@@ -176,14 +197,14 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
   modelMap?: Texture | null;
   /**
    * Whether a lamp's and the sun's highlight on this surface is GGX's own, `π · D · Vis · F · N·L`,
-   * as Unreal and this engine's skin and eye shade it, rather than the engine's lobe scaled to a
-   * peak of one. **False by default**, every surface as it was.
+   * as physically based renderers and this engine's skin and eye shade it, rather than the engine's
+   * lobe scaled to a peak of one. **False by default**, every surface as it was.
    *
    * The peak-normalised lobe is a look control: the specular attribute says how strong a highlight
    * is and roughness how wide, apart. Physical, they are entangled as they are in a real surface —
    * the peak is `1 / (4 α²)` of the light head-on, so a polished surface's highlight is many times
    * the look's and a rough one's lower and broader — and the specular attribute is read as the
-   * reflectance at normal incidence, F0: Unreal's `0.08 × Specular`, 0.04 at its default. Fresnel
+   * reflectance at normal incidence, F0: `0.08 × Specular`, 0.04 at its default. Fresnel
    * then brightens every surface toward grazing, not only a metal. A rectangle's highlight is the
    * lobe integrated over it with the attribute as F0 already, so it is unchanged either way.
    *
@@ -292,7 +313,9 @@ export class SurfaceTexture {
   /** The per-layer effects table, or null for a texture given none. See `surfaceEffects.ts`. */
   private effectsTable: WebGLTexture | null = null;
   /** The block format a compressed texture holds, or null for one uploaded from images. */
-  private readonly blockFormat: BlockFormat | null;
+  private blockFormat: BlockFormat | null;
+  /** How the texture is sampled, kept so blocks swapped in by `update` are sampled the same way. */
+  private readonly sampling: { wrap: number; nearest: boolean; anisotropy: number };
   /** Level 0's size, which `flatLayer` copies; kept as `update` changes it. */
   private width = 0;
   private height = 0;
@@ -404,27 +427,13 @@ export class SurfaceTexture {
       this.storage = this.srgb ? gl.SRGB8_ALPHA8 : gl.RGBA8;
       uploadImages(gl, sources, this.srgb);
     }
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, wrap);
-    /* Nearest where the caller said their pixels are the subject; see `filter`. The mip chain is
-       still blended between levels, because that is minification and this option is about
-       magnification. */
-    const nearest = options.filter === 'nearest';
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, nearest ? gl.NEAREST : gl.LINEAR);
-    gl.texParameteri(
-      gl.TEXTURE_2D_ARRAY,
-      gl.TEXTURE_MIN_FILTER,
-      this.mipmapped
-        ? nearest
-          ? gl.NEAREST_MIPMAP_LINEAR
-          : gl.LINEAR_MIPMAP_LINEAR
-        : nearest
-          ? gl.NEAREST
-          : gl.LINEAR,
-    );
-
+    this.sampling = {
+      wrap,
+      nearest: options.filter === 'nearest',
+      anisotropy: options.anisotropy ?? DEFAULT_ANISOTROPY,
+    };
+    this.applySampling(gl);
     if (this.mipmapped && this.blockFormat === null) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
-    applyAnisotropy(gl, options.anisotropy ?? DEFAULT_ANISOTROPY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
     /* Half floats, nearest, clamped: a table read by texelFetch, whose every whole number is under
@@ -475,9 +484,17 @@ export class SurfaceTexture {
    * Not a hot path: it re-uploads the whole image and regenerates the chain. A caller
    * doing this every frame at any size wants to know that it costs what it costs.
    */
-  update(gl: WebGL2RenderingContext, source: TexImageSource): void {
+  update(
+    gl: WebGL2RenderingContext,
+    source: TexImageSource | CompressedTextureSource,
+    compressed: readonly CompressedTextureFormat[] = [],
+  ): void {
     if (this.texture === null) return;
     refuseArrayUpdate(this.layers);
+    if (isCompressedSource(source)) {
+      this.swapToBlocks(gl, source, compressed);
+      return;
+    }
     refuseBlockUpdate(this.blockFormat);
     const { width, height } = sourceSize(source);
     this.width = width;
@@ -499,6 +516,56 @@ export class SurfaceTexture {
     );
     if (this.mipmapped) gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  }
+
+  /**
+   * Blocks in place of the image, behind the same handle: **a new GL object** rather than the
+   * image's levels respecified, because a chain shorter than the image's would leave the levels
+   * past it allocated, and immutable storage could not be respecified at all. Sampled as the image
+   * was, and refused before anything changes where the context does not take the format.
+   */
+  private swapToBlocks(
+    gl: WebGL2RenderingContext,
+    source: CompressedTextureSource,
+    compressed: readonly CompressedTextureFormat[],
+  ): void {
+    const plan = planBlocks([source], this.srgb, compressed);
+    const texture = gl.createTexture();
+    if (texture === null) throw new Error('SurfaceTexture: createTexture failed');
+    this.dropFlat(gl);
+    if (this.texture !== null) gl.deleteTexture(this.texture);
+    this.texture = texture;
+    this.blockFormat = source.format;
+    this.width = source.width;
+    this.height = source.height;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+    uploadCompressedArray(gl, plan.name, [source], this.mipmapped ? plan.levels : 1);
+    this.applySampling(gl);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+  }
+
+  /**
+   * Wrap, filters and anisotropy on the bound texture. Nearest where the caller said their pixels
+   * are the subject; see `filter`. The mip chain is still blended between levels, because that is
+   * minification and this option is about magnification.
+   */
+  private applySampling(gl: WebGL2RenderingContext): void {
+    const { wrap, nearest, anisotropy } = this.sampling;
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, wrap);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, nearest ? gl.NEAREST : gl.LINEAR);
+    gl.texParameteri(
+      gl.TEXTURE_2D_ARRAY,
+      gl.TEXTURE_MIN_FILTER,
+      this.mipmapped
+        ? nearest
+          ? gl.NEAREST_MIPMAP_LINEAR
+          : gl.LINEAR_MIPMAP_LINEAR
+        : nearest
+          ? gl.NEAREST
+          : gl.LINEAR,
+    );
+    applyAnisotropy(gl, anisotropy);
   }
 
   /**

@@ -277,6 +277,17 @@ export const PARTICLE_SPRITE_UNIT = SKIN_BLUR_ALBEDO_UNIT + 1;
 export const PARTICLE_DEPTH_UNIT = PARTICLE_SPRITE_UNIT + 1;
 
 /**
+ * A bone animation's places and turns and its batch's clocks (`shaders/boneAnimation.ts`): vertex
+ * samplers of the animated instanced program, so they count against the vertex stage's sixteen, not
+ * the lit stage's. Numbered past every unit before them rather than sharing the cloth's, which no
+ * animated program declares: a unit two programs both write is a binding one draw can leave for the
+ * other to read. Twenty-six to twenty-eight, inside the combined pool of thirty-two.
+ */
+export const BONE_PLACES_TEXTURE_UNIT = PARTICLE_DEPTH_UNIT + 1;
+export const BONE_TURNS_TEXTURE_UNIT = BONE_PLACES_TEXTURE_UNIT + 1;
+export const INSTANCE_CLOCKS_TEXTURE_UNIT = BONE_TURNS_TEXTURE_UNIT + 1;
+
+/**
  * A cookie's tile, in texels a side.
  *
  * **128, which is what a gobo is.** A cookie is a soft mask — a window frame, a leaf canopy, a

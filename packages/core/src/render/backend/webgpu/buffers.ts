@@ -258,16 +258,35 @@ export interface GpuMesh {
         device: GPUDevice,
         positions: Float32Array,
         normals?: Float32Array,
-        previous?: GPUBuffer | null,
+        staged?: StagedRewrite | null,
       ) => void)
     | null;
   /**
-   * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's positions,
-   * made the first time a reconstructing renderer rewrites the mesh, and the frame of the last
-   * rewrite. Null on a mesh created without `{ dynamic: true }`, which never moves a vertex.
+   * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's positions and
+   * one the new positions are staged in, each made the first time a reconstructing renderer
+   * rewrites the mesh, and the frame of the last rewrite. Null on a mesh created without
+   * `{ dynamic: true }`, which never moves a vertex.
    */
-  readonly motion: { previous: GPUBuffer | null; changed: number } | null;
+  readonly motion: {
+    previous: GPUBuffer | null;
+    staging: GPUBuffer | null;
+    changed: number;
+  } | null;
   dispose(): void;
+}
+
+/**
+ * A rewrite a reconstructing renderer stages rather than writes, so last frame's positions can be
+ * kept with no submit of the rewrite's own: the new positions are written into `staging`, and two
+ * copies are recorded into `encoder` — the live positions into `previous` first, where the frame's
+ * first rewrite keeps them, then the staged ones in. The renderer submits that encoder at the head
+ * of the frame's next submit, which is what keeps both copies ahead of every draw that reads the
+ * mesh. A `writeBuffer` straight to the live positions would land before the copy aside could run.
+ */
+export interface StagedRewrite {
+  encoder: GPUCommandEncoder;
+  staging: GPUBuffer;
+  previous: GPUBuffer | null;
 }
 
 /** A mesh on its way to the device, and the iterator that gets it there. */
@@ -658,7 +677,10 @@ function gpuMeshOf(parts: {
   readonly morph: MorphTexture | null;
   readonly update: GpuMesh['update'];
 }): GpuMesh {
-  const motion = parts.update === null ? null : { previous: null as GPUBuffer | null, changed: -1 };
+  const motion =
+    parts.update === null
+      ? null
+      : { previous: null as GPUBuffer | null, staging: null as GPUBuffer | null, changed: -1 };
   const { vertices, constants, streams, indexBuffer, progress } = parts;
   return {
     vertexBuffers:
@@ -684,6 +706,7 @@ function gpuMeshOf(parts: {
     motion,
     dispose(): void {
       motion?.previous?.destroy();
+      motion?.staging?.destroy();
       streams?.positions.destroy();
       streams?.normals.destroy();
       vertices.destroy();
@@ -700,9 +723,9 @@ function isStreamed(attribute: VertexAttribute): boolean {
 
 /**
  * A dynamic mesh's `update`: the caller's positions, and its normals where it has them, each
- * written to its own buffer as it came. Last frame's positions, where a reconstruction wants them,
- * are copied on the device before the write — a copy submitted ahead of a `writeBuffer` runs ahead
- * of it on the queue — so no CPU copy of anything is kept.
+ * written to its own buffer as it came — or, where a reconstruction keeps last frame's positions,
+ * the positions staged and copied in on the device behind the copy aside (`StagedRewrite`), so no
+ * CPU copy of anything is kept and the rewrite submits nothing of its own.
  */
 function streamUpdate(
   positionsBuffer: GPUBuffer,
@@ -715,7 +738,7 @@ function streamUpdate(
     target: GPUDevice,
     positions: Float32Array,
     normals?: Float32Array,
-    previous: GPUBuffer | null = null,
+    staged: StagedRewrite | null = null,
   ): void => {
     for (const [name, values] of [
       ['update', positions],
@@ -728,15 +751,18 @@ function streamUpdate(
           'every other attribute are sized against it.',
       );
     }
-    if (previous !== null) {
-      const encoder = target.createCommandEncoder({ label: 'mesh.previousPositions' });
-      encoder.copyBufferToBuffer(positionsBuffer, 0, previous, 0, streamBytes);
-      target.queue.submit([encoder.finish()]);
-    }
     /* Everything that decides whether this is on screen starts from the bounds, so a cloth
        that blew sideways out of its original box would be culled while still visible. */
     boundsOfPositions(positions, bounds);
-    target.queue.writeBuffer(positionsBuffer, 0, positions);
+    if (staged === null) {
+      target.queue.writeBuffer(positionsBuffer, 0, positions);
+    } else {
+      target.queue.writeBuffer(staged.staging, 0, positions);
+      if (staged.previous !== null) {
+        staged.encoder.copyBufferToBuffer(positionsBuffer, 0, staged.previous, 0, streamBytes);
+      }
+      staged.encoder.copyBufferToBuffer(staged.staging, 0, positionsBuffer, 0, streamBytes);
+    }
     if (normals !== undefined) target.queue.writeBuffer(normalsBuffer, 0, normals);
   };
 }

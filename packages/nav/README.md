@@ -2,7 +2,7 @@
 
 A navigation mesh: geometry in, convex walkable polygons out, and a straight line across them.
 
-**9,058 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
+**9,051 bytes gzipped**, measured by `scripts/size-gate.test.mjs` against
 `scripts/fixtures/size/nav-only.ts`. Optional — nothing in `@driftengine/core` imports it, so a game
 that does not path pays nothing.
 

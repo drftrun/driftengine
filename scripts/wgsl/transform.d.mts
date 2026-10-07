@@ -14,6 +14,18 @@ export interface Bindings {
   readonly textures?: Readonly<
     Record<string, { readonly texture: number; readonly sampler: number; readonly type: string }>
   >;
+  /** The `// wgsl:material` block's binding, size and fields; absent where nothing is marked. */
+  readonly materialUniforms?: number;
+  readonly materialSize?: number;
+  readonly materialFields?: Readonly<
+    Record<string, { readonly offset: number; readonly size: number }>
+  >;
+  /** The `// wgsl:view` block's binding, size and fields; absent where nothing is marked. */
+  readonly viewUniforms?: number;
+  readonly viewSize?: number;
+  readonly viewFields?: Readonly<
+    Record<string, { readonly offset: number; readonly size: number }>
+  >;
   /** Each `// wgsl:override` constant's specialisation id, by name; absent where there are none. */
   readonly overrides?: Readonly<Record<string, number>>;
 }
@@ -25,6 +37,7 @@ export function hoistDefines(source: string): string;
 export function hoistUniformBlock(
   source: string,
   binding?: number,
+  marked?: Readonly<Record<string, number>>,
 ): { source: string; bindings: Bindings };
 export function padNarrowArrays(
   members: readonly string[],

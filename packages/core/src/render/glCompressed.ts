@@ -28,6 +28,42 @@ const INTERNAL: Readonly<Record<CompressedTextureFormat, number>> = {
   bc5: 0x8dbd, // COMPRESSED_RED_GREEN_RGTC2_EXT
   bc7: 0x8e8c, // COMPRESSED_RGBA_BPTC_UNORM_EXT
   'bc7-srgb': 0x8e8d, // COMPRESSED_SRGB_ALPHA_BPTC_UNORM_EXT
+  'eac-r11': 0x9270, // COMPRESSED_R11_EAC
+  'eac-rg11': 0x9272, // COMPRESSED_RG11_EAC
+  'etc2-rgb8': 0x9274, // COMPRESSED_RGB8_ETC2
+  'etc2-rgb8-srgb': 0x9275, // COMPRESSED_SRGB8_ETC2
+  'etc2-rgb8a1': 0x9276, // COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2
+  'etc2-rgb8a1-srgb': 0x9277, // COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2
+  'etc2-rgba8': 0x9278, // COMPRESSED_RGBA8_ETC2_EAC
+  'etc2-rgba8-srgb': 0x9279, // COMPRESSED_SRGB8_ALPHA8_ETC2_EAC
+  'astc-4x4': 0x93b0, // COMPRESSED_RGBA_ASTC_4x4_KHR
+  'astc-4x4-srgb': 0x93d0, // COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR
+  'astc-5x4': 0x93b1, // COMPRESSED_RGBA_ASTC_5x4_KHR
+  'astc-5x4-srgb': 0x93d1, // COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR
+  'astc-5x5': 0x93b2, // COMPRESSED_RGBA_ASTC_5x5_KHR
+  'astc-5x5-srgb': 0x93d2, // COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR
+  'astc-6x5': 0x93b3, // COMPRESSED_RGBA_ASTC_6x5_KHR
+  'astc-6x5-srgb': 0x93d3, // COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR
+  'astc-6x6': 0x93b4, // COMPRESSED_RGBA_ASTC_6x6_KHR
+  'astc-6x6-srgb': 0x93d4, // COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR
+  'astc-8x5': 0x93b5, // COMPRESSED_RGBA_ASTC_8x5_KHR
+  'astc-8x5-srgb': 0x93d5, // COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR
+  'astc-8x6': 0x93b6, // COMPRESSED_RGBA_ASTC_8x6_KHR
+  'astc-8x6-srgb': 0x93d6, // COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR
+  'astc-8x8': 0x93b7, // COMPRESSED_RGBA_ASTC_8x8_KHR
+  'astc-8x8-srgb': 0x93d7, // COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR
+  'astc-10x5': 0x93b8, // COMPRESSED_RGBA_ASTC_10x5_KHR
+  'astc-10x5-srgb': 0x93d8, // COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR
+  'astc-10x6': 0x93b9, // COMPRESSED_RGBA_ASTC_10x6_KHR
+  'astc-10x6-srgb': 0x93d9, // COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR
+  'astc-10x8': 0x93ba, // COMPRESSED_RGBA_ASTC_10x8_KHR
+  'astc-10x8-srgb': 0x93da, // COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR
+  'astc-10x10': 0x93bb, // COMPRESSED_RGBA_ASTC_10x10_KHR
+  'astc-10x10-srgb': 0x93db, // COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR
+  'astc-12x10': 0x93bc, // COMPRESSED_RGBA_ASTC_12x10_KHR
+  'astc-12x10-srgb': 0x93dc, // COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR
+  'astc-12x12': 0x93bd, // COMPRESSED_RGBA_ASTC_12x12_KHR
+  'astc-12x12-srgb': 0x93dd, // COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR
 };
 
 const BY_EXTENSION: readonly (readonly [string, readonly CompressedTextureFormat[]])[] = [
@@ -35,6 +71,53 @@ const BY_EXTENSION: readonly (readonly [string, readonly CompressedTextureFormat
   ['WEBGL_compressed_texture_s3tc_srgb', ['bc1-srgb', 'bc2-srgb', 'bc3-srgb']],
   ['EXT_texture_compression_rgtc', ['bc4', 'bc5']],
   ['EXT_texture_compression_bptc', ['bc7', 'bc7-srgb']],
+  /* The two families a phone has: every GLES 3 device takes ETC2, and most take ASTC beside it. */
+  [
+    'WEBGL_compressed_texture_etc',
+    [
+      'etc2-rgb8',
+      'etc2-rgb8-srgb',
+      'etc2-rgb8a1',
+      'etc2-rgb8a1-srgb',
+      'etc2-rgba8',
+      'etc2-rgba8-srgb',
+      'eac-r11',
+      'eac-rg11',
+    ],
+  ],
+  [
+    'WEBGL_compressed_texture_astc',
+    [
+      'astc-4x4',
+      'astc-4x4-srgb',
+      'astc-5x4',
+      'astc-5x4-srgb',
+      'astc-5x5',
+      'astc-5x5-srgb',
+      'astc-6x5',
+      'astc-6x5-srgb',
+      'astc-6x6',
+      'astc-6x6-srgb',
+      'astc-8x5',
+      'astc-8x5-srgb',
+      'astc-8x6',
+      'astc-8x6-srgb',
+      'astc-8x8',
+      'astc-8x8-srgb',
+      'astc-10x5',
+      'astc-10x5-srgb',
+      'astc-10x6',
+      'astc-10x6-srgb',
+      'astc-10x8',
+      'astc-10x8-srgb',
+      'astc-10x10',
+      'astc-10x10-srgb',
+      'astc-12x10',
+      'astc-12x10-srgb',
+      'astc-12x12',
+      'astc-12x12-srgb',
+    ],
+  ],
 ];
 
 /**

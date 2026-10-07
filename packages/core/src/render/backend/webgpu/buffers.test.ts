@@ -271,26 +271,39 @@ describe('a gpu mesh', () => {
   });
 
   /*
-   * A reconstruction needs where a rewritten mesh's vertices were last frame. The update writes the
-   * rows as they stood into the buffer it is handed before patching a position, and `writeBuffer`
-   * copies at the call — so the previous buffer holds the old positions and the mesh the new ones.
+   * A reconstruction needs where a rewritten mesh's vertices were last frame. The rewrite is staged:
+   * the new positions are written into a buffer of the mesh's own, and two copies are recorded into
+   * the encoder the renderer hands over — the live positions aside first, then the staged ones in —
+   * which goes out at the head of the frame's next submit. So nothing is submitted by the rewrite,
+   * the live positions are untouched until then, and after it the previous buffer holds the old
+   * positions and the mesh the new ones.
    */
-  it('A DYNAMIC MESH HANDS OVER ITS POSITIONS AS THEY STOOD BEFORE IT WRITES NEW ONES', () => {
+  it('A DYNAMIC MESH STAGES A REWRITE: ITS OLD POSITIONS ASIDE AND THE NEW ONES IN, AT THE SUBMIT', () => {
     const { device, memory } = fakeDevice();
     const mesh = createGpuMesh(device, triangle(), true);
-    expect(mesh.motion).toEqual({ previous: null, changed: -1 });
+    expect(mesh.motion).toEqual({ previous: null, staging: null, changed: -1 });
     expect(createGpuMesh(device, triangle()).motion).toBeNull();
 
     const previous = device.createBuffer({ size: 36, usage: 0 });
-    mesh.update?.(device, new Float32Array([10, 0, 0, 11, 0, 0, 10, 1, 0]), undefined, previous);
-
-    const was = new Float32Array((memory.get(previous) as Uint8Array).buffer);
-    const now = new Float32Array(
-      (memory.get(mesh.vertexBuffers[0] as object) as Uint8Array).buffer,
-    );
+    const staging = device.createBuffer({ size: 36, usage: 0 });
+    const encoder = device.createCommandEncoder();
+    mesh.update?.(device, new Float32Array([10, 0, 0, 11, 0, 0, 10, 1, 0]), undefined, {
+      encoder,
+      staging,
+      previous,
+    });
+    const floats = (buffer: object): Float32Array =>
+      new Float32Array((memory.get(buffer) as Uint8Array).buffer);
+    const live = mesh.vertexBuffers[0] as object;
     /* The first vertex's x, then the second's: three floats a vertex in a buffer of positions. */
-    expect([was[0], was[3]]).toEqual([0, 1]);
-    expect([now[0], now[3]]).toEqual([10, 11]);
+    expect(device.queue.submit, 'the rewrite submits nothing of its own').not.toHaveBeenCalled();
+    expect([floats(live)[0], floats(live)[3]], 'and the live positions wait for it').toEqual([
+      0, 1,
+    ]);
+
+    device.queue.submit([encoder.finish()]);
+    expect([floats(previous)[0], floats(previous)[3]]).toEqual([0, 1]);
+    expect([floats(live)[0], floats(live)[3]]).toEqual([10, 11]);
   });
 
   it('destroys every buffer it made', () => {
