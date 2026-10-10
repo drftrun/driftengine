@@ -1,0 +1,9 @@
+{
+  "description": "A complete 3D game: physics, a character, orbs to gather against the clock, sound, shadows, a HUD and rules in DriftScript.",
+  "dependencies": [
+    "@driftengine/audio",
+    "@driftengine/core",
+    "@driftengine/script",
+    "driftscript"
+  ]
+}

@@ -221,7 +221,7 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   if (MODEL_SKIN) {
     if (SKIN_DIFFUSE) mAlbedo = vec3(1.0);
   }
-  mSpecColor = mix(vec3(vSpecular), albedo, metal);
+  mSpecColor = mix(vec3(surfaceSpecular), albedo, metal);
   mRoughness = roughness;
   mMetal = metal;
   mMap = vec4(0.5, 0.5, 1.0, 1.0);

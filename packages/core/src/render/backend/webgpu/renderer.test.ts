@@ -3813,6 +3813,55 @@ describe('the webgpu renderer', () => {
   });
 
   /*
+   * **A layered material's picks and looks are its own, the identity where it names none, and only
+   * a material that names one turns their switch on.** Once on, every layered material is drawn
+   * through it, so one that named nothing must read layer `i`, untinted, as before.
+   */
+  it("WRITES A LAYERED MATERIAL'S PICKS AND LOOKS, AND TURNS THEIR SWITCH ON ONLY WHEN ASKED", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const switches = (
+      renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } }
+    ).pipelines.litSwitches;
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ layers: { mask: 'orm', repeats: [8, 4] } });
+    renderer.drawMesh(mesh, mat4.create());
+    expect(switches.LAYER_LOOKS, 'layers alone do not ask for looks').toBe(false);
+    renderer.setMaterial({
+      layers: {
+        mask: 'orm',
+        repeats: [8, 4],
+        arrayLayers: [12, 3],
+        extrasAt: 40,
+        meshOcclusion: 0.5,
+        looks: [null, { tint: [2, 1, 0.5], normalStrength: 3, roughness: [0.25, 0.75] }],
+      },
+    });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    expect(switches.LAYER_LOOKS).toBe(true);
+    const variant = variantFor(quality);
+    const lane = (k: number): number[] => drawnMaterial(stub, variant, 'uLayerLooks', 'float', k);
+    /* The first draw names nothing: layer 0 and 1 read themselves, the extras start at two. */
+    expect([lane(0), lane(1), lane(5), lane(6)]).toEqual([
+      [0, 12],
+      [1, 3],
+      [2, 40],
+      [0, 0.5],
+    ]);
+    /* The second layer's look: its tint, its normal strength and its roughness range. */
+    expect([16, 17, 18, 19, 20, 21].map((k) => lane(k)[1])).toEqual([2, 1, 0.5, 3, 0.25, 0.75]);
+    expect(
+      [16, 17, 18, 19].map((k) => lane(k)[0]),
+      'none named, untinted',
+    ).toEqual([1, 1, 1, 1]);
+  });
+
+  /*
    * **A draw may spend its own opacity on the screen door**: `setDitherOpacity` is the third lane
    * of the row the fade shares, per draw like any material state, independent of the fade beside
    * it, and taken back by `bindMeshPass` as the fade is.

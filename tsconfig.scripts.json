@@ -70,6 +70,7 @@
     "packages/package/src/**/*.ts",
     "demo/dev/vite.config.ts",
     "packages/native-host/src/**/*.ts",
+    "packages/create/src/**/*.ts",
     "demo/native/**/*.ts",
     "demo/sprawl/bake/**/*.ts",
     "tools/**/*.ts"

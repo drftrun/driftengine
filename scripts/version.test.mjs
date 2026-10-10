@@ -185,7 +185,12 @@ test('every engine manifest carries the workspace version', () => {
    * file — see `manifests()`. Nothing was added to the tree; what changed is that the count is
    * now taken from what a release actually has to move.
    */
-  assert.ok(engine.length >= 25, `only ${engine.length} engine manifests found`);
+  /*
+   * **Raised to 26 on 2026-10-10 by `@driftengine/create`, in the commit that created it**, counted
+   * with the snippet first. It names no `@driftengine/*` range: it writes the engine's version into
+   * the projects it starts, read from its own manifest, so the ranges stay at sixty-nine.
+   */
+  assert.ok(engine.length >= 26, `only ${engine.length} engine manifests found`);
 });
 
 test('every engine range pins the workspace version, and the language pin agrees with itself', () => {

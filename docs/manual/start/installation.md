@@ -25,7 +25,20 @@ npm install @driftengine/core
 
 ## A new project
 
-The quickest start is Vite's TypeScript template, with the engine added to it:
+The quickest start is a project made for the engine, ready to run:
+
+```sh
+npm create @driftengine@latest my-game
+cd my-game
+npm install
+npm run dev
+```
+
+It is a Vite and TypeScript project with the engine, DriftScript and the page below already set up,
+a test runner, and a command that looks at the game on both backends. It is also set up for a coding
+agent to work in, which [Working with a coding agent](with-an-agent.md) describes.
+
+To add the engine to a project of your own instead, start from Vite's TypeScript template:
 
 ```sh
 npm create vite@latest my-game -- --template vanilla-ts

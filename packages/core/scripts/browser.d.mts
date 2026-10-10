@@ -7,6 +7,11 @@ export interface LaunchedBrowser {
   close(): Promise<void>;
 }
 
+/** Where a Chromium-based browser lives on a platform, in the order `chromePath` tries them. */
+export function browserCandidates(
+  platform?: string,
+  env?: Readonly<Record<string, string | undefined>>,
+): string[];
 export function chromePath(): string;
 export function launch(options?: {
   flags?: readonly string[];

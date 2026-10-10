@@ -174,6 +174,15 @@ function knownDocuments() {
   for (const f of walk(path.join(ROOT, 'demo'), (f) => f.endsWith('.md'))) {
     names.add(path.basename(f));
   }
+  /*
+   * The language's own reference, which left this repository with the language: `driftscript`
+   * ships `docs/LANGUAGE.md` and a project reads it at `node_modules/driftscript/docs/`, which is
+   * where the skill and a started project's `AGENTS.md` send an agent to learn the language.
+   */
+  const language = path.join(ROOT, 'node_modules', 'driftscript', 'docs');
+  if (existsSync(language)) {
+    for (const entry of readdirSync(language)) if (entry.endsWith('.md')) names.add(entry);
+  }
   names.add('CHANGELOG.json');
   return names;
 }

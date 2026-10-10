@@ -917,7 +917,9 @@ test('roughness falls back to the vertex attribute with no map bound', () => {
  */
 test('every metal term collapses to its dielectric form at metal 0', () => {
   /* mix(x, y, 0) is exactly x, so the dielectric value must be the FIRST argument in each. */
-  expect(source).toContain('mix(vec3(vSpecular), albedo, metal)');
+  /* The specular every term reads: the vertices' own, or a layered material's blend of its layers'. */
+  expect(source).toContain('surfaceSpecular = vSpecular;');
+  expect(source).toContain('mix(vec3(surfaceSpecular), albedo, metal)');
   expect(source).toContain('mix(0.04, 1.0, metal)');
   expect(source).toContain('mix(vec3(1.0), albedo, metal)');
   /* max(reflectivity, 0.0) is the reflectivity, because both renderers clamp it non-negative. */
@@ -943,8 +945,8 @@ test('the Fresnel base rises with metal', () => {
  * is 0, so nothing that does not bind a map takes a different branch than it did.
  */
 test('a metal takes a lamp highlight even with no specular attribute', () => {
-  expect(source).toContain('if (vSpecular > 0.0 || metal > 0.0) {');
-  expect(source, 'the old gate is gone').not.toContain('if (vSpecular > 0.0) {');
+  expect(source).toContain('if (surfaceSpecular > 0.0 || metal > 0.0) {');
+  expect(source, 'the old gate is gone').not.toContain('if (surfaceSpecular > 0.0) {');
 });
 
 /*

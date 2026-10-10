@@ -1712,6 +1712,50 @@ test("WRITES A MATERIAL'S LAYERS, KEEPS THE MODEL OFF ITS MASK, AND A PASS FORGE
 });
 
 /**
+ * **A layered material's picks and looks reach the lit stage, the identity for one that asks for
+ * none, and a pass forgets them**, as WebGPU's twin asserts from its blocks. The identity matters
+ * as much as the values: once one material turns `LAYER_LOOKS` on, every layered material is drawn
+ * through it, and one that named nothing must read layer `i`, untinted, as it did before.
+ */
+test("WRITES A LAYERED MATERIAL'S PICKS AND LOOKS, THE IDENTITY WHERE IT NAMES NONE, AND A PASS FORGETS THEM", () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uLayerLooks'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const last = (): number[] =>
+    Array.from(
+      (calls
+        .filter(
+          (c) =>
+            c.name === 'uniform4fv' &&
+            (c.args[0] as { name?: string } | null)?.name === 'uLayerLooks',
+        )
+        .at(-1)?.args[1] as Float32Array | undefined) ?? [],
+    );
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({
+    layers: {
+      mask: 'orm',
+      repeats: [8, 4],
+      arrayLayers: [12, 3],
+      extrasAt: 40,
+      meshOcclusion: 0.5,
+      looks: [null, { tint: [2, 1, 0.5], normalStrength: 3, roughness: [0.25, 0.75] }],
+    },
+  });
+  expect(last().slice(0, 8), 'the picks, the extras and the occlusion').toEqual([
+    12, 3, 2, 3, 4, 40, 0.5, 0,
+  ]);
+  expect(last().slice(16, 24), "the second layer's look").toEqual([2, 1, 0.5, 3, 0.25, 0.75, 0, 1]);
+  renderer.setMaterial({ layers: { mask: 'orm', repeats: [8, 4] } });
+  expect(last().slice(0, 16), 'a material that names none reads layer i, untinted').toEqual([
+    0, 1, 2, 3, 4, 2, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1,
+  ]);
+  renderer.bindMeshPass(camera, env);
+  expect(last()).toEqual(new Array(60).fill(0));
+});
+
+/**
  * **A draw may spend its own opacity on the screen door**: the third lane of `uWriteMode`, beside
  * the fade and independent of it, and taken back by `bindMeshPass` as the fade is. What WebGPU's
  * twin asserts from its blocks, asserted here from the uploads.

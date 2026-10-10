@@ -535,6 +535,11 @@ export interface FlatShaderOptions {
    */
   readonly layered?: boolean;
   /**
+   * Whether a layered material's layers are picked from shared arrays and given looks of their own,
+   * \`uLayerLooks\` and all. True when absent; nothing without \`layered\`. See \`layerLooksGlsl\`.
+   */
+  readonly layerLooks?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -686,7 +691,7 @@ export function flatFrag(options: FlatShaderOptions): string {
       /* After the reflection maps, so its switch takes the next id; main calls it. worldUv.ts. */
       worldUvGlsl(options.worldUvs ?? true),
       /* After the projection, so its switch takes the next id; the normal map below calls it. */
-      layeredGlsl(options.layered ?? true),
+      layeredGlsl(options.layered ?? true, options.layerLooks ?? true),
       /* Where each map is read, after both of the ways it can be read otherwise. See mapReads.ts. */
       MAP_READS_GLSL,
       /* After the frame and the projection it calls, unconditional for the same reason as the

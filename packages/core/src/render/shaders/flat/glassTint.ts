@@ -39,7 +39,8 @@ export type LitSwitch =
   | 'REFLECTION_MAPS'
   | 'WORLD_UVS'
   | 'MOVING_SUN'
-  | 'LAYERED';
+  | 'LAYERED'
+  | 'LAYER_LOOKS';
 
 /** Every switch off: what a renderer starts from before its profile and its content say otherwise. */
 export function noLitSwitches(): Record<LitSwitch, boolean> {
@@ -55,6 +56,7 @@ export function noLitSwitches(): Record<LitSwitch, boolean> {
     WORLD_UVS: false,
     MOVING_SUN: false,
     LAYERED: false,
+    LAYER_LOOKS: false,
   };
 }
 

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- An empty icon until the game has one, so the browser does not ask for /favicon.ico. -->
+    <link rel="icon" href="data:," />
+    <title>my-game</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d0e12;
+        color: #c9cdd6;
+        font:
+          13px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      /* The canvas is sized by CSS; `renderer.resize()` reads that size back. */
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #backend {
+        position: fixed;
+        top: 12px;
+        left: 14px;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: #00000080;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <p id="backend">starting…</p>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

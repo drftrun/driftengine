@@ -338,6 +338,8 @@ const COLUMN = {
   script: { fixture: 'core-and-script', over: 'core-only' },
   'native-host': { words: 'a Node host' },
   package: { words: 'a build tool' },
+  /* Run once by `npm create`, never imported into a game, so it has no bundle to measure. */
+  create: { words: 'a command' },
 };
 
 test('the root README states a cost for every package, and it is the measured one', () => {

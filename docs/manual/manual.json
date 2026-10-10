@@ -7,6 +7,7 @@
       "pages": [
         "introduction",
         "installation",
+        "with-an-agent",
         "hello-world",
         "the-loop",
         "moving-things",

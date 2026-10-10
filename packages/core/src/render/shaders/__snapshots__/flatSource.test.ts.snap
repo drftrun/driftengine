@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "b1517200:276951",
-  "directionalShadows+environmentProbe": "9d7fe22e:302962",
-  "directionalShadows+environmentProbe+nightEmissive": "1aedad3c:305448",
-  "directionalShadows+nightEmissive": "60c93cf0:279437",
-  "environmentProbe": "0e102e4c:279722",
-  "environmentProbe+nightEmissive": "2911dac8:282208",
-  "nightEmissive": "f9ecc0a4:256197",
-  "none": "7cf525e6:253711",
-  "pointShadows": "63928608:293148",
-  "pointShadows+directionalShadows": "3173dc36:316388",
-  "pointShadows+directionalShadows+environmentProbe": "0c65886c:342399",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "e44e595c:344885",
-  "pointShadows+directionalShadows+nightEmissive": "858a0080:318874",
-  "pointShadows+environmentProbe": "4318ce56:319159",
-  "pointShadows+environmentProbe+nightEmissive": "82a736ec:321645",
-  "pointShadows+nightEmissive": "d89cd650:295634",
+  "directionalShadows": "0ea0d069:282298",
+  "directionalShadows+environmentProbe": "c5b105a3:308309",
+  "directionalShadows+environmentProbe+nightEmissive": "5c4ed8cb:310795",
+  "directionalShadows+nightEmissive": "06e84be7:284784",
+  "environmentProbe": "31e61905:285069",
+  "environmentProbe+nightEmissive": "3fe776e3:287555",
+  "nightEmissive": "ea2dfa8f:261544",
+  "none": "a1262ac3:259058",
+  "pointShadows": "dafe2af5:298495",
+  "pointShadows+directionalShadows": "2740ee77:321735",
+  "pointShadows+directionalShadows+environmentProbe": "978d1da1:347746",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "e012c0f7:350232",
+  "pointShadows+directionalShadows+nightEmissive": "12763afb:324221",
+  "pointShadows+environmentProbe": "47475ae7:324506",
+  "pointShadows+environmentProbe+nightEmissive": "ae7ea863:326992",
+  "pointShadows+nightEmissive": "4ee978cf:300981",
 }
 `;
 
@@ -36,6 +36,12 @@ in vec3 vColor;
 in vec3 vWorldPos;
 in float vEmissive;
 in float vSpecular;
+/*
+ * The specular this fragment shades with: its vertices' own, or a layered material's layers'
+ * blend of theirs, set once at the top of main. Every read of the specular reads this rather than
+ * the varying, so a layer's specular reaches the highlight, the reflection and the area lights alike.
+ */
+float surfaceSpecular;
 in vec4 vLightPos;
 in vec3 vUv;
 in vec3 vEmissiveColor;
@@ -3690,7 +3696,7 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   if (MODEL_SKIN) {
     if (SKIN_DIFFUSE) mAlbedo = vec3(1.0);
   }
-  mSpecColor = mix(vec3(vSpecular), albedo, metal);
+  mSpecColor = mix(vec3(surfaceSpecular), albedo, metal);
   mRoughness = roughness;
   mMetal = metal;
   mMap = vec4(0.5, 0.5, 1.0, 1.0);
@@ -4077,9 +4083,94 @@ const bool LAYERED = true;  // wgsl:override
  */
 uniform vec4 uLayers[4]; // wgsl:material
 
+/* Whether layers are picked from shared arrays and given looks of their own: layerLooks.ts. */
+const bool LAYER_LOOKS = true;  // wgsl:override
+/*
+ * Fifteen vectors, as surfaceLayerLooks.ts packs them: the array layer each of the five reads, base
+ * first (floats 0 to 4); where the maps beyond the layers start (5), the mesh occlusion's strength
+ * (6) and whether it darkens the ambient light rather than the colour (7); then two vectors a
+ * layer, base first: its tint (x y z) and normal strength (w), then its roughness range (x to y)
+ * and metalness range (z to w); then each layer's specular, -1 for the surface's own (48 to 52), its
+ * repeat down (53 to 57), and the occlusion's range (58 to 59).
+ */
+uniform vec4 uLayerLooks[15]; // wgsl:material
+
+/* Float k of the fifteen vectors. */
+float layerLook(int k) {
+  return uLayerLooks[k / 4][k % 4];
+}
+
+/* The layer of the albedo, normal and ORM arrays a material's layer i reads. */
+float layerArray(int i) {
+  if (LAYER_LOOKS) return layerLook(i);
+  return float(i);
+}
+
+/* Where the maps beyond the layers start in each array. */
+float layerExtras() {
+  if (LAYER_LOOKS) return uLayerLooks[1].y;
+  return uLayers[1].y;
+}
+
+vec3 layerTint(int i) {
+  if (LAYER_LOOKS) return uLayerLooks[2 + i * 2].xyz;
+  return vec3(1.0);
+}
+
+/* The ORM's roughness and metalness, each spread over the layer's own range. */
+vec2 layerRanges(int i, vec2 roughMetal) {
+  if (LAYER_LOOKS) {
+    vec4 range = uLayerLooks[3 + i * 2];
+    return vec2(mix(range.x, range.y, roughMetal.x), mix(range.z, range.w, roughMetal.y));
+  }
+  return roughMetal;
+}
+
+/*
+ * A tangent-space texel bent further or less by the layer's strength: its x and y scaled, its z
+ * kept, so 0 lies flat and a strength above 1 steepens every slope the map holds. z is held above
+ * zero so a texel lying exactly flat on its surface cannot normalise to nothing at strength 0.
+ */
+vec3 layerStrengthen(int i, vec3 texel) {
+  if (LAYER_LOOKS) return normalize(vec3(texel.xy * uLayerLooks[2 + i * 2].w, max(texel.z, 1e-4)));
+  return texel;
+}
+
+/* The layer's specular, or the surface's own where it names none. */
+float layerSpecular(int i, float own) {
+  if (LAYER_LOOKS) {
+    float named = layerLook(48 + i);
+    return named < 0.0 ? own : named;
+  }
+  return own;
+}
+
+/* The layer's repeat down, which is its repeat across unless it gave two. */
+float layerRepeatDown(int i, float across) {
+  if (LAYER_LOOKS) return layerLook(53 + i);
+  return across;
+}
+
+float layerOcclusionStrength() {
+  if (LAYER_LOOKS) return uLayerLooks[1].z;
+  return 0.0;
+}
+
+bool layerOcclusionAmbient() {
+  if (LAYER_LOOKS) return uLayerLooks[1].w > 0.5;
+  return false;
+}
+
+vec2 layerOcclusionRange() {
+  if (LAYER_LOOKS) return uLayerLooks[14].zw;
+  return vec2(0.0, 1.0);
+}
+
 /* Each layer's share of this point, the base's and layers 1 to 4's: worked out once, in layeredBegin. */
 float lShareBase;
 vec4 lShare;
+/* What an occlusion read at the mesh's coordinates leaves of this point, 1 where none: layeredBegin. */
+float lMeshOcclusion;
 
 bool layered() {
   return uLayers[1].y > 0.5;
@@ -4096,14 +4187,15 @@ vec2 layerPlace() {
 }
 
 vec3 layerAt(int i) {
-  return vec3(layerPlace() * layerRepeat(i), float(i));
+  float across = layerRepeat(i);
+  return vec3(layerPlace() * vec2(across, layerRepeatDown(i, across)), layerArray(i));
 }
 
 /* The weights as the material keeps them: the mask's channels, at the mesh's own coordinates. */
 vec4 layerWeights() {
   float source = uLayers[1].w;
   if (source > 1.5) return vec4(vColor, 0.0);
-  if (source > 0.5) return texture(uOrmMap, vec3(vUv.xy, uLayers[1].y));
+  if (source > 0.5) return texture(uOrmMap, vec3(vUv.xy, layerExtras()));
   return texture(uModelMap, vec3(vUv.xy, 0.0));
 }
 
@@ -4117,10 +4209,22 @@ vec4 layerPick(float layer) {
  * Under a branch on uniforms, as its reads are.
  */
 void layeredBegin() {
+  /*
+   * The occlusion at the mesh's coordinates, once: the ORM array's layer past the layers and past
+   * any mask and added mask it carries, spread over its range and taken at its strength.
+   */
+  lMeshOcclusion = 1.0;
+  float strength = layerOcclusionStrength();
+  if (strength > 0.0) {
+    float at = layerExtras() + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0) + (uLayers[2].z > 0.5 ? 1.0 : 0.0);
+    vec2 range = layerOcclusionRange();
+    float occlusion = mix(range.x, range.y, texture(uOrmMap, vec3(vUv.xy, at)).r);
+    lMeshOcclusion = mix(1.0, occlusion, strength);
+  }
   vec4 m = layerWeights();
   if (uLayers[2].z > 0.5) {
     /* The ORM array's layer past the layers, and past the mask where the array carries that too. */
-    float at = uLayers[1].y + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0);
+    float at = layerExtras() + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0);
     float added = texture(uOrmMap, vec3(layerPlace() * uLayers[2].w, at)).r * uLayers[3].x;
     m = mix(m, clamp(m + added, 0.0, 1.0), layerPick(uLayers[2].z));
   }
@@ -4160,23 +4264,52 @@ vec3 layeredColor(vec3 color) {
   return uLayers[1].w > 1.5 ? vec3(1.0) : color;
 }
 
-/* Colour by the shares, and the base layer's coverage, which a cutout reads. */
+/*
+ * Colour by the shares, each layer's tinted, and the base layer's coverage, which a cutout reads;
+ * then darkened by the occlusion at the mesh's coordinates, where it is the colour that takes it.
+ */
 vec4 layeredAlbedo() {
   vec4 sum = vec4(0.0);
   for (int i = 0; i < 5; i++) {
     if (float(i) >= uLayers[1].y) break;
     vec4 t = texture(uAlbedo, layerAt(i));
-    sum.rgb += t.rgb * layerShare(i);
+    sum.rgb += t.rgb * layerTint(i) * layerShare(i);
     if (i == 0) sum.a = t.a;
   }
+  if (!layerOcclusionAmbient()) sum.rgb *= lMeshOcclusion;
   return sum;
 }
 
+/* What the ambient light keeps: the occlusion at the mesh's coordinates, where it takes it. */
+float layeredAmbient() {
+  return layerOcclusionAmbient() ? lMeshOcclusion : 1.0;
+}
+
+/*
+ * The specular by the shares, each layer's own or the surface's where it names none. The surface's
+ * own, untouched, where no material has asked for looks: shares summing to one in floating point
+ * are not quite one, and a layered material that names nothing must draw exactly as before.
+ */
+float layeredSpecular(float own) {
+  if (LAYER_LOOKS) {
+    float sum = 0.0;
+    for (int i = 0; i < 5; i++) {
+      if (float(i) >= uLayers[1].y) break;
+      sum += layerSpecular(i, own) * layerShare(i);
+    }
+    return sum;
+  }
+  return own;
+}
+
+/* Occlusion, roughness and metalness by the shares, each layer's spread over its own ranges. */
 vec3 layeredOrm() {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     if (float(i) >= uLayers[1].y) break;
-    sum += texture(uOrmMap, layerAt(i)).rgb * layerShare(i);
+    vec3 t = texture(uOrmMap, layerAt(i)).rgb;
+    t.yz = layerRanges(i, t.yz);
+    sum += t * layerShare(i);
   }
   return sum;
 }
@@ -4193,7 +4326,7 @@ vec3 layeredTexel() {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     if (float(i) >= uLayers[1].y) break;
-    sum += layerNormalTexel(layerAt(i)) * layerShare(i);
+    sum += layerStrengthen(i, layerNormalTexel(layerAt(i))) * layerShare(i);
   }
   float len = length(sum);
   return len > 1e-5 ? sum / len : vec3(0.0, 0.0, 1.0);
@@ -4206,7 +4339,7 @@ bool layeredMeshNormal() {
 
 /* That normal's texel: the normal array's layer past the layers, at the mesh's coordinates. */
 vec3 layeredMeshTexel() {
-  return layerNormalTexel(vec3(vUv.xy, uLayers[1].y));
+  return layerNormalTexel(vec3(vUv.xy, layerExtras()));
 }
 
 /* Whether the emissive map belongs to one layer rather than to the whole surface. */
@@ -4397,7 +4530,7 @@ void areaLightAdd(
   lampOpen += areaDiffuse;
   lampShadowed += areaDiffuse * occl * glass;
 
-  if (vSpecular > 0.0 || metal > 0.0) {
+  if (surfaceSpecular > 0.0 || metal > 0.0) {
     vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
     vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
     vec3 c2 = centre + right * halfSize.x - up * halfSize.y;
@@ -4432,6 +4565,9 @@ void main() {
   projectSurface(surfaceAt, frameAt, frameTangents);
   /* A layered material's mask, read once for every layer's share below: layered.ts. */
   if (LAYERED && layered()) layeredBegin();
+  /* And the specular every highlight below reads: its layers' own, where a material gives them. */
+  surfaceSpecular = vSpecular;
+  if (LAYERED && layered()) surfaceSpecular = layeredSpecular(vSpecular);
   if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
   /*
    * The layer's surface effects, zeros where the albedo array carries no table — see
@@ -4918,6 +5054,8 @@ void main() {
     ambient = mix(ambient, irradiance, uProbeGridAmbient * uEnvironmentEnabled);
     /* A draw's own ambient, where one is set, in place of the frame's: \`setAmbientSH\`. */
     if (uAmbientSH[6].w > 0.5) ambient = ambientHarmonics(n);
+    /* Less of it where a layered material's mesh occlusion darkens the ambient light: layered.ts. */
+    if (LAYERED && layered()) ambient *= layeredAmbient();
     /*
      * A metal keeps its ambient and loses its direct diffuse.
      *
@@ -4971,7 +5109,7 @@ void main() {
      * mix(x, y, 0) is exactly x, so at metal 0 this is vec3(vSpecular) and the line below is the
      * one it replaces with the scalar broadened to three components.
      */
-    vec3 specColor = mix(vec3(vSpecular), albedo, metal);
+    vec3 specColor = mix(vec3(surfaceSpecular), albedo, metal);
     /*
      * **A metal's highlight goes white at a grazing angle, and that is most of what reads as
      * polished.**
@@ -6053,7 +6191,7 @@ void main() {
        * any lamp in the scene. The condition is the old one exactly when metal is 0, so nothing
        * that binds no map takes a different branch than it took before.
        */
-      if (vSpecular > 0.0 || metal > 0.0) {
+      if (surfaceSpecular > 0.0 || metal > 0.0) {
         vec3 toEyeLamp = normalize(uCameraPos - vWorldPos);
         vec3 lampHalfway = normalize(toLight / max(dist, 1e-4) + toEyeLamp);
         /* The same grazing whitening the sun's highlight takes, and zero at metal 0 for the look. */

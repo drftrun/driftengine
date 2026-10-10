@@ -1,0 +1,62 @@
+{
+  "name": "@driftengine/create",
+  "version": "4.12.0",
+  "description": "Starts a DriftEngine game: a Vite and TypeScript project, its instructions for a coding agent, and the engine's skill",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "drift-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
+  "bin": {
+    "create-driftengine": "bin/create.mjs"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "bin",
+    "shared",
+    "templates",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "author": "Drift Technologies",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftengine.git",
+    "directory": "packages/create"
+  },
+  "homepage": "https://github.com/drftrun/driftengine#readme",
+  "bugs": "https://github.com/drftrun/driftengine/issues",
+  "keywords": [
+    "driftengine",
+    "create",
+    "scaffold",
+    "game-engine",
+    "webgpu",
+    "typescript",
+    "vite",
+    "agent-skills",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/build.mjs @driftengine/create"
+  }
+}

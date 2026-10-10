@@ -1,0 +1,61 @@
+// The round: how long it lasts, how close the player has to come to an orb, and when it is won or
+// lost. The page holds the player, the world and the orbs, and asks these rules about them.
+//
+// Under `npm run examples`, change a rule and save: the round plays by it from the next tick, with
+// the clock and the score where they were. Try a longer round, a wider reach, or a round that is
+// lost the moment the clock runs out even with one orb left to take.
+
+// How long a round lasts, in seconds, and how close the player has to come to an orb, in metres.
+let ROUND_SECONDS: f32 = 60
+let REACH: f32 = 1
+
+// Where a round is: still being played, or over one way or the other.
+enum Phase {
+    Playing
+    Won
+    Lost
+}
+
+// One round, which the page owns and hands to every rule below.
+data Round {
+    remaining: f32 = 60
+    gathered: u32 = 0
+    total: u32 = 8
+    phase: Phase = Phase.Playing
+}
+
+// A new round: a full clock, nothing gathered yet, and the number of orbs the page laid out.
+fn start(round: mut Round, total: u32) {
+    round.remaining = ROUND_SECONDS
+    round.gathered = 0
+    round.total = total
+    round.phase = Phase.Playing
+}
+
+// Whether the player, this far from an orb on each axis, is close enough to take it. Pure: it reaches
+// nothing outside its arguments and the constants above, which the compiler checks.
+@pure
+fn reaches(dx: f32, dy: f32, dz: f32) -> bool {
+    return dx * dx + dy * dy + dz * dz < REACH * REACH
+}
+
+fn gather(round: mut Round) {
+    round.gathered = round.gathered + 1
+}
+
+// The clock, once a step. Every orb taken wins the round; the clock reaching zero first loses it.
+// Deterministic: the same round and the same step give the same answer on every machine, so a
+// recorded round replays exactly. Reading input or the wall clock here would not compile.
+@deterministic
+fn tick(round: mut Round, dt: f32) {
+    if round.phase != Phase.Playing {
+        return
+    }
+    round.remaining = round.remaining - dt
+    if round.gathered == round.total {
+        round.phase = Phase.Won
+    } else if round.remaining <= 0 {
+        round.remaining = 0
+        round.phase = Phase.Lost
+    }
+}

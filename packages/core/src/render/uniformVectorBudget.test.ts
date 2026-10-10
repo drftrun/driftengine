@@ -26,6 +26,7 @@ const lit = (
   worldUvs = false,
   movingSun = false,
   layered = false,
+  layerLooks = false,
 ): string =>
   flatFrag({
     pointShadows: true,
@@ -36,6 +37,7 @@ const lit = (
     worldUvs,
     movingSun,
     layered,
+    layerLooks,
     maxLights: budget.maxLights,
     maxAreaLights: budget.maxAreaLights,
   });
@@ -99,6 +101,11 @@ describe('countUniformVectors', () => {
       countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true)) -
         countUniformVectors(lit(FULL_LIGHT_BUDGET)),
     ).toBe(4);
+    /* And their picks and looks beside them, fifteen more, which is why they are a switch apart. */
+    expect(
+      countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true, true)) -
+        countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true)),
+    ).toBe(15);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,

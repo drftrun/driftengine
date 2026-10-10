@@ -666,6 +666,8 @@ export { MAX_CLUSTERED_LIGHTS } from './render/clusteredLights.ts';
 export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
 export type { SurfaceProjection } from './render/surfaceProjection.ts';
+export type { SurfaceLayers } from './render/surfaceLayers.ts';
+export type { SurfaceLayerLook } from './render/surfaceLayerLooks.ts';
 /*
  * Compressed textures — BC, ETC2 and EAC, ASTC: the source `createSurfaceTexture` takes as blocks,
  * the one question to ask before handing one over — whether this device takes its format

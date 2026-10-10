@@ -176,13 +176,14 @@ test('every variant that can bend declares the wind, and the instanced one decla
  * (`models.ts`), which it sets from its own key, and last on the physical highlight's, from the
  * cache again, after it on a surface overlay's, from the cache too, and on the reflection
  * pass's surface half, from the key, and whether the frame's draws write its maps, from the cache,
- * and on whether a material's maps are placed by the world, and last whether its layers are
- * blended, both from the cache. The moving sun's switch sits after the four, ahead of the shadow
- * lookup that reads it. Every variant declares all twenty, because a pipeline naming an override its
+ * and on whether a material's maps are placed by the world, whether its layers are blended, and
+ * last whether they are picked from shared arrays with looks of their own, all from the cache. The
+ * moving sun's switch sits after the four, ahead of the shadow lookup that reads it. Every variant
+ * declares all twenty-one, because a pipeline naming an override its
  * module lacks fails validation and drops the frame, the permutations without shadows included,
  * which read the glass switch nowhere. The models and halves are generated off, the lit features on.
  */
-test('EVERY LIT VARIANT DECLARES THE TWENTY SWITCHES ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE TWENTY-ONE SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
   const switches = [
@@ -228,6 +229,7 @@ test('EVERY LIT VARIANT DECLARES THE TWENTY SWITCHES ITS PIPELINES SET', () => {
     );
     expect(wgsl, `${variant}: WORLD_UVS`).toMatch(/@id\(18\) override WORLD_UVS: bool = true;/);
     expect(wgsl, `${variant}: LAYERED`).toMatch(/@id\(19\) override LAYERED: bool = true;/);
+    expect(wgsl, `${variant}: LAYER_LOOKS`).toMatch(/@id\(20\) override LAYER_LOOKS: bool = true;/);
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
     expect(bindings?.overrides, variant).toEqual({
       GLASS_SHADOWS: 0,
@@ -250,6 +252,7 @@ test('EVERY LIT VARIANT DECLARES THE TWENTY SWITCHES ITS PIPELINES SET', () => {
       REFLECTION_MAPS: 17,
       WORLD_UVS: 18,
       LAYERED: 19,
+      LAYER_LOOKS: 20,
     });
   }
 });
@@ -313,6 +316,7 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
     '17': 0,
     '18': 0,
     '19': 0,
+    '20': 0,
   };
   expect(descriptors[0]?.fragment?.constants).toEqual({
     '0': 0,
@@ -337,9 +341,11 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
   expect(descriptors[2]?.fragment?.constants?.['18']).toBe(1);
   await cache.enable('MOVING_SUN');
   expect(descriptors[3]?.fragment?.constants?.['5']).toBe(1);
-  /* And a material's layers, by its id 19. */
+  /* And a material's layers, by its id 19, and their picks and looks, by 20. */
   await cache.enable('LAYERED');
   expect(descriptors[4]?.fragment?.constants?.['19']).toBe(1);
+  await cache.enable('LAYER_LOOKS');
+  expect(descriptors[5]?.fragment?.constants?.['20']).toBe(1);
 });
 
 /*

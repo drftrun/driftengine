@@ -89,8 +89,9 @@
    */
   "exclude": [
     /* The native host and its harness run in Node and nowhere else; `tsconfig.scripts.json` checks
-       all of both. */
+       all of both. So does the command that starts a project, which writes files and nothing else. */
     "packages/native-host/src",
+    "packages/create/src",
     "demo/native",
     /* The city demo's bake reads the reference's source off disk; checked there as well. */
     "demo/sprawl/bake",

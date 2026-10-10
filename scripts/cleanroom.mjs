@@ -22,8 +22,12 @@
  * **Outside the checkout**, in the system temp directory, so nothing here can resolve back into the
  * repository by accident.
  *
+ * **Then a project started by `@driftengine/create`, from the same room**, typechecked, tested and
+ * built: `starterRoom.mjs` says why that half also has to be outside the workspace.
+ *
  * Usage:
- *   node scripts/cleanroom.mjs           every package
+ *   node scripts/cleanroom.mjs           every package, then every starter template
+ *   node scripts/cleanroom.mjs --look    and photograph each started project on both backends
  *   node scripts/cleanroom.mjs --keep    leave the room behind for inspection
  */
 import { execFileSync } from 'node:child_process';
@@ -40,6 +44,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { missingModules } from './emitModules.mjs';
+import { checkStarters } from './starterRoom.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const KEEP = process.argv.includes('--keep');
@@ -203,10 +208,16 @@ for (const p of manifests) {
   }
 }
 
+const importFailures = failed;
+if (importFailures === 0) {
+  failed += checkStarters({ room, modules, look: process.argv.includes('--look') });
+}
+
 if (!KEEP) rmSync(room, { recursive: true, force: true });
 console.log(
-  failed === 0
+  importFailures === 0
     ? `\n${checked} entry points import under plain node`
-    : `\n${failed} of ${checked} entry points failed`,
+    : `\n${importFailures} of ${checked} entry points failed`,
 );
+if (failed > importFailures) console.log(`${failed - importFailures} started-project steps failed`);
 process.exit(failed === 0 ? 0 : 1);

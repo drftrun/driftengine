@@ -1,0 +1,8 @@
+{
+  "description": "A lit cube turning on a fixed clock, at a rate a DriftScript rule decides.",
+  "dependencies": [
+    "@driftengine/core",
+    "@driftengine/script",
+    "driftscript"
+  ]
+}

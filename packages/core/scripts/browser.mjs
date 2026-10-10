@@ -27,22 +27,64 @@
  * it, and it is what turns "leaks accumulate forever" into "at most one leak per still-running
  * process."
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { sleep } from './cdp.mjs';
 
-/** Where a Chrome or Chromium lives, in the order worth trying. `CHROME_PATH` wins. */
-const CANDIDATES = [
-  '/opt/google/chrome/chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-];
+/**
+ * Where a Chromium-based browser lives on each platform, in the order worth trying.
+ *
+ * **Edge is last on every list and the only thing on Windows that is always there.** It is
+ * Chromium, it speaks the same DevTools protocol, and it ships with Windows 10 and 11, so a person
+ * who never installed Chrome still has a browser this module can drive. Chrome comes first where it
+ * exists because it is what the engine's captures are measured on.
+ *
+ * Windows paths are built from the environment rather than written out, because `Program Files`
+ * is wherever that machine put it and a per-user install sits under `LOCALAPPDATA`; a Mac's
+ * per-user install sits under `~/Applications`. Nothing here has been run on Windows or macOS by
+ * this repository yet; the lists are the browsers' documented install locations.
+ */
+export function browserCandidates(platform = process.platform, env = process.env) {
+  if (platform === 'win32') {
+    const roots = [env['PROGRAMFILES'], env['PROGRAMFILES(X86)'], env['LOCALAPPDATA']].filter(
+      (root) => typeof root === 'string' && root !== '',
+    );
+    return [
+      ...roots.map((root) =>
+        path.win32.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      ),
+      ...roots.map((root) =>
+        path.win32.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      ),
+    ];
+  }
+  if (platform === 'darwin') {
+    /* `/Applications` for an install by an administrator, `~/Applications` for one without. */
+    const roots = [
+      '/Applications',
+      typeof env['HOME'] === 'string' && env['HOME'] !== ''
+        ? path.posix.join(env['HOME'], 'Applications')
+        : null,
+    ].filter((root) => root !== null);
+    const apps = [
+      'Google Chrome.app/Contents/MacOS/Google Chrome',
+      'Chromium.app/Contents/MacOS/Chromium',
+      'Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ];
+    return apps.flatMap((app) => roots.map((root) => path.posix.join(root, app)));
+  }
+  return [
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+  ];
+}
 
 /**
  * What it takes to reach the real card from a headless process.
@@ -80,7 +122,7 @@ const PROFILE_PREFIX = 'driftengine-shots-';
 const OWNER_FILE = 'driftengine-owner.json';
 
 /**
- * Signal an entire process group, escalating if it does not go.
+ * Stop a browser and every process it started, escalating if it does not go.
  *
  * **Chrome is a tree, not a process.** It forks a zygote, a GPU process and one renderer per
  * page, and signalling the parent alone leaves the rest running with the port closed and the
@@ -89,9 +131,20 @@ const OWNER_FILE = 'driftengine-owner.json';
  *
  * SIGTERM first because a browser asked politely flushes and exits; SIGKILL after a grace period
  * because one that is wedged never will, and a wedged browser is exactly the case this exists for.
+ *
+ * **Windows has no process groups to signal**, so there `taskkill /T` walks the tree from the
+ * browser's own PID and `/F` ends it at once. Synchronous, because this also runs from an `exit`
+ * handler, where nothing asynchronous gets to finish.
  */
 function killTree(pid, graceMs = 2000) {
   if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    return;
+  }
   try {
     process.kill(-pid, 'SIGTERM');
   } catch {
@@ -194,10 +247,11 @@ function defaultIsAlive(pid) {
 export function chromePath() {
   const asked = process.env['CHROME_PATH'];
   if (asked !== undefined && asked !== '') return asked;
-  const found = CANDIDATES.find((candidate) => existsSync(candidate));
+  const candidates = browserCandidates();
+  const found = candidates.find((candidate) => existsSync(candidate));
   if (found === undefined) {
     throw new Error(
-      `no Chrome or Chromium found. Tried:\n  ${CANDIDATES.join('\n  ')}\nSet CHROME_PATH to one.`,
+      `no Chrome, Chromium or Edge found. Tried:\n  ${candidates.join('\n  ')}\nSet CHROME_PATH to one.`,
     );
   }
   return found;
@@ -227,7 +281,7 @@ export async function launch({ flags = GPU_FLAGS, headless = true, timeoutMs = 2
      process and every renderer with one signal to the negative PID. `unref()` is deliberately
      not called: the parent must stay attached, or its own exit and signal handlers below never
      fire, and those are half of what closes the other three holes. */
-  const child = spawn(binary, args, { stdio: 'ignore', detached: true });
+  const child = spawn(binary, args, { stdio: 'ignore', detached: true, windowsHide: true });
   writeFileSync(
     path.join(profile, OWNER_FILE),
     JSON.stringify({ ownerPid: process.pid, chromePid: child.pid }),

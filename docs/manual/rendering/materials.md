@@ -639,6 +639,68 @@ Other families of layered surface blend differently, and `layers` takes them too
   layer just past the layers, under the layers' blended normal: a cliff's large shape beneath detail
   that repeats forty times across it.
 
+### Layers shared between materials
+
+A texture worn by many materials, in a different tint on each, is one texture. `arrayLayers` picks
+which layer of the albedo, normal and ORM arrays each of a material's layers reads, so materials
+share one array of each kind, and `looks` gives each layer what used to be baked into its pixels:
+
+```ts sample=snippets/layers.ts#shared
+/**
+ * Two cliffs that share one array of each kind, every texture in it once. Each cliff picks its
+ * layers by index and gives them a look of its own; its own mask and its occlusion sit past the
+ * shared textures, at `extrasAt` in the ORM array.
+ */
+export function sharedCliffs(
+  albedo: SurfaceTextureHandle,
+  normal: SurfaceTextureHandle,
+  orm: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle>[] {
+  const warm: SurfaceLayers<SurfaceTextureHandle> = {
+    mask: 'orm',
+    repeats: [8, 4, 16],
+    /* Rock, moss and sand: textures 0, 5 and 2 of every array. */
+    arrayLayers: [0, 5, 2],
+    /* This cliff's mask is the ORM array's layer 30, and its occlusion the one after. */
+    extrasAt: 30,
+    meshOcclusion: 0.8,
+    looks: [{ tint: [1.2, 1, 0.85], roughness: [0.6, 0.95] }, { normalStrength: 2 }],
+  };
+  /* The same rock, darker and smoother, under a different moss: nothing new uploaded. */
+  const cold: SurfaceLayers<SurfaceTextureHandle> = {
+    ...warm,
+    arrayLayers: [0, 7, 2],
+    extrasAt: 32,
+    looks: [{ tint: [0.7, 0.75, 0.85], roughness: [0.3, 0.6] }],
+  };
+  return [
+    { albedo, normal, orm, layers: warm },
+    { albedo, normal, orm, layers: cold },
+  ];
+}
+```
+
+- **`arrayLayers`** names an array layer for each of the material's layers, base first. The same
+  index reads all three arrays, so a texture's colour, normal and ORM sit at the same layer of each.
+- **`extrasAt`** is where this material's own maps start: an ORM mask, an added mask and a mesh
+  occlusion in that order in the ORM array, and a mesh normal in the normal array. Absent, they sit
+  just past the layers, which is no place for them once arrays are shared.
+- **`looks`**, one for each layer, base first: a `tint` multiplying its colour, linear and allowed
+  above 1; the `roughness` and `metalness` ranges its ORM's green and blue are spread over, 0 to 1
+  where absent; a `normalStrength` its normal map's slopes are scaled by, 0 lying flat; and a
+  `specular` in the units a mesh's vertices carry theirs, blended as the colours are, the surface's
+  own where absent.
+- **A repeat may be a pair**, across and down apart: moss stretched along a trunk at `[4, 0.5]`.
+- **`meshOcclusion`** darkens the surface by the red of the ORM layer after the masks, read at the
+  mesh's own coordinates, by a strength from 0 to 1: the large shading of a cliff, as `meshNormal`
+  carries its large shape. A number darkens the blended colour, and so every light on it. The
+  object form, `{ strength, into, range }`, can send it `into: 'ambient'` instead, darkening the
+  ambient light alone as an ambient occlusion does and leaving the sun and the lamps as they were,
+  and spreads its red over a `range`.
+
+These four are compiled into the lit stage the first time a material names one, as the layers are.
+A layered material that names none of them draws as it did, whether or not another one has.
+
 What it gives up:
 
 - **Every layer present is read wherever any shows**: five layers are fifteen reads where one
@@ -653,6 +715,9 @@ What it gives up:
 - **Layers share an array**, so they share its size and format, and a cutout reads the base layer's
   alpha.
 - **On WebGL2 it takes four fragment uniform vectors**, refused, said once, where a part has no room.
+  Shared arrays and looks take fifteen more, refused on their own, said once, where a part has room
+  for the layers and not for them: the layers then read layer `i` of their arrays, untinted, at
+  one repeat each.
 
 ## Light through a thin surface
 

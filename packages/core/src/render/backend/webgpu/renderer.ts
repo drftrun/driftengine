@@ -208,6 +208,7 @@ import {
   packSurfaceLayers,
 } from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
+import { LOOK_FLOATS, asksLayerLooks, packLayerLooks } from '../../surfaceLayerLooks.ts';
 import {
   frameReflectionsRefused,
   resolveFrameReflections,
@@ -3015,6 +3016,8 @@ export class WebGPURenderer implements RendererApi {
   private readonly projection = new Float32Array(PROJECTION_FLOATS);
   /** `uLayers`, the material's layers packed by `packSurfaceLayers`. */
   private readonly layerFloats = new Float32Array(LAYER_FLOATS);
+  /** `uLayerLooks`, the material's layer picks and looks packed by `packLayerLooks`. */
+  private readonly lookFloats = new Float32Array(LOOK_FLOATS);
   /**
    * `uGlassTint` as the material leaves it, its light from behind and that light's colour, which a
    * pane overwrites for its own draw and `releaseSeeThrough` puts back. See `transmission.ts`.
@@ -3588,6 +3591,10 @@ export class WebGPURenderer implements RendererApi {
       packSurfaceLayers(layers, this.layerFloats);
       f.set(this.layerFloats, this.materialField('uLayers'));
       if (layers !== null) this.enableLit('LAYERED');
+      /* And which layer of shared arrays each reads, with its look: layerLooks.ts. */
+      packLayerLooks(layers, this.lookFloats);
+      f.set(this.lookFloats, this.materialField('uLayerLooks'));
+      if (asksLayerLooks(layers)) this.enableLit('LAYER_LOOKS');
       f.set(this.modelParams, this.materialField('uModelParams'));
     });
     /*
@@ -8976,6 +8983,7 @@ export class WebGPURenderer implements RendererApi {
     f.set(this.transmission, at('uGlassTint'));
     /* Nor layers: one layer until a material asks for more. */
     f.fill(0, at('uLayers'), at('uLayers') + LAYER_FLOATS);
+    f.fill(0, at('uLayerLooks'), at('uLayerLooks') + LOOK_FLOATS);
     f[at('uCutout')] = 0;
     f[at('uCutout') + 1] = 0;
     this.cutoutResolveStaged = 'hard';

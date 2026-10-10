@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="npm" src="https://img.shields.io/npm/v/@driftengine/core?logo=npm&label=%40driftengine%2Fcore"></a>
   <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="Downloads" src="https://img.shields.io/npm/dm/@driftengine/core?label=downloads"></a>
-  <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-23-blue"></a>
-  <a href="packages/core/README.md"><img alt="Core size" src="https://img.shields.io/badge/core%20gzipped-904.6%20KB-blue"></a>
+  <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-24-blue"></a>
+  <a href="packages/core/README.md"><img alt="Core size" src="https://img.shields.io/badge/core%20gzipped-910.1%20KB-blue"></a>
   <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/npm/l/@driftengine/core?label=licence"></a>
   <a href="https://github.com/drftrun/driftengine/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/drftrun/driftengine/actions/workflows/test.yml/badge.svg"></a>
   <a href="https://driftengine.dev"><img alt="Docs" src="https://img.shields.io/badge/docs-driftengine.dev-blue"></a>
@@ -16,6 +16,12 @@
 DriftEngine is a 3D game engine written in strict TypeScript. It draws through WebGPU, and through
 WebGL2 wherever a browser has no usable device. The same game ships as a web page and as an
 installed application for Linux, Windows, macOS and Android.
+
+**Built to be written by a coding agent as much as by a person.** `npm create @driftengine` starts
+a project with instructions an agent reads on its own, the engine's skill, and a command that opens
+the game on both backends, on the machine's real GPU, and says in words what it saw. A game's rules
+run in Node with no GPU, so an agent can test them, and the exports carry their documentation with
+them.
 
 **Nothing in it decides what your game is.** There is no character type, no level format, no HUD.
 The API takes positions, colours, sizes and time, so what you build keeps its own shape, and a piece
@@ -115,22 +121,22 @@ These three are procedural and ship with the repository: `npm run demo` opens th
 
 ## Packages
 
-**Twenty-three packages, and a consumer takes only what it uses:**
+**Twenty-four packages, and a consumer takes only what it uses:**
 
 | Package                                                      | What it is                                                                                                     | Gzipped               |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | --------------------- |
-| [`@driftengine/core`](packages/core/README.md)               | The runtime: loop, both renderers, cameras, input, scene graph, geometry and text. Re-exports physics          | **904.6 KB**          |
+| [`@driftengine/core`](packages/core/README.md)               | The runtime: loop, both renderers, cameras, input, scene graph, geometry and text. Re-exports physics          | **910.1 KB**          |
 | [`@driftengine/physics`](packages/physics/README.md)         | Rigid bodies, joints, queries, a character controller, a vehicle, ragdolls and cloth. Imports nothing else     | **47.0 KB**           |
-| [`@driftengine/animation`](packages/animation/README.md)     | Skeletons, clips sampled at a time you supply, blend trees, IK, morph targets and spring secondary motion      | **6.0 KB over core**  |
+| [`@driftengine/animation`](packages/animation/README.md)     | Skeletons, clips sampled at a time you supply, blend trees, IK, morph targets and spring secondary motion      | **6.1 KB over core**  |
 | [`@driftengine/audio`](packages/audio/README.md)             | Buses and stems, placed sounds, rooms, synthesis and rhythm analysis                                           | **6.2 KB over core**  |
-| [`@driftengine/assets`](packages/assets/README.md)           | Model readers, the streaming loader, KTX2, and ETC2 encoding for phones                                        | **27.0 KB over core** |
+| [`@driftengine/assets`](packages/assets/README.md)           | Model readers, the streaming loader, KTX2, and ETC2 encoding for phones                                        | **27.1 KB over core** |
 | [`@driftengine/drft`](packages/drft/README.md)               | The `.drft` container. Declares no runtime dependency                                                          | **14.3 KB**           |
 | [`@driftengine/splats`](packages/splats/README.md)           | Gaussian splat captures: readers, view-dependent colour, an off-frame sort and a pass among meshes             | **16.7 KB over core** |
 | [`@driftengine/texture`](packages/texture/README.md)         | DriftTexture: a material as a latent and a decode program sampled on the device, in content-addressed tiles    | **2.3 KB**            |
 | [`@driftengine/capture`](packages/capture/README.md)         | DriftCapture: a video to a surface, colliders, a navigation mesh and proposed entities, on the player's device | **71.3 KB**           |
-| [`@driftengine/terrain`](packages/terrain/README.md)         | Heightfields whose patches meet at different detail without cracks, and a query that answers the drawn surface | **1.4 KB over core**  |
+| [`@driftengine/terrain`](packages/terrain/README.md)         | Heightfields whose patches meet at different detail without cracks, and a query that answers the drawn surface | **1.3 KB over core**  |
 | [`@driftengine/nav`](packages/nav/README.md)                 | Navigation meshes baked from geometry, and paths funnelled across them                                         | **8.8 KB**            |
-| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.1 KB over core** |
+| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.0 KB over core** |
 | [`@driftengine/entities`](packages/entities/README.md)       | Entities with generational identity, components, queries, systems, prefabs and scenes                          | **0.9 KB**            |
 | [`@driftengine/network`](packages/network/README.md)         | One rewind core for lockstep and prediction, a transport seam, and desyncs named by tick. No renderer          | **2.4 KB**            |
 | [`@driftengine/script`](packages/script/README.md)           | The `drift/*` bindings that describe the engine to DriftScript                                                 | **40.3 KB over core** |
@@ -142,6 +148,7 @@ These three are procedural and ship with the repository: `npm run demo` opens th
 | [`@driftengine/media`](packages/media/README.md)             | Clip encoding and frame delivery. Carries `mp4-muxer` so core does not                                         | **11.3 KB**           |
 | [`@driftengine/package`](packages/package/README.md)         | Turns a built game into an installable Linux, Windows, macOS, Android or iOS application                       | **a build tool**      |
 | [`@driftengine/native-host`](packages/native-host/README.md) | The engine on a native window and device — Node, Dawn and SDL — for the packager's native target               | **a Node host**       |
+| [`@driftengine/create`](packages/create/README.md)           | Starts a game: a Vite and TypeScript project, its instructions for a coding agent, and the engine's skill      | **a command**         |
 
 The sizes are the floors `scripts/size-gate.test.mjs` asserts, measured from a real bundle, and
 `scripts/packages.test.mjs` fails when this table disagrees with them or with the directory.
@@ -158,8 +165,26 @@ from a prefab instead. The linker refuses an unprovided module by name at link t
 ## Getting started
 
 ```sh
-npm install @driftengine/core
+npm create @driftengine@latest my-game                           # a lit cube and a rule in DriftScript
+npm create @driftengine@latest my-game -- --template first-game  # a complete 3D game
+cd my-game && npm install && npm run dev
 ```
+
+That is a Vite and TypeScript project with the engine, DriftScript, a test runner and
+`npm run check`, which typechecks, tests, and photographs the game on WebGPU and on WebGL2 into
+`.driftengine/look/`. To add the engine to a project you already have, `npm install
+@driftengine/core`.
+
+### With a coding agent
+
+A started project carries `AGENTS.md`, which most coding agents read on their own, and the
+[`driftengine` skill](skills/driftengine/SKILL.md) in `.agents/skills/` and `.claude/skills/`, for
+Codex, Cursor, Claude Code and the others that read the same folders. The skill teaches the shape
+of a program, the rules the compiler cannot check, the traps that look like engine faults, and
+where every manual page and example is at the installed version. Add it to an existing project
+with `npm create @driftengine@latest . -- --skill`, or from this repository with
+`npx skills add drftrun/driftengine`. The manual's
+[Working with a coding agent](docs/manual/start/with-an-agent.md) has the rest.
 
 **Start from [`examples/`](examples/README.md)**: small runnable programs, one capability each,
 from a single lit mesh to a complete 3D game. `npm run examples` serves them. The smallest,

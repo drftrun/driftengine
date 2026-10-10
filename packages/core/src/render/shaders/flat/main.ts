@@ -18,6 +18,9 @@ export const MAIN_GLSL = `void main() {
   projectSurface(surfaceAt, frameAt, frameTangents);
   /* A layered material's mask, read once for every layer's share below: layered.ts. */
   if (LAYERED && layered()) layeredBegin();
+  /* And the specular every highlight below reads: its layers' own, where a material gives them. */
+  surfaceSpecular = vSpecular;
+  if (LAYERED && layered()) surfaceSpecular = layeredSpecular(vSpecular);
   if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
   /*
    * The layer's surface effects, zeros where the albedo array carries no table — see
@@ -511,6 +514,8 @@ export const MAIN_GLSL = `void main() {
 #endif
     /* A draw's own ambient, where one is set, in place of the frame's: \`setAmbientSH\`. */
     if (uAmbientSH[6].w > 0.5) ambient = ambientHarmonics(n);
+    /* Less of it where a layered material's mesh occlusion darkens the ambient light: layered.ts. */
+    if (LAYERED && layered()) ambient *= layeredAmbient();
     /*
      * A metal keeps its ambient and loses its direct diffuse.
      *
@@ -564,7 +569,7 @@ export const MAIN_GLSL = `void main() {
      * mix(x, y, 0) is exactly x, so at metal 0 this is vec3(vSpecular) and the line below is the
      * one it replaces with the scalar broadened to three components.
      */
-    vec3 specColor = mix(vec3(vSpecular), albedo, metal);
+    vec3 specColor = mix(vec3(surfaceSpecular), albedo, metal);
     /*
      * **A metal's highlight goes white at a grazing angle, and that is most of what reads as
      * polished.**
@@ -1657,7 +1662,7 @@ export const MAIN_GLSL = `void main() {
        * any lamp in the scene. The condition is the old one exactly when metal is 0, so nothing
        * that binds no map takes a different branch than it took before.
        */
-      if (vSpecular > 0.0 || metal > 0.0) {
+      if (surfaceSpecular > 0.0 || metal > 0.0) {
         vec3 toEyeLamp = normalize(uCameraPos - vWorldPos);
         vec3 lampHalfway = normalize(toLight / max(dist, 1e-4) + toEyeLamp);
         /* The same grazing whitening the sun's highlight takes, and zero at metal 0 for the look. */

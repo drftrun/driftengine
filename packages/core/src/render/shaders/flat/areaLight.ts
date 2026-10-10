@@ -123,7 +123,7 @@ void areaLightAdd(
   lampOpen += areaDiffuse;
   lampShadowed += areaDiffuse * occl * glass;
 
-  if (vSpecular > 0.0 || metal > 0.0) {
+  if (surfaceSpecular > 0.0 || metal > 0.0) {
     vec3 c0 = centre - right * halfSize.x + up * halfSize.y;
     vec3 c1 = centre + right * halfSize.x + up * halfSize.y;
     vec3 c2 = centre + right * halfSize.x - up * halfSize.y;

@@ -117,6 +117,7 @@ import {
   packSurfaceLayers,
 } from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
+import { LOOK_FLOATS, asksLayerLooks, packLayerLooks } from '../../surfaceLayerLooks.ts';
 import type { SurfaceProjection } from '../../surfaceProjection.ts';
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
 import { SceneTarget } from '../../sceneTarget.ts';
@@ -1783,9 +1784,14 @@ export class WebGL2Renderer implements RendererApi {
   private readonly transmission = new Float32Array([-1, -1, -1, 0]);
   /** `uLayers`, the current material's layers packed. See `surfaceLayers.ts`. */
   private readonly layerFloats = new Float32Array(LAYER_FLOATS);
+  /** `uLayerLooks`, the current material's layer picks and looks packed. See `surfaceLayerLooks.ts`. */
+  private readonly lookFloats = new Float32Array(LOOK_FLOATS);
   /** Whether the lit stage has room for layers' two vectors, and which refusals were said. */
   private layersRoom: boolean | null = null;
   private warnedLayersRoom = false;
+  /** Whether it has room for the layers' looks beside them, and whether the refusal was said. */
+  private looksRoom: boolean | null = null;
+  private warnedLooksRoom = false;
   private warnedLayersModelMap = false;
   private warnedLayersTriplanar = false;
   private warnedOverlayRoom = false;
@@ -4398,6 +4404,9 @@ export class WebGL2Renderer implements RendererApi {
     packSurfaceLayers(layers, this.layerFloats);
     if (layers !== null) this.askLit('LAYERED');
     gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
+    packLayerLooks(layers, this.lookFloats);
+    if (this.looksFit(layers)) this.askLit('LAYER_LOOKS');
+    gl.uniform4fv(u['uLayerLooks'] ?? null, this.lookFloats);
     gl.uniform1i(u['uModelMap'] ?? null, MODEL_MAP_TEXTURE_UNIT);
     packModel(
       material?.model ?? null,
@@ -4691,6 +4700,28 @@ export class WebGL2Renderer implements RendererApi {
     return null;
   }
 
+  /**
+   * Whether a layered material's picks and looks are drawn: asked for, and room for their fifteen
+   * vectors beside the layers' four. Refused, the layers are drawn reading layer `i` of their arrays
+   * as they are, said once — which on a material sharing its arrays reads the wrong textures, so
+   * the sentence names the way out.
+   */
+  private looksFit(layers: SurfaceLayers<SurfaceTexture> | null): boolean {
+    if (!asksLayerLooks(layers)) return false;
+    this.looksRoom ??= this.switchFits('LAYER_LOOKS', 'LAYERED');
+    if (this.looksRoom) return true;
+    if (!this.warnedLooksRoom) {
+      this.warnedLooksRoom = true;
+      console.warn(
+        "Renderer: a layered material's picks and looks are refused on this device. They take " +
+          'fifteen fragment uniform vectors the lit shader does not have, so its layers read layer ' +
+          'i of its arrays, untinted, at one repeat each. A lower `maxLights` makes the room, or ' +
+          'WebGPU has it.',
+      );
+    }
+    return false;
+  }
+
   /** Says once that a layered material's triplanar projection is laid on the horizontal plane. */
   private warnLayersTriplanar(): void {
     if (this.warnedLayersTriplanar) return;
@@ -4701,9 +4732,13 @@ export class WebGL2Renderer implements RendererApi {
     );
   }
 
-  /** Whether the lit shader with `feature` compiled in fits this GPU's fragment uniform vectors. */
-  private switchFits(feature: LitSwitch): boolean {
+  /**
+   * Whether the lit shader with `feature` compiled in, and `beside` with it where a switch means
+   * nothing alone, fits this GPU's fragment uniform vectors.
+   */
+  private switchFits(feature: LitSwitch, beside?: LitSwitch): boolean {
     const asIf: Partial<Record<LitSwitch, boolean>> = { [feature]: true };
+    if (beside !== undefined) asIf[beside] = true;
     return (
       countUniformVectors(this.flatFragAt(this.lightBudget, asIf)) <= this.fragmentVectorLimit()
     );
@@ -6960,6 +6995,7 @@ export class WebGL2Renderer implements RendererApi {
       worldUvs: asIf.WORLD_UVS ?? this.litOn.WORLD_UVS,
       movingSun: asIf.MOVING_SUN ?? this.litOn.MOVING_SUN,
       layered: asIf.LAYERED ?? this.litOn.LAYERED,
+      layerLooks: asIf.LAYER_LOOKS ?? this.litOn.LAYER_LOOKS,
       maxLights: budget.maxLights,
       maxAreaLights: budget.maxAreaLights,
     });
@@ -9116,6 +9152,7 @@ export class WebGL2Renderer implements RendererApi {
     resolveTransmission(null, this.transmission);
     /* Nor layers: one layer until a material asks for more. */
     this.layerFloats.fill(0);
+    this.lookFloats.fill(0);
     this.overlayMaps = null;
     this.overlayTexture = null;
     /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
@@ -9290,6 +9327,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
     gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
     gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
+    gl.uniform4fv(u['uLayerLooks'] ?? null, this.lookFloats);
     /* Neither refracting nor glass, which is every draw that does not say otherwise. See
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);

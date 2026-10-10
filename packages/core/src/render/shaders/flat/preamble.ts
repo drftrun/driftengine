@@ -52,6 +52,12 @@ in vec3 vColor;
 in vec3 vWorldPos;
 in float vEmissive;
 in float vSpecular;
+/*
+ * The specular this fragment shades with: its vertices' own, or a layered material's layers'
+ * blend of theirs, set once at the top of main. Every read of the specular reads this rather than
+ * the varying, so a layer's specular reaches the highlight, the reflection and the area lights alike.
+ */
+float surfaceSpecular;
 in vec4 vLightPos;
 in vec3 vUv;
 in vec3 vEmissiveColor;

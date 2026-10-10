@@ -50,6 +50,13 @@ const DOC = path.join(ROOT, 'docs', 'CAPABILITIES.md');
  */
 export const TEST_ROOTS = ['packages', 'demo', 'editor', 'tools', 'examples'];
 
+/**
+ * Directories under the roots that hold copies rather than tests: `@driftengine/create` carries the
+ * first game's test as a file a started project runs, generated from `examples/`, where the suite
+ * runs the original. Counting the copy made every full run look filtered.
+ */
+const COPIES = new Set([path.join(ROOT, 'packages', 'create', 'templates')]);
+
 export function surveyTestFiles() {
   let total = 0;
   let newest = 0;
@@ -57,6 +64,7 @@ export function surveyTestFiles() {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
       const full = path.join(dir, entry.name);
+      if (COPIES.has(full)) continue;
       if (entry.isDirectory()) walk(full);
       else if (entry.name.endsWith('.test.ts')) {
         total += 1;

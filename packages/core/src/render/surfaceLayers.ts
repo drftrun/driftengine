@@ -2,6 +2,7 @@
  * A material blended from layers by a mask: `SurfaceMaterial.layers`, the four vectors
  * `shaders/flat/layered.ts` reads it from, and the decisions both backends take about it.
  */
+import type { SurfaceLayerLook, SurfaceMeshOcclusion } from './surfaceLayerLooks.ts';
 import type { SurfaceProjection } from './surfaceProjection.ts';
 
 /** The most layers a material blends: a base and one for each of the mask's four channels. */
@@ -10,8 +11,9 @@ export const MAX_SURFACE_LAYERS = 5;
 /**
  * Up to five layers, each its own colour, normal and roughness at its own repeat, blended by a mask.
  *
- * **Layer `i` is layer `i` of the material's arrays**: `albedo`, `normal` and `orm` each an array
- * whose layers are the material's layers in order, read at the mesh's coordinates times
+ * **Layer `i` is layer `i` of the material's arrays**, unless `arrayLayers` picks another: `albedo`,
+ * `normal` and `orm` each an array whose layers are the material's layers, read at the mesh's
+ * coordinates times
  * `repeats[i]`, so rock can repeat forty times across a cliff while the moss on it repeats three.
  * Where the material has a `projection`, the layers are read at the world's horizontal position
  * instead, so a repeat is so many a metre (with the projection's own scale at 1). **The mask** is
@@ -23,8 +25,13 @@ export const MAX_SURFACE_LAYERS = 5;
  * **Maps beyond the layers ride the material's own arrays, after its layers**, so they take no
  * texture binding of their own — the lit stage has none to spare: a mask the ORM array carries
  * (`mask: 'orm'`) is the ORM array's layer just past the layers, an `addMask` the one after that,
- * and `meshNormal` the normal array's layer just past the layers. Each shares its array's size and
- * format, so a four-channel mask wants an array that stores four.
+ * a `meshOcclusion` the one after any of those, and `meshNormal` the normal array's layer just past
+ * the layers. `extrasAt` moves where "just past" is, for materials that share arrays. Each shares
+ * its array's size and format, so a four-channel mask wants an array that stores four.
+ *
+ * **Shared arrays and a look of each layer's own** — `arrayLayers`, `extrasAt`, `looks` and
+ * `meshOcclusion` — are a lit switch of their own, `LAYER_LOOKS`, and `surfaceLayerLooks.ts` says
+ * what they cost.
  *
  * **What it gives up**: every layer's maps are read wherever any shows, three reads a layer, so five
  * layers are fifteen reads where one material is three; layers share an array's size and format; a
@@ -40,8 +47,12 @@ export interface SurfaceLayers<Texture> {
    * vertex colour's red, green and blue, which then weights the layers instead of tinting them.
    */
   readonly mask: Texture | 'orm' | 'vertex';
-  /** Each layer's repeats across the mesh's coordinates, base first: one to five of them. */
-  readonly repeats: readonly number[];
+  /**
+   * Each layer's repeats across the mesh's coordinates, base first: one to five of them. A pair is a
+   * repeat across and a repeat down apart, moss stretched along a trunk; a pair is drawn through the
+   * `LAYER_LOOKS` switch, which a single number does not need.
+   */
+  readonly repeats: readonly (number | readonly [number, number])[];
   /** The layer the emissive map glows on, 0 to 4. Absent: everywhere, as on any material. */
   readonly emissiveLayer?: number;
   /**
@@ -77,6 +88,34 @@ export interface SurfaceLayers<Texture> {
    * layer repeating forty times across it cannot carry.
    */
   readonly meshNormal?: boolean;
+  /**
+   * Which layer of the material's albedo, normal and ORM arrays each layer reads, base first, so
+   * many materials can share one array of each kind and hold every texture once. Absent, or past
+   * its end, layer `i` reads layer `i`. The same index reads all three arrays, so a texture's three
+   * maps sit at the same layer of each.
+   */
+  readonly arrayLayers?: readonly number[];
+  /**
+   * The layer of each array where the maps beyond the layers start: the ORM array's mask, added
+   * mask and mesh occlusion, in that order, and the normal array's mesh normal. Absent: just past
+   * the layers, at the layer count — which is no place for them once materials share arrays.
+   */
+  readonly extrasAt?: number;
+  /**
+   * Each layer's own look, base first: a tint, the ranges its ORM's roughness and metalness are
+   * spread over, and how far its normal map bends the surface. Absent or null for a layer: the map
+   * as it is.
+   */
+  readonly looks?: readonly (SurfaceLayerLook | null | undefined)[];
+  /**
+   * An occlusion read at the mesh's own coordinates — the red of the ORM array's layer after the
+   * layers and any mask or added mask the array carries — darkening the surface by a strength from 0
+   * to 1: the large shading of a cliff that layers repeating across it cannot carry, as
+   * `meshNormal` carries its shape. A number is that strength, darkening the blended colour; the
+   * object form also chooses what it darkens and the range its red is spread over. Absent or 0:
+   * none.
+   */
+  readonly meshOcclusion?: number | SurfaceMeshOcclusion;
 }
 
 /** Floats `packSurfaceLayers` writes: four vectors. */
@@ -104,7 +143,8 @@ export function packSurfaceLayers<Texture>(
   out.fill(0);
   if (layers === null || layers === undefined || layers.repeats.length === 0) return;
   const count = Math.min(layers.repeats.length, MAX_SURFACE_LAYERS);
-  for (let i = 0; i < MAX_SURFACE_LAYERS; i++) out[i] = positive(i < count ? layers.repeats[i] : 1);
+  for (let i = 0; i < MAX_SURFACE_LAYERS; i++)
+    out[i] = positive(i < count ? across(layers.repeats[i]) : 1);
   out[5] = count;
   const glow = layers.emissiveLayer;
   out[6] = glow !== undefined && Number.isInteger(glow) && glow >= 0 && glow < count ? glow : -1;
@@ -160,6 +200,11 @@ export function layeredProjection<Texture>(
   if (projection === null || projection === undefined) return null;
   if (layers === null || layers === undefined || projection.kind !== 'triplanar') return projection;
   return { kind: 'planar', scale: projection.scale };
+}
+
+/** A layer's repeat across: the number, or the first of a pair. The second is `LAYER_LOOKS`'. */
+export function across(repeat: number | readonly [number, number] | undefined): number | undefined {
+  return typeof repeat === 'number' || repeat === undefined ? repeat : repeat[0];
 }
 
 /** A layer an added mask or the facing may name: one a channel lays, 1 to `count − 1`, or −1. */
