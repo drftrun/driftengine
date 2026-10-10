@@ -80,11 +80,17 @@ export class TextRenderer {
     originY: number,
     style: TextStyle,
     timeSec: number,
+    /** The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    outputTransform = 0,
+    outputExposure = 1,
   ): boolean {
     if (this.layout.instanceCount === 0 || style.alpha <= 0) return false;
     const gl = this.gl;
 
     gl.useProgram(this.program);
+    const grade = this.uniforms['uOutputTransform'];
+    if (grade !== undefined) gl.uniform1i(grade, outputTransform);
+    setFloat(gl, this.uniforms['uOutputExposure'], outputExposure);
     gl.bindVertexArray(this.vao);
 
     /*

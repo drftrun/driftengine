@@ -2537,3 +2537,119 @@ test('AN ANIMATED BATCH BINDS ITS CLIP, CLOCKS AND CLOCK, IN ITS DRAW AND ITS SH
   expect(named(start, 'uSceneTime'), 'the shadow by the same clock').toEqual([[1.5]]);
   expect(named(start, 'uBonePlaces')).toEqual([[BONE_PLACES_TEXTURE_UNIT]]);
 });
+
+/*
+ * **THE CLEAR IS GRADED AS A PASS GRADES A COLOUR**, the WebGL2 half of the WebGPU test of that
+ * name: 0.5 clears to 0.735357 under the default sRGB encode with no composite grading after the
+ * frame, and to 0.5 as given under `hdrScene`, whose resolve grades the whole frame.
+ */
+test('CLEARS TO THE COLOUR GRADED, AND TO THE COLOUR ITSELF WHERE THE RESOLVE GRADES', () => {
+  const cleared = (hdrScene: boolean): number => {
+    const { canvas, calls } = recordingGl({ extensions: ['EXT_color_buffer_float'] });
+    const renderer = new Renderer(canvas, resolveRenderQuality({ hdrScene }));
+    renderer.beginFrame([0.5, 0.5, 0.5]);
+    return calls.filter((call) => call.name === 'clearColor').at(-1)?.args[0] as number;
+  };
+  expect(cleared(false)).toBeCloseTo(0.735357, 5);
+  expect(cleared(true)).toBe(0.5);
+});
+
+/*
+ * **PAST THE PRESENT, A PASS GRADES ITSELF EVEN WHERE A COMPOSITE GRADES THE FRAME.** Under
+ * `hdrScene` the resolve applies the transform and every pass before it writes linear light. A pass
+ * drawn after `endFrame` lands on the canvas the resolve has already written, so nothing grades it
+ * after, and it used to write its colour ungraded there: the one surface on screen reading a colour
+ * as a display value. Pinned through the mesh pass and a panel, the interface's two usual verbs.
+ */
+test('PAST THE PRESENT, A PASS GRADES ITSELF UNDER A COMPOSITE THAT GRADES THE FRAME', () => {
+  const { canvas, calls } = recordingGl({
+    extensions: ['EXT_color_buffer_float'],
+    uniforms: ['uOutputTransform'],
+  });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ hdrScene: true }));
+  const env = createEnvironment();
+  const camera = new Camera();
+  camera.updateMatrices(1);
+  const grades = (from: number): unknown[] =>
+    calls
+      .slice(from)
+      .filter(
+        (call) =>
+          call.name === 'uniform1i' &&
+          (call.args[0] as { name?: string } | null)?.name === 'uOutputTransform',
+      )
+      .map((call) => call.args[1]);
+  renderer.beginFrame([0, 0, 0]);
+  const inFrame = calls.length;
+  renderer.bindMeshPass(camera, env);
+  renderer.fillPanel({ left: 0, top: 0, width: 10, height: 10 }, [0.5, 0.5, 0.5], 1);
+  expect(grades(inFrame), 'inside the frame the resolve grades').toEqual([0, 0]);
+  renderer.endFrame();
+  const past = calls.length;
+  renderer.bindMeshPass(camera, env);
+  renderer.fillPanel({ left: 0, top: 0, width: 10, height: 10 }, [0.5, 0.5, 0.5], 1);
+  expect(grades(past), 'past the present each pass grades itself').toEqual([1, 1]);
+});
+
+/*
+ * **UNDER A TONE CURVE A PANEL IS ENCODED AND NOT TONE MAPPED, WHERE THE WORLD IS.** A panel's
+ * colour was picked for the screen; put through `aces` with the world, a dark one was crushed to
+ * black and white text came out grey. The mesh pass in the same frame keeps the curve, code 2.
+ */
+test('UNDER A TONE CURVE A PANEL IS ENCODED AND NOT TONE MAPPED, WHERE THE WORLD IS', () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uOutputTransform'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ outputTransform: 'aces' }));
+  const camera = new Camera();
+  camera.updateMatrices(1);
+  renderer.beginFrame([0, 0, 0]);
+  const from = calls.length;
+  renderer.bindMeshPass(camera, createEnvironment());
+  renderer.fillPanel({ left: 0, top: 0, width: 10, height: 10 }, [0.5, 0.5, 0.5], 1);
+  const grades = calls
+    .slice(from)
+    .filter(
+      (call) =>
+        call.name === 'uniform1i' &&
+        (call.args[0] as { name?: string } | null)?.name === 'uOutputTransform',
+    )
+    .map((call) => call.args[1]);
+  expect(grades).toEqual([2, 1]);
+});
+
+/*
+ * **A PROBE'S FACE STAYS UNGRADED WHEN ITS CALLBACK BINDS THE MESH PASS**, which every bake's
+ * callback does. The bake holds the grade at 0 because a probe stores radiance; `bindMeshPass` set
+ * the frame's grade again on its first line, so a face drawn through it was graded after all and the
+ * frame graded what it read of the cube a second time. Every grade a face uploads is 0 now, and the
+ * frame's own comes back after.
+ */
+test('A PROBE FACE IS DRAWN UNGRADED THROUGH bindMeshPass, AND THE FRAME GRADES AFTER', () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uOutputTransform'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ reflectionProbeSize: 64 }));
+  const env = createEnvironment();
+  const grades = (from: number): unknown[] =>
+    calls
+      .slice(from)
+      .filter(
+        (call) =>
+          call.name === 'uniform1i' &&
+          (call.args[0] as { name?: string } | null)?.name === 'uOutputTransform',
+      )
+      .map((call) => call.args[1]);
+  let inFace = 0;
+  const start = calls.length;
+  const baked = renderer.bakeReflectionProbe([0, 1, 0], [0, 0, 0], (camera) => {
+    const from = calls.length;
+    renderer.bindMeshPass(camera, env);
+    expect(grades(from), 'a face binds the mesh pass ungraded').toEqual([0]);
+    inFace++;
+  });
+  expect(baked && inFace, 'the bake must have drawn its faces').toBe(6);
+  const camera = new Camera();
+  camera.updateMatrices(1);
+  const after = calls.length;
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, env);
+  expect(grades(after).at(-1), 'the frame grades with its sRGB encode').toBe(1);
+  expect(grades(start).length).toBeGreaterThan(6);
+});

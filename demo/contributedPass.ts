@@ -10,7 +10,7 @@
  * pipeline, it builds them in `init`, it draws in `draw`, and it never touches an engine internal.
  * Everything it is handed comes through `PassDevice` and `PassContext`.
  */
-import { Camera, createEnvironment, createRenderer } from '../packages/core/src/index';
+import { Camera, createEnvironment, createRenderer, srgbColor } from '../packages/core/src/index';
 import type {
   PassContext,
   PassDefinition,
@@ -182,14 +182,14 @@ class BarsPass implements PassDefinition {
 }
 
 const SKY: SkyColors = {
-  top: [0.06, 0.09, 0.16],
-  horizon: [0.22, 0.26, 0.34],
-  deep: [0.02, 0.03, 0.06],
+  top: srgbColor(0.06, 0.09, 0.16),
+  horizon: srgbColor(0.22, 0.26, 0.34),
+  deep: srgbColor(0.02, 0.03, 0.06),
   sunDir: [0.3, 0.7, 0.4],
-  sunColor: [1, 0.95, 0.85],
+  sunColor: srgbColor(1, 0.95, 0.85),
   sunAngularRadius: 0.005,
   moonDir: [-0.3, 0.6, -0.4],
-  moonColor: [0.5, 0.55, 0.7],
+  moonColor: srgbColor(0.5, 0.55, 0.7),
   moonAngularRadius: 0.006,
   moonPhase: 0.5,
   nightFactor: 0.7,
@@ -200,11 +200,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: [0.3, 0.7, 0.4],
   directionalColor: [0.8, 0.8, 0.9],
-  ambient: [0.1, 0.12, 0.16],
-  ambientGround: [0.05, 0.05, 0.07],
+  ambient: srgbColor(0.1, 0.12, 0.16),
+  ambientGround: srgbColor(0.05, 0.05, 0.07),
   emissiveGain: 1,
   nightFactor: 0.7,
-  fogColor: [0.12, 0.14, 0.2],
+  fogColor: srgbColor(0.12, 0.14, 0.2),
   fogDensity: 0.004,
   fogHeightFalloff: 0.05,
   fogBaseY: 0,

@@ -253,10 +253,15 @@ export class WaterRenderer {
     lightFalloff: 'smooth' | 'inverseSquare' = 'smooth',
     windX = 0,
     windZ = 0,
+    outputTransform = 0,
+    outputExposure = 1,
   ): void {
     const u = this.uniforms;
     const reflectionReady = reflection?.isReadyFor(settings.level) ?? false;
     gl.useProgram(this.program);
+    /* The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, camera.viewProjection);
     gl.uniformMatrix4fv(
       u['uReflectionViewProj'] ?? null,

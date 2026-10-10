@@ -5,9 +5,12 @@
  * Picking answers one question, what is under this pixel, against meshes registered for it. Hover,
  * press and drag are the game's: the engine says what was hit, where, and how far away.
  */
-import { MeshBuilder, SceneNode } from '@driftengine/core';
+import { MeshBuilder, SceneNode, srgbColor } from '@driftengine/core';
 import type { Vec3 } from '@driftengine/core';
 import { DAYLIGHT, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.6, 0.68);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -90,7 +93,7 @@ stage.run({
     clicked = false;
     // #endregion
 
-    renderer.beginFrame([0.55, 0.6, 0.68]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, DAYLIGHT);
     renderer.drawMesh(table, still.worldMatrix);
     for (let i = 0; i < nodes.length; i += 1)

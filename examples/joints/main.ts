@@ -5,7 +5,7 @@
  * Balls drop onto the bridge and into the chain's basket. Open and shut the door, and make the
  * chain breakable to watch a joint give way.
  */
-import { MeshBuilder, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, computeLightMatrix, createEnvironment, srgbColor } from '@driftengine/core';
 import type { MeshHandle, Vec3 } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
@@ -19,6 +19,9 @@ import {
 } from '@driftengine/physics';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.56, 0.62, 0.7);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -311,7 +314,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters((sink) => drawAll((mesh, matrix) => sink.mesh(mesh, matrix)));
     renderer.endShadowPass();
-    renderer.beginFrame([0.56, 0.62, 0.7]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     drawAll((mesh, matrix) => renderer.drawMesh(mesh, matrix));
     const broken = chainJoints.filter((joint) => world.joints.broken[joint] === 1).length;

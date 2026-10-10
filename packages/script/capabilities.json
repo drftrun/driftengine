@@ -6887,7 +6887,7 @@
         "scene.write"
       ],
       "deterministic": false,
-      "doc": "The same, multiplied by a colour. White is the identity, so a white texture draws exactly this colour — which is how a solid rectangle is drawn.",
+      "doc": "The same, multiplied by a colour picked for the screen: sRGB, 0 to 1, decoded to linear as a tint on a node is, with alpha kept as given. White is the identity, so a white texture draws exactly this colour — which is how a solid rectangle is drawn.",
       "implementation": "drift/2d.tinted"
     },
     {
@@ -7421,7 +7421,7 @@
         "scene.write"
       ],
       "deterministic": false,
-      "doc": "Change a node's background colour. A node with no background gets one.",
+      "doc": "Change a node's background colour, given as picked for the screen: sRGB, 0 to 1, decoded here to the linear light the renderer draws, as a theme's hex token is. Alpha is coverage and is kept as given. A node with no background gets one.",
       "implementation": "drift/ui.tint"
     },
     {

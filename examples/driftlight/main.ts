@@ -14,9 +14,13 @@ import {
   createEnvironment,
   createPointLightBuffer,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { GlobalFieldInstance, PointLightSource, Vec3 } from '@driftengine/core';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0, 0, 0);
 
 const stage = await openStage({ outputTransform: 'aces', outputExposure: 1.4, sceneSamples: 4 });
 const { renderer, camera } = stage;
@@ -147,7 +151,7 @@ stage.run({
     shadedAt = time;
     // #endregion
 
-    renderer.beginFrame([0, 0, 0]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(gallery, still.worldMatrix);
     renderer.drawMesh(stands, still.worldMatrix);

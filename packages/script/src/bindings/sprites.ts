@@ -1,3 +1,4 @@
+import { srgbToLinear } from '@driftengine/core';
 import type { SpriteBatch, SpriteSheet, Tilemap } from '@driftengine/ui2d';
 import {
   createSpriteFrame,
@@ -125,7 +126,7 @@ export const SPRITES_CAPABILITIES: readonly CapabilityDefinition[] = [
     ],
     'void',
     ['scene.write'],
-    'The same, multiplied by a colour. White is the identity, so a white texture draws exactly this colour — which is how a solid rectangle is drawn.',
+    'The same, multiplied by a colour picked for the screen: sRGB, 0 to 1, decoded to linear as a tint on a node is, with alpha kept as given. White is the identity, so a white texture draws exactly this colour — which is how a solid rectangle is drawn.',
   ),
   define(
     'frame',
@@ -264,9 +265,10 @@ export function spritesImplementation(): Record<string, unknown> {
       b: number,
       a: number,
     ) => {
-      tint[0] = r;
-      tint[1] = g;
-      tint[2] = b;
+      /* Picked for the screen and decoded, so a white texture draws exactly this colour. */
+      tint[0] = srgbToLinear(r);
+      tint[1] = srgbToLinear(g);
+      tint[2] = srgbToLinear(b);
       tint[3] = a;
       drawSprite(batch, texture, at(x, y, w, h), null, tint);
     },

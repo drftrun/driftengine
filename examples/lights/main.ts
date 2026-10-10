@@ -17,6 +17,7 @@ import {
   createPointLightBuffer,
   selectAreaLights,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type {
   AreaLightSource,
@@ -27,6 +28,9 @@ import type {
 import type { RendererApi } from '@driftengine/core';
 import { controls, flag, openScene } from '../common/stage';
 import type { SceneHooks } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0, 0, 0);
 
 // #region lamps
 /** Two lamps on posts, one of them flickering, and a downlight aimed at the floor between pillars. */
@@ -291,7 +295,7 @@ function build(renderer: RendererApi): SceneHooks {
       shadedAt = time;
       // #endregion
 
-      renderer.beginFrame([0, 0, 0]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       renderer.drawMesh(courtyard, fixed.worldMatrix);
       renderer.drawMesh(block, blockNode.worldMatrix);

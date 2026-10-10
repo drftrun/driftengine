@@ -167,20 +167,53 @@ export function chain(cloud: Cloud, gradients: GaussianGradients): void {
   }
 }
 
-/** The fitted cloud as a capture: single precision, cut to what it holds. */
+/**
+ * The fitted cloud as a capture: single precision, cut to what it holds, and its colour as display
+ * values.
+ *
+ * **Encoded, because `SplatSource.colors` is a display value** — what every trained capture stores,
+ * since training fits photographs as they look — and the splat shader decodes it after the
+ * view-dependent term. The fit runs in linear light against decoded frames, so its colour goes out
+ * through the sRGB encode, which the shader's decode undoes exactly. The l=1 band is carried
+ * through the encode's slope at that colour, the first-order step: what it gives up is a sheen as
+ * large as the colour itself, which comes back a little off. What would make it wrong is a fit
+ * run in display values, which this one is not.
+ */
 export function harvest(cloud: Cloud): SplatSource {
   const { count } = cloud;
+  const linear = cloud.colors.values;
+  const colors = new Float32Array(count * 3);
+  for (let i = 0; i < count * 3; i += 1) colors[i] = encode(Math.max(0, linear[i] as number));
   const source: SplatSource = {
     count,
     positions: Float32Array.from(cloud.positions.values.subarray(0, count * 3)),
     scales: Float32Array.from(cloud.scales.subarray(0, count * 3)),
     rotations: Float32Array.from(cloud.rotations.values.subarray(0, count * 4)),
-    colors: Float32Array.from(cloud.colors.values.subarray(0, count * 3)),
+    colors,
     opacities: Float32Array.from(cloud.opacities.subarray(0, count)),
   };
   if (cloud.sh1 === null) return source;
-  return {
-    ...source,
-    sh1: Float32Array.from(cloud.sh1.values.subarray(0, count * SH1_COEFFICIENTS)),
-  };
+  const band = cloud.sh1.values;
+  const sh1 = new Float32Array(count * SH1_COEFFICIENTS);
+  /* Interleaved by basis and then by channel, so coefficient `k` carries channel `k % 3`. */
+  for (let at = 0; at < count; at += 1) {
+    for (let k = 0; k < SH1_COEFFICIENTS; k += 1) {
+      const slope = encodeSlope(Math.max(0, linear[at * 3 + (k % 3)] as number));
+      sh1[at * SH1_COEFFICIENTS + k] = (band[at * SH1_COEFFICIENTS + k] as number) * slope;
+    }
+  }
+  return { ...source, sh1 };
+}
+
+/*
+ * The sRGB encode and its derivative, through the reproducible `exactExp` and `exactLog` the fit's
+ * other transforms use, so a capture fitted on two machines hands over the same colours.
+ */
+function encode(value: number): number {
+  return value <= 0.0031308 ? value * 12.92 : 1.055 * exactExp(exactLog(value) / 2.4) - 0.055;
+}
+
+/** The encode's slope at `value`: 12.92 on its straight segment, and the curve's above it. */
+function encodeSlope(value: number): number {
+  return value <= 0.0031308 ? 12.92 : (1.055 / 2.4) * exactExp(exactLog(value) * (1 / 2.4 - 1));
 }

@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 
 import { LOOK_FLOATS, asksLayerLooks, packLayerLooks } from './surfaceLayerLooks.ts';
+import type { SurfaceMeshOcclusion } from './surfaceLayerLooks.ts';
 
 /** The identity of one layer's two vectors: white, the map's own bend, both ranges 0 to 1. */
 const PLAIN_LAYER = [1, 1, 1, 1, 0, 1, 0, 1];
@@ -34,7 +35,7 @@ it('PACKS THE IDENTITY FOR A LAYERED MATERIAL THAT ASKS FOR NO PICKS AND NO LOOK
 
 /*
  * **Layers picked from shared arrays, each with its own look**: the picks base first, the extras'
- * start, the occlusion's strength and target, then each layer's tint and normal strength and its
+ * start, the occlusion's strength on the colour and on the ambient light, then each layer's tint and normal strength and its
  * two ranges, then each layer's specular, its repeat down, and the occlusion's range. A layer given
  * no look keeps the identity; a repeat given as a pair keeps its second number down.
  */
@@ -55,7 +56,7 @@ it('PACKS EACH PICK, THE EXTRAS, THE OCCLUSION, EACH LOOK, EACH SPECULAR AND EAC
     },
     out,
   );
-  expect(Array.from(out.subarray(0, 8))).toEqual([12, 3, 30, 3, 4, 40, 0.75, 1]);
+  expect(Array.from(out.subarray(0, 8))).toEqual([12, 3, 30, 3, 4, 40, 0, 0.75]);
   expect(Array.from(out.subarray(8, 16))).toEqual(
     [2.5, 2.46, 1.33, 7, 0, 1, 0, 1].map(Math.fround),
   );
@@ -76,7 +77,39 @@ it('READS A NUMBER OCCLUSION AS A STRENGTH ON THE COLOUR, AND AN OBJECT AS STREN
   packLayerLooks({ mask: 'orm', repeats: [1], meshOcclusion: 0.5 }, out);
   expect([out[6], out[7], out[58], out[59]]).toEqual([0.5, 0, 0, 1]);
   packLayerLooks({ mask: 'orm', repeats: [1], meshOcclusion: { into: 'ambient' } }, out);
-  expect([out[6], out[7]]).toEqual([1, 1]);
+  expect([out[6], out[7]]).toEqual([0, 1]);
+});
+
+/*
+ * **ONE OCCLUSION INTO THE AMBIENT LIGHT AND THE COLOUR AT ONCE, EACH AT ITS OWN STRENGTH**, the
+ * colour's past 1: a material that takes its ambient occlusion from a map and darkens its colour by
+ * the same map twice as hard. The colour's own strength stands wherever it is named, `into` the
+ * colour too; absent, it is the strength where the colour is the target and 0 where the ambient
+ * light is. Not a number, or below 0, is none.
+ */
+it('PACKS AN OCCLUSION INTO THE AMBIENT LIGHT AND THE COLOUR, THE COLOUR PAST 1', () => {
+  const out = new Float32Array(LOOK_FLOATS);
+  const occluded = (meshOcclusion: SurfaceMeshOcclusion): number[] => {
+    packLayerLooks({ mask: 'orm', repeats: [1], meshOcclusion }, out);
+    return [out[6] as number, out[7] as number];
+  };
+  expect(occluded({ strength: 0.5, into: 'ambient', colorStrength: 2 })).toEqual([2, 0.5]);
+  expect(occluded({ colorStrength: 1.75 }), 'named on the colour, it is the colour').toEqual([
+    1.75, 0,
+  ]);
+  expect(occluded({ strength: 0.25, colorStrength: 0 })).toEqual([0, 0]);
+  expect(occluded({ into: 'ambient', colorStrength: -1 })).toEqual([0, 1]);
+  expect(occluded({ into: 'ambient', colorStrength: Number.NaN })).toEqual([0, 1]);
+  expect(
+    asksLayerLooks({ mask: 'orm', repeats: [1], meshOcclusion: { strength: 0, colorStrength: 2 } }),
+  ).toBe(true);
+  expect(
+    asksLayerLooks({
+      mask: 'orm',
+      repeats: [1],
+      meshOcclusion: { strength: 0, into: 'ambient', colorStrength: 0 },
+    }),
+  ).toBe(false);
 });
 
 /*

@@ -36,6 +36,7 @@ import {
   createPointLightBuffer,
   createRenderer,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   MeshHandle,
@@ -73,14 +74,14 @@ const ROOM_HEIGHT = 8;
  * brightness would bury the difference under something the smoke was never between.
  */
 const SKY: SkyColors = {
-  top: [0.01, 0.012, 0.02],
-  horizon: [0.03, 0.032, 0.04],
-  deep: [0.004, 0.005, 0.01],
+  top: srgbColor(0.01, 0.012, 0.02),
+  horizon: srgbColor(0.03, 0.032, 0.04),
+  deep: srgbColor(0.004, 0.005, 0.01),
   sunDir: [0.3, -0.8, 0.2],
-  sunColor: [0.02, 0.02, 0.03],
+  sunColor: srgbColor(0.02, 0.02, 0.03),
   sunAngularRadius: 0.005,
   moonDir: [-0.3, 0.5, -0.4],
-  moonColor: [0.1, 0.11, 0.16],
+  moonColor: srgbColor(0.1, 0.11, 0.16),
   moonAngularRadius: 0.006,
   moonPhase: 0.2,
   nightFactor: 1,
@@ -99,11 +100,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: [0.3, -0.8, 0.2],
   directionalColor: [0.02, 0.02, 0.03],
-  ambient: [0.012, 0.013, 0.018],
-  ambientGround: [0.006, 0.006, 0.008],
+  ambient: srgbColor(0.012, 0.013, 0.018),
+  ambientGround: srgbColor(0.006, 0.006, 0.008),
   emissiveGain: 1,
   nightFactor: 1,
-  fogColor: [0.02, 0.02, 0.028],
+  fogColor: srgbColor(0.02, 0.02, 0.028),
   fogDensity: 0,
   fogHeightFalloff: 0,
   fogBaseY: 0,
@@ -216,7 +217,7 @@ class SmokeRoomHandle implements DemoHandle {
         [0.5, 0.5, 0.52],
       );
     }
-    this.room = renderer.createMesh(builder.build());
+    this.room = renderer.createMesh(builder.build({ colorSpace: 'srgb' }));
 
     /*
      * **The environment has to be pointed at the buffer's arrays, and nothing says so if it is

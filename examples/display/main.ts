@@ -17,6 +17,7 @@ import {
   createEnvironment,
   pixelCursor,
   requestFullscreenOnGesture,
+  srgbColor,
 } from '@driftengine/core';
 import type {
   DisplayControl,
@@ -27,6 +28,9 @@ import type {
   Vec3,
 } from '@driftengine/core';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.07, 0.08, 0.11);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -296,7 +300,7 @@ stage.run({
       cubes.forEach((cube, i) => sink.mesh(cube, models[i] as Float32Array));
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.07, 0.08, 0.11]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(floorMesh, IDENTITY);
     cubes.forEach((cube, i) => renderer.drawMesh(cube, models[i] as Float32Array));

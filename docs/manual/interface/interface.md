@@ -164,7 +164,9 @@ applyTheme();
 A theme is colours and sizes by name. `createTheme(values)` makes one and `deriveTheme(base,
 overrides)` another from it, flattened when it is derived so a lookup is one property access.
 `themeColour` and `themeSize` read a token, and `themeRgba` unpacks a colour token straight into a
-node's `background` or `tint`. The example's light theme is the dark one with four colours changed.
+node's `background` or `tint`, decoded from the sRGB a hex colour is written in to the linear light a
+node holds, so a token comes out on screen exactly as written. The example's light theme is the dark
+one with four colours changed.
 
 ## Drawing it
 

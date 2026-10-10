@@ -98,11 +98,11 @@ Geometry built once, with colour as vertex data:
  * is two units on a side.
  */
 const shapes = new MeshBuilder();
-shapes.addBox([0, 1, 0], [1, 1, 1], [0.85, 0.45, 0.25]);
+shapes.addBox([0, 1, 0], [1, 1, 1], srgbColor(0.85, 0.45, 0.25));
 const cube = renderer.createMesh(shapes.build());
 
 const slab = new MeshBuilder();
-slab.addBox([0, -0.25, 0], [12, 0.25, 12], [0.3, 0.32, 0.36]);
+slab.addBox([0, -0.25, 0], [12, 0.25, 12], srgbColor(0.3, 0.32, 0.36));
 const ground = renderer.createMesh(slab.build());
 ```
 
@@ -131,7 +131,7 @@ startLoop({
 
     camera.updateMatrices(canvas.height > 0 ? canvas.width / canvas.height : 1);
 
-    renderer.beginFrame([0.05, 0.06, 0.09]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, ENV);
     renderer.drawMesh(ground, stillness.worldMatrix);
     renderer.drawMesh(cube, spinner.worldMatrix);
@@ -191,6 +191,12 @@ and its rules in DriftScript. Read it before building anything larger than the s
   `nightFactor: 0` nothing emits and bloom finds nothing.
 - **Bloom that does nothing**: it reads its threshold in scene units, so it needs `hdrScene: true`
   and a `bloomThreshold` something in the scene exceeds.
+- **Colours that come out pale, or a model that comes out dark**: the renderer works in linear
+  values and encodes them for the screen at the end (`outputTransform: 'srgb'`, the default), every
+  pass and the clear colour alike. A colour picked by eye goes through `srgbColor(r, g, b)`, and a
+  mesh whose colours were picked by eye is built with `build({ colorSpace: 'srgb' })`; an image of
+  colours is uploaded as sRGB, which the model loaders do. A light's intensity is an amount, not a
+  look, and stays as it is.
 - **A box twice the size intended**: `addBox(centre, halfExtents, colour)` takes half extents.
 - **A blank or stretched canvas**: the canvas is sized by CSS and `renderer.resize()` reads that
   size back; call it once and on every `resize`. A canvas inside `display: none` has no size.

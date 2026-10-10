@@ -12,8 +12,9 @@ import {
   MeshBuilder,
   computeLightMatrix,
   createEnvironment,
+  srgbColor,
 } from '@driftengine/core';
-import type { MeshHandle, Vec3 } from '@driftengine/core';
+import type { MeshHandle } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
   BODY_STATIC,
@@ -257,7 +258,7 @@ const lightMatrix = new Float32Array(16);
 env.lightViewProj = lightMatrix;
 env.shadowStrength = 0.8;
 const readout = createReadout(renderer, 1);
-const SKY: Vec3 = [0.62, 0.68, 0.76];
+const SKY = srgbColor(0.62, 0.68, 0.76);
 const chase = { x: 18, y: 4, z: -16 };
 
 function drawFrame(): void {

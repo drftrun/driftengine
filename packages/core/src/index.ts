@@ -96,7 +96,15 @@ export {
   wrapAngle,
   lerpAngle,
 } from './math/scalar.ts';
-export { hslToRgb, mixColor, mixColorInto, scaleColor } from './math/color.ts';
+export {
+  decodeSrgbInPlace,
+  hslToRgb,
+  mixColor,
+  mixColorInto,
+  scaleColor,
+  srgbColor,
+  srgbToLinear,
+} from './math/color.ts';
 export type { Vec3 } from './math/color.ts';
 
 export { Camera } from './render/camera.ts';
@@ -707,7 +715,7 @@ export type { LightGrid } from './render/lightGrid.ts';
 export type { PointLightBuffer, PointLightSource } from './render/pointLightSelection.ts';
 export { createFlame, flameFrequencyHz, updateFlame } from './render/flameLight.ts';
 export type { Flame, FlameOptions } from './render/flameLight.ts';
-export { computeLightMatrix } from './render/lightMatrix.ts';
+export { computeLightMatrix, computeLightMatrixForBounds } from './render/lightMatrix.ts';
 export { PlumeRenderer } from './render/plumeRenderer.ts';
 export { createEnvironment } from './render/backend/webgl2/renderer.ts';
 export type { InsetRect } from './render/backend/webgl2/renderer.ts';
@@ -750,6 +758,7 @@ export type { ShellStation, ShellFillOptions } from './geometry/shellFill.ts';
  * this line the only way for it to comply was to copy, which is what the rule forbids.
  */
 export { OUTPUT_TRANSFORM_GLSL } from './render/shaders/outputTransform.ts';
+export { interfaceGrade } from './render/passGrade.ts';
 export { PLUME_VERT, FIRE_FRAG } from './render/shaders/fire.ts';
 export { ARCANE_FRAG } from './render/shaders/arcane.ts';
 export { SMOKE_FRAG } from './render/shaders/smoke.ts';

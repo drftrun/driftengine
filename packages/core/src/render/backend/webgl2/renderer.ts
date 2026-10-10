@@ -340,7 +340,9 @@ import {
   RUSH_REACH_UV,
   clampMotionShare,
 } from '../../vertexDefaults.ts';
-import { OUTPUT_TRANSFORM_CODE, forwardTransformCode } from '../../vertexDefaults.ts';
+import { OUTPUT_TRANSFORM_CODE } from '../../vertexDefaults.ts';
+import { gradeColorInto } from '../../gradeColor.ts';
+import { interfaceGrade, passGradeCode, passGradeExposure } from '../../passGrade.ts';
 import type { DisplayRange } from '../../displayRange.ts';
 import {
   DEFAULT_FILMIC_CURVE,
@@ -1798,6 +1800,8 @@ export class WebGL2Renderer implements RendererApi {
   private warnedOverlayBlocks = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
   private probePassActive = false;
+  /** `clearOf`'s scratch: a clear colour as the open target takes it. */
+  private readonly gradedClear: Vec3 = [0, 0, 0];
   /**
    * Whether a scene capture is being drawn (`captureScene`): an off-screen pass like a bake, so the
    * frame's own view, its refraction copy and skin's spread are left alone, but lit as the frame is.
@@ -2563,8 +2567,8 @@ export class WebGL2Renderer implements RendererApi {
       sceneDepth: null,
     };
     const context = this.passContext;
-    context.outputTransform = this.gradeCode();
-    context.outputExposure = this.gradeExposure();
+    context.outputTransform = this.passGrade();
+    context.outputExposure = this.passGradeExposure();
     /*
      * The copies a pass declared it reads, taken here with everything drawn before it: colour
      * afresh at each reading pass, as WebGPU's `takePassColour` does, so a full-screen effect drawn
@@ -3893,11 +3897,11 @@ export class WebGL2Renderer implements RendererApi {
     } finally {
       target.end(gl);
       gl.frontFace(gl.CCW);
-      this.useFlatProgram();
-      gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.gradeCode());
-      gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.gradeExposure());
-      this.materials.dirty();
       this.capturePassActive = false;
+      this.useFlatProgram();
+      gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.passGrade());
+      gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.passGradeExposure());
+      this.materials.dirty();
       this.temporalJittering = jittering;
       this.restoreViewport();
     }
@@ -5289,7 +5293,7 @@ export class WebGL2Renderer implements RendererApi {
      */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 0);
     if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, fog);
-    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.gradeCode(), 1));
+    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.passGrade(), 1));
 
     if (blend) {
       gl.enable(gl.BLEND);
@@ -5347,7 +5351,7 @@ export class WebGL2Renderer implements RendererApi {
     if (refracting) this.unbindSeeThrough(u);
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
     if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, this.surfaceFog);
-    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
+    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
     if (own) this.materials.dirty();
     this.useFlatProgram();
   }
@@ -5523,7 +5527,18 @@ export class WebGL2Renderer implements RendererApi {
     // raining dust into the sea.
     const surface = env.underwater?.surfaceY;
     const submerged = surface !== undefined && (camera.position[1] ?? 0) < surface;
-    if (streaks.draw(this.gl, this.frameViewFor(camera), wind, timeSeconds, tint, submerged)) {
+    if (
+      streaks.draw(
+        this.gl,
+        this.frameViewFor(camera),
+        wind,
+        timeSeconds,
+        tint,
+        submerged,
+        this.passGrade(),
+        this.passGradeExposure(),
+      )
+    ) {
       this.windStreakBudget.ask();
     }
   }
@@ -5563,7 +5578,18 @@ export class WebGL2Renderer implements RendererApi {
     timeSec: number,
   ): void {
     this.scatterSkin();
-    if (text.draw(viewportWidth, viewportHeight, originX, originY, style, timeSec)) {
+    if (
+      text.draw(
+        viewportWidth,
+        viewportHeight,
+        originX,
+        originY,
+        style,
+        timeSec,
+        interfaceGrade(this.passGrade()),
+        1,
+      )
+    ) {
       this.textBudget.ask();
     }
   }
@@ -5642,7 +5668,9 @@ export class WebGL2Renderer implements RendererApi {
    * real draw call touches the unit in the first place.
    */
   /**
-   * The output transform a forward pass should apply, and the exposure it should apply it at.
+   * The grade a pass applies to what it draws into the target open now, and the exposure it
+   * applies it at. The decision is `passGrade.ts`'s, for both backends; this only gathers the
+   * state it is taken from.
    *
    * **Only where that pass is genuinely the last one to touch the frame.** With a scene target
    * the resolve grades, so a pass that graded as well would be applying a curve to its own
@@ -5650,21 +5678,37 @@ export class WebGL2Renderer implements RendererApi {
    * `screenEffects` off there is no resolve at all and every pass writes straight to the canvas,
    * so each one has to grade itself or the frame comes out half converted: linear values in an
    * eight-bit buffer read as display values, which is a saturated, clipped version of the colour
-   * the caller asked for rather than a slightly different one.
+   * the caller asked for rather than a slightly different one. A probe's face or a capture is
+   * never graded, and past the present every pass grades itself, composite or not.
    *
    * One pair of accessors rather than the expression written out at each site, because that is
    * how the mesh pass and the particle pass came to disagree in the first place: the mesh pass
    * gated, and the particle pass uploaded the transform unconditionally to a stage that did not
    * yet declare it.
    */
-  private gradeCode(): number {
-    return this.sceneTarget === null || !this.quality.hdrScene
-      ? forwardTransformCode(this.quality.outputTransform)
-      : 0;
+  private passGrade(): number {
+    const storing = this.probePassActive || this.capturePassActive;
+    const transform = this.quality.outputTransform;
+    return passGradeCode(storing, this.framePresented, this.resolveGrades(), transform);
   }
 
-  private gradeExposure(): number {
-    return this.sceneTarget === null || !this.quality.hdrScene ? this.exposure : 1;
+  private passGradeExposure(): number {
+    const storing = this.probePassActive || this.capturePassActive;
+    return passGradeExposure(storing, this.framePresented, this.resolveGrades(), this.exposure);
+  }
+
+  /** Whether the frame's resolve applies the transform, so the passes before it draw linear. */
+  private resolveGrades(): boolean {
+    return this.sceneTarget !== null && this.quality.hdrScene;
+  }
+
+  /**
+   * A clear colour as the target open now takes it: graded as a pass would grade it, so a colour
+   * handed to the renderer is linear wherever it lands — the clear too, which the resolve grades
+   * with everything else under `hdrScene`. See `gradeColor.ts`. Into one scratch, read at once.
+   */
+  private clearOf(color: Readonly<Vec3>): Vec3 {
+    return gradeColorInto(this.passGrade(), this.passGradeExposure(), color, this.gradedClear);
   }
 
   drawSdfText(handle: SdfTextRenderer, model: Float32Array, color: Vec3, opacity: number): void {
@@ -5679,8 +5723,8 @@ export class WebGL2Renderer implements RendererApi {
         model,
         color,
         opacity,
-        this.gradeCode(),
-        this.gradeExposure(),
+        this.passGrade(),
+        this.passGradeExposure(),
       )
     ) {
       this.sdfTextBudget.ask();
@@ -5707,7 +5751,17 @@ export class WebGL2Renderer implements RendererApi {
     windZ = 0,
   ): void {
     this.flockBudget.ask();
-    flock.draw(this.gl, this.frameViewFor(camera), timeSeconds, params, tint, windX, windZ);
+    flock.draw(
+      this.gl,
+      this.frameViewFor(camera),
+      timeSeconds,
+      params,
+      tint,
+      windX,
+      windZ,
+      this.passGrade(),
+      this.passGradeExposure(),
+    );
   }
 
   /**
@@ -5808,8 +5862,8 @@ export class WebGL2Renderer implements RendererApi {
        the uniform at all, so it was a write to a location that did not exist; now that the
        stage grades itself it has to obey the same "only where this pass is last" rule the mesh
        pass does, or a scene with a composite grades its particles twice. */
-    gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
-    gl.uniform1f(u['uOutputExposure'] ?? null, this.gradeExposure());
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     gl.uniform3fv(u['uAmbient'] ?? null, env.ambient);
     gl.uniform3fv(u['uAmbientGround'] ?? null, env.ambientGround ?? env.ambient);
     gl.uniform1i(u['uNoiseOctaves'] ?? null, this.quality.plumeNoiseOctaves);
@@ -5917,6 +5971,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform3fv(u['uCoreColor'] ?? null, core);
     gl.uniform3fv(u['uEdgeColor'] ?? null, edge);
     gl.uniform1f(u['uCoreGain'] ?? null, coreGain);
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     bindAtmosphere(
       gl,
       u,
@@ -5992,8 +6048,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform3fv(u['uColor'] ?? null, color);
     gl.uniform1f(u['uOpacity'] ?? null, opacity);
     gl.uniform1f(u['uSoftness'] ?? null, softness);
-    gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
-    gl.uniform1f(u['uOutputExposure'] ?? null, this.gradeExposure());
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     bindAtmosphere(
       gl,
       u,
@@ -6042,6 +6098,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform3fv(u['uDirectionalColor'] ?? null, env.directionalColor);
     gl.uniform3fv(u['uAmbient'] ?? null, env.ambient);
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     bindAtmosphere(
       gl,
       u,
@@ -6236,6 +6294,8 @@ export class WebGL2Renderer implements RendererApi {
       originX,
       originY,
       originZ,
+      this.passGrade(),
+      this.passGradeExposure(),
     );
   }
 
@@ -6265,6 +6325,8 @@ export class WebGL2Renderer implements RendererApi {
       this.quality.pointLightFalloff,
       windX,
       windZ,
+      this.passGrade(),
+      this.passGradeExposure(),
     );
   }
 
@@ -6295,6 +6357,8 @@ export class WebGL2Renderer implements RendererApi {
       windX,
       windZ,
       strength,
+      this.passGrade(),
+      this.passGradeExposure(),
     );
     if (drew) this.causticsBudget.ask();
   }
@@ -6337,7 +6401,7 @@ export class WebGL2Renderer implements RendererApi {
       this.canvas.height,
       source,
       planeY,
-      clearColor,
+      this.clearOf(clearColor),
     );
     this.gpuTimer.begin('reflection');
     this.reflectionPassActive = true;
@@ -7651,7 +7715,8 @@ export class WebGL2Renderer implements RendererApi {
       // scene rather than over a rectangle of flat colour.
       gl.clear(gl.DEPTH_BUFFER_BIT);
     } else {
-      gl.clearColor(clearColor[0], clearColor[1], clearColor[2], 1);
+      const clear = this.clearOf(clearColor);
+      gl.clearColor(clear[0], clear[1], clear[2], 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     }
     /*
@@ -7761,6 +7826,9 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniformMatrix4fv(this.panelUniforms['uClipCorrection'] ?? null, false, IDENTITY_MAT4);
     gl.uniform3fv(this.panelUniforms['uColor'] ?? null, color);
     gl.uniform1f(this.panelUniforms['uAlpha'] ?? null, alpha);
+    /* An interface: the screen encode, never the curve. See `interfaceGrade`. */
+    gl.uniform1i(this.panelUniforms['uOutputTransform'] ?? null, interfaceGrade(this.passGrade()));
+    gl.uniform1f(this.panelUniforms['uOutputExposure'] ?? null, 1);
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
@@ -8487,7 +8555,8 @@ export class WebGL2Renderer implements RendererApi {
     this.sceneTarget?.begin(this.canvas.width, this.canvas.height);
     /* The materials' maps on the scene's framebuffer, cleared and disabled: `reflectionKeeps`. */
     this.reflectionTargets?.begin(this.canvas.width, this.canvas.height);
-    gl.clearColor(clearColor[0], clearColor[1], clearColor[2], 1);
+    const clear = this.clearOf(clearColor);
+    gl.clearColor(clear[0], clear[1], clear[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   }
 
@@ -8642,7 +8711,7 @@ export class WebGL2Renderer implements RendererApi {
           exposure: this.exposure,
           film: this.filmConstants,
         }
-      : { transform: 0, exposure: 1 };
+      : { transform: 0, exposure: 1, sceneGraded: this.passGrade() !== 0 };
     /*
      * Depth of field, on the same ceiling-and-dial split as bloom above: `depthOfField` decides
      * how far a defocused point may spread and this frame's `setDepthOfField` decides where the
@@ -8705,6 +8774,7 @@ export class WebGL2Renderer implements RendererApi {
           this.frameEye,
           this.canvas.width,
           this.canvas.height,
+          this.passGrade(),
         );
       }
     }
@@ -8902,7 +8972,13 @@ export class WebGL2Renderer implements RendererApi {
           /* The march finished on the default framebuffer, which is not where the frame is being
              drawn. See `resolveReflections`, which is the same two-step for the same reason. */
           this.sceneTarget.bind();
-          this.medium.compositeMedium(depthCopy, this.canvas.width, this.canvas.height);
+          this.medium.compositeMedium(
+            depthCopy,
+            this.canvas.width,
+            this.canvas.height,
+            this.passGrade(),
+            this.passGradeExposure(),
+          );
         }
       }
     }
@@ -9381,12 +9457,11 @@ export class WebGL2Renderer implements RendererApi {
      * exists to keep. With `screenEffects` off there is no resolve at all and the mesh pass
      * writes straight to the canvas, so it stays where it always was.
      *
-     * The consequence worth stating: full grading needs the composite. Without it the sky, the
-     * particles, the film and the water are still ungraded beside a world that is, which is the
-     * inconsistency that existed everywhere before this moved.
+     * Every other pass grades through the same gate, `passGrade`, so a frame without a composite
+     * is graded pass by pass to the curve a composite would have applied once.
      */
-    gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
-    gl.uniform1f(u['uOutputExposure'] ?? null, this.gradeExposure());
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     /*
      * Solid, every frame, before anything asks otherwise. A GL uniform starts at
@@ -9875,7 +9950,15 @@ export class WebGL2Renderer implements RendererApi {
     if (projection === null) return;
     const depth = scene.snapshotDepth(true);
     mat4.invert(this.skinInverseProjection, projection);
-    skin.spread(scene, depth, this.emptyTexture2D, projection, this.skinInverseProjection);
+    skin.spread(
+      scene,
+      depth,
+      this.emptyTexture2D,
+      projection,
+      this.skinInverseProjection,
+      this.passGrade(),
+      this.passGradeExposure(),
+    );
     this.useFlatProgram();
   }
 
@@ -10188,7 +10271,7 @@ export class WebGL2Renderer implements RendererApi {
     /* `1` is sRGB alone: the conversion without the curve, which is what dropping the tone map
        means rather than dropping the whole transform. `Math.min` rather than a literal, so a
        renderer asked for `none` stays at none and one asked for `srgb` is already there. */
-    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.gradeCode(), 1));
+    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, Math.min(this.passGrade(), 1));
     /* Scoped and handed back like every other state here, so a tinted draw cannot leak its
        colour onto the next one. See `TranslucentMeshOptions.tint`. */
     const tint = options.tint ?? null;
@@ -10259,7 +10342,7 @@ export class WebGL2Renderer implements RendererApi {
        cannot inherit a material from the draw before it. */
     if (!lit) gl.uniform1i(u['uLightingEnabled'] ?? null, 1);
     if (fog !== this.surfaceFog) gl.uniform1i(u['uFogEnabled'] ?? null, this.surfaceFog);
-    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.gradeCode());
+    if (!toneMapped) gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
     if (own) this.materials.dirty();
   }
 
@@ -10362,7 +10445,7 @@ export class WebGL2Renderer implements RendererApi {
     /*
      * **A probe stores radiance, not display pixels.**
      *
-     * `gradeCode()` is the ACES curve and the sRGB encode whenever the frame has no HDR target,
+     * `passGrade()` is the ACES curve and the sRGB encode whenever the frame has no HDR target,
      * so every face was baked through the whole output transform and the shader then sampled the
      * result as though it were light. Two things came of that and both read as "the reflection is
      * dull": the curve pulls everything bright toward 1 *before* it reaches the cube, so no
@@ -10418,16 +10501,17 @@ export class WebGL2Renderer implements RendererApi {
       }
     } finally {
       this.gl.frontFace(this.gl.CCW);
-      this.useFlatProgram();
-      this.gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.gradeCode());
-      this.gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.gradeExposure());
-      this.materials.dirty();
       /*
        * Cleared even if a caller's own draw threw, because leaving this set would keep every
-       * later frame reading the placeholder and quietly reflecting nothing.
+       * later frame reading the placeholder and quietly reflecting nothing. Before the grade is
+       * put back, which asks it.
        */
       this.probePassActive = false;
       this.probeBounce = false;
+      this.useFlatProgram();
+      this.gl.uniform1i(this.flatUniforms['uOutputTransform'] ?? null, this.passGrade());
+      this.gl.uniform1f(this.flatUniforms['uOutputExposure'] ?? null, this.passGradeExposure());
+      this.materials.dirty();
       /* Back to the canvas, or to the frame's own target if one is bound. See `SceneTarget`. */
       if (this.sceneTarget !== null && !this.framePresented) this.sceneTarget.bind();
       else {
@@ -10655,6 +10739,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniformMatrix4fv(u['uModel'] ?? null, false, model);
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     gl.uniform1f(u['uStrength'] ?? null, Math.min(shown, 1));
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     gl.uniform1f(u['uLength'] ?? null, length);
     gl.uniform1f(u['uSpread'] ?? null, spread);
     gl.uniform1f(u['uDust'] ?? null, clamp(options.dust ?? 0, 0, 1));
@@ -10820,6 +10906,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     gl.uniform1f(u['uTime'] ?? null, timeSeconds);
     gl.uniform1f(u['uSheen'] ?? null, sheen);
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     gl.uniform1f(u['uFilmRoughness'] ?? null, Math.min(1, Math.max(0, options.roughness ?? 0)));
     gl.uniform1f(
       u['uFilmRoughnessCycles'] ?? null,
@@ -10875,6 +10963,8 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uMoonPhase'] ?? null, sky.moonPhase);
     gl.uniform1f(u['uNightFactor'] ?? null, sky.nightFactor);
     gl.uniform2f(u['uCloudOffset'] ?? null, sky.cloudOffsetX, sky.cloudOffsetZ);
+    gl.uniform1i(u['uOutputTransform'] ?? null, this.passGrade());
+    gl.uniform1f(u['uOutputExposure'] ?? null, this.passGradeExposure());
     bindAtmosphere(
       gl,
       u,

@@ -7,7 +7,7 @@
  * flowers it steps on by rewriting their tiles, and draws both. The switches zoom the camera,
  * change how the sheet is filtered, and repaint it at dusk, all on the running page.
  */
-import { ActionMap, InputSource } from '@driftengine/core';
+import { ActionMap, InputSource, srgbColor } from '@driftengine/core';
 import {
   createAffine2D,
   createSpritePass,
@@ -32,6 +32,9 @@ const { renderer, canvas } = stage;
 /* One pass of sprites, drawn wherever in the frame it is asked for, over one sheet. A sheet of
    pixel art is filtered nearest, so its texels stay square at any zoom. */
 const pass = createSpritePass({ capacity: 4096, slots: 1, label: 'garden' });
+/** The ground behind the tiles at each hour, picked by eye and so stated through `srgbColor`. */
+const DUSK_CLEAR = srgbColor(0.08, 0.1, 0.14);
+const DAY_CLEAR = srgbColor(0.3, 0.45, 0.25);
 const handle = renderer.registerPass(pass);
 const painted = new OffscreenCanvas(SHEET_WIDTH, SHEET_HEIGHT);
 let palette = flag('light', 'day') === 'dusk' ? DUSK : DAY;
@@ -188,7 +191,7 @@ stage.run({
       seenW,
       seenH,
     );
-    renderer.beginFrame(palette === DUSK ? [0.08, 0.1, 0.14] : [0.3, 0.45, 0.25]);
+    renderer.beginFrame(palette === DUSK ? DUSK_CLEAR : DAY_CLEAR);
     renderer.drawPass(handle);
     // #endregion
     readout.set(

@@ -49,6 +49,7 @@ import {
   defineCinematic,
   mulberry32,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   CinematicScript,
@@ -136,7 +137,7 @@ const CARNELIAN: Vec3 = [0.66, 0.19, 0.11];
 const EMERALD: Vec3 = [0.09, 0.5, 0.32];
 const TURQUOISE: Vec3 = [0.1, 0.55, 0.55];
 const EMBER: Vec3 = [1, 0.42, 0.13];
-const FIRE_LIGHT: Vec3 = [1, 0.52, 0.18];
+const FIRE_LIGHT = srgbColor(1, 0.52, 0.18);
 /** Sand that has blown in over a few thousand years. */
 const DRIFT: Vec3 = [0.66, 0.56, 0.39];
 
@@ -150,8 +151,8 @@ const DRIFT: Vec3 = [0.66, 0.56, 0.39];
  * warm side and a cool side, and that division is most of what "realistic" means when
  * somebody looks at a render and cannot say why it works.
  */
-const SUN: Vec3 = [0.86, 0.95, 1.18];
-const SHAFT_COLOR: Vec3 = [0.78, 0.88, 1];
+const SUN = srgbColor(0.86, 0.95, 1.18);
+const SHAFT_COLOR = srgbColor(0.78, 0.88, 1);
 
 /**
  * How rough each material is, in one place.
@@ -1813,7 +1814,7 @@ function buildChamber(): { mesh: MeshData; colliders: Collider[] } {
 
   builder.setRoughness(null);
   builder.setGrain(0);
-  return { mesh: builder.build(), colliders };
+  return { mesh: builder.build({ colorSpace: 'srgb' }), colliders };
 }
 
 /* -- The shaft of daylight ------------------------------------------------- */
@@ -2003,7 +2004,7 @@ class GildedChamberHandle implements DemoHandle {
       blend: 'alpha',
       sizePulse: 0.35,
       windResponse: 0.35,
-      tint: [0.3, 0.26, 0.22],
+      tint: srgbColor(0.3, 0.26, 0.22),
     });
 
     /*
@@ -2038,11 +2039,11 @@ class GildedChamberHandle implements DemoHandle {
       directionalColor: SUN,
       // An interior lit by four fires and one hole. The ambient has to be low or the
       // firelight has nothing to be brighter than.
-      ambient: [0.075, 0.062, 0.052],
-      ambientGround: [0.04, 0.033, 0.028],
+      ambient: srgbColor(0.075, 0.062, 0.052),
+      ambientGround: srgbColor(0.04, 0.033, 0.028),
       emissiveGain: 1,
       nightFactor: 0.35,
-      fogColor: [0.16, 0.12, 0.09],
+      fogColor: srgbColor(0.16, 0.12, 0.09),
       // Enough to give the far end of the hall some depth. A room this long with no
       // medium in it looks like a diagram.
       fogDensity: 0.011,
@@ -2059,11 +2060,11 @@ class GildedChamberHandle implements DemoHandle {
 
     this.sky = {
       // Only ever seen through the opening, so it is a hot desert noon and nothing else.
-      top: [0.55, 0.68, 0.92],
-      horizon: [0.86, 0.82, 0.72],
-      deep: [0.4, 0.56, 0.85],
+      top: srgbColor(0.55, 0.68, 0.92),
+      horizon: srgbColor(0.86, 0.82, 0.72),
+      deep: srgbColor(0.4, 0.56, 0.85),
       sunDir: this.env.directionalDir,
-      sunColor: [1.4, 1.25, 0.95],
+      sunColor: srgbColor(1.4, 1.25, 0.95),
       sunAngularRadius: 0.005,
       moonDir: [0, -1, 0],
       moonColor: [0, 0, 0],
@@ -2076,8 +2077,8 @@ class GildedChamberHandle implements DemoHandle {
 
     this.body = {
       level: WATER_LEVEL,
-      deepColor: [0.05, 0.06, 0.07],
-      shallowColor: [0.11, 0.12, 0.12],
+      deepColor: srgbColor(0.05, 0.06, 0.07),
+      shallowColor: srgbColor(0.11, 0.12, 0.12),
       density: 0.55,
       visibility: 1,
       // Still water in a sheltered room, and a near mirror because that is what carries
@@ -2104,7 +2105,7 @@ class GildedChamberHandle implements DemoHandle {
           r: FIRE_LIGHT[0],
           g: FIRE_LIGHT[1],
           b: FIRE_LIGHT[2],
-          radius: 26,
+          radius: 20,
           flicker: 0.22,
           shadowNear: 0.25,
           sourceRadius: 0.4,

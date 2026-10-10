@@ -151,7 +151,7 @@ render() {
   camera.lookAt(0, 1, 0);
   moveCrystals(time);
 
-  renderer.beginFrame([0.6, 0.66, 0.74]);
+  renderer.beginFrame(CLEAR);
   renderer.bindMeshPass(camera, ENV);
   renderer.drawMesh(ground, still.worldMatrix);
   for (let i = 0; i < fields.length; i += 1)

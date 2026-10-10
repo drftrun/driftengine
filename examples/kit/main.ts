@@ -9,7 +9,7 @@
  * How tall each building is, how wide, and whether it has an arcade or a dome are rules in
  * `street.drs`; save a change to them and the street is built again from the same kit.
  */
-import { MeshBuilder, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, createEnvironment, srgbColor } from '@driftengine/core';
 import type { MeshData, MeshHandle, Vec3 } from '@driftengine/core';
 import {
   COPY_MATRIX_FLOATS,
@@ -205,7 +205,7 @@ controls([
   },
 ]);
 
-const HAZE: Vec3 = [0.7, 0.74, 0.8];
+const HAZE = srgbColor(0.7, 0.74, 0.8);
 const env = createEnvironment({
   directionalDir: [0.5, 0.7, -0.3],
   directionalColor: [1.9, 1.8, 1.6],

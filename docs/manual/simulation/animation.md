@@ -8,7 +8,7 @@ areas: ['animation']
 
 # Animation
 
-`@driftengine/animation` is skeletons, clips, poses and the graphs over them, for 6.3 KB gzipped on
+`@driftengine/animation` is skeletons, clips, poses and the graphs over them, for 5.8 KB gzipped on
 top of core. Everything in it is a function of a time you hand it, and nothing in it reads a clock,
 so an animated character replays exactly and a playhead can scrub it backwards. It never touches
 the GPU either: it produces a palette, sixteen floats a joint, and core's renderer skins a mesh by

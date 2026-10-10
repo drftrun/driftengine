@@ -142,10 +142,10 @@ example sets them in TypeScript.
 
 `outputTransform` turns scene light into screen colour.
 
-- `'none'`, the default, writes values as they are, and anything above 1 clips flat. A scene with
-  bright lamps against dark surroundings then reads as crushed and muddy, which looks like a
-  lighting problem and is not.
-- `'srgb'` applies the display's transfer curve without a tone curve.
+- `'srgb'`, the default, applies the display's transfer curve without a tone curve, so a channel
+  above 1 clips on its own.
+- `'none'` writes values as they are computed. It reads as dark and muddy unless every colour in
+  the world was chosen under it, and it was the default until 4.13.0.
 - `'aces'` rolls highlights off smoothly before that, so bright light keeps its colour. It is the
   usual choice, and it is what exposure, grading and the eye below need.
 - `'shoulder'` keeps sRGB's midtones exactly and eases only the highlights. Past 0.8, the brightest

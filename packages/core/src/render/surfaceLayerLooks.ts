@@ -43,7 +43,7 @@ export interface SurfaceLayerLook {
 
 /** What an occlusion read at the mesh's own coordinates darkens, and how far. */
 export interface SurfaceMeshOcclusion {
-  /** 0 to 1: the surface times `mix(1, occlusion, strength)`. Absent: 1. */
+  /** 0 to 1: what `into` names times `mix(1, occlusion, strength)`. Absent: 1. */
   readonly strength?: number;
   /**
    * `'color'`, the default, darkens the blended colour, and so every light on it, the sun's too.
@@ -51,6 +51,18 @@ export interface SurfaceMeshOcclusion {
    * does, leaving the sun, the lamps and the reflections as they were.
    */
   readonly into?: 'color' | 'ambient';
+  /**
+   * The colour's own strength, from 0 up and past 1: the blended colour times
+   * `max(0, 1 − colorStrength × (1 − occlusion))`, which up to 1 is the `mix` above and past it
+   * darkens faster than the occlusion does. Absent: `strength` where `into` is the colour, and 0
+   * where it is the ambient light — so named beside `into: 'ambient'` it darkens both, each at its
+   * own strength, as a material taking its ambient occlusion and a darker colour from one map does.
+   *
+   * **What it gives up**: past 1 the colour is black wherever `1 − occlusion` reaches
+   * `1 / colorStrength`, and black under every light, the sun's too, which is what such a material
+   * asks for and what an ambient occlusion alone would never do.
+   */
+  readonly colorStrength?: number;
   /** The range the occlusion's red is spread over, from its 0 to its 1. Absent: `[0, 1]`. */
   readonly range?: readonly [number, number];
 }
@@ -75,7 +87,8 @@ export function asksLayerLooks<Texture>(
     layers.extrasAt !== undefined ||
     layers.looks !== undefined ||
     layers.repeats.some((repeat) => typeof repeat !== 'number') ||
-    occlusionOf(layers.meshOcclusion).strength > 0
+    colorOcclusion(layers.meshOcclusion) > 0 ||
+    ambientOcclusion(layers.meshOcclusion) > 0
   );
 }
 
@@ -85,15 +98,15 @@ export function asksLayerLooks<Texture>(
  * `LAYER_LOOKS` on, so it must draw exactly as it did before.
  *
  * - **0 to 7**: the array layer each layer reads, base first (layer `i` where not given); where the
- *   maps beyond the layers start (the layer count where not given); the mesh occlusion's strength,
- *   and what it darkens, 0 the colour and 1 the ambient light.
+ *   maps beyond the layers start (the layer count where not given); the mesh occlusion's strength
+ *   on the colour, from 0 up, and on the ambient light, 0 to 1.
  * - **8 to 47**: two vectors a layer, base first: its tint and its normal strength, then its
  *   roughness range and its metalness range.
  * - **48 to 59**: each layer's specular (−1 for the surface's own), each layer's repeat down (its
  *   repeat across where it gave one number), and the range the occlusion is spread over.
  *
  * An array layer that is not a whole number at or above 0 reads layer `i`; a start that is not one
- * is the count; a strength is held to 0..1; a tint channel, a normal strength or a specular that is
+ * is the count; a strength is held to 0..1, but for the colour's own, which is held at or above 0; a tint channel, a normal strength or a specular that is
  * not a number at or above 0 is the identity; a repeat down that is not a positive number is the
  * repeat across; a range end that is not a number is the identity's end.
  */
@@ -105,9 +118,9 @@ export function packLayerLooks<Texture>(
   const picks = layers?.arrayLayers;
   for (let i = 0; i < MAX_SURFACE_LAYERS; i++) out[i] = arrayLayer(picks?.[i], i);
   out[5] = arrayLayer(layers?.extrasAt, count);
-  const occlusion = occlusionOf(layers?.meshOcclusion);
-  out[6] = occlusion.strength;
-  out[7] = occlusion.into === 'ambient' ? 1 : 0;
+  const occlusion = layers?.meshOcclusion;
+  out[6] = colorOcclusion(occlusion);
+  out[7] = ambientOcclusion(occlusion);
   for (let i = 0; i < MAX_SURFACE_LAYERS; i++) {
     const look = layers?.looks?.[i] ?? null;
     const at = 8 + i * 8;
@@ -124,18 +137,36 @@ export function packLayerLooks<Texture>(
     const acrossIt = positiveOr(across(repeat), 1);
     out[53 + i] = typeof repeat === 'object' ? positiveOr(repeat[1], acrossIt) : acrossIt;
   }
-  out[58] = finiteOr(occlusion.range?.[0], 0);
-  out[59] = finiteOr(occlusion.range?.[1], 1);
+  const range = typeof occlusion === 'object' ? occlusion.range : undefined;
+  out[58] = finiteOr(range?.[0], 0);
+  out[59] = finiteOr(range?.[1], 1);
 }
 
-/** The number form of `meshOcclusion` as the object form, the strength held to 0..1. */
-function occlusionOf(
-  occlusion: number | SurfaceMeshOcclusion | undefined,
-): SurfaceMeshOcclusion & { readonly strength: number } {
-  const given =
-    typeof occlusion === 'number' ? { strength: occlusion } : (occlusion ?? { strength: 0 });
-  const strength = given.strength ?? 1;
-  return { ...given, strength: Number.isFinite(strength) ? Math.min(Math.max(strength, 0), 1) : 0 };
+/** The strength `meshOcclusion` names, held to 0..1: a number's own, an object's or 1, and 0 for none. */
+function occlusionStrength(occlusion: number | SurfaceMeshOcclusion | undefined): number {
+  const strength =
+    typeof occlusion === 'number'
+      ? occlusion
+      : occlusion === undefined
+        ? 0
+        : (occlusion.strength ?? 1);
+  return Number.isFinite(strength) ? Math.min(Math.max(strength, 0), 1) : 0;
+}
+
+/** How hard the occlusion darkens the colour: its own strength where named, else `into`'s. */
+function colorOcclusion(occlusion: number | SurfaceMeshOcclusion | undefined): number {
+  if (typeof occlusion === 'object' && occlusion.colorStrength !== undefined)
+    return atLeastZero(occlusion.colorStrength, 0);
+  return typeof occlusion === 'object' && occlusion.into === 'ambient'
+    ? 0
+    : occlusionStrength(occlusion);
+}
+
+/** How hard the occlusion darkens the ambient light: its strength where that is its target. */
+function ambientOcclusion(occlusion: number | SurfaceMeshOcclusion | undefined): number {
+  return typeof occlusion === 'object' && occlusion.into === 'ambient'
+    ? occlusionStrength(occlusion)
+    : 0;
 }
 
 function arrayLayer(value: number | undefined, otherwise: number): number {

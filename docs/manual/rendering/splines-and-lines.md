@@ -116,7 +116,7 @@ segments, one fewer than the points that make them.
 ```ts sample=lines/main.ts#draw
 segments.count = setPolyline(segments, path, POINTS);
 
-stage.renderer.beginFrame([0.05, 0.06, 0.09]);
+stage.renderer.beginFrame(CLEAR);
 stage.renderer.bindMeshPass(stage.camera, DAYLIGHT);
 stage.renderer.drawMesh(ground, still.worldMatrix);
 stage.renderer.drawLines(
@@ -125,7 +125,7 @@ stage.renderer.drawLines(
   still.worldMatrix,
   stage.camera,
   DAYLIGHT,
-  [1, 0.72, 0.32],
+  STROKE,
   width,
   1,
   softness,

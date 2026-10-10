@@ -14,7 +14,13 @@
  *
  * It stays in `DRAFT_SCENES` because a marched distance field is a diagnostic, not a material.
  */
-import { Camera, GiFieldPass, createEnvironment, createRenderer } from '../packages/core/src/index';
+import {
+  Camera,
+  GiFieldPass,
+  createEnvironment,
+  createRenderer,
+  srgbColor,
+} from '../packages/core/src/index';
 
 import type {
   FieldSource,
@@ -80,14 +86,14 @@ function boxField(
 }
 
 const SKY: SkyColors = {
-  top: [0.07, 0.11, 0.2],
-  horizon: [0.3, 0.36, 0.44],
-  deep: [0.02, 0.03, 0.06],
+  top: srgbColor(0.07, 0.11, 0.2),
+  horizon: srgbColor(0.3, 0.36, 0.44),
+  deep: srgbColor(0.02, 0.03, 0.06),
   sunDir: [0.4, 0.66, 0.35],
-  sunColor: [1, 0.96, 0.88],
+  sunColor: srgbColor(1, 0.96, 0.88),
   sunAngularRadius: 0.005,
   moonDir: [-0.3, 0.6, -0.4],
-  moonColor: [0.5, 0.55, 0.7],
+  moonColor: srgbColor(0.5, 0.55, 0.7),
   moonAngularRadius: 0.006,
   moonPhase: 0.5,
   nightFactor: 0,
@@ -98,11 +104,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: [0.4, 0.66, 0.35],
   directionalColor: [0.95, 0.9, 0.8],
-  ambient: [0.22, 0.26, 0.34],
-  ambientGround: [0.07, 0.06, 0.05],
+  ambient: srgbColor(0.22, 0.26, 0.34),
+  ambientGround: srgbColor(0.07, 0.06, 0.05),
   emissiveGain: 1,
   nightFactor: 0,
-  fogColor: [0.3, 0.36, 0.44],
+  fogColor: srgbColor(0.3, 0.36, 0.44),
   fogDensity: 0,
   fogHeightFalloff: 0.05,
   fogBaseY: 0,

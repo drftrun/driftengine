@@ -10,13 +10,16 @@
  */
 import { BlendTree, Skeleton, createPose } from '@driftengine/animation';
 import type { AnimationClip, JointTrack, Pose } from '@driftengine/animation';
-import { MeshBuilder, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, computeLightMatrix, createEnvironment, srgbColor } from '@driftengine/core';
 import type { Vec3 } from '@driftengine/core';
 import { patchModule } from 'driftscript';
 import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as rigScript from './rig.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.56, 0.62, 0.7);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -319,7 +322,7 @@ stage.run({
       sink.skinnedMesh(figure, model, skeleton.palette);
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.56, 0.62, 0.7]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(ground, IDENTITY);
     renderer.drawMesh(post, IDENTITY);

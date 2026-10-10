@@ -1,13 +1,19 @@
 /** Loading a `.drft` into drawable parts progressively, without stalling the frame. */
 
 import type { MeshData } from '@driftengine/drft';
-import type { MeshHandle, RendererApi } from '@driftengine/core';
+import type { MeshHandle, RendererApi, ShadowCasters, Vec3 } from '@driftengine/core';
 import type {
   CompressedTextureSource,
   GlassOptions,
   SurfaceTextureHandle,
 } from '@driftengine/core';
-import { MeshBuilder, concatMeshes, placeMesh } from '@driftengine/core';
+import {
+  MeshBuilder,
+  computeLightMatrixForBounds,
+  concatMeshes,
+  placeMesh,
+} from '@driftengine/core';
+import { PartDraws } from './partDraws.ts';
 import type { DrftMaterial } from '@driftengine/drft';
 import type { DrftSdfvEntry } from '@driftengine/drft';
 import { placeFields } from './fieldPlacement.ts';
@@ -226,6 +232,10 @@ export interface DrftLoaderOptions {
   readonly onMesh?: (mesh: MeshData, ordinal: number) => boolean;
 }
 
+/** `shadowFit`'s fitted bounds, rewritten in place on each call. */
+const FIT_MIN: Vec3 = [0, 0, 0];
+const FIT_MAX: Vec3 = [0, 0, 0];
+
 /**
  * A `.drft` loaded progressively: the model builds up on screen instead of appearing.
  *
@@ -411,11 +421,14 @@ export class DrftLoader {
   private arrived = 0;
   /** A streamed world's regions, kept apart from the parts and never merged. See `regionStore.ts`. */
   private readonly regionStore: RegionStore;
+  /** What `draw`, `casters` and `prepare` do with the parts. See `partDraws.ts`. */
+  private readonly partDraws: PartDraws;
 
   constructor(renderer: RendererApi, options: DrftLoaderOptions = {}) {
     this.renderer = renderer;
     this.options = options;
     this.regionStore = new RegionStore(renderer, () => this.fit);
+    this.partDraws = new PartDraws(renderer);
   }
 
   get progress(): DrftLoadProgress {
@@ -655,6 +668,62 @@ export class DrftLoader {
     readonly z: number;
   } | null {
     return this.fit;
+  }
+
+  /**
+   * Draw this frame's parts into the open mesh pass, each by every rule a baked container needs:
+   * its whole material, its copies through the instanced path, a blended part translucent and
+   * writing no depth, glass as glass, its own reflectivity. Returns the draws issued.
+   *
+   * **The one call a model wants**, because each rule missed is a wrong picture rather than an
+   * error: a repeated arch drawn once, a decal as a black patch, foliage without its alpha test.
+   * What it gives up, and what drawing `parts` by hand is for, is a per-part override; see
+   * `PartDraws`.
+   */
+  draw(): number {
+    return this.partDraws.draw(this.revealed, this.textureSet);
+  }
+
+  /**
+   * Every part that stands in the light, for `drawShadowCasters` or a mirror's replay: all but a
+   * decal, which would shadow its own surface, each with its material so a cutout casts the shape
+   * in its texture, glass as glass and copies as copies. Always this frame's parts.
+   */
+  readonly casters: ShadowCasters = (sink) =>
+    this.partDraws.cast(sink, this.revealed, this.textureSet);
+
+  /**
+   * Compile what every part's draw will take, off the frame, and wait for it. Call it once the load
+   * has finished, behind whatever is showing then; one frame drawn there as well compiles the
+   * shadow passes' own pipelines, which this cannot reach, and the first frame a player sees then
+   * waits on nothing.
+   */
+  prepare(): Promise<void> {
+    return this.partDraws.prepare(this.revealed, this.textureSet);
+  }
+
+  /**
+   * A directional light's matrix covering the model whole, as fitted, into `out`, through
+   * `computeLightMatrixForBounds`; returns the depth span for `shadowDepthSpan`, or null until
+   * `HEAD` has said how large the model is.
+   *
+   * **What it gives up** is the bounds' own: they are the file's, fitted, so a `transform` that
+   * moves a mesh moves it past them, and a model far larger than what the viewer sees spreads the
+   * map over all of it — a city wants the map around the viewer instead, through
+   * `computeLightMatrix`.
+   */
+  shadowFit(lightDir: Vec3, shadowMapSize: number, out: Float32Array): number | null {
+    const fit = this.fit;
+    const b = this.bounds;
+    if (fit === null || b.length < 6) return null;
+    const { scale, x, y, z } = fit;
+    FIT_MIN[0] = (b[0] as number) * scale + x;
+    FIT_MIN[1] = (b[1] as number) * scale + y;
+    FIT_MIN[2] = (b[2] as number) * scale + z;
+    FIT_MAX[0] = (b[3] as number) * scale + x;
+    FIT_MAX[1] = (b[4] as number) * scale + y;
+    FIT_MAX[2] = (b[5] as number) * scale + z;
+    return computeLightMatrixForBounds(lightDir, FIT_MIN, FIT_MAX, shadowMapSize, out);
   }
 
   /**

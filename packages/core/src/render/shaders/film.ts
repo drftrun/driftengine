@@ -1,4 +1,5 @@
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * A thin, wet, iridescent film lying on a surface.
@@ -122,6 +123,7 @@ uniform float uFilmRoughness;
 uniform float uFilmRoughnessCycles;
 
 out vec4 fragColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 /** A hue wheel, without a texture. Standard 6-segment ramp. */
 vec3 hue(float h) {
@@ -200,6 +202,19 @@ void main() {
   vec3 color = base + sheen * uSheen * (0.22 + grazing * 0.75);
 
   /*
+   * **Graded before the mirror is mixed in**, as every pass grades what it draws when nothing after
+   * it will, because the mirror's own passes graded what it holds. The fog that used to follow the
+   * mirror distributes over the mix, so the film's own colour is fogged and graded here, and what
+   * the mirror shows is fogged toward the same air, graded, where it is mixed in below.
+   */
+  // The same fog every other pass applies — and now literally the same code, which
+  // it was not: this ran its own curve while claiming otherwise, so a slick receded
+  // at a different rate than the deck it was lying on.
+  float fog = mediumFog(length(uCameraPos - vWorld), vWorld.y);
+  vec3 gradedAir = applyOutputTransform(mediumColor());
+  vec3 graded = applyOutputTransform(mix(color, mediumColor(), fog));
+
+  /*
    * The mirrored scene, under the sheen rather than instead of it.
    *
    * Screen-space from the mirrored clip position, exactly as the water pass does it, with the
@@ -208,7 +223,7 @@ void main() {
    *
    * Weighted by the grazing term as well as by strength, because that is what a reflection does:
    * a wet surface underfoot shows almost nothing and the same surface down the street shows the
-   * whole scene. Added before the fog so the image recedes with everything else in the frame.
+   * whole scene. Fogged as the film is, so the image recedes with everything else in the frame.
    */
   if (uReflectionEnabled != 0 && uReflectionStrength > 0.0 && vReflectionClip.w > 0.0) {
     vec2 reflectionUv = vReflectionClip.xy / vReflectionClip.w * 0.5 + 0.5;
@@ -254,14 +269,12 @@ void main() {
       valid = min(valid, smoothstep(0.0, 0.025, min(movedBorder.x, movedBorder.y)));
     }
     vec3 mirrored = textureLod(uReflectionMap, clamp(reflectionUv, 0.0, 1.0), 0.0).rgb;
-    color = mix(color, mirrored, valid * uReflectionStrength * (0.25 + grazing * 0.75));
+    graded = mix(
+      graded,
+      mix(mirrored, gradedAir, fog),
+      valid * uReflectionStrength * (0.25 + grazing * 0.75)
+    );
   }
-
-  // The same fog every other pass applies — and now literally the same code, which
-  // it was not: this ran its own curve while claiming otherwise, so a slick receded
-  // at a different rate than the deck it was lying on.
-  float fog = mediumFog(length(uCameraPos - vWorld), vWorld.y);
-  color = mix(color, mediumColor(), fog);
 
   /*
    * Alpha from coverage, squared.
@@ -280,6 +293,6 @@ void main() {
    */
   float coverage = clamp(vCoverage, 0.0, 1.0);
   float alpha = mix(coverage * coverage, coverage, 0.65) * 0.92;
-  fragColor = vec4(color, alpha);
+  fragColor = vec4(graded, alpha);
 }
 `;

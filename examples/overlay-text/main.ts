@@ -7,17 +7,21 @@
  * rather than a world matrix. The font is built in: `createText()` takes no arguments and fetches
  * nothing, so a heads-up display costs no assets at all.
  */
-import { Camera, DEFAULT_TEXT_STYLE, MeshBuilder, SceneNode } from '@driftengine/core';
+import { Camera, DEFAULT_TEXT_STYLE, MeshBuilder, SceneNode, srgbColor } from '@driftengine/core';
 import type { TextStyle } from '@driftengine/core';
 import { DAYLIGHT, openStage } from '../common/stage';
 
 const stage = await openStage({ directionalShadows: true, sceneSamples: 4 });
 const { renderer, camera } = stage;
+/** The backgrounds, picked by eye like every colour here, and so stated through `srgbColor`. */
+const CLEAR = srgbColor(0.05, 0.06, 0.09);
+const INSET_CLEAR = srgbColor(0.1, 0.12, 0.16);
+const PANEL = srgbColor(0.14, 0.16, 0.22);
 
 const solids = new MeshBuilder();
-solids.addBox([0, -0.25, 0], [9, 0.25, 9], [0.32, 0.34, 0.4]);
-solids.addBox([-1.6, 1, 0], [1, 1, 1], [0.66, 0.5, 0.42]);
-solids.addBox([1.7, 0.75, -0.6], [0.75, 0.75, 0.75], [0.5, 0.56, 0.66]);
+solids.addBox([0, -0.25, 0], [9, 0.25, 9], srgbColor(0.32, 0.34, 0.4));
+solids.addBox([-1.6, 1, 0], [1, 1, 1], srgbColor(0.66, 0.5, 0.42));
+solids.addBox([1.7, 0.75, -0.6], [0.75, 0.75, 0.75], srgbColor(0.5, 0.56, 0.66));
 const scene = renderer.createMesh(solids.build());
 const still = new SceneNode();
 still.updateWorld();
@@ -46,16 +50,16 @@ let plateStyle: TextStyle = DEFAULT_TEXT_STYLE;
 let keyStyle: TextStyle = DEFAULT_TEXT_STYLE;
 function restyle(size: number): void {
   cell = size;
-  titleStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [1, 0.85, 0.35], glow: 1 };
-  bodyStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.8, 0.84, 0.92] };
-  plateStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.9, 0.9, 0.95] };
-  keyStyle = { ...plateStyle, color: [0.08, 0.09, 0.12] };
+  titleStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(1, 0.85, 0.35), glow: 1 };
+  bodyStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(0.8, 0.84, 0.92) };
+  plateStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(0.9, 0.9, 0.95) };
+  keyStyle = { ...plateStyle, color: srgbColor(0.08, 0.09, 0.12) };
 }
 // #endregion
 
 /** The portrait's subject, turning in a box of its own in the corner. */
 const gem = renderer.createMesh(
-  new MeshBuilder().addCylinder([0, 0, 0], 0.6, 0.6, 'y', [0.4, 0.8, 0.9], 0.3, 6).build(),
+  new MeshBuilder().addCylinder([0, 0, 0], 0.6, 0.6, 'y', srgbColor(0.4, 0.8, 0.9), 0.3, 6).build(),
 );
 const gemNode = new SceneNode();
 const portrait = new Camera();
@@ -85,7 +89,7 @@ stage.run({
       renderer.setText(timer, `${shownSecond} S`);
     }
 
-    renderer.beginFrame([0.05, 0.06, 0.09]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, DAYLIGHT);
     renderer.drawMesh(scene, still.worldMatrix);
 
@@ -95,7 +99,7 @@ stage.run({
     const baseline = Math.round(height * 0.18);
     renderer.fillPanel(
       { left: left - cell * 3, top: baseline - cell * 10, width: cell * 72, height: cell * 22 },
-      [0.14, 0.16, 0.22],
+      PANEL,
       0.8,
     );
     renderer.drawText(title, width, height, left, baseline, titleStyle, seconds);
@@ -114,7 +118,7 @@ stage.run({
     // #region inset
     /* A box in the corner with its own camera and its own backdrop, drawn into the same frame. */
     const box = { left: width - 220, top: 24, width: 196, height: 196 };
-    const aspect = renderer.beginInset(box, [0.1, 0.12, 0.16]);
+    const aspect = renderer.beginInset(box, INSET_CLEAR);
     gemNode.setRotationAxisAngle(0, 1, 0, seconds);
     gemNode.updateWorld();
     portrait.updateMatrices(aspect);

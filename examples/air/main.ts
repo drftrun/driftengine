@@ -14,12 +14,16 @@ import {
   createEnvironment,
   createPointLightBuffer,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { PointLightSource, RendererApi, ShadowCasters, Vec3 } from '@driftengine/core';
 import { patchModule } from 'driftscript';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as airScript from './air.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0, 0, 0);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -198,7 +202,7 @@ stage.run({
     breathedAt = time;
     // #endregion
 
-    renderer.beginFrame([0, 0, 0]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(roomMesh, fixed.worldMatrix);
     // #region draw

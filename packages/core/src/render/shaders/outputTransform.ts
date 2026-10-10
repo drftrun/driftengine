@@ -48,6 +48,24 @@ vec3 highlightShoulder(vec3 c) {
 }
 `;
 
+/**
+ * Linear to sRGB alone, for a stage that needs the encode and nothing else: one that multiplies an
+ * encoded pixel and wants the factor in the same terms (`decalProject.ts`). The body below includes
+ * it, so there is one definition. Branch-free, so it may sit where derivatives are taken.
+ */
+export const LINEAR_TO_SRGB_GLSL = `
+/*
+ * Linear to sRGB. The piecewise form rather than a plain pow: the linear toe near black
+ * is where banding lives in an 8-bit buffer, and the cheap approximation puts it in the
+ * wrong place.
+ */
+vec3 linearToSrgb(vec3 c) {
+  vec3 low = c * 12.92;
+  vec3 high = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+  return mix(high, low, step(c, vec3(0.0031308)));
+}
+`;
+
 /** The fit and `applyOutputTransform`, below whichever declaration of the two uniforms. */
 const OUTPUT_TRANSFORM_BODY_GLSL = `
 /*
@@ -97,17 +115,7 @@ vec3 acesFilmic(vec3 x) {
   return clamp(ACES_OUTPUT * rrtAndOdtFit(ACES_INPUT * x), 0.0, 1.0);
 }
 
-/*
- * Linear to sRGB. The piecewise form rather than a plain pow: the linear toe near black
- * is where banding lives in an 8-bit buffer, and the cheap approximation puts it in the
- * wrong place.
- */
-vec3 linearToSrgb(vec3 c) {
-  vec3 low = c * 12.92;
-  vec3 high = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
-  return mix(high, low, step(c, vec3(0.0031308)));
-}
-
+${LINEAR_TO_SRGB_GLSL}
 ${HIGHLIGHT_SHOULDER_GLSL}
 vec3 applyOutputTransform(vec3 c) {
   if (uOutputTransform == 0) return c;

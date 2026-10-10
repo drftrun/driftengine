@@ -6,7 +6,13 @@
  * more bounce, as an edit the overlay can undo with Ctrl+Z; R drops every ball again. `balls.drs`
  * holds the rules, and the frame meter in the corner is core's.
  */
-import { FpsMeter, MeshBuilder, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import {
+  FpsMeter,
+  MeshBuilder,
+  computeLightMatrix,
+  createEnvironment,
+  srgbColor,
+} from '@driftengine/core';
 import type { Vec3 } from '@driftengine/core';
 import { World, buildSchedule, runSchedule } from '@driftengine/entities';
 import type { ComponentType, Entity, Schedule } from '@driftengine/entities';
@@ -41,6 +47,9 @@ import type { OverlayPainter, Severity, ToolsOverlay } from '@driftengine/tools'
 import { loadModule, patchModule } from 'driftscript';
 import { controls, flag, openStage } from '../common/stage';
 import * as ballsScript from './balls.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.08, 0.09, 0.12);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -379,7 +388,7 @@ stage.run({
     const timer = renderer.gpuTimer;
     timer.beginFrame();
     drawShadows();
-    renderer.beginFrame([0.08, 0.09, 0.12]);
+    renderer.beginFrame(CLEAR);
     timer.begin('rest');
     drawScene();
     timer.end();

@@ -15,24 +15,25 @@
  * emissive on it, so block light stays invisible until this drives one. That is the single most
  * likely reason a correct mesher looks broken.
  */
-import { mixColorInto, type Vec3 } from '../../packages/core/src/index';
+import { mixColorInto, srgbColor, type Vec3 } from '../../packages/core/src/index';
 
-/* Palette keyframes. Night is floored rather than black, so a world at midnight is still
-   readable and the fog never becomes a hole in the picture. */
-const DAY_AMBIENT: Vec3 = [0.45, 0.48, 0.55];
-const NIGHT_AMBIENT: Vec3 = [0.12, 0.14, 0.22];
-const SUNSET_AMBIENT_TINT: Vec3 = [0.12, 0.05, 0.02];
+/* Palette keyframes. The sun is light, as an intensity; the ambient fill, the fog and the sky are
+   tones picked by eye, and so stated through `srgbColor`. Night is floored rather than black, so a
+   world at midnight is still readable and the fog never becomes a hole in the picture. */
+const DAY_AMBIENT = srgbColor(0.45, 0.48, 0.55);
+const NIGHT_AMBIENT = srgbColor(0.12, 0.14, 0.22);
+const SUNSET_AMBIENT_TINT = srgbColor(0.12, 0.05, 0.02);
 
 const DAY_SUN: Vec3 = [0.55, 0.5, 0.42];
 const SUNSET_SUN: Vec3 = [0.85, 0.42, 0.16];
 
-const DAY_FOG: Vec3 = [0.7, 0.82, 0.92];
-const NIGHT_FOG: Vec3 = [0.03, 0.04, 0.09];
-const SUNSET_FOG: Vec3 = [0.8, 0.52, 0.4];
+const DAY_FOG = srgbColor(0.7, 0.82, 0.92);
+const NIGHT_FOG = srgbColor(0.03, 0.04, 0.09);
+const SUNSET_FOG = srgbColor(0.8, 0.52, 0.4);
 
-const DAY_ZENITH: Vec3 = [0.28, 0.5, 0.86];
-const NIGHT_ZENITH: Vec3 = [0.02, 0.03, 0.08];
-const SUNSET_ZENITH: Vec3 = [0.3, 0.3, 0.55];
+const DAY_ZENITH = srgbColor(0.28, 0.5, 0.86);
+const NIGHT_ZENITH = srgbColor(0.02, 0.03, 0.08);
+const SUNSET_ZENITH = srgbColor(0.3, 0.3, 0.55);
 
 export interface LightingSnapshot {
   readonly sunDir: Vec3;

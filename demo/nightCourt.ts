@@ -43,6 +43,7 @@ import {
   mixColorInto,
   mulberry32,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   Environment,
@@ -169,8 +170,8 @@ const MARBLE_SHADE: Vec3 = [0.6, 0.585, 0.55];
 const LANTERN_GLOW: Vec3 = [1, 0.72, 0.38];
 const EMBER_GLOW: Vec3 = [1, 0.44, 0.15];
 /** The light a lantern and a fire actually cast. Magnitude near one; reach is `radius`. */
-const LANTERN_LIGHT: Vec3 = [1, 0.66, 0.3];
-const FIRE_LIGHT: Vec3 = [1, 0.5, 0.16];
+const LANTERN_LIGHT = srgbColor(1, 0.66, 0.3);
+const FIRE_LIGHT = srgbColor(1, 0.5, 0.16);
 
 /* -- Weather -------------------------------------------------------------- */
 
@@ -349,7 +350,7 @@ function buildCourt(): MeshData {
 
   builder.setRoughness(null);
 
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -451,7 +452,7 @@ function buildFigure(): MeshData {
   }
   marble.setRoughness(null);
 
-  return marble.build();
+  return marble.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -487,7 +488,7 @@ function addLimb(target: MeshBuilder, from: Vec3, to: Vec3, radius: number, colo
   piece.setRoughness(0.3);
   piece.addCapsule([0, 0, 0], radius, length / 2, color, 0, 12, 6, 0.15);
   target.addOrientedMesh(
-    piece.build(),
+    piece.build({ colorSpace: 'srgb' }),
     [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2, (from[2] + to[2]) / 2],
     right,
     up,
@@ -605,12 +606,12 @@ const NIGHT: CourtHour = {
    * seconds in a browser tab rather than studied, and geometry nobody can see is
    * geometry that may as well not have been built.
    */
-  directionalColor: [0.15, 0.18, 0.27],
-  ambient: [0.078, 0.089, 0.122],
+  directionalColor: srgbColor(0.15, 0.18, 0.27),
+  ambient: srgbColor(0.078, 0.089, 0.122),
   // Cooler and darker from below: the stone underfoot is not lit by the same sky the
   // tops of things are, and a uniform fill is what makes an outdoor scene read as a room.
-  ambientGround: [0.034, 0.038, 0.05],
-  fogColor: [0.031, 0.038, 0.056],
+  ambientGround: srgbColor(0.034, 0.038, 0.05),
+  fogColor: srgbColor(0.031, 0.038, 0.056),
   // Enough to close the far paving. More and the colonnade goes with it.
   fogDensity: 0.009,
   emissiveGain: 0.9,
@@ -618,17 +619,17 @@ const NIGHT: CourtHour = {
   // Weak, and it should be: the moon is here to keep the far paving off pure ambient
   // rather than to compete with five lamps.
   shadowStrength: 0.4,
-  skyTop: [0.012, 0.017, 0.038],
-  skyHorizon: [0.042, 0.052, 0.086],
-  skyDeep: [0.008, 0.01, 0.022],
+  skyTop: srgbColor(0.012, 0.017, 0.038),
+  skyHorizon: srgbColor(0.042, 0.052, 0.086),
+  skyDeep: srgbColor(0.008, 0.01, 0.022),
   nightFactor: 1,
   /*
    * A water body's own colour is multiplied by the light arriving at it, so under a
    * moon it is black whatever the palette says. What a reader sees in a night basin is
    * what is reflected in it, so at night that is the term to spend on.
    */
-  waterDeep: [0.055, 0.088, 0.105],
-  waterShallow: [0.1, 0.15, 0.17],
+  waterDeep: srgbColor(0.055, 0.088, 0.105),
+  waterShallow: srgbColor(0.1, 0.15, 0.17),
   waterMirror: 0.88,
 };
 
@@ -642,7 +643,7 @@ const AFTERNOON: CourtHour = {
    * the paving, a rim on every column, and the marble reading as marble — which is the
    * daylight equivalent of what the lanterns do after dark.
    */
-  directionalColor: [1.12, 0.98, 0.8],
+  directionalColor: srgbColor(1.12, 0.98, 0.8),
   /*
    * A high ambient, and it is doing more work here than at night.
    *
@@ -651,22 +652,22 @@ const AFTERNOON: CourtHour = {
    * that light comes from the sky, which is a hemisphere rather than a point; without
    * enough of it the afternoon has a dark half and looks like a mistake.
    */
-  ambient: [0.42, 0.46, 0.55],
-  ambientGround: [0.29, 0.275, 0.25],
-  fogColor: [0.6, 0.66, 0.75],
+  ambient: srgbColor(0.42, 0.46, 0.55),
+  ambientGround: srgbColor(0.29, 0.275, 0.25),
+  fogColor: srgbColor(0.6, 0.66, 0.75),
   fogDensity: 0.0055,
   // A lit lantern in daylight is its glass catching the sun, not a glow.
   emissiveGain: 0.16,
   lampGain: 0.12,
   shadowStrength: 0.9,
-  skyTop: [0.2, 0.38, 0.7],
-  skyHorizon: [0.7, 0.75, 0.8],
-  skyDeep: [0.12, 0.26, 0.56],
+  skyTop: srgbColor(0.2, 0.38, 0.7),
+  skyHorizon: srgbColor(0.7, 0.75, 0.8),
+  skyDeep: srgbColor(0.12, 0.26, 0.56),
   nightFactor: 0,
   // By day the water has light to work with, so its own colour carries most of it and
   // the mirror term comes down to something a real pool would do.
-  waterDeep: [0.09, 0.17, 0.2],
-  waterShallow: [0.22, 0.36, 0.38],
+  waterDeep: srgbColor(0.09, 0.17, 0.2),
+  waterShallow: srgbColor(0.22, 0.36, 0.38),
   waterMirror: 0.36,
 };
 
@@ -674,12 +675,12 @@ const AFTERNOON: CourtHour = {
 function buildEnvironment(): Environment {
   return createEnvironment({
     directionalDir: [MOON_DIR[0], MOON_DIR[1], MOON_DIR[2]],
-    directionalColor: [0, 0, 0],
-    ambient: [0, 0, 0],
-    ambientGround: [0, 0, 0],
+    directionalColor: srgbColor(0, 0, 0),
+    ambient: srgbColor(0, 0, 0),
+    ambientGround: srgbColor(0, 0, 0),
     emissiveGain: 1,
     nightFactor: 1,
-    fogColor: [0, 0, 0],
+    fogColor: srgbColor(0, 0, 0),
     fogDensity: 0,
     fogHeightFalloff: 0.05,
     fogBaseY: 0,
@@ -695,10 +696,10 @@ function buildSky(): SkyColors {
     // which is what that uniform is for. The lighting direction lerps between them
     // separately, so the shadows swing as the hour moves.
     sunDir: SUN_DIR,
-    sunColor: [1, 0.92, 0.76],
+    sunColor: srgbColor(1, 0.92, 0.76),
     sunAngularRadius: 0.0046,
     moonDir: MOON_DIR,
-    moonColor: [0.62, 0.68, 0.85],
+    moonColor: srgbColor(0.62, 0.68, 0.85),
     moonAngularRadius: 0.013,
     moonPhase: 0.68,
     nightFactor: 1,
@@ -912,7 +913,7 @@ class NightCourtHandle implements DemoHandle {
       sizePulse: 0.3,
       // Smoke has nothing holding it down and goes where the air goes.
       windResponse: 1.35,
-      tint: [0.42, 0.4, 0.44],
+      tint: srgbColor(0.42, 0.4, 0.44),
     });
 
     this.camera.fovYDeg = 46;

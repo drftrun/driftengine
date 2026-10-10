@@ -23,6 +23,7 @@
  * updated; a completion request resolves later and is dropped if the popup was dismissed while it
  * was in flight. Awaiting either would stall the editor at exactly the moment somebody is typing.
  */
+import { srgbToLinear } from '@driftengine/core';
 import { addUiChild, createUiNode, runsFor } from '@driftengine/ui2d';
 import type { TextModel, TextRun, UiNode } from '@driftengine/ui2d';
 import { emptyPanel } from '@driftengine/tools';
@@ -353,10 +354,11 @@ function lineOf(text: string, offset: number): number {
 
 const TINT = new Float32Array(4);
 
+/* A hex colour is a display colour, so decoded to the linear light the renderer grades. */
 function colourOf(rgb: number): Float32Array {
-  TINT[0] = ((rgb >> 16) & 0xff) / 255;
-  TINT[1] = ((rgb >> 8) & 0xff) / 255;
-  TINT[2] = (rgb & 0xff) / 255;
+  TINT[0] = srgbToLinear(((rgb >> 16) & 0xff) / 255);
+  TINT[1] = srgbToLinear(((rgb >> 8) & 0xff) / 255);
+  TINT[2] = srgbToLinear((rgb & 0xff) / 255);
   TINT[3] = 1;
   return TINT;
 }

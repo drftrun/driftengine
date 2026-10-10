@@ -18,7 +18,13 @@
  * clicking land somewhere other than where things look — which reads as broken picking rather than
  * as two cameras.
  */
-import { Camera, createEnvironment, createRenderer, MeshBuilder } from '@driftengine/core';
+import {
+  Camera,
+  createEnvironment,
+  createRenderer,
+  MeshBuilder,
+  srgbColor,
+} from '@driftengine/core';
 import type { MeshHandle, RendererApi } from '@driftengine/core';
 
 import { appendLog } from '@driftengine/tools';
@@ -79,11 +85,17 @@ camera.far = 200;
 
 /** The marker a region is drawn as, made once: a unit cube scaled to whatever it stands for. */
 const markerMesh = renderer.createMesh(
-  new MeshBuilder().addBox([0, 0, 0], [0.5, 0.5, 0.5], [0.42, 0.52, 0.62], 0.12).build(),
+  new MeshBuilder()
+    .addBox([0, 0, 0], [0.5, 0.5, 0.5], [0.42, 0.52, 0.62], 0.12)
+    .build({ colorSpace: 'srgb' }),
 );
 const selectedMesh = renderer.createMesh(
-  new MeshBuilder().addBox([0, 0, 0], [0.5, 0.5, 0.5], [0.44, 0.84, 0.63], 0.45).build(),
+  new MeshBuilder()
+    .addBox([0, 0, 0], [0.5, 0.5, 0.5], [0.44, 0.84, 0.63], 0.45)
+    .build({ colorSpace: 'srgb' }),
 );
+/** The viewport's backdrop, picked by eye and so decoded: the renderer grades a clear. */
+const BACKDROP = srgbColor(0.08, 0.095, 0.11);
 const transform = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 /** What is open, and the surface mesh the renderer holds for it. */
@@ -369,7 +381,7 @@ function drawScene(): void {
   editor.shell.setCamera(camera.invViewProjection as unknown as Float32Array);
 
   const count = viewportItems(editor.scene, editor.shell.selection, items);
-  renderer.beginFrame([0.08, 0.095, 0.11]);
+  renderer.beginFrame(BACKDROP);
   renderer.bindMeshPass(camera, environment);
   drawViewport(items, count, {
     surface: () => {

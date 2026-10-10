@@ -13,9 +13,13 @@ import {
   createPointLightBuffer,
   hashToUnit,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { PointLightSource } from '@driftengine/core';
 import { openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.02, 0.025, 0.04);
 
 const stage = await openStage({
   outputTransform: 'aces',
@@ -191,7 +195,7 @@ stage.run({
     env.lightSourceRadii = chosen.sourceRadii;
     env.lightWeights = chosen.weights;
 
-    renderer.beginFrame([0.02, 0.025, 0.04]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(groundMesh, still.worldMatrix);
     // #region draw

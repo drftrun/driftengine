@@ -9,10 +9,19 @@
  * clock carries on.
  */
 import { bakeObjectSdf } from '@driftengine/assets';
-import { MeshBuilder, SceneNode, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import {
+  MeshBuilder,
+  SceneNode,
+  computeLightMatrix,
+  createEnvironment,
+  srgbColor,
+} from '@driftengine/core';
 import type { RendererApi, ShadowCasters, Vec3 } from '@driftengine/core';
 import { controls, flag, openScene } from '../common/stage';
 import type { SceneHooks } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0, 0, 0);
 
 const WHITE: Vec3 = [0.82, 0.82, 0.82];
 const RED: Vec3 = [0.9, 0.06, 0.06];
@@ -112,7 +121,7 @@ function build(renderer: RendererApi): SceneHooks {
       renderer.drawShadowCasters(casters);
       renderer.endShadowPass();
 
-      renderer.beginFrame([0, 0, 0]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       // #region frame
       declareFields(renderer, blue ? BLUE : RED);

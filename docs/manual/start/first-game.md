@@ -65,18 +65,25 @@ end of this chapter.
 ## Light that makes orbs glow
 
 ```ts sample=first-game/main.ts#environment
-const SKY: Vec3 = [0.56, 0.68, 0.84];
+/*
+ * Colours picked by eye go through `srgbColor`, because the renderer works in linear light and
+ * encodes for the screen at the end — the clear colour and the interface's included. The sky is the
+ * clear colour and the fog fades to it. The sun is half again as bright as white: light adds in
+ * linear values, and a sun of exactly white beside this ambient leaves a sunlit floor darker than
+ * the colour picked for it.
+ */
+const SKY = srgbColor(0.56, 0.68, 0.84);
 
 const ENV = createEnvironment({
   directionalDir: [0.35, 0.8, 0.45],
-  directionalColor: [1, 0.95, 0.86],
-  ambient: [0.34, 0.38, 0.46],
-  ambientGround: [0.14, 0.12, 0.1],
+  directionalColor: scaleColor(srgbColor(1, 0.95, 0.86), 1.5),
+  ambient: srgbColor(0.34, 0.38, 0.46),
+  ambientGround: srgbColor(0.14, 0.12, 0.1),
   // The emissive master switch. At 0 nothing glows, whatever emissiveGain says.
   nightFactor: 1,
   emissiveGain: 1.6,
   fogColor: SKY,
-  fogDensity: 0.01,
+  fogDensity: 0.007,
   fogHeightFalloff: 0.06,
   fogBaseY: 0,
 });
@@ -107,9 +114,9 @@ function solid(
   footprints.push({ x, z, hx, hz });
 }
 
-const GRASS: Vec3 = [0.4, 0.5, 0.36];
-const WALL: Vec3 = [0.62, 0.6, 0.56];
-const STONE: Vec3 = [0.5, 0.52, 0.58];
+const GRASS = srgbColor(0.4, 0.5, 0.36);
+const WALL = srgbColor(0.62, 0.6, 0.56);
+const STONE = srgbColor(0.5, 0.52, 0.58);
 
 solid(0, -0.5, 0, ARENA, 0.5, ARENA, GRASS);
 for (const side of [-1, 1]) {
@@ -142,7 +149,7 @@ All the boxes go into one `MeshBuilder`, so the whole level is a single mesh and
 ```ts sample=first-game/main.ts#crates
 const CRATE = 0.5;
 const crateMesh = renderer.createMesh(
-  new MeshBuilder().addBox([0, 0, 0], [CRATE, CRATE, CRATE], [0.74, 0.52, 0.3]).build(),
+  new MeshBuilder().addBox([0, 0, 0], [CRATE, CRATE, CRATE], srgbColor(0.74, 0.52, 0.3)).build(),
 );
 
 const crates: number[] = [];
@@ -199,7 +206,7 @@ const START: Vec3 = [0, 1.2, 7];
 
 const playerMesh = renderer.createMesh(
   new MeshBuilder()
-    .addCapsule([0, 0, 0], player.radius, player.halfHeight, [0.92, 0.88, 0.82])
+    .addCapsule([0, 0, 0], player.radius, player.halfHeight, srgbColor(0.92, 0.88, 0.82))
     .build(),
 );
 
@@ -228,7 +235,7 @@ interface Orb {
 const random = mulberry32(SEED);
 const orbs: Orb[] = [];
 const orbMesh = renderer.createMesh(
-  new MeshBuilder().addSphere([0, 0, 0], 0.32, [1, 0.78, 0.36], 1).build(),
+  new MeshBuilder().addSphere([0, 0, 0], 0.32, srgbColor(1, 0.78, 0.36), 1).build(),
 );
 
 function blocked(x: number, z: number): boolean {
@@ -668,7 +675,7 @@ the casters, draws the HUD and ends.
 const hud = renderer.createText();
 let hudStyle: typeof DEFAULT_TEXT_STYLE = {
   ...DEFAULT_TEXT_STYLE,
-  color: [1, 0.98, 0.92],
+  color: srgbColor(1, 0.98, 0.92),
   glow: 0.7,
 };
 /** What the text last said, so a new string is built only when a number on it changes. */

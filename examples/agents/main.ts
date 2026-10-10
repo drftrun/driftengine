@@ -33,6 +33,7 @@ import {
   createLineSegments,
   createNavSteer,
   hashToUnit,
+  srgbColor,
 } from '@driftengine/core';
 import type { BehaviorSpec, BehaviorStatus, MeshHandle, NavGraph, Vec3 } from '@driftengine/core';
 import { patchModule } from 'driftscript';
@@ -40,6 +41,10 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as villageScript from './village.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR_RAIN = srgbColor(0.42, 0.46, 0.52);
+const CLEAR = srgbColor(0.56, 0.64, 0.74);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -495,7 +500,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters((sink) => drawAll((mesh, model) => sink.mesh(mesh, model)));
     renderer.endShadowPass();
-    renderer.beginFrame(raining ? [0.42, 0.46, 0.52] : [0.56, 0.64, 0.74]);
+    renderer.beginFrame(raining ? CLEAR_RAIN : CLEAR);
     renderer.bindMeshPass(camera, env);
     drawAll((mesh, model) => renderer.drawMesh(mesh, model));
     if (raining) {

@@ -14,6 +14,7 @@ import {
   MeshBuilder,
   computeLightMatrix,
   createEnvironment,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshHandle, Vec3 } from '@driftengine/core';
 import { World, buildSchedule, runSchedule } from '@driftengine/entities';
@@ -32,6 +33,9 @@ import { loadModule, patchModule } from 'driftscript';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
 import * as pitchScript from './pitch.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.11, 0.12, 0.15);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -401,7 +405,7 @@ stage.run({
       drawPeer(match.peers[1], SEPARATION, (mesh, at) => sink.mesh(mesh, at));
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.11, 0.12, 0.15]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     for (const at of pitchModels) renderer.drawMesh(pitchDraw, at);
     drawPeer(match.peers[0], -SEPARATION, (mesh, at) => renderer.drawMesh(mesh, at));

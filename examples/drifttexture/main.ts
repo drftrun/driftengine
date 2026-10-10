@@ -18,6 +18,7 @@ import {
   programFromEncoded,
   solidBox,
   solidToMesh,
+  srgbColor,
   streamingScene,
   transformSolid,
 } from '@driftengine/core';
@@ -40,6 +41,9 @@ import {
 import type { DecodeGraph } from '@driftengine/texture';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.6, 0.68);
 
 const stage = await openStage(
   { outputTransform: 'aces', hdrScene: true, directionalShadows: false },
@@ -303,7 +307,7 @@ if (stage !== null) {
       );
       pass.resize(renderer.sceneWidth, renderer.sceneHeight);
       pass.setView(view);
-      renderer.beginFrame([0.55, 0.6, 0.68]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       renderer.drawPass(handle);
       readout.draw(time);

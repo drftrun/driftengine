@@ -3,7 +3,7 @@
 Model readers, the loader that streams a `.drft` file onto the screen, and the textures a phone
 samples.
 
-**Cost: 27.1 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
+**Cost: 29.2 KB gzipped on top of core.** Measured by `scripts/size-gate.test.mjs`, which fails if it
 drifts more than 3% — the number is a fact about the build rather than a claim in a document.
 
 - **Readers.** glTF and GLB, OBJ, STL, USD and 3MF, and experimentally FBX and Blender's `.blend`,

@@ -1,5 +1,6 @@
 import { GERSTNER_GLSL } from './gerstner.ts';
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * Light off water, projected onto what covers it.
@@ -78,6 +79,7 @@ uniform float uMaxDrop;
 ${FOG_GLSL}
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 ${GERSTNER_GLSL}
 
@@ -164,6 +166,7 @@ void main() {
   float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
 
   // Additive: this is light arriving at a surface that is already shaded.
-  outColor = vec4(uTint * (caustic * uStrength * reach * (1.0 - fog)), 1.0);
+  /* Graded where nothing after this will grade it, as every pass is, light added included. */
+  outColor = vec4(applyOutputTransform(uTint * (caustic * uStrength * reach * (1.0 - fog))), 1.0);
 }
 `;

@@ -10,7 +10,7 @@
  * and drawn in whatever order last arrived. Switch the sort off to see what drawing them in file
  * order looks like, and switch the pool's view-dependent colour off to see it flatten.
  */
-import { MeshBuilder, createEnvironment, hashToUnit } from '@driftengine/core';
+import { MeshBuilder, createEnvironment, hashToUnit, srgbColor } from '@driftengine/core';
 import type { PassHandle, Vec3 } from '@driftengine/core';
 import {
   SplatSorter,
@@ -27,7 +27,10 @@ const stage = await openStage({ outputTransform: 'aces', outputExposure: 1.2 });
 const { renderer, camera } = stage;
 
 // #region capture
-/** Splats gathered for one capture: where, how big along each axis, which way, what colour. */
+/**
+ * Splats gathered for one capture: where, how big along each axis, which way, what colour. A colour
+ * is a display value, as a capture trained on photographs stores it, and the pass decodes it.
+ */
 const positions: number[] = [];
 const scales: number[] = [];
 const rotations: number[] = [];
@@ -64,9 +67,9 @@ function rock(cx: number, cz: number, rx: number, ry: number, rz: number, seed: 
     const nz = Math.sin(a) * ring;
     const lump = 1 + (hashToUnit(seed + Math.floor(a * 3) * 17 + Math.floor(y * 6)) - 0.5) * 0.18;
     if (y < -0.2) continue;
-    const grey = 0.36 + hashToUnit(seed * 7 + i) * 0.14;
+    const grey = 0.63 + hashToUnit(seed * 7 + i) * 0.1;
     const moss = Math.max(0, y - 0.55) * 2.2 * hashToUnit(seed * 13 + i);
-    const colour: Vec3 = [grey - moss * 0.2, grey + moss * 0.18, grey - moss * 0.22];
+    const colour: Vec3 = [grey - moss * 0.15, grey + moss * 0.12, grey - moss * 0.17];
     lay([cx + nx * rx * lump, y * ry * lump, cz + nz * rz * lump], [nx, y, nz], 0.07, colour, 0.9);
   }
 }
@@ -80,8 +83,8 @@ for (let i = 0; i < 52000; i += 1) {
   const pool = Math.hypot(x - 2.2, z + 1.2) < 1.8;
   const tone = hashToUnit(i * 3);
   const colour: Vec3 = pool
-    ? [0.05, 0.12 + tone * 0.03, 0.16]
-    : [0.16 + tone * 0.08, 0.2 + tone * 0.16, 0.08 + tone * 0.04];
+    ? [0.25, 0.38 + tone * 0.04, 0.44]
+    : [0.44 + tone * 0.09, 0.48 + tone * 0.17, 0.31 + tone * 0.07];
   lay(
     [x, pool ? -0.05 : tone * 0.04, z],
     [0, 1, 0],
@@ -190,7 +193,7 @@ const env = createEnvironment({
   nightFactor: 0.4,
   emissiveGain: 1.5,
 });
-const SKY: Vec3 = [0.5, 0.58, 0.68];
+const SKY = srgbColor(0.5, 0.58, 0.68);
 const readout = createReadout(renderer, 1);
 readout.set(0, `${count} SPLATS`);
 

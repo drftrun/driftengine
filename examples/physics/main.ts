@@ -10,7 +10,7 @@
  * The wall is stacked again every fifteen seconds. The switches are the world's options, so
  * changing one builds the world again from the start.
  */
-import { MeshBuilder, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, computeLightMatrix, createEnvironment, srgbColor } from '@driftengine/core';
 import type { MeshData, MeshHandle, Vec3 } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
@@ -272,7 +272,7 @@ const lightMatrix = new Float32Array(16);
 env.lightViewProj = lightMatrix;
 env.shadowStrength = 0.8;
 const readout = createReadout(renderer, 2);
-const SKY: Vec3 = [0.58, 0.64, 0.72];
+const SKY = srgbColor(0.58, 0.64, 0.72);
 let time = 0;
 
 stage.run({

@@ -268,7 +268,14 @@ export class GlobalMediumPass {
    * `(ONE, SRC_ALPHA)` on colour is `dst * transmittance + inscatter`; alpha is left alone with
    * `(ZERO, ONE)`, because the frame's own alpha is not the medium's to spend.
    */
-  compositeMedium(depth: WebGLTexture, frameWidth: number, frameHeight: number): void {
+  compositeMedium(
+    depth: WebGLTexture,
+    frameWidth: number,
+    frameHeight: number,
+    /** The renderer's `passGrade`: how the frame under the medium was graded. */
+    outputTransform = 0,
+    outputExposure = 1,
+  ): void {
     if (this.target === null || this.unavailable) return;
     const { gl } = this;
     const u = this.upsampleUniforms;
@@ -292,6 +299,8 @@ export class GlobalMediumPass {
     this.mediumTexel[1] = 1 / Math.max(1, this.height);
     gl.uniform2fv(u['uMediumTexel'] ?? null, this.mediumTexel);
     gl.uniform4fv(u['uDepthToViewZ'] ?? null, this.depthToViewZ);
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 

@@ -1,3 +1,4 @@
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 /**
  * A flat, blended rectangle in screen space.
  *
@@ -44,8 +45,11 @@ uniform vec3 uColor;
 uniform float uAlpha;
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 void main() {
-  outColor = vec4(uColor, uAlpha);
+  /* Graded where nothing after this will grade it, as every pass is: a panel's colour is the
+     same linear colour as the text drawn over it. The alpha is coverage. */
+  outColor = vec4(applyOutputTransform(uColor), uAlpha);
 }
 `;

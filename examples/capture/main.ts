@@ -22,7 +22,7 @@ import {
   segmentGeometry,
 } from '@driftengine/capture';
 import type { SurfaceView, TestScene } from '@driftengine/capture';
-import { MeshBuilder, createEnvironment, hashToUnit } from '@driftengine/core';
+import { MeshBuilder, createEnvironment, hashToUnit, srgbColor } from '@driftengine/core';
 import type { MeshData, MeshHandle, Vec3 } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
@@ -33,6 +33,9 @@ import {
 } from '@driftengine/physics';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.6, 0.68);
 
 const stage = await openStage({ outputTransform: 'aces', sceneSamples: 4 });
 const { renderer, camera } = stage;
@@ -247,7 +250,7 @@ stage.run({
     camera.position[1] = 3.2;
     camera.position[2] = Math.cos(time * 0.2) * 5.5;
     camera.lookAt(0, 0.5, 0);
-    renderer.beginFrame([0.55, 0.6, 0.68]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     if (drawn !== null) renderer.drawMesh(drawn, IDENTITY);
     for (const body of balls) {

@@ -119,7 +119,7 @@ export const OUTPUT_TRANSFORM_CODE: Readonly<Record<string, number>> = {
 /**
  * The code a **forward** pass grades with: the transform's own, except `filmic`, which only the
  * composite carries the constants for, and which a pass grading itself therefore draws as `aces`.
- * Both backends' `gradeCode` read this, so neither can hand a forward stage a code it lacks.
+ * `passGrade.ts` reads this for both backends, so neither can hand a forward stage a code it lacks.
  */
 export function forwardTransformCode(transform: string): number {
   return transform === 'filmic' ? 2 : (OUTPUT_TRANSFORM_CODE[transform] ?? 0);

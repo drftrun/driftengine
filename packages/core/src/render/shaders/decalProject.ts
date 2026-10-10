@@ -24,6 +24,7 @@
  */
 
 import { glslIsFarDepth } from '../depthConvention.ts';
+import { LINEAR_TO_SRGB_GLSL } from './outputTransform.ts';
 
 export const DECAL_PROJECT_FRAG = `#version 300 es
 precision highp float;
@@ -63,7 +64,9 @@ uniform float uDecalOpacity;
 uniform float uDecalFacingCos;
 /** How much of the mark's radius is edge. */
 uniform float uDecalSoftness;
-
+/** How the frame under the marks was graded, 0 where the resolve grades it. See renderQuality.ts. */
+uniform int uOutputTransform;
+${LINEAR_TO_SRGB_GLSL}
 out vec4 fragColor;
 
 void main() {
@@ -122,6 +125,13 @@ void main() {
   mark *= ${glslIsFarDepth('stored')} ? 0.0 : 1.0;
 
   /* White is the identity of a multiply, so a pixel the projector missed changes nothing. */
-  fragColor = vec4(mix(vec3(1.0), uDecalColor, mark * uDecalOpacity), 1.0);
+  vec3 multiply = mix(vec3(1.0), uDecalColor, mark * uDecalOpacity);
+  /*
+   * **The multiply as an encoded pixel takes it**, where the frame was graded before this: the
+   * receiver is a display value, and darkening its light by a factor is darkening the display value
+   * by that factor encoded — exact through the sRGB encode, whose power carries a product through,
+   * and close through a curve, which bends it. A frame graded at the resolve multiplies linear light.
+   */
+  fragColor = vec4(mix(multiply, linearToSrgb(multiply), float(uOutputTransform != 0)), 1.0);
 }
 `;

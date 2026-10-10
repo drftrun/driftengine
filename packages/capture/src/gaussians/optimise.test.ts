@@ -1,4 +1,4 @@
-import { mulberry32 } from '@driftengine/core';
+import { mulberry32, srgbToLinear } from '@driftengine/core';
 import { readDrft, writeDrft, type DrftSplatBlock } from '@driftengine/drft';
 import { packSplats } from '@driftengine/splats';
 import { expect, test } from 'vitest';
@@ -95,9 +95,9 @@ test(
         Math.abs((fitted.positions[c] as number) - (truth.positions[c] as number)),
       ).toBeLessThan(0.02);
       expect(Math.abs((fitted.scales[c] as number) - 0.08)).toBeLessThan(0.02);
-      expect(Math.abs((fitted.colors[c] as number) - (truth.colors[c] as number))).toBeLessThan(
-        0.08,
-      );
+      /* A capture hands its colour over as a display value; the fit's own is linear. */
+      const linear = srgbToLinear(fitted.colors[c] as number);
+      expect(Math.abs(linear - (truth.colors[c] as number))).toBeLessThan(0.08);
     }
     expect(fitted.opacities[0]).toBeGreaterThan(0.6);
   },
@@ -222,7 +222,8 @@ function worstLikeness(
     positions: Float64Array.from(fitted.positions),
     scales: Float64Array.from(fitted.scales),
     rotations: Float64Array.from(fitted.rotations),
-    colors: Float64Array.from(fitted.colors),
+    /* Decoded back to the linear light the rasteriser and the frames are in. */
+    colors: Float64Array.from(fitted.colors, srgbToLinear),
     opacities: Float64Array.from(fitted.opacities),
   };
   const rendered = new Float64Array(SCENE_WIDTH * SCENE_HEIGHT * 4);

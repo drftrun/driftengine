@@ -168,7 +168,7 @@ underwater)` to fog the pipeline exactly as the forward path fogs, and `emissive
 pass.resize(renderer.sceneWidth, renderer.sceneHeight);
 pass.setView(view);
 
-renderer.beginFrame([0.55, 0.62, 0.72]);
+renderer.beginFrame(CLEAR);
 renderer.bindMeshPass(camera, env);
 renderer.drawPass(handle);
 renderer.endFrame();

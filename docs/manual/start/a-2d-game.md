@@ -39,15 +39,21 @@ Everything is measured in world units in the plane. The field is 14 units wide a
 ## Even light
 
 ```ts sample=game-2d/main.ts#light
-/** Flat-on light, so the board reads evenly rather than falling off toward one corner. */
+/**
+ * Flat-on light, so the board reads evenly rather than falling off toward one corner. Colours
+ * picked by eye go through `srgbColor` wherever they are lit, since the renderer lights in linear
+ * values, and the clear colour and the score's with them.
+ */
+const CLEAR = srgbColor(0.05, 0.06, 0.09);
+
 const FLAT = createEnvironment({
   directionalDir: [0.25, 0.45, 1],
-  directionalColor: [1, 0.97, 0.92],
-  ambient: [0.34, 0.36, 0.42],
-  ambientGround: [0.2, 0.21, 0.26],
+  directionalColor: srgbColor(1, 0.97, 0.92),
+  ambient: srgbColor(0.34, 0.36, 0.42),
+  ambientGround: srgbColor(0.2, 0.21, 0.26),
   emissiveGain: 1,
   nightFactor: 0,
-  fogColor: [0.05, 0.06, 0.09],
+  fogColor: srgbColor(0.05, 0.06, 0.09),
   fogDensity: 0,
   fogHeightFalloff: 0,
   fogBaseY: 0,
@@ -81,15 +87,15 @@ brickMesh.addBox([0, 0, 0], [BRICK_HALF_X, BRICK_HALF_Y, 0.24], [1, 1, 1]);
 const brick = stage.renderer.createMesh(brickMesh.build());
 
 const paddleMesh = new MeshBuilder();
-paddleMesh.addBox([0, 0, 0], [PADDLE_HALF, 0.26, 0.24], [0.82, 0.86, 0.95]);
+paddleMesh.addBox([0, 0, 0], [PADDLE_HALF, 0.26, 0.24], srgbColor(0.82, 0.86, 0.95));
 const paddle = stage.renderer.createMesh(paddleMesh.build());
 
 const ballMesh = new MeshBuilder();
-ballMesh.addBox([0, 0, 0], [BALL_R, BALL_R, BALL_R], [1, 0.86, 0.5]);
+ballMesh.addBox([0, 0, 0], [BALL_R, BALL_R, BALL_R], srgbColor(1, 0.86, 0.5));
 const ball = stage.renderer.createMesh(ballMesh.build());
 
 const wallMesh = new MeshBuilder();
-wallMesh.addBox([0, 0, 0], [0.25, FIELD_TOP, 0.24], [0.24, 0.26, 0.34]);
+wallMesh.addBox([0, 0, 0], [0.25, FIELD_TOP, 0.24], srgbColor(0.24, 0.26, 0.34));
 const wall = stage.renderer.createMesh(wallMesh.build());
 ```
 
@@ -101,10 +107,10 @@ meshes.
 
 ```ts sample=game-2d/main.ts#bricks
 const ROW_TINTS: [number, number, number][] = [
-  [0.95, 0.42, 0.35],
-  [0.95, 0.68, 0.32],
-  [0.55, 0.78, 0.5],
-  [0.45, 0.66, 0.95],
+  srgbColor(0.95, 0.42, 0.35),
+  srgbColor(0.95, 0.68, 0.32),
+  srgbColor(0.55, 0.78, 0.5),
+  srgbColor(0.45, 0.66, 0.95),
 ];
 
 /** Reused for every draw: set, update, draw, set again. Nothing is allocated in the frame. */
@@ -293,7 +299,7 @@ render(alpha) {
   const drawX = previousBallX + (ballX - previousBallX) * alpha;
   const drawY = previousBallY + (ballY - previousBallY) * alpha;
 
-  stage.renderer.beginFrame([0.05, 0.06, 0.09]);
+  stage.renderer.beginFrame(CLEAR);
   stage.renderer.bindMeshPass(stage.camera, FLAT);
 
   for (const side of [-1, 1]) {
@@ -333,7 +339,7 @@ render(alpha) {
     {
       ...DEFAULT_TEXT_STYLE,
       cellSize: cell,
-      color: [0.92, 0.94, 1],
+      color: srgbColor(0.92, 0.94, 1),
       glow: 0,
       alpha: 1,
       reveal: 1,

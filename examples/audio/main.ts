@@ -25,6 +25,7 @@ import {
   createEnvironment,
   createPointLightBuffer,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { PointLightSource, Vec3 } from '@driftengine/core';
 import { patchModule } from 'driftscript';
@@ -33,6 +34,9 @@ import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import { beatBuffer } from './beat';
 import * as courtyardScript from './courtyard.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.1, 0.11, 0.18);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -468,7 +472,7 @@ stage.run({
       sink.mesh(cartMesh, model);
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.1, 0.11, 0.18]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(yardMesh, IDENTITY);
     renderer.drawMesh(cartMesh, model);

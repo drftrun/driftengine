@@ -6,9 +6,18 @@
  * images arrive the same way, as anything `createSurfaceTexture` accepts: an image element, a
  * bitmap or a canvas.
  */
-import { MeshBuilder, SceneNode, createEnvironment, generateTangents } from '@driftengine/core';
+import {
+  MeshBuilder,
+  SceneNode,
+  createEnvironment,
+  generateTangents,
+  srgbColor,
+} from '@driftengine/core';
 import type { SurfaceTextureHandle } from '@driftengine/core';
 import { openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.62, 0.68, 0.76);
 
 const stage = await openStage({
   screenEffects: true,
@@ -155,7 +164,7 @@ stage.run({
     camera.position[2] = Math.cos(angle) * 9;
     camera.lookAt(0, 1.2, 0);
 
-    renderer.beginFrame([0.62, 0.68, 0.76]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, ENV);
 
     renderer.setMaterial(groundMaterial);

@@ -173,6 +173,8 @@ export class PlumeRenderer {
     originX = 0,
     originY = 0,
     originZ = 0,
+    outputTransform = 0,
+    outputExposure = 1,
   ): void {
     if (this.indexCount === 0) return;
     const u = this.uniforms;
@@ -200,6 +202,9 @@ export class PlumeRenderer {
     gl.uniform3f(u['uTint'] ?? null, this.tint[0], this.tint[1], this.tint[2]);
     gl.uniform1i(u['uClipEnabled'] ?? null, clipPlane === null ? 0 : 1);
     if (clipPlane !== null) gl.uniform4fv(u['uClipPlane'] ?? null, clipPlane);
+    /* The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
     bindAtmosphere(gl, u, atmosphere, atmosphereCameraY, underwaterEnabled);
 
     gl.enable(gl.BLEND);

@@ -116,10 +116,15 @@ export class CausticsRenderer {
     windX = 0,
     windZ = 0,
     strength = 1,
+    /** The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    outputTransform = 0,
+    outputExposure = 1,
   ): boolean {
     if (this.vertexCount === 0) return false;
     const u = this.uniforms;
     gl.useProgram(this.program);
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, camera.viewProjection);
     gl.uniform3fv(u['uCameraPos'] ?? null, camera.position);
     gl.uniform1f(u['uTime'] ?? null, timeSeconds);

@@ -44,7 +44,9 @@ import {
   moonIllumination,
   mulberry32,
   resolveDaylight,
+  scaleColor,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type { RenderBackend, RendererApi } from '../packages/core/src/index';
 import type {
@@ -90,33 +92,41 @@ const ORBIT_RADIUS_M = 21;
 
 /* -- Palette --------------------------------------------------------------- */
 
+/**
+ * How much stronger the key lights are than the numbers they were picked as: the sun, the moon and
+ * the lamps. Light adds in linear values, so a sunlit stone that summed its sun and its fill past
+ * the white it was picked as takes its sun at this much more, with the fills, picked as tones,
+ * decoded to where a shaded stone lands as picked.
+ */
+const KEY_LIGHT = 1.7;
+
 const STONE: Vec3 = [0.44, 0.42, 0.39];
 const STONE_DARK: Vec3 = [0.33, 0.32, 0.3];
 const PILLAR: Vec3 = [0.55, 0.53, 0.49];
 const IRON: Vec3 = [0.1, 0.1, 0.11];
 const LAMP_GLOW: Vec3 = [1, 0.74, 0.4];
-const LAMP_LIGHT: Vec3 = [1, 0.68, 0.33];
+const LAMP_LIGHT = scaleColor([1, 0.68, 0.33], KEY_LIGHT);
 
 /* Sky at the two extremes. The clock decides where between them the frame sits. */
 const DAY_SKY = {
-  top: [0.19, 0.38, 0.72] as Vec3,
-  horizon: [0.72, 0.78, 0.84] as Vec3,
-  deep: [0.11, 0.26, 0.56] as Vec3,
+  top: srgbColor(0.19, 0.38, 0.72),
+  horizon: srgbColor(0.72, 0.78, 0.84),
+  deep: srgbColor(0.11, 0.26, 0.56),
 };
 const NIGHT_SKY = {
-  top: [0.012, 0.018, 0.042] as Vec3,
-  horizon: [0.055, 0.07, 0.11] as Vec3,
-  deep: [0.008, 0.011, 0.026] as Vec3,
+  top: srgbColor(0.012, 0.018, 0.042),
+  horizon: srgbColor(0.055, 0.07, 0.11),
+  deep: srgbColor(0.008, 0.011, 0.026),
 };
 
-const DAY_AMBIENT: Vec3 = [0.4, 0.44, 0.53];
-const NIGHT_AMBIENT: Vec3 = [0.055, 0.066, 0.095];
-const DAY_GROUND: Vec3 = [0.3, 0.285, 0.26];
-const NIGHT_GROUND: Vec3 = [0.03, 0.033, 0.042];
+const DAY_AMBIENT = srgbColor(0.4, 0.44, 0.53);
+const NIGHT_AMBIENT = srgbColor(0.055, 0.066, 0.095);
+const DAY_GROUND = srgbColor(0.3, 0.285, 0.26);
+const NIGHT_GROUND = srgbColor(0.03, 0.033, 0.042);
 const SUN_COLOR: Vec3 = [1.2, 1.05, 0.82];
 const MOON_LIGHT: Vec3 = [0.16, 0.2, 0.3];
-const DAY_FOG: Vec3 = [0.66, 0.71, 0.78];
-const NIGHT_FOG: Vec3 = [0.035, 0.043, 0.062];
+const DAY_FOG = srgbColor(0.66, 0.71, 0.78);
+const NIGHT_FOG = srgbColor(0.035, 0.043, 0.062);
 
 /*
  * The two extremes as a palette keyed by the day factor, so the blend between them is the engine's
@@ -128,7 +138,7 @@ const PALETTE = createDaylightPalette([
   {
     at: 0,
     sunColor: [0, 0, 0],
-    moonColor: MOON_LIGHT,
+    moonColor: scaleColor(MOON_LIGHT, KEY_LIGHT),
     skyTop: NIGHT_SKY.top,
     skyHorizon: NIGHT_SKY.horizon,
     skyDeep: NIGHT_SKY.deep,
@@ -142,8 +152,8 @@ const PALETTE = createDaylightPalette([
   },
   {
     at: 1,
-    sunColor: SUN_COLOR,
-    moonColor: [0, 0, 0],
+    sunColor: scaleColor(SUN_COLOR, KEY_LIGHT),
+    moonColor: srgbColor(0, 0, 0),
     skyTop: DAY_SKY.top,
     skyHorizon: DAY_SKY.horizon,
     skyDeep: DAY_SKY.deep,
@@ -232,7 +242,7 @@ function buildSet(): MeshData {
   }
 
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 const PROFILES: Readonly<Record<DemoBudget, RenderQualityOptions>> = {
@@ -387,7 +397,7 @@ class DayClockHandle implements DemoHandle {
       sunColor: SUN_COLOR,
       sunAngularRadius: 0.0047,
       moonDir: this.celestial.moonDir,
-      moonColor: [0.66, 0.71, 0.86],
+      moonColor: srgbColor(0.66, 0.71, 0.86),
       moonAngularRadius: 0.014,
       moonPhase: 0,
       nightFactor: 0,

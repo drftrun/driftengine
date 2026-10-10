@@ -11,7 +11,7 @@ areas: ['splats']
 A splat capture is a photographed place drawn as several hundred thousand oriented, soft-edged
 ellipsoids. `@driftengine/splats` reads the files capture tools write, sorts the splats off the
 frame, and draws them as a pass that composes into a scene of ordinary meshes, so a lamp post you
-model stands among splats someone photographed. It costs 16.7 KB gzipped on top of core.
+model stands among splats someone photographed. It costs 17.3 KB gzipped on top of core.
 
 The example is a rock garden synthesised from about sixty-six thousand flat splats, so the page
 needs no download, with a post of ordinary geometry standing in it. Switch the sort off to see
@@ -22,7 +22,10 @@ what drawing in file order looks like, and the pool's view-dependent colour to s
 ## A capture
 
 ```ts sample=splats/main.ts#capture
-/** Splats gathered for one capture: where, how big along each axis, which way, what colour. */
+/**
+ * Splats gathered for one capture: where, how big along each axis, which way, what colour. A colour
+ * is a display value, as a capture trained on photographs stores it, and the pass decodes it.
+ */
 const positions: number[] = [];
 const scales: number[] = [];
 const rotations: number[] = [];
@@ -59,9 +62,9 @@ function rock(cx: number, cz: number, rx: number, ry: number, rz: number, seed: 
     const nz = Math.sin(a) * ring;
     const lump = 1 + (hashToUnit(seed + Math.floor(a * 3) * 17 + Math.floor(y * 6)) - 0.5) * 0.18;
     if (y < -0.2) continue;
-    const grey = 0.36 + hashToUnit(seed * 7 + i) * 0.14;
+    const grey = 0.63 + hashToUnit(seed * 7 + i) * 0.1;
     const moss = Math.max(0, y - 0.55) * 2.2 * hashToUnit(seed * 13 + i);
-    const colour: Vec3 = [grey - moss * 0.2, grey + moss * 0.18, grey - moss * 0.22];
+    const colour: Vec3 = [grey - moss * 0.15, grey + moss * 0.12, grey - moss * 0.17];
     lay([cx + nx * rx * lump, y * ry * lump, cz + nz * rz * lump], [nx, y, nz], 0.07, colour, 0.9);
   }
 }
@@ -75,8 +78,8 @@ for (let i = 0; i < 52000; i += 1) {
   const pool = Math.hypot(x - 2.2, z + 1.2) < 1.8;
   const tone = hashToUnit(i * 3);
   const colour: Vec3 = pool
-    ? [0.05, 0.12 + tone * 0.03, 0.16]
-    : [0.16 + tone * 0.08, 0.2 + tone * 0.16, 0.08 + tone * 0.04];
+    ? [0.25, 0.38 + tone * 0.04, 0.44]
+    : [0.44 + tone * 0.09, 0.48 + tone * 0.17, 0.31 + tone * 0.07];
   lay(
     [x, pool ? -0.05 : tone * 0.04, z],
     [0, 1, 0],
@@ -94,9 +97,11 @@ rock(3.4, 2.4, 1, 0.6, 1.1, 41);
 
 Each splat is a Gaussian: a position, a standard deviation along each of its own three axes, a
 rotation, a colour and an opacity. A `SplatSource` holds them as flat arrays: three numbers a splat
-for `positions` and `scales`, four for `rotations` in **xyzw** order, three for linear `colors`
-from 0 to 1, and one for `opacities`, already through the logistic. Both common file formats store
-rotations as wxyz, and the readers turn them round.
+for `positions` and `scales`, four for `rotations` in **xyzw** order, three for `colors` from 0 to
+1, and one for `opacities`, already through the logistic. A colour is a display value, as a capture
+trained on photographs stores it, and the pass decodes it after the view-dependent band, so a capture
+draws as it does in the tool that made it. Both common file formats store rotations as wxyz, and the
+readers turn them round.
 
 ```ts sample=splats/main.ts#pack
 /**

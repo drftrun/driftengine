@@ -2378,10 +2378,11 @@ describe('the webgpu renderer', () => {
   it('clears to the colour it was given, on the first pass that draws', () => {
     const stub = stubSurface();
     const { encoder } = stub;
-    /* The direct path: the graph has its own clear tests in its describe block. */
+    /* The direct path: the graph has its own clear tests in its describe block. Ungraded, so the
+       colour reaches the attachment as it was handed in; the grade is the test after the next. */
     const renderer = freshRenderer(
       stub,
-      resolveRenderQuality({ deferFramePass: true, frameGraph: false }),
+      resolveRenderQuality({ deferFramePass: true, frameGraph: false, outputTransform: 'none' }),
     );
     const scene = stubScene();
 
@@ -2408,7 +2409,7 @@ describe('the webgpu renderer', () => {
   it('clears an empty frame rather than presenting whatever was there', () => {
     const stub = stubSurface();
     const { encoder } = stub;
-    const renderer = freshRenderer(stub);
+    const renderer = freshRenderer(stub, resolveRenderQuality({ outputTransform: 'none' }));
 
     renderer.beginFrame([0.1, 0.2, 0.3]);
     renderer.endFrame();
@@ -2420,6 +2421,27 @@ describe('the webgpu renderer', () => {
     const attachment = [...(frame?.colorAttachments ?? [])][0];
     expect(attachment?.loadOp).toBe('clear');
     expect(attachment?.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
+  });
+
+  /*
+   * **THE CLEAR IS GRADED AS A PASS GRADES A COLOUR**, so a colour handed to the renderer is linear
+   * wherever it lands: under the default sRGB encode with no composite grading after the frame, 0.5
+   * clears to 1.055 · 0.5^(1/2.4) − 0.055 = 0.735357; with `hdrScene`, where the resolve grades the
+   * whole frame, it clears to 0.5 as given, and the resolve grades it there.
+   */
+  it('CLEARS TO THE COLOUR GRADED, AND TO THE COLOUR ITSELF WHERE THE RESOLVE GRADES', () => {
+    const cleared = (quality: RenderQuality) => {
+      const stub = stubSurface();
+      const renderer = freshRenderer(stub, quality);
+      renderer.beginFrame([0.5, 0.5, 0.5]);
+      renderer.endFrame();
+      const frame = stub.encoder.beginRenderPass.mock.calls
+        .map(([d]) => d)
+        .find((d) => String(d.label ?? '') === 'frame');
+      return [...(frame?.colorAttachments ?? [])][0]?.clearValue as { r: number } | undefined;
+    };
+    expect(cleared(resolveRenderQuality({}))?.r).toBeCloseTo(0.735357, 5);
+    expect(cleared(resolveRenderQuality({ hdrScene: true }))?.r).toBe(0.5);
   });
 
   /*
@@ -2955,7 +2977,7 @@ describe('the webgpu renderer', () => {
    * They were constants here, justified as "taken from `DEFAULT_RENDER_QUALITY` so a
    * comparison at default quality compares the same numbers". `renderer.ts` binds
    * `this.quality.*`, and a scene overrides it: `demo/dayClock` resolves
-   * `directionalShadowMaxSlope` to 9 where the default is 3, read off both live renderers.
+   * `directionalShadowMaxSlope` to 9 where the default was 3, read off both live renderers.
    * A copied default is wrong for whichever scene overrides it next, so nothing here may be
    * a copy.
    *
@@ -3159,7 +3181,7 @@ describe('the webgpu renderer', () => {
     expect(floats[off('uRelief') + 1]).toBe(60);
     expect(floats[off('uOpacity')]).toBe(1);
     expect(floats[off('uOutputExposure')]).toBe(1);
-    expect(ints[off('uOutputTransform')]).toBe(0);
+    expect(ints[off('uOutputTransform')], 'srgb, the default since 4.13.0').toBe(1);
   });
 
   /*

@@ -14,6 +14,7 @@ import {
   createLineSegments,
   hashToUnit,
   setPolyline,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshHandle, Vec3 } from '@driftengine/core';
 import {
@@ -31,6 +32,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as laserScript from './laser.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.5, 0.56, 0.64);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -248,7 +252,7 @@ stage.run({
     });
     renderer.endShadowPass();
 
-    renderer.beginFrame([0.5, 0.56, 0.64]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(room, IDENTITY);
     renderer.drawMesh(post, IDENTITY);

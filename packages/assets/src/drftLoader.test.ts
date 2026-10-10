@@ -13,7 +13,7 @@ import { DrftLoader, imageTypeFor, isRawCodec } from './drftLoader.ts';
 import type { DrftLoaderOptions } from './drftLoader.ts';
 import { writeDrft } from '@driftengine/drft';
 import type { DrftMaterial } from '@driftengine/drft';
-import type { MeshData, RendererApi } from '@driftengine/core';
+import type { MeshData, RendererApi, ShadowCasterSink } from '@driftengine/core';
 
 /**
  * The frame's stream work is bounded by the clock, and this is why it cannot be a count.
@@ -499,6 +499,82 @@ test('a fit still fits when it is asked for one', async () => {
 
   /* Two metres across and two tall, into a one metre box: a half scale either way. */
   expect(loader.placement?.scale).toBeCloseTo(0.5, 6);
+});
+
+/*
+ * **The sun's map placed by the model's own bounds, as fitted.** A focus and radius chosen by eye
+ * left part of a model outside the map, where it cast nothing; the loader knows the box. Four by two
+ * by one, from the origin, fitted into a two metre footprint: half scale, so x −1 to 1, y 0 to 1 and
+ * z −0.25 to 0.25, centred at (0, 0.5, 0). The sphere around that box is √5.25 / 2 = 1.1456 across
+ * its radius, widened by two texels in 1024, and the span is six radii: 6.887. The raw bounds would
+ * be twice that, and the unshifted box would put its centre 0.87 of the way to the map's edge.
+ */
+test('THE SUN IS FITTED TO THE MODEL AS PLACED, AND TO NOTHING BEFORE ITS SIZE IS KNOWN', async () => {
+  const loader = new DrftLoader(fakeRenderer(), {});
+  const out = new Float32Array(16);
+  const sun: [number, number, number] = [0, 1, 0];
+  expect(loader.shadowFit(sun, 1024, out)).toBeNull();
+
+  const mesh = triangle();
+  mesh.positions = new Float32Array([0, 0, 0, 4, 2, 0, 0, 0, 1]);
+  const drft = writeDrft({ head: { name: 'boxed' }, meshes: [mesh] });
+  await loader.consume(new Response(drft), { footprint: 2, height: 10, baseY: 0 });
+
+  expect(loader.shadowFit(sun, 1024, out)).toBeCloseTo(6.887, 2);
+  const clip = (x: number, y: number, z: number): [number, number] => [
+    (out[0] as number) * x + (out[4] as number) * y + (out[8] as number) * z + (out[12] as number),
+    (out[1] as number) * x + (out[5] as number) * y + (out[9] as number) * z + (out[13] as number),
+  ];
+  /* The centre at the map's centre, to the half texel the snap may move it. */
+  const [cx, cy] = clip(0, 0.5, 0);
+  expect(Math.abs(cx)).toBeLessThan(1 / 1024 + 1e-6);
+  expect(Math.abs(cy)).toBeLessThan(1 / 1024 + 1e-6);
+  for (const x of [-1, 1])
+    for (const z of [-0.25, 0.25]) {
+      const [u, v] = clip(x, 0, z);
+      expect(Math.max(Math.abs(u), Math.abs(v))).toBeLessThan(1);
+    }
+});
+
+/*
+ * **A model drawn, cast and prepared through the loader is its own parts**, this frame's: the rules
+ * each part is drawn by are `PartDraws`' and asserted there, so what is asserted here is that the
+ * loader hands it what it is drawing.
+ */
+test("THE LOADER'S DRAW, CASTERS AND PREPARE ARE THIS FRAME'S PARTS", async () => {
+  const drawn: unknown[] = [];
+  const prepared: unknown[] = [];
+  let ready = 0;
+  const renderer = {
+    ...fakeRenderer(),
+    setMaterial: () => {},
+    setSurfaceReflectivity: () => {},
+    drawMesh: (mesh: unknown) => drawn.push(mesh),
+    drawTranslucentMesh: (mesh: unknown) => drawn.push(mesh),
+    prepareMesh: (mesh: unknown) => prepared.push(mesh),
+    ready: async () => {
+      ready++;
+    },
+  } as unknown as RendererApi;
+  const loader = new DrftLoader(renderer, {});
+  const drft = writeDrft({
+    head: { name: 'two' },
+    meshes: [triangle(), triangle()],
+    materials: [material({ name: 'stone', albedo: 0 }), material({ name: 'veil', opacity: 0.5 })],
+  });
+  await loader.consume(new Response(drft), { footprint: 1, height: 1, baseY: 0 });
+  for (let frame = 0; frame < 16; frame++) loader.update(1 / 60);
+  const meshes = loader.parts.map((part) => part.mesh);
+  expect(meshes.length).toBe(2);
+
+  expect(loader.draw()).toBe(2);
+  expect(drawn).toEqual(meshes);
+  const cast: unknown[] = [];
+  loader.casters({ mesh: (mesh: unknown) => cast.push(mesh) } as unknown as ShadowCasterSink);
+  expect(cast).toEqual(meshes);
+  await loader.prepare();
+  expect(prepared).toEqual(meshes);
+  expect(ready).toBe(1);
 });
 
 /**

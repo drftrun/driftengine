@@ -7,7 +7,7 @@
  * its own region of the page at its second set of coordinates. The switch turns the page off, which
  * leaves the room to its faint ambient: what is left is what the bake was carrying.
  */
-import { MeshBuilder, createEnvironment, lightmapModel } from '@driftengine/core';
+import { MeshBuilder, createEnvironment, lightmapModel, srgbColor } from '@driftengine/core';
 import type {
   LightmapPage,
   LightmapRegion,
@@ -17,6 +17,9 @@ import type {
   Vec3,
 } from '@driftengine/core';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.02, 0.022, 0.026);
 
 const stage = await openStage({ outputTransform: 'aces' });
 const { renderer, camera } = stage;
@@ -190,7 +193,7 @@ const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
 const walls = [floor, back, left];
 stage.run({
   render() {
-    renderer.beginFrame([0.02, 0.022, 0.026]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     for (let k = 0; k < walls.length; k += 1) {
       renderer.setMaterial(lit ? (materials[k] ?? null) : null);

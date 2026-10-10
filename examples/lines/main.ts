@@ -13,7 +13,13 @@
  * `setPolyline` writes into arrays that already exist. Nothing here allocates per frame,
  * which is the rule the whole engine is built to.
  */
-import { MeshBuilder, SceneNode, createLineSegments, setPolyline } from '@driftengine/core';
+import {
+  MeshBuilder,
+  SceneNode,
+  createLineSegments,
+  setPolyline,
+  srgbColor,
+} from '@driftengine/core';
 import { DAYLIGHT, controls, flagNumber, openStage } from '../common/stage';
 
 /** Both are per-draw values, so the switches change the next frame's stroke. */
@@ -51,7 +57,10 @@ controls([
 ]);
 
 const slab = new MeshBuilder();
-slab.addBox([0, -0.25, 0], [9, 0.25, 9], [0.3, 0.32, 0.38]);
+slab.addBox([0, -0.25, 0], [9, 0.25, 9], srgbColor(0.3, 0.32, 0.38));
+/** Lit and fogged like the ground, so picked by eye and stated through `srgbColor` as it is. */
+const STROKE = srgbColor(1, 0.72, 0.32);
+const CLEAR = srgbColor(0.05, 0.06, 0.09);
 const ground = stage.renderer.createMesh(slab.build());
 
 const still = new SceneNode();
@@ -90,7 +99,7 @@ stage.run({
     // #region draw
     segments.count = setPolyline(segments, path, POINTS);
 
-    stage.renderer.beginFrame([0.05, 0.06, 0.09]);
+    stage.renderer.beginFrame(CLEAR);
     stage.renderer.bindMeshPass(stage.camera, DAYLIGHT);
     stage.renderer.drawMesh(ground, still.worldMatrix);
     stage.renderer.drawLines(
@@ -99,7 +108,7 @@ stage.run({
       still.worldMatrix,
       stage.camera,
       DAYLIGHT,
-      [1, 0.72, 0.32],
+      STROKE,
       width,
       1,
       softness,

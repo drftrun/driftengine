@@ -18,6 +18,7 @@ import {
   createEnvironment,
   createMeshInstances,
   hashToUnit,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshHandle, ShadowCasters, SkyColors, Vec3, WaterBody } from '@driftengine/core';
 import {
@@ -284,7 +285,7 @@ function chooseGround(cameraX: number, cameraZ: number): void {
 }
 // #endregion
 
-const HORIZON: Vec3 = [0.66, 0.74, 0.84];
+const HORIZON = srgbColor(0.66, 0.74, 0.84);
 const env = createEnvironment({
   directionalDir: [-0.55, 0.5, -0.4],
   directionalColor: [2.1, 1.95, 1.75],
@@ -295,9 +296,9 @@ const env = createEnvironment({
   fogHeightFalloff: 0.004,
 });
 const sky: SkyColors = {
-  top: [0.22, 0.4, 0.7],
+  top: srgbColor(0.22, 0.4, 0.7),
   horizon: HORIZON,
-  deep: [0.3, 0.36, 0.42],
+  deep: srgbColor(0.3, 0.36, 0.42),
   sunDir: env.directionalDir,
   sunColor: [1.8, 1.6, 1.3],
   sunAngularRadius: 0.02,
@@ -314,8 +315,8 @@ const sky: SkyColors = {
 const river = renderer.createWater();
 const riverBody: WaterBody = {
   level: 0.6,
-  deepColor: [0.04, 0.09, 0.1],
-  shallowColor: [0.1, 0.2, 0.2],
+  deepColor: srgbColor(0.04, 0.09, 0.1),
+  shallowColor: srgbColor(0.1, 0.2, 0.2),
   density: 0.8,
   waveScale: 0.15,
 };

@@ -61,8 +61,12 @@ ${layerLooksGlsl(looks)}
 /* Each layer's share of this point, the base's and layers 1 to 4's: worked out once, in layeredBegin. */
 float lShareBase;
 vec4 lShare;
-/* What an occlusion read at the mesh's coordinates leaves of this point, 1 where none: layeredBegin. */
-float lMeshOcclusion;
+/*
+ * What an occlusion read at the mesh's coordinates leaves of this point's colour and of its ambient
+ * light, 1 where none: layeredBegin.
+ */
+float lColorOcclusion;
+float lAmbientOcclusion;
 
 bool layered() {
   return uLayers[1].y > 0.5;
@@ -103,15 +107,18 @@ vec4 layerPick(float layer) {
 void layeredBegin() {
   /*
    * The occlusion at the mesh's coordinates, once: the ORM array's layer past the layers and past
-   * any mask and added mask it carries, spread over its range and taken at its strength.
+   * any mask and added mask it carries, spread over its range and taken at each strength. The
+   * colour's may pass 1, darkening faster than the occlusion does, and is held at black.
    */
-  lMeshOcclusion = 1.0;
-  float strength = layerOcclusionStrength();
-  if (strength > 0.0) {
+  lColorOcclusion = 1.0;
+  lAmbientOcclusion = 1.0;
+  vec2 strength = layerOcclusionStrengths();
+  if (strength.x > 0.0 || strength.y > 0.0) {
     float at = layerExtras() + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0) + (uLayers[2].z > 0.5 ? 1.0 : 0.0);
     vec2 range = layerOcclusionRange();
-    float occlusion = mix(range.x, range.y, texture(uOrmMap, vec3(vUv.xy, at)).r);
-    lMeshOcclusion = mix(1.0, occlusion, strength);
+    float bare = 1.0 - mix(range.x, range.y, texture(uOrmMap, vec3(vUv.xy, at)).r);
+    lColorOcclusion = max(0.0, 1.0 - strength.x * bare);
+    lAmbientOcclusion = 1.0 - strength.y * bare;
   }
   vec4 m = layerWeights();
   if (uLayers[2].z > 0.5) {
@@ -158,7 +165,7 @@ vec3 layeredColor(vec3 color) {
 
 /*
  * Colour by the shares, each layer's tinted, and the base layer's coverage, which a cutout reads;
- * then darkened by the occlusion at the mesh's coordinates, where it is the colour that takes it.
+ * then darkened by the occlusion at the mesh's coordinates, at the colour's strength.
  */
 vec4 layeredAlbedo() {
   vec4 sum = vec4(0.0);
@@ -168,28 +175,36 @@ vec4 layeredAlbedo() {
     sum.rgb += t.rgb * layerTint(i) * layerShare(i);
     if (i == 0) sum.a = t.a;
   }
-  if (!layerOcclusionAmbient()) sum.rgb *= lMeshOcclusion;
+  sum.rgb *= lColorOcclusion;
   return sum;
 }
 
-/* What the ambient light keeps: the occlusion at the mesh's coordinates, where it takes it. */
+/* What the ambient light keeps: the occlusion at the mesh's coordinates, at the ambient's strength. */
 float layeredAmbient() {
-  return layerOcclusionAmbient() ? lMeshOcclusion : 1.0;
+  return lAmbientOcclusion;
 }
 
 /*
- * The specular by the shares, each layer's own or the surface's where it names none. The surface's
- * own, untouched, where no material has asked for looks: shares summing to one in floating point
- * are not quite one, and a layered material that names nothing must draw exactly as before.
+ * The specular by the shares: each layer's named one at its share, and the surface's own over the
+ * layers naming none, once at most. Under a summed blend the shares add past 1 where the weights
+ * do, and a surface whose layers leave the specular to it reflects its own, not its own times that
+ * sum; under a blend laid over, the shares never pass 1 and this is the sum it always was. What it
+ * gives up: named speculars still add as their colours do, so a summed blend that names them
+ * reflects their sum. The surface's own, untouched, where no material has asked for looks: shares
+ * summing to one in floating point are not quite one, and a layered material that names nothing
+ * must draw exactly as before.
  */
 float layeredSpecular(float own) {
   if (LAYER_LOOKS) {
-    float sum = 0.0;
+    float named = 0.0;
+    float unnamed = 0.0;
     for (int i = 0; i < 5; i++) {
       if (float(i) >= uLayers[1].y) break;
-      sum += layerSpecular(i, own) * layerShare(i);
+      float specular = layerNamedSpecular(i);
+      if (specular < 0.0) unnamed += layerShare(i);
+      else named += specular * layerShare(i);
     }
-    return sum;
+    return named + own * min(unnamed, 1.0);
   }
   return own;
 }

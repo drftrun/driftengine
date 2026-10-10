@@ -1,3 +1,4 @@
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 /**
  * Screen-space 3D text.
  *
@@ -147,6 +148,7 @@ uniform float uGlow;
 uniform float uAlpha;
 
 out vec4 fragColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 void main() {
   /*
@@ -161,5 +163,6 @@ void main() {
   vec3 lit = uColor * lambert;
   // The glow rides the arrival: brightest as a character lands, settling after.
   vec3 emissive = uColor * uGlow * (0.45 + 0.55 * vChar);
-  fragColor = vec4(lit + emissive, uAlpha);
+  /* Graded where nothing after this will grade it, as every pass is. The alpha is coverage. */
+  fragColor = vec4(applyOutputTransform(lit + emissive), uAlpha);
 }`;

@@ -41,6 +41,8 @@ export class SkinScatterPass {
   private readonly layout: GPUBindGroupLayout;
   private readonly uniforms: GPUBuffer;
   private readonly staging = new Float32Array((SLOT * 2) / 4);
+  /** The same blocks' ints: the frame's grade, which the second axis applies. */
+  private readonly stagingInts = new Int32Array(this.staging.buffer);
   private readonly linear: GPUSampler;
   private readonly nearest: GPUSampler;
   private readonly commands: CommandPool = createCommandPool(16);
@@ -212,6 +214,9 @@ export class SkinScatterPass {
     projection: ArrayLike<number>,
     inverseProjection: ArrayLike<number>,
     timestampWrites: () => GPURenderPassTimestampWrites | undefined,
+    /** The frame's grade, which the second axis applies to the light it adds. */
+    outputTransform = 0,
+    outputExposure = 1,
   ): void {
     const diffuse = this.diffuse;
     if (diffuse === null || this.diffuseView === null || this.acrossView === null) return;
@@ -221,7 +226,14 @@ export class SkinScatterPass {
       this.groupDown = this.group('skin.blurDown', this.acrossView, depth);
       this.groupsDepth = depth;
     }
-    this.writeUniforms(diffuse.width, diffuse.height, projection, inverseProjection);
+    this.writeUniforms(
+      diffuse.width,
+      diffuse.height,
+      projection,
+      inverseProjection,
+      outputTransform,
+      outputExposure,
+    );
 
     const across = postPipeline(
       pipelines,
@@ -316,6 +328,8 @@ export class SkinScatterPass {
     height: number,
     projection: ArrayLike<number>,
     inverse: ArrayLike<number>,
+    outputTransform: number,
+    outputExposure: number,
   ): void {
     const f = this.staging;
     const fields = BINDINGS.fields;
@@ -335,6 +349,8 @@ export class SkinScatterPass {
       f.set(this.profiles, base + fields.uProfiles.offset / 4);
       /* The colour is applied once, on the axis that adds into the frame. */
       f[base + fields.uApplyAlbedo.offset / 4] = axis;
+      this.stagingInts[base + fields.uOutputTransform.offset / 4] = outputTransform;
+      f[base + fields.uOutputExposure.offset / 4] = outputExposure;
     }
     this.device.queue.writeBuffer(this.uniforms, 0, f);
   }

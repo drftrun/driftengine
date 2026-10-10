@@ -229,7 +229,7 @@ render() {
   camera.position[2] = Math.cos(angle) * 9;
   camera.lookAt(0, 1.2, 0);
 
-  renderer.beginFrame([0.62, 0.68, 0.76]);
+  renderer.beginFrame(CLEAR);
   renderer.bindMeshPass(camera, ENV);
 
   renderer.setMaterial(groundMaterial);

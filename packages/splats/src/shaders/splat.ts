@@ -149,6 +149,20 @@ vec4 unpackRgba8(uint packed) {
   ) / 255.0;
 }
 
+/*
+ * **A capture's colour is a display value, decoded here to the linear light the frame grades.** A
+ * capture is trained against photographs, so its colour terms reproduce their pixels when drawn as
+ * they are; the frame encodes for the screen at the end, so a colour handed over undecoded comes out
+ * a washed-out version of the capture. Decoded after the view-dependent term, which training added
+ * in the same space. What it gives up is the blend: the splats are composed in linear light rather
+ * than in the display values training composed them in, which moves a translucent edge by a little.
+ */
+vec3 decodeSrgb(vec3 c) {
+  vec3 low = c / 12.92;
+  vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(high, low, vec3(lessThanEqual(c, vec3(0.04045))));
+}
+
 /**
  * The view-dependent term of one splat's colour, from the texel packSh1 wrote.
  *
@@ -211,6 +225,7 @@ void main() {
     vec3 direction = normalize(centre - uSplatCameraLocal);
     vColor.rgb = max(vColor.rgb + viewDependentColour(fetchTexel(splat, 2), direction), vec3(0.0));
   }
+  vColor.rgb = decodeSrgb(vColor.rgb);
 
   vec2 c01 = unpackHalf2x16(texel1.x);
   vec2 c23 = unpackHalf2x16(texel1.y);

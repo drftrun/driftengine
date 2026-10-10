@@ -95,3 +95,26 @@ test('a cloud with no scale to start from is refused rather than given one', () 
   const cloud = createCloud(BUDGET, 1, false);
   expect(() => start(cloud, Float64Array.from([0, 0, 1]), 1, 0)).toThrow(/spacing/);
 });
+
+/*
+ * **A FITTED COLOUR GOES OUT AS A DISPLAY VALUE**, which `SplatSource.colors` is and the splat
+ * shader decodes. The fit's 0.2 of linear light leaves as 1.055 · 0.2^(1/2.4) − 0.055 = 0.484529,
+ * and the l=1 band goes through the encode's slope there, (1.055 / 2.4) · 0.2^(1/2.4 − 1) =
+ * 1.124019, so a coefficient of 0.1 leaves as 0.112402 with its sign kept.
+ */
+test('A FITTED COLOUR GOES OUT AS A DISPLAY VALUE, its l=1 band through the slope of the encode', () => {
+  const cloud = createCloud(BUDGET, 1, true);
+  start(cloud, Float64Array.from([0, 0, 1]), 1, 0.2);
+  materialise(cloud);
+  cloud.colors.values.fill(0.2, 0, 3);
+  const band = cloud.sh1?.values;
+  if (band === undefined) throw new Error('a view-dependent cloud carries a band');
+  band.fill(0, 0, 9);
+  band[0] = 0.1;
+  band[4] = -0.1;
+  const source = harvest(cloud);
+  for (let c = 0; c < 3; c += 1) expect(source.colors[c]).toBeCloseTo(0.484529, 5);
+  expect(source.sh1?.[0]).toBeCloseTo(0.112402, 5);
+  expect(source.sh1?.[4]).toBeCloseTo(-0.112402, 5);
+  expect(source.sh1?.[1]).toBe(0);
+});

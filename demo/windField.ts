@@ -37,6 +37,7 @@ import {
   createRenderer,
   createWindField,
   mulberry32,
+  srgbColor,
   writeInstance,
 } from '../packages/core/src/index';
 import type {
@@ -185,7 +186,7 @@ function buildGround(random: () => number, trees: readonly MeshData[]): MeshData
 
   for (const trunk of trees) builder.addMesh(trunk, 0, 0, 0, 1);
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -213,7 +214,7 @@ function buildBlade(): MeshData {
       BLADE,
     );
   }
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /** Sow the disc, and hand back what to draw it with. */
@@ -349,13 +350,14 @@ class WindFieldHandle implements DemoHandle {
           canopyRadius: 1.5 + random() * 0.9,
           canopyClusters: 9,
           trunkColor: BARK,
-          canopyColor: LEAF,
+          /* The canopy is scattered as it is built rather than through a builder, so decoded here. */
+          canopyColor: srgbColor(...LEAF),
         },
         random,
       );
       const solid = new MeshBuilder();
       solid.addMesh(tree.solid, x, y, z, 1);
-      trunks.push(solid.build());
+      trunks.push(solid.build({ colorSpace: 'srgb' }));
       canopySource ??= tree.flexible;
       const shade = 0.85 + random() * 0.3;
       writeInstance(
@@ -389,17 +391,17 @@ class WindFieldHandle implements DemoHandle {
       ambientGround: [0.24, 0.24, 0.19],
       emissiveGain: 0,
       nightFactor: 0,
-      fogColor: [0.66, 0.72, 0.8],
+      fogColor: srgbColor(0.66, 0.72, 0.8),
       fogDensity: 0.008,
       fogHeightFalloff: 0.03,
       fogBaseY: 0,
     });
     this.sky = {
-      top: [0.21, 0.4, 0.72],
-      horizon: [0.72, 0.78, 0.84],
-      deep: [0.13, 0.28, 0.58],
+      top: srgbColor(0.21, 0.4, 0.72),
+      horizon: srgbColor(0.72, 0.78, 0.84),
+      deep: srgbColor(0.13, 0.28, 0.58),
       sunDir: this.env.directionalDir,
-      sunColor: [1, 0.94, 0.8],
+      sunColor: srgbColor(1, 0.94, 0.8),
       sunAngularRadius: 0.0046,
       moonDir: [0, -1, 0],
       moonColor: [0, 0, 0],

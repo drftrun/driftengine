@@ -5,8 +5,12 @@
  * level each region is drawn at. This draws those lines over the finished frame, laying a line out
  * again only when its text changes.
  */
-import { DEFAULT_TEXT_STYLE } from '@driftengine/core';
+import { DEFAULT_TEXT_STYLE, srgbColor } from '@driftengine/core';
 import type { RendererApi, TextStyle } from '@driftengine/core';
+
+/** The figures and their backing, picked by eye and so decoded: the renderer grades both. */
+const INK = srgbColor(0.92, 0.94, 0.98);
+const BACKING = srgbColor(0.07, 0.08, 0.1);
 
 export interface Readout {
   /** Set one line's text. Laid out again only when it differs from what the line holds. */
@@ -53,12 +57,12 @@ export function createReadout(
       const size = Math.max(1, Math.min(suggested, fits));
       if (size !== cell) {
         cell = size;
-        style = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.92, 0.94, 0.98] };
+        style = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: INK };
       }
       const top = 52;
       renderer.fillPanel(
         { left: 14, top, width: (longest * 6 + 5) * size, height: (lines * 9 + 4) * size },
-        [0.07, 0.08, 0.1],
+        BACKING,
         0.6,
       );
       for (let line = 0; line < lines; line += 1) {

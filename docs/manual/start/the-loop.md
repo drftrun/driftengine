@@ -35,7 +35,7 @@ startLoop({
 
     camera.updateMatrices(canvas.height > 0 ? canvas.width / canvas.height : 1);
 
-    renderer.beginFrame([0.05, 0.06, 0.09]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, ENV);
     renderer.drawMesh(ground, stillness.worldMatrix);
     renderer.drawMesh(cube, spinner.worldMatrix);
@@ -66,7 +66,7 @@ const START: Vec3 = [0, 1.2, 7];
 
 const playerMesh = renderer.createMesh(
   new MeshBuilder()
-    .addCapsule([0, 0, 0], player.radius, player.halfHeight, [0.92, 0.88, 0.82])
+    .addCapsule([0, 0, 0], player.radius, player.halfHeight, srgbColor(0.92, 0.88, 0.82))
     .build(),
 );
 

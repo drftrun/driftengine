@@ -15,6 +15,7 @@ import {
   computeLightMatrix,
   createEnvironment,
   describeClipMime,
+  srgbColor,
   stillFrame,
 } from '@driftengine/core';
 import type { FrameOverlay, MeshHandle, Vec3 } from '@driftengine/core';
@@ -23,6 +24,9 @@ import { patchModule } from 'driftscript';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as showScript from './show.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.05, 0.06, 0.09);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -225,7 +229,7 @@ function draw(time: number, aspect: number): void {
     for (const { mesh, model } of placed) sink.mesh(mesh, model);
   });
   renderer.endShadowPass();
-  renderer.beginFrame([0.05, 0.06, 0.09]);
+  renderer.beginFrame(CLEAR);
   renderer.bindMeshPass(camera, env);
   renderer.drawMesh(floorMesh, IDENTITY);
   renderer.drawMesh(plinthMesh, plinth);

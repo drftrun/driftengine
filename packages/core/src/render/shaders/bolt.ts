@@ -1,4 +1,5 @@
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * Electrical arcs: a filament with a saturating core and a wide soft glow.
@@ -95,6 +96,7 @@ ${FOG_GLSL}
 uniform vec3 uCameraPos;
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 float hash11(float p) {
   return fract(sin(p * 12.9898) * 43758.5453123);
@@ -165,6 +167,7 @@ void main() {
    * faint: at a typical energy of 0.5 it delivered a quarter of what it asked for.
    * Every emissive material here has to pick one channel and mean it.
    */
-  outColor = vec4(lit * energy * (1.0 - fog), 1.0);
+  /* Graded where nothing after this will grade it, as every pass is, light added included. */
+  outColor = vec4(applyOutputTransform(lit * energy * (1.0 - fog)), 1.0);
 }
 `;

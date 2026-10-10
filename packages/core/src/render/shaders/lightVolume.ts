@@ -49,6 +49,7 @@
 
 import { SUN_DYNAMIC_LAYER, SUN_PEELED_LAYER, SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { resolveConditionals } from './conditionals.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 export const LIGHT_VOLUME_VERT = `#version 300 es
 precision highp float;
@@ -169,6 +170,7 @@ uniform int uPeeledShadowEnabled;
 #endif
 
 out vec4 fragColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 /** Where the drawn volume starts along its own +Z, so a shaft can be a slice of a wide cone. */
 uniform float uNear;
@@ -545,7 +547,8 @@ void main() {
    * it in both squares it, which is how an effect authored as bright arrives as faint. Every
    * emissive material in this renderer has to pick one channel and mean it: see bolt.ts.
    */
-  fragColor = vec4(vColor * (vEnergy * lit * uStrength), 1.0);
+  /* Graded where nothing after this will grade it, as every pass is, light added included. */
+  fragColor = vec4(applyOutputTransform(vColor * (vEnergy * lit * uStrength)), 1.0);
 }
 `,
     { DIRECTIONAL_SHADOWS: options.directionalShadows },

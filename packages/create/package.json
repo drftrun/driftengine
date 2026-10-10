@@ -1,6 +1,6 @@
 {
   "name": "@driftengine/create",
-  "version": "4.12.0",
+  "version": "4.13.0",
   "description": "Starts a DriftEngine game: a Vite and TypeScript project, its instructions for a coding agent, and the engine's skill",
   "license": "Apache-2.0",
   "type": "module",

@@ -13,8 +13,9 @@ import {
   computeLightMatrix,
   createEnvironment,
   createWindField,
+  srgbColor,
 } from '@driftengine/core';
-import type { ShadowCasters, SkyColors, Vec3, WaterBody, WindProfile } from '@driftengine/core';
+import type { ShadowCasters, SkyColors, WaterBody, WindProfile } from '@driftengine/core';
 import { controls, flag, openStage } from '../common/stage';
 
 const SPEEDS: Record<string, number> = { calm: 0.8, breeze: 4, gale: 10 };
@@ -44,7 +45,7 @@ controls([
   },
 ]);
 
-const HORIZON: Vec3 = [0.62, 0.7, 0.78];
+const HORIZON = srgbColor(0.62, 0.7, 0.78);
 const env = createEnvironment({
   directionalDir: [-0.5, 0.45, -0.7],
   directionalColor: [2.2, 2.05, 1.85],
@@ -55,9 +56,9 @@ const env = createEnvironment({
   fogHeightFalloff: 0.02,
 });
 const sky: SkyColors = {
-  top: [0.2, 0.36, 0.66],
+  top: srgbColor(0.2, 0.36, 0.66),
   horizon: HORIZON,
-  deep: [0.3, 0.36, 0.42],
+  deep: srgbColor(0.3, 0.36, 0.42),
   sunDir: env.directionalDir,
   sunColor: [1.8, 1.6, 1.3],
   sunAngularRadius: 0.02,
@@ -75,8 +76,8 @@ const sky: SkyColors = {
 const sea = renderer.createWater();
 const seaBody: WaterBody = {
   level: 0,
-  deepColor: [0.03, 0.07, 0.1],
-  shallowColor: [0.08, 0.16, 0.18],
+  deepColor: srgbColor(0.03, 0.07, 0.1),
+  shallowColor: srgbColor(0.08, 0.16, 0.18),
   density: 0.95,
 };
 // #endregion

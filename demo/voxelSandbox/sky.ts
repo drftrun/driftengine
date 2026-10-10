@@ -21,6 +21,7 @@ import type {
 } from '../../packages/core/src/index';
 
 import type { LightingSnapshot } from './lighting';
+import { srgbColor } from '../../packages/core/src/index';
 
 /** How fast the cloud layer drifts, in offset units a second. */
 const CLOUD_DRIFT = 0.9;
@@ -38,7 +39,7 @@ export const SUN_ANGULAR_RADIUS = 0.035;
 /** The moon's, kept the fraction of the sun's it was when both were the real sizes. */
 export const MOON_ANGULAR_RADIUS = 0.034;
 
-const MOON_COLOR: Vec3 = [0.95, 0.95, 0.88];
+const MOON_COLOR = srgbColor(0.95, 0.95, 0.88);
 
 export class Sky {
   /* One object, written in place each frame: the frame loop must not allocate. */

@@ -16,11 +16,12 @@ import type { Camera, Environment, UnderwaterAtmosphere } from '../../packages/c
 import { Block } from './blocks';
 import { SEA_LEVEL } from './constants';
 import type { BlockSource } from './world';
+import { srgbColor } from '../../packages/core/src/index';
 
 /** What the eye sees while submerged. */
 const UNDERWATER: UnderwaterAtmosphere = {
   surfaceY: SEA_LEVEL,
-  color: [0.12, 0.35, 0.6],
+  color: srgbColor(0.12, 0.35, 0.6),
   fogDensity: 0.08,
   transitionDepth: 0.5,
 };

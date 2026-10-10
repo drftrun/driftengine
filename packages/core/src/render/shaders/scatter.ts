@@ -1,4 +1,5 @@
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * Instanced scatter: grass, flowers, foliage — anything there are thousands of.
@@ -193,6 +194,7 @@ uniform vec3 uCameraPos;
 ${FOG_GLSL}
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 void main() {
   vec3 n = normalize(vNormal);
@@ -206,6 +208,7 @@ void main() {
 
   float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
 
-  outColor = vec4(mix(lit, mediumColor(), fog), 1.0);
+  /* Graded where nothing after this will grade it, as every pass is: the same light as the ground. */
+  outColor = vec4(applyOutputTransform(mix(lit, mediumColor(), fog)), 1.0);
 }
 `;

@@ -97,14 +97,23 @@ test('shows and hides a node, and a hidden one leaves the layout', () => {
   expect(call<number>(fns, 'left', root, 'quit')).toBe(0);
 });
 
-test('changes text and a background colour', () => {
+/*
+ * **A TINT IS A COLOUR PICKED FOR THE SCREEN, DECODED TO LINEAR**, as a theme's hex token is, and its
+ * coverage kept: by ((c + 0.055) / 1.055) ^ 2.4, 0.25 is 0.050876, 0.5 is 0.214041 and 0.75 is
+ * 0.522522. Kept as given, a script's menu came out a washed-out version of the colours it named.
+ */
+test('CHANGES TEXT, AND A BACKGROUND COLOUR PICKED FOR THE SCREEN DECODED TO LINEAR', () => {
   const fns = api();
   const root = tree();
   call(fns, 'setText', root, 'start', 'Play');
-  call(fns, 'tint', root, 'start', 0.25, 0.5, 0.75, 1);
+  call(fns, 'tint', root, 'start', 0.25, 0.5, 0.75, 0.5);
   const node = root.children[0] as UiNode;
   expect(node.text).toBe('Play');
-  expect(Array.from(node.background ?? [])).toEqual([0.25, 0.5, 0.75, 1]);
+  const [r, g, b, a] = Array.from(node.background ?? []);
+  expect(r).toBeCloseTo(0.050876, 5);
+  expect(g).toBeCloseTo(0.214041, 5);
+  expect(b).toBeCloseTo(0.522522, 5);
+  expect(a).toBe(0.5);
 });
 
 test('draws the tree into a batch and answers how many quads that was', () => {

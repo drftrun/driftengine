@@ -1,5 +1,71 @@
 [
   {
+    "version": "4.13.0",
+    "date": "2026-10-10",
+    "entries": [
+      {
+        "kind": "changed",
+        "short": "The frame is encoded for the screen by default, every pass and the clear colour alike: `outputTransform` is `'srgb'`, so a model reads as it does elsewhere.",
+        "text": "`outputTransform` defaults to `'srgb'`. The light the renderer computes is linear, and a texture's colours are decoded to linear when they are read, so a frame written without encoding them back, which `'none'`, the default until now, did, reads every midtone far too dark: a textured model drawn from the manual with no quality options came out darker than the same file in any other engine, and the cause looks like lighting, so that is where people looked. **Every pass now grades where nothing after it will, and the clear colour with them**, so a colour handed to the renderer means one thing wherever it lands: the sky, water, scatter, the plumes, flocks, wind streaks, bolts, caustics, light volumes and film grade themselves, as the lit pass, particles, lines and world text already did; the decal multiply, the global medium, the skin blur's add and the resolve's occlusion work in the terms of a pixel already graded; and the gpu-driven pipeline's blit grades instead of warning. Until now, without `hdrScene`, those passes drew their colours as given beside a graded world, so a sky never met the fog fading into it. `'srgb'` is the display encoding with no tone curve; `'aces'` with an `outputExposure` still rolls highlights off. A world graded under `'none'` says so and draws exactly as it did, bit for bit, and a frame with `hdrScene` is graded once at the resolve exactly as before. What changes for a world on another curve without `hdrScene` is that its sky and water are graded with it, and its interface is encoded for the screen, as the next entry says."
+      },
+      {
+        "kind": "added",
+        "short": "Colours picked by eye are stated as such: `srgbColor(r, g, b)`, `MeshBuilder.build({ colorSpace: 'srgb' })` and `decodeSrgbInPlace`, each decoding to the linear values the renderer draws.",
+        "text": "A colour picked by eye, on a screen or in a paint program, is a display value, and the renderer draws linear ones, so typed in as it looks it comes out too light. Three ways say which it is. `srgbColor(r, g, b)` decodes one colour through the sRGB curve, so a surface lit at 1, a sky or a clear colour comes out as the colour picked. `MeshBuildOptions.colorSpace: 'srgb'` decodes every vertex colour and emissive colour of a built mesh once, at build, as a texture uploaded as sRGB is decoded at upload, so a world built from hand-picked colours changes one line. `decodeSrgbInPlace` decodes an array of them, leaving a negative sentinel alone, for a mesh written by hand. `srgbToLinear` decodes one channel, for a colour that arrives a number at a time, as a packed hex token does. A light's intensity is an amount rather than a look and stays as it is. The examples state their colours this way, and the starter, which a new project begins from, shows the default."
+      },
+      {
+        "kind": "changed",
+        "short": "Text, panels and the 2D layer are encoded for the screen and never tone mapped, so an interface comes out as picked under any transform and at any exposure.",
+        "text": "Screen text, `fillPanel` and `@driftengine/ui2d`'s 2D layer take the screen encode and never the curve or the exposure: `interfaceGrade` says which code that is, for a contributed pass that draws an interface. A caption or a panel is not light, and its colour was picked for the screen, so under `'aces'` a menu's white text came out grey, its dark panel crushed to black, and the whole interface brightened and darkened as the scene's exposure eased. Now every interface colour stated through `srgbColor`, or as a theme's hex token, comes out exactly as picked under every transform. Inside an `hdrScene` frame an interface is part of the picture the resolve tone maps, as it was; drawn after `endFrame`, it is not. Text drawn in the world at a model matrix is part of the world and keeps the curve."
+      },
+      {
+        "kind": "fixed",
+        "short": "A pass drawn after `endFrame` grades itself under an `hdrScene` composite too, where it drew its colours as display values beside a graded frame.",
+        "text": "With `hdrScene` the resolve grades the frame and every pass before it draws linear light. A pass drawn after `endFrame` lands on the canvas the resolve has already written, so nothing after it grades it, and it used to draw ungraded there: an interface drawn after the present, which is where the manual puts one to keep it out of the screen-space chain, was the one surface on screen reading its colours as display values. The decision is now one function both backends read, and past the present it answers the frame's own grade, composite or not."
+      },
+      {
+        "kind": "changed",
+        "short": "A colour picked for the screen is decoded where an interface takes one: ui2d's hex tokens, and a script's `ui.tint` and `sprites.tinted`.",
+        "text": "`unpackRgba` and `themeRgba` decode a packed `0xRRGGBBAA` token from the sRGB a hex colour is written in to the linear light a node holds, keeping its alpha as coverage. Read as linear, `0x336699` came out as `0x7caacb` under the new default, every panel a washed-out version of the one picked. DriftScript's `ui.tint` and `sprites.tinted` take a colour picked for the screen in the same terms and decode it, since a script has no `srgbColor` to say so, so a white sprite draws exactly the tint named. A renderer asked for `outputTransform: 'none'` draws these darker than picked, as it does every colour."
+      },
+      {
+        "kind": "changed",
+        "short": "A splat capture's colour is a display value, decoded after its view-dependent band, so a trained capture draws as it does in the tool that made it.",
+        "text": "A Gaussian capture is trained against photographs, so its colour terms reproduce their pixels drawn as they are. `SplatSource.colors` was documented as linear and drawn so, which under the new `'srgb'` default is a washed-out cloud. The splat shader now decodes a splat's colour after adding its l=1 band, which training added in the same space, and the eight bits a colour is packed into are spent where the eye sees them. What it gives up is the blend: splats compose in linear light rather than in the display values training composed them in, which moves a translucent edge a little. `@driftengine/capture` fits in linear light against decoded frames and now hands its colours over encoded, its l=1 band carried through the encode's slope at each colour, so a fitted capture draws as fitted."
+      },
+      {
+        "kind": "changed",
+        "short": "Sun shadows no longer dissolve past six metres or below 18° of sun: `directionalShadowMaxDistance` defaults to 1,000 and `directionalShadowMaxSlope` to 60.",
+        "text": "`directionalShadowMaxDistance` defaults to 1,000 metres and `directionalShadowMaxSlope` to 60. The old 6 and 3 were a tuning for short casters: any sun shadow longer than six metres along the ground dissolved, so a building's walls and arcades cast nothing on its floor under a high sun and the light read as random, and every sun shadow faded below about 18° of elevation, which is an evening without shadows. A shadow now reaches as far as its map holds, whose edge already fades it, and holds until the sun is about a degree above the horizon. The reach is a shadow's own length along the ground and not a distance from the camera, which its name suggests, and both options now say what their default gives up and what would make it wrong. A scene whose low sun streaks lowers the slope; one tuned around the old values sets them. The medium's shafts and a surface's shadows, which disagreed past six metres, now agree."
+      },
+      {
+        "kind": "added",
+        "short": "`DrftLoader` draws, casts and prepares its model: `draw()`, `casters` and `prepare()` apply every rule a container needs, and `PartDraws` does it for a chosen list.",
+        "text": "`DrftLoader.draw()` draws this frame's parts into the open mesh pass by every rule a baked container needs, each of which fails as a picture rather than an error when it is missed: a part's whole material, so foliage keeps its alpha test and a one-sided card its faces; its copies through one instanced draw, where a part drawn as a plain mesh shows one arch of a repeated row; a blended part translucent whatever its opacity and writing no depth, since its alpha is in its texture, where drawn opaque a grime decal is a black patch; a blended batch through the translucent instanced path; glass as glass, its options kept per pane so a frame allocates nothing; and each part's own reflectivity, with nothing left set for the caller's draws after it. `loader.casters` is a ready `ShadowCasters`: every part but a decal, which would shadow its own surface, each with its material so a cutout casts its shape, glass as glass and copies as copies. `await loader.prepare()` compiles every pipeline the parts draw with, off the frame, translucent where they will be drawn so. `PartDraws` is the same for any list of parts, several loaders' or a filtered one. The manual's chapter on importing models and the models example draw through them."
+      },
+      {
+        "kind": "added",
+        "short": "`computeLightMatrixForBounds` covers a box with the sun's map whole, and `DrftLoader.shadowFit` fits the map to a model as placed, from the bounds its file declares.",
+        "text": "`computeLightMatrixForBounds(lightDir, min, max, mapSize, out)` places a directional light's map around a box of known size: the sphere around the box, at its centre, widened by the half texel the centre's snap may move it, so a corner on the sphere stays inside. A focus and a radius chosen by eye around a guessed centre left part of a model outside the map, where it cast nothing. `DrftLoader.shadowFit(lightDir, mapSize, out)` does it for the model as fitted and returns the depth span for `shadowDepthSpan`, or null until `HEAD` has said how large the model is. What both give up is resolution on a large box, whose texels are spread over all of it; a world that follows a player keeps `computeLightMatrix` around the viewer."
+      },
+      {
+        "kind": "added",
+        "short": "`meshOcclusion` darkens the colour and the ambient light at once, each at its own strength: `colorStrength` beside `into: 'ambient'`, past 1 where a material asks.",
+        "text": "`SurfaceMeshOcclusion.colorStrength` is the colour's own strength: the blended colour times `max(0, 1 − colorStrength × (1 − occlusion))`, which up to 1 is the `mix` a strength always gave and past it darkens faster than the occlusion does. Named beside `into: 'ambient'`, one occlusion darkens the ambient light at `strength` and the colour at `colorStrength`, which is how a material that takes its ambient occlusion from a map and darkens its colour by the same map, at up to twice that, is drawn; with a single target it drew one of the two. Absent, it is `strength` where the colour is the target and 0 where the ambient light is, so every material written for 4.12.0 draws as it did. The two floats that carried a strength and a target now carry the two strengths."
+      },
+      {
+        "kind": "fixed",
+        "short": "A summed layer blend reflects the surface's own specular once where its layers name none, rather than its own times the sum of the layers' shares.",
+        "text": "Under `blend: 'sum'` a layer's share is its weight, and the shares add past 1 where the weights do, which is what a summed blend is for in colour. The specular took the same sum: a layer that named none gave the surface's own times its share, so a surface painted to weights adding to 2.5 or 3 reflected two and a half to three times its own specular, measured as a sandy floor 2.5% brighter across a frame than with its own. The layers that name no specular now give the surface's own at most once, whatever their shares add to, and named speculars still add as their colours do. A blend laid over, whose shares never pass 1, draws exactly as before, as does any layered material while no material has asked for looks."
+      },
+      {
+        "kind": "fixed",
+        "short": "A reflection probe stays ungraded when its bake's callback binds the mesh pass, so the frame no longer grades what it reads from the probe a second time.",
+        "text": "A probe stores radiance, so its bake holds the output transform at 0 while it draws the faces. `bindMeshPass`, which every bake's callback calls first, set the frame's grade again, so under any forward grade each face was graded as it was drawn and the frame graded what it read back from the cube a second time: reflections and probe ambient lifted and flattened. Every pass, the mesh pass among them, now asks one gate, which answers the frame's grade except in a probe's face or a capture. The same gate keeps particles, lines, text and contributed passes ungraded inside a bake."
+      }
+    ]
+  },
+  {
     "version": "4.12.0",
     "date": "2026-10-10",
     "entries": [

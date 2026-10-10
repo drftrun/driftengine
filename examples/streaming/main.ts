@@ -32,6 +32,7 @@ import {
   setCellStreamOrigin,
   thawCell,
   toRenderSpace,
+  srgbColor,
 } from '@driftengine/core';
 import type { CellStore, FreezableWorld, MeshHandle, ShadowCasters, Vec3 } from '@driftengine/core';
 import { runPrediction } from '@driftengine/texture';
@@ -320,7 +321,7 @@ const STILL: Vec3 = [0.05, 0.25, 1];
 const FROZEN_CELL: Vec3 = [0.45, 0.62, 1.5];
 const LIVE_CELL: Vec3 = [1.3, 1.05, 0.7];
 
-const HORIZON: Vec3 = [0.7, 0.76, 0.84];
+const HORIZON = srgbColor(0.7, 0.76, 0.84);
 const env = createEnvironment({
   directionalDir: [-0.45, 0.6, -0.35],
   directionalColor: [2, 1.9, 1.7],

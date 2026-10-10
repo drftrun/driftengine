@@ -16,8 +16,8 @@ import {
   solidQuad,
   solidToMesh,
   transformSolid,
+  srgbColor,
 } from '@driftengine/core';
-import type { Vec3 } from '@driftengine/core';
 import {
   OVERLAY_CHANNELS,
   createOverlay,
@@ -168,7 +168,7 @@ const env = createEnvironment({
   ambientGround: [0.15, 0.14, 0.13],
 });
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-const SKY: Vec3 = [0.6, 0.66, 0.74];
+const SKY = srgbColor(0.6, 0.66, 0.74);
 const readout = createReadout(renderer, 2);
 let time = 0;
 

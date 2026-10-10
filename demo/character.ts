@@ -189,7 +189,7 @@ function figure(): MeshData {
    * scene did, and looking at it is what found it.
    */
   const claim = (joint: number): void => {
-    const vertices = builder.build().positions.length / 3;
+    const vertices = builder.build({ colorSpace: 'srgb' }).positions.length / 3;
     while (owners.length < vertices) owners.push(joint);
   };
 
@@ -204,7 +204,7 @@ function figure(): MeshData {
   limb(builder, world[3] as number[], world[4] as number[]);
   claim(3);
 
-  const data = builder.build();
+  const data = builder.build({ colorSpace: 'srgb' });
   const vertices = data.positions.length / 3;
   const joints = new Float32Array(vertices * 4);
   const weights = new Float32Array(vertices * 4);

@@ -12,10 +12,14 @@ import {
   createEnvironment,
   createMover,
   hashToUnit,
+  srgbColor,
 } from '@driftengine/core';
 import type { RendererApi } from '@driftengine/core';
 import { controls, flag, openScene } from '../common/stage';
 import type { SceneHooks } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.6, 0.68);
 
 const env = createEnvironment({
   directionalDir: [0.4, 0.7, 0.3],
@@ -67,7 +71,7 @@ function build(renderer: RendererApi, canvas: HTMLCanvasElement): SceneHooks {
       blockNode.setRotationAxisAngle(0, 1, 0, time * 1.5);
       blockNode.updateWorld();
 
-      renderer.beginFrame([0.55, 0.6, 0.68]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       renderer.drawMesh(fieldMesh, still.worldMatrix);
       // #region draw

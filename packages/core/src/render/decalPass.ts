@@ -53,6 +53,8 @@ export class DecalPass {
     eye: ArrayLike<number>,
     width: number,
     height: number,
+    /** The renderer's `passGrade`: how the frame under the marks was graded, 0 for not yet. */
+    outputTransform = 0,
   ): void {
     if (queue.length === 0) return;
     const { gl } = this;
@@ -62,6 +64,7 @@ export class DecalPass {
     mat4.multiply(this.depthToWorld, this.depthToWorld, DEPTH_01_TO_CLIP);
 
     gl.useProgram(this.program);
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
     gl.bindVertexArray(this.vao);
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);

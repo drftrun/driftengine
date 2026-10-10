@@ -19,6 +19,7 @@ import {
   createEnvironment,
   createWindField,
   hashToUnit,
+  srgbColor,
 } from '@driftengine/core';
 import type { Camera, SkyColors, Vec3, WindProfile } from '@driftengine/core';
 import { patchModule } from 'driftscript';
@@ -178,9 +179,9 @@ const wet = { reflectionStrength: 0.7, reflectionPlaneY: 0, roughness: 0.25 };
 // #endregion
 
 const heavens: SkyColors = {
-  top: [0.05, 0.06, 0.08],
-  horizon: [0.22, 0.24, 0.28],
-  deep: [0.1, 0.1, 0.12],
+  top: srgbColor(0.05, 0.06, 0.08),
+  horizon: srgbColor(0.22, 0.24, 0.28),
+  deep: srgbColor(0.1, 0.1, 0.12),
   sunDir: [0, -1, 0],
   sunColor: [0, 0, 0],
   sunAngularRadius: 0.02,

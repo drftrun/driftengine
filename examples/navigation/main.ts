@@ -17,6 +17,7 @@ import {
   createEnvironment,
   createLineSegments,
   hashToUnit,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshData, MeshHandle, NavEdge, NavGraph, Vec3 } from '@driftengine/core';
 import {
@@ -33,6 +34,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as walkScript from './walk.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.58, 0.66, 0.76);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -427,7 +431,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters((sink) => drawAll((mesh, model) => sink.mesh(mesh, model)));
     renderer.endShadowPass();
-    renderer.beginFrame([0.58, 0.66, 0.76]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     drawAll((mesh, model) => renderer.drawMesh(mesh, model));
 

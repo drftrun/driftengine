@@ -69,6 +69,38 @@ export function computeLightMatrix(
 }
 
 /**
+ * A directional light's matrix covering a box of known size whole: a model, a level, a room. The
+ * sphere around the box, at its centre, through `computeLightMatrix`, widened by the half texel the
+ * centre's snap may move it so a corner on the sphere stays inside. Returns the depth span, as that
+ * does.
+ *
+ * **For a scene whose extent is known rather than one that follows a viewer.** A radius chosen by
+ * eye around a guessed centre leaves part of the model outside the map, where it casts nothing; the
+ * bounds are the answer, and a loader has them. **What it gives up** is resolution where the box is
+ * large: the map's texels are spread over all of it, so a building's shadows are coarser than a
+ * focus on the viewer would draw them, which is what `computeLightMatrix` around the viewer is for.
+ */
+export function computeLightMatrixForBounds(
+  lightDir: Vec3,
+  min: Readonly<Vec3>,
+  max: Readonly<Vec3>,
+  shadowMapSize: number,
+  out: mat4,
+): number {
+  const half = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2;
+  const radius = Math.max(half, 1e-3) * (1 + 2 / Math.max(shadowMapSize, 1));
+  return computeLightMatrix(
+    lightDir,
+    (min[0] + max[0]) / 2,
+    (min[1] + max[1]) / 2,
+    (min[2] + max[2]) / 2,
+    radius,
+    shadowMapSize,
+    out,
+  );
+}
+
+/**
  * The depth an orthographic light matrix spans, in metres: what `computeLightMatrix` returns, read
  * back off any such matrix. Its depth row is the light's axis scaled by two over the span, so the
  * span is two over that row's length — whatever focus, radius or bearing built it.

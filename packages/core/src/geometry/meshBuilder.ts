@@ -1,6 +1,7 @@
 import { GrowableF32, GrowableU32 } from './growable.ts';
 import type { MeshData } from '../render/mesh.ts';
 import type { Vec3 } from '../math/color.ts';
+import { decodeSrgbInPlace } from '../math/color.ts';
 
 /**
  * The emissive colour of a vertex that has not been given one: negative, which no real
@@ -23,6 +24,16 @@ export interface MeshBuildOptions {
    * sample them. On, for a mesh that will be drawn with a `SurfaceTexture`.
    */
   planarUvs?: boolean;
+  /**
+   * The space the builder's colours were given in. `'linear'`, the default, is the renderer's own:
+   * light as a surface reflects it. `'srgb'` is a colour picked by eye, on a screen or in a paint
+   * program, and decodes every vertex's colour and emissive colour to linear here, once — as a
+   * texture of colours uploaded as sRGB is decoded — so a world built from hand-picked colours draws
+   * them as picked under the default `outputTransform`, where the same numbers taken as linear come
+   * out pale. What it gives up: nothing at the colour picked; a colour meant as light rather than as
+   * a look wants a linear number of its own.
+   */
+  colorSpace?: 'linear' | 'srgb';
 }
 
 /**
@@ -1083,14 +1094,22 @@ export class MeshBuilder {
     /* Same promise as `specular`: a mesh nothing bound uploads no skinning buffers, and
        `MeshData` requires both arrays or neither. */
     const skinned = this.anyJoint;
+    /* Colours picked by eye, decoded once here: see `MeshBuildOptions.colorSpace`. */
+    const picked = options.colorSpace === 'srgb';
     return {
       positions: this.positions.toTyped(),
       normals: this.normals.toTyped(),
-      colors: this.colors.toTyped(),
+      colors: picked ? decodeSrgbInPlace(this.colors.toTyped()) : this.colors.toTyped(),
       emissive: this.emissive.toTyped(),
       ...(shines ? { specular: this.specular.toTyped() } : {}),
       ...(textured ? { relief: this.relief.toTyped() } : {}),
-      ...(tinted ? { emissiveColor: this.emissiveColor.toTyped() } : {}),
+      ...(tinted
+        ? {
+            emissiveColor: picked
+              ? decodeSrgbInPlace(this.emissiveColor.toTyped())
+              : this.emissiveColor.toTyped(),
+          }
+        : {}),
       ...(rough ? { roughness: this.roughness.toTyped() } : {}),
       ...(mineral ? { grain: this.grain.toTyped() } : {}),
       ...(skinned ? { joints: this.expandedJoints(), weights: this.expandedWeights() } : {}),

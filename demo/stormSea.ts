@@ -41,6 +41,7 @@ import {
   createWindField,
   mulberry32,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   BoltHandle,
@@ -84,7 +85,7 @@ const BEAM_LENGTH_M = 90;
  * permanent dusk, so there is no dawn for the lamp to fade up out of. A scene with a clock
  * would drive this from it.
  */
-const BEAM_STRENGTH = 0.65;
+const BEAM_STRENGTH = 0.22;
 /**
  * How wide the beam opens, as half-width over distance.
  *
@@ -114,13 +115,13 @@ const BEACON_LIGHT: Vec3 = [1, 0.54, 0.2];
 const TOWER_PALE: Vec3 = [0.62, 0.62, 0.6];
 const TOWER_BAND: Vec3 = [0.3, 0.11, 0.1];
 /** Warm, and paler than the lamp itself: what is being seen is rain, not the filament. */
-const BEAM_COLOR: Vec3 = [1, 0.86, 0.62];
+const BEAM_COLOR = srgbColor(1, 0.86, 0.62);
 /** What a strike puts into the world while it lasts. Cold, so it reads as electrical. */
 const STRIKE_LIGHT: Vec3 = [0.72, 0.82, 1];
-const BOLT_CORE: Vec3 = [1, 1, 1];
-const BOLT_EDGE: Vec3 = [0.55, 0.68, 1];
-const RAIN_TINT: Vec3 = [0.78, 0.84, 0.95];
-const BIRD_TINT: Vec3 = [0.1, 0.11, 0.13];
+const BOLT_CORE = srgbColor(1, 1, 1);
+const BOLT_EDGE = srgbColor(0.55, 0.68, 1);
+const RAIN_TINT = srgbColor(0.78, 0.84, 0.95);
+const BIRD_TINT = srgbColor(0.1, 0.11, 0.13);
 
 /**
  * A real blow: enough wind that the sea is near fully developed and breaking.
@@ -257,7 +258,7 @@ function buildLighthouse(random: () => number): MeshData {
   builder.addCylinder([STACK_X_M, lampY + 2.1, STACK_Z_M], 0.09, 0.35, 'y', ROCK_WET, 0, 8, 0.5);
 
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -275,7 +276,7 @@ function buildOptic(): MeshData {
   builder.setRoughness(0.2);
   builder.addBox([0, 0, 0.52], [0.3, 0.62, 0.26], BEACON_GLOW, 1);
   builder.setEmissiveColor(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -447,13 +448,13 @@ class StormSeaHandle implements DemoHandle {
     this.env = createEnvironment({
       // A storm has no sun to speak of; what light there is arrives from everywhere.
       directionalDir: [-0.28, 0.86, 0.42],
-      directionalColor: [0.34, 0.37, 0.42],
-      ambient: [0.2, 0.23, 0.28],
-      ambientGround: [0.11, 0.13, 0.16],
+      directionalColor: srgbColor(0.34, 0.37, 0.42),
+      ambient: srgbColor(0.2, 0.23, 0.28),
+      ambientGround: srgbColor(0.11, 0.13, 0.16),
       emissiveGain: 0.85,
       nightFactor: 0.55,
-      fogColor: [0.26, 0.29, 0.34],
-      fogDensity: 0.011,
+      fogColor: srgbColor(0.26, 0.29, 0.34),
+      fogDensity: 0.007,
       fogHeightFalloff: 0.012,
       fogBaseY: 0,
     });
@@ -466,9 +467,9 @@ class StormSeaHandle implements DemoHandle {
     this.env.activeLightWorldIndices = this.lightBuffer.sourceIndex;
 
     this.sky = {
-      top: [0.1, 0.12, 0.16],
-      horizon: [0.34, 0.36, 0.4],
-      deep: [0.06, 0.07, 0.1],
+      top: srgbColor(0.1, 0.12, 0.16),
+      horizon: srgbColor(0.34, 0.36, 0.4),
+      deep: srgbColor(0.06, 0.07, 0.1),
       sunDir: [0, -1, 0],
       sunColor: [0, 0, 0],
       sunAngularRadius: 0.0046,
@@ -483,8 +484,8 @@ class StormSeaHandle implements DemoHandle {
 
     this.body = {
       level: SEA_LEVEL_M,
-      deepColor: [0.028, 0.045, 0.06],
-      shallowColor: [0.08, 0.12, 0.14],
+      deepColor: srgbColor(0.028, 0.045, 0.06),
+      shallowColor: srgbColor(0.08, 0.12, 0.14),
       // An ocean hides its own floor, and reflects by Fresnel alone. A basin may cheat;
       // the sea may not, which is why `mirror` is absent here and generous next door.
       density: 0.9,

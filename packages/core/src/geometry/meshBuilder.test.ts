@@ -628,3 +628,31 @@ test('A BUILDER REFUSES A LAYERED MESH rather than merging it without its layers
     new MeshBuilder().addOrientedMesh(withLayers, [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]),
   ).toThrow(/concatMeshes/);
 });
+
+/*
+ * **COLOURS PICKED BY EYE ARE DECODED ONCE, AT BUILD, AS AN sRGB TEXTURE'S ARE AT UPLOAD.** The
+ * default keeps them as given, the renderer's own linear values; `colorSpace: 'srgb'` decodes every
+ * vertex's colour and its emissive colour through the sRGB curve, worked by hand: 0.5 is
+ * ((0.5 + 0.055) / 1.055)^2.4 = 0.214041, 0.02 is 0.02 / 12.92 = 0.00154799 on the straight
+ * segment, and 1 is 1. An emissive colour left to the albedo keeps its sentinel, which is not a
+ * colour.
+ */
+test('BUILDS ITS COLOURS AS GIVEN, OR DECODES THEM WHERE THEY WERE PICKED BY EYE', () => {
+  const build = (colorSpace?: 'linear' | 'srgb') =>
+    new MeshBuilder()
+      .addBox([0, 0, 0], [1, 1, 1], [0.5, 0.02, 1])
+      .setEmissiveColor([0.5, 0.5, 0.5])
+      .addBox([3, 0, 0], [1, 1, 1], [1, 1, 1], 1)
+      .build(colorSpace === undefined ? {} : { colorSpace });
+  const plain = build();
+  expect(Array.from(plain.colors.slice(0, 3))).toEqual([0.5, 0.02, 1].map(Math.fround));
+  const picked = build('srgb');
+  for (let v = 0; v < 24; v++) {
+    expect(picked.colors[v * 3]).toBeCloseTo(0.214041, 6);
+    expect(picked.colors[v * 3 + 1]).toBeCloseTo(0.00154799, 7);
+    expect(picked.colors[v * 3 + 2]).toBe(1);
+  }
+  expect(picked.emissiveColor?.[0], 'the first box inherits: the sentinel stays').toBe(-1);
+  expect(picked.emissiveColor?.[24 * 3]).toBeCloseTo(0.214041, 6);
+  expect(plain.emissiveColor?.[24 * 3]).toBe(0.5);
+});

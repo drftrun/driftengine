@@ -12,11 +12,15 @@ import {
   createEnvironment,
   hashToUnit,
   mulberry32,
+  srgbColor,
   streamingScene,
 } from '@driftengine/core';
 import type { GpuDrivenMaterial, GpuDrivenMesh, GpuDrivenView, Vec3 } from '@driftengine/core';
 import type { MeshData } from '@driftengine/drft';
 import { openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.62, 0.72);
 
 // #region renderer
 /** The pipeline is a renderer option, and asking for it where it cannot run throws. */
@@ -141,7 +145,7 @@ if (stage !== null) {
       pass.resize(renderer.sceneWidth, renderer.sceneHeight);
       pass.setView(view);
 
-      renderer.beginFrame([0.55, 0.62, 0.72]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       renderer.drawPass(handle);
       renderer.endFrame();

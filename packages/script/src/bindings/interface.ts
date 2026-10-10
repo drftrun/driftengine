@@ -1,3 +1,4 @@
+import { srgbToLinear } from '@driftengine/core';
 import type { SpriteBatch, UiInput, UiNode } from '@driftengine/ui2d';
 import {
   createUiInput,
@@ -158,7 +159,7 @@ export const INTERFACE_CAPABILITIES: readonly CapabilityDefinition[] = [
     ],
     'void',
     ['scene.write'],
-    "Change a node's background colour. A node with no background gets one.",
+    "Change a node's background colour, given as picked for the screen: sRGB, 0 to 1, decoded here to the linear light the renderer draws, as a theme's hex token is. Alpha is coverage and is kept as given. A node with no background gets one.",
   ),
   define('hovered', NAMED, 'bool', ['input.read'], 'Whether the pointer is over a node.'),
   define(
@@ -268,9 +269,10 @@ export function interfaceImplementation(): Record<string, unknown> {
       /* A node with no background gets one, which is the only allocation in this module and
          happens once per node rather than per frame. */
       if (node.background === null) node.background = new Float32Array(4);
-      node.background[0] = r;
-      node.background[1] = g;
-      node.background[2] = b;
+      /* A colour a script picks is a display value, and the node's is linear: see `unpackRgba`. */
+      node.background[0] = srgbToLinear(r);
+      node.background[1] = srgbToLinear(g);
+      node.background[2] = srgbToLinear(b);
       node.background[3] = a;
     },
     hovered: (tree: UiNode, name: string) => nodeOf(tree, name)?.hovered === true,

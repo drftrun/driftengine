@@ -16,7 +16,7 @@ import {
   type LineHandle,
   type LineSegments,
   type RendererApi,
-  type Vec3,
+  srgbColor,
 } from '../../packages/core/src/index';
 
 /** The twelve edges of a unit cube, as pairs of corners. */
@@ -51,7 +51,7 @@ const INFLATE_M = 0.003;
  * the standard path allows: a wide soft stroke for the halo and a narrow bright one over it, both
  * pulsing. See `GAPS.md` for what additive blending would have added.
  */
-const GLOW: Vec3 = [0.55, 0.95, 1.0];
+const GLOW = srgbColor(0.55, 0.95, 1.0);
 
 /** The crisp inner line, and the wider soft one under it. */
 const CORE_WIDTH_M = 0.008;

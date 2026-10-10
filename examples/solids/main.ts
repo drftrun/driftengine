@@ -10,8 +10,8 @@
  */
 import {
   MeshBuilder,
-  createEnvironment,
   computeLightMatrix,
+  createEnvironment,
   mergeSolids,
   smoothSolidNormals,
   solidBox,
@@ -28,6 +28,7 @@ import {
   solidTorus,
   solidTube,
   solidVolume,
+  srgbColor,
   transformSolid,
 } from '@driftengine/core';
 import type { BoxOperation, MeshHandle, ShadowCasters, Solid, Vec3 } from '@driftengine/core';
@@ -36,6 +37,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as wallScript from './wall.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.68, 0.74, 0.82);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -270,7 +274,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters(casters);
     renderer.endShadowPass();
-    renderer.beginFrame([0.68, 0.74, 0.82]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawSceneCasters(casters);
     readout.draw(time);

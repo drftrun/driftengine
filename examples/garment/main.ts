@@ -18,6 +18,7 @@ import {
   createEnvironment,
   createSkinnedCloth,
   createWindField,
+  srgbColor,
 } from '@driftengine/core';
 import type {
   ClothBindingData,
@@ -30,6 +31,9 @@ import type {
 } from '@driftengine/core';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.6, 0.66, 0.74);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -432,7 +436,7 @@ stage.run({
     renderer.drawShadowCasters(casters);
     renderer.endShadowPass();
 
-    renderer.beginFrame([0.6, 0.66, 0.74]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(ground, IDENTITY);
     // #region draw

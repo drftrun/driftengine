@@ -1270,8 +1270,9 @@ or vendors a font. Whoever runs it has cleared that face for what they are about
 `outputTransform` is a conversion, not a look, and a frame where one pass applies it and another does
 not is a frame where two surfaces disagree about what a colour means. With a composite the resolve
 grades and every forward pass must **not**; without one, each pass is the last thing to touch the
-frame and each must grade itself. The gate is one expression, `Renderer.gradeCode` and its WebGPU
-twin, and a pass uploading the transform ungated double-grades any consumer that has a composite.
+frame and each must grade itself. The gate is one decision, `render/passGrade.ts`, which both
+backends' `passGrade()` read, and a pass uploading the transform ungated double-grades any consumer
+that has a composite.
 
 `shaders/outputTransform.ts` is the single definition. Include it, call `applyOutputTransform` at the
 end of the fragment stage, and upload the two uniforms from the gate. Do not copy the curve.
@@ -1280,9 +1281,23 @@ This was wrong for as long as the option existed, and **the reason it survived i
 fix**: the mesh pass's own comment described the state accurately, so it read as a known limitation
 rather than a fault. A linear value written into an eight-bit buffer is read as a display value —
 clipped and oversaturated rather than slightly different — and the only reason nobody saw it is that
-the passes it applied to were additive and fogged and therefore too dim to show it. Still ungraded
-without a composite, named here so nobody rediscovers them one at a time: the sky, water, scatter,
-the plumes, and the pixel font.
+the passes it applied to were additive and fogged and therefore too dim to show it.
+
+**Every pass grades now, and the clear colour with them (4.13.0)**, when the default became `srgb`
+and the gap went from a curiosity to the first thing a newcomer saw: the sky, water, scatter, the
+plumes, flocks, wind streaks, bolts, caustics, light volumes, film, the pixel font and panels grade
+themselves; the decal multiply, the medium, the skin blur's add and the resolve's occlusion do it
+in the terms of a pixel already graded. **The two copies of the curve this rule's "do not copy" now
+allows**, each because no shader can reach where it runs, and each held to the original by a test:
+the gpu-driven blit's WGSL twin, by `present.test.ts`, constant for constant and in order; and the
+clear colour's CPU twin, `gradeColor.ts`, by values derived from the shader's constants. Each pass
+reads **`passGrade()`**, which is the frame's grade except in two places: a probe's face or a
+capture, where radiance is stored, and past the present, where a pass drawn after `endFrame` grades
+itself even under a composite, because the resolve that would have graded it has already run. The
+mesh pass's `bindMeshPass` reads it too, because a bake's callback binds it and was grading the probe
+it was filling. **An interface takes `interfaceGrade` of it**, the screen encode and never the curve:
+screen text, panels and ui2d's 2D layer were picked for the screen, and under `aces` a menu's white
+text came out grey and its dark panel black.
 
 ### `dFdy` does not mean the same thing on the two backends — hard rule (2026-08-17)
 

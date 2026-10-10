@@ -2,6 +2,7 @@ import { MAX_POINT_LIGHTS } from '../lightBudget.ts';
 import { MAX_WATER_REFLECTION_FILTER_TAPS } from '../renderQuality.ts';
 import { GERSTNER_GLSL } from './gerstner.ts';
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * The sky-ocean, as an actual wave simulation rather than a tinted plane.
@@ -198,6 +199,7 @@ uniform sampler2D uReflectionMap;
 uniform int uReflectionEnabled;
 uniform vec2 uReflectionTexelSize;
 uniform int uReflectionFilterTaps;
+${OUTPUT_TRANSFORM_GLSL}
 
 const vec2 REFLECTION_FILTER[${MAX_WATER_REFLECTION_FILTER_TAPS}] = vec2[${MAX_WATER_REFLECTION_FILTER_TAPS}](
   vec2( 0.00,  0.00), vec2(-0.62, -0.31), vec2( 0.54,  0.43),
@@ -276,6 +278,14 @@ void main() {
   float dist = distance(vWorldPos, uCameraPos);
   float fog = mediumFog(dist, vWorldPos.y);
   col = mix(col, atmosphereColor, fog);
+  /*
+   * **Graded here, before the mirror is mixed in**, as every pass grades what it draws when
+   * nothing after it will: the mirror's own passes graded what it holds, so mixing first would put
+   * the curve on it twice. The air's colour, which stands in where the mirror shows nothing, is
+   * graded to meet it, as the sky behind it is.
+   */
+  col = applyOutputTransform(col);
+  vec3 gradedAir = applyOutputTransform(atmosphereColor);
 
   // Transparency is angle-dependent, like real water: looking down you see
   // straight through to the seabed, at grazing angles it turns reflective.
@@ -289,7 +299,7 @@ void main() {
   // Project the displaced surface into the mirrored camera. The Gerstner
   // displacement supplies broad distortion; the analytic normal adds the
   // smaller ripples that make reflected silhouettes move with each crest.
-  vec3 reflected = atmosphereColor;
+  vec3 reflected = gradedAir;
   float reflectionValid = 0.0;
   if (uReflectionEnabled != 0 && vReflectionClip.w > 0.0) {
     vec2 reflectionUv = vReflectionClip.xy / vReflectionClip.w * 0.5 + 0.5;
@@ -324,7 +334,7 @@ void main() {
       filterWeight += weight;
     }
     sceneReflection /= max(filterWeight, 0.001);
-    reflected = mix(atmosphereColor, sceneReflection, reflectionValid);
+    reflected = mix(gradedAir, sceneReflection, reflectionValid);
   }
   // The atmosphere-colour fallback preserves the old sky reflection when a
   // quality profile disables the extra scene pass. Foam scatters rather than

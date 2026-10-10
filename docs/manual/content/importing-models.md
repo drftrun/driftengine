@@ -16,7 +16,7 @@ reaches the screen by one path.
 
 The example is a turntable with three models made for it, a lantern as glTF, a vase as OBJ with its
 material file, and a gear as STL, and it takes any model you drop on the page, with the files it
-names dropped beside it. It is 22.5 KB gzipped on top of core.
+names dropped beside it. It is 29.2 KB gzipped on top of core.
 
 <!-- run: models -->
 
@@ -125,7 +125,9 @@ a reader emits one per triangle corner, about six times what the model has, and
 Reading at run time has costs a bake does not. A large model takes seconds to parse and weld, so it
 never runs on the page's own thread or inside a frame: the example posts the bytes to a worker and
 gets back one transferred buffer. And the arrays it makes are fresh, so it holds more memory than a
-baked file would.
+baked file would. The container it writes is larger than a baked one too, since it neither quantises
+vertices nor finds the meshes a model repeats: a 154 MB glTF scene comes to 197 MB this way and
+bakes to 80 MB.
 
 ## Onto the screen
 
@@ -134,6 +136,8 @@ baked file would.
 const FIT: DrftFit = { footprint: 1.8, height: 1.6, baseY: 0.1 };
 const worker = new Worker(new URL('./convert.ts', import.meta.url), { type: 'module' });
 let loader: DrftLoader | null = null;
+/** The loader whose pipelines have been compiled, so each is prepared once. */
+let prepared: DrftLoader | null = null;
 
 /** Send a file's bytes to the worker, and stream the container it answers with. */
 function open(request: ConvertRequest): void {
@@ -197,30 +201,51 @@ Dropped files come with the files beside them, so dropping an `.obj` together wi
 pictures finds them by name.
 
 ```ts sample=models/main.ts#draw
-/* Each part with the images its material names: colour, the packed occlusion, roughness and
-   metal map, normals and emission, each -1 where the file had none. */
-const textures = loader?.textures ?? null;
-const image = (index: number) => (index >= 0 ? (textures?.at(index) ?? null) : null);
-for (const part of parts) {
-  renderer.setMaterial({
-    albedo: image(part.albedo),
-    orm: image(part.orm),
-    normal: image(part.normal),
-    emissive: image(part.emissive),
-    roughnessScale: part.roughnessScale,
-    metallicScale: part.metallicScale,
-    occlusionStrength: part.occlusionStrength,
-  });
-  if (part.opacity >= 1) renderer.drawMesh(part.mesh, IDENTITY);
-  else renderer.drawTranslucentMesh(part.mesh, IDENTITY, part.opacity);
-}
-renderer.setMaterial(null);
+/* Every part in its whole material: its copies through one instanced draw, a blended part
+   translucent and writing no depth, glass as glass, each with its own reflectivity. */
+loader?.draw();
 ```
 
-The loader hands back `parts`, each a mesh and the indices of the images its material wears, its
-colour, its packed occlusion, roughness and metal map, its normals and its emission, or -1, plus
-the scales and the opacity the material carried. `textures` resolves an index to an uploaded image.
-The [`.drft` chapter](drft.md) covers what else a container holds and how a loader streams it.
+`draw()` draws this frame's parts into the open mesh pass, each by every rule a container needs: its
+whole material, so foliage keeps its alpha test and a one-sided card its faces; its copies through
+one instanced draw, where a baked container found a mesh repeated; a blended part translucent and
+writing no depth, since its alpha is in its texture; glass as glass; and each part's own
+reflectivity. A rule missed is a wrong picture rather than an error, a repeated arch drawn once or a
+decal drawn as a black patch, which is why the loader keeps them.
+
+```ts sample=models/main.ts#shadow
+/* The sun's map around the model as it was fitted, once its file has said how large it is. */
+const span = loader?.shadowFit(env.directionalDir, renderer.shadowMapSize, lightMatrix) ?? null;
+if (span !== null) env.shadowDepthSpan = span;
+renderer.beginShadowPass(lightMatrix, 'static');
+renderer.drawShadowCasters(casters);
+renderer.endShadowPass();
+```
+
+`casters` offers a shadow pass every part that stands in the light: all but a decal, which would
+shadow the surface it lies on, each with its material, so a cutout casts the shape in its texture.
+The example's own `casters` adds the plinth, and is made once so a frame allocates nothing.
+`shadowFit` fits the sun's map to the model as it was placed, from the bounds its file declares, and
+returns the depth span the environment takes, or null until the file has said. For a scene of known
+size that is not one model, `computeLightMatrixForBounds` takes a box; a world that follows a player
+wants `computeLightMatrix` around the viewer, where the map's texels go furthest.
+
+```ts sample=models/main.ts#prepare
+/* Once the finished model is in, every pipeline its parts draw with is compiled off the frame,
+   so no later frame waits on one. A game would hold its loading screen until this resolves. */
+if (loader !== null && loader !== prepared && loader.progress.phase === 'ready') {
+  prepared = loader;
+  void loader.prepare();
+}
+```
+
+`prepare()` compiles, off the frame, every pipeline the parts will draw with, and resolves when they
+are ready; one frame drawn behind a loading screen as well compiles the shadow passes' own. A caller
+who needs a part its own way, a map switched off or a part left out, draws `parts` itself: each is a
+mesh and the indices of the images its material wears, or -1, with its scales, opacity,
+reflectivity, cutout, blend, sidedness, glass and copies. `writePartMaterial` turns one into the
+renderer's material, and `PartDraws` draws any list of them by the same rules as `draw()`. The
+[`.drft` chapter](drft.md) covers what else a container holds and how a loader streams it.
 
 ## Baking for a release
 

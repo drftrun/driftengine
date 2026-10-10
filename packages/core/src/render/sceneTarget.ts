@@ -785,6 +785,8 @@ export class SceneTarget {
       readonly transform: number;
       readonly exposure: number;
       readonly film?: Float32Array;
+      /** Whether the forward passes graded the scene because this resolve does not. */
+      readonly sceneGraded?: boolean;
     } = {
       transform: 0,
       exposure: 1,
@@ -1030,6 +1032,7 @@ export class SceneTarget {
     gl.uniform1f(this.uniforms['uReach'] ?? null, reachUv);
     gl.uniform1i(this.uniforms['uOutputTransform'] ?? null, grade.transform);
     gl.uniform1f(this.uniforms['uOutputExposure'] ?? null, grade.exposure);
+    gl.uniform1i(this.uniforms['uSceneGraded'] ?? null, grade.sceneGraded === true ? 1 : 0);
     if (grade.film !== undefined) {
       gl.uniform4fv(this.uniforms['uFilmA'] ?? null, grade.film, 0, 4);
       gl.uniform4fv(this.uniforms['uFilmB'] ?? null, grade.film, 4, 4);

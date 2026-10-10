@@ -42,13 +42,19 @@ test('creating a theme copies its input, so a later mutation of the source is no
   expect(themeSize(theme, 'a', 0)).toBe(1);
 });
 
-test('a packed token unpacks into the array a node background wants', () => {
+/*
+ * **A HEX TOKEN IS A DISPLAY COLOUR, SO IT UNPACKS DECODED TO LINEAR**, and its coverage as it is.
+ * By the sRGB decode, ((c + 0.055) / 1.055) ^ 2.4: 0x33 is 0.2 and decodes to 0.033105, 0x66 is 0.4
+ * and decodes to 0.132868, 0x99 is 0.6 and decodes to 0.318547. Read as linear, the renderer's
+ * default encode drew this token as 0x7caacb.
+ */
+test('A PACKED TOKEN UNPACKS DECODED TO LINEAR, ITS COVERAGE AS IT IS', () => {
   const out = new Float32Array(4);
-  unpackRgba(0x336699ff, out);
-  expect(out[0]).toBeCloseTo(0x33 / 255, 6);
-  expect(out[1]).toBeCloseTo(0x66 / 255, 6);
-  expect(out[2]).toBeCloseTo(0x99 / 255, 6);
-  expect(out[3]).toBe(1);
+  unpackRgba(0x33669980, out);
+  expect(out[0]).toBeCloseTo(0.033105, 6);
+  expect(out[1]).toBeCloseTo(0.132868, 6);
+  expect(out[2]).toBeCloseTo(0.318547, 6);
+  expect(out[3]).toBeCloseTo(0x80 / 255, 6);
 });
 
 /* The top byte is not sign-extended away: 0xff......  is the case `>>` gets wrong and `>>>` gets right. */

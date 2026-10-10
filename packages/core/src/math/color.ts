@@ -35,3 +35,42 @@ export function mixColorInto(out: Vec3, a: Vec3, b: Vec3, t: number): void {
 export function scaleColor(color: Vec3, factor: number): Vec3 {
   return [color[0] * factor, color[1] * factor, color[2] * factor];
 }
+
+/**
+ * A colour picked by eye — on a screen, in a paint program, as a CSS colour — as the linear value
+ * the renderer lights, blends, fogs and grades: each channel through the sRGB curve, which the
+ * default `outputTransform`, `'srgb'`, applies the other way at the end, so a colour drawn as it is,
+ * a sky, a clear or a surface lit at exactly 1, comes out as the colour picked.
+ *
+ * **Why a colour needs it**: everything the renderer draws is linear and encoded at the end, so a
+ * colour typed as it looks comes out too light — a brown picked as `(0.55, 0.3, 0.15)` draws as
+ * tan. **What it gives up**: nothing at the colour picked. **What would make it wrong** is a number
+ * that is an amount rather than a look: a light's intensity, a multiplier, a strength, which are
+ * linear already. Allocates, so it is for building a world rather than for a frame.
+ */
+export function srgbColor(r: number, g: number, b: number): Vec3 {
+  return [srgbToLinear(r), srgbToLinear(g), srgbToLinear(b)];
+}
+
+/**
+ * Every value of `values` decoded from sRGB in place, but a negative one, which is a sentinel and
+ * not a colour (`MeshBuilder`'s emissive colour left to the albedo). For whole arrays of colours
+ * picked by eye; see `MeshBuildOptions.colorSpace`.
+ */
+export function decodeSrgbInPlace(values: Float32Array): Float32Array {
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i] as number;
+    if (value >= 0) values[i] = srgbToLinear(value);
+  }
+  return values;
+}
+
+/**
+ * One channel, 0 to 1, through the sRGB decode: the straight segment below 0.04045. For a colour
+ * that arrives as numbers per channel rather than as a triple, a packed hex token being the usual
+ * one; allocates nothing.
+ */
+export function srgbToLinear(value: number): number {
+  // determinism: build-time — a colour for drawing, which no tick reads
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}

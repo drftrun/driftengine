@@ -1,4 +1,5 @@
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * An arcane aura: the volume a floating object sits inside.
@@ -31,6 +32,8 @@ ${FOG_GLSL}
 uniform int uNoiseOctaves;
 uniform vec4 uClipPlane;
 uniform int uClipEnabled;
+/* Before \`uTint\`, where fire and smoke declare it, so one field table serves all three. */
+${OUTPUT_TRANSFORM_GLSL}
 /** The caller's colour, so an aura shifts with the world's own palette. */
 uniform vec3 uTint;
 
@@ -98,6 +101,7 @@ void main() {
   col = mix(col, mediumColor(), fog);
   alpha *= 1.0 - fog;
 
-  outColor = vec4(col, alpha);
+  /* Graded where nothing after this will grade it, as every pass is. The alpha is coverage. */
+  outColor = vec4(applyOutputTransform(col), alpha);
 }
 `;

@@ -23,9 +23,10 @@ export const SPLAT_RECORD_BYTES = 32;
  * place the file's own order is on screen. Getting it wrong does not produce a refusal — it
  * produces a capture whose every splat is rotated to somewhere else, which reads as a smear.
  *
- * **Colour is already eight-bit and already linear**, so it divides by 255 and nothing else: there
- * is no logistic and no exponential here, unlike the `.ply` reader. That asymmetry is the format's
- * rather than a choice, and `packSplats` takes linear values from both.
+ * **Colour is already eight-bit and already a plain value**, so it divides by 255 and nothing else:
+ * there is no logistic and no exponential here, unlike the `.ply` reader. That asymmetry is the
+ * format's rather than a choice, and `packSplats` takes plain values from both — a display colour
+ * among them, which the shader decodes (`SplatData.colors`).
  */
 export function readSplat(buffer: ArrayBuffer): SplatData {
   const remainder = buffer.byteLength % SPLAT_RECORD_BYTES;

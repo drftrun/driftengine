@@ -42,13 +42,15 @@ export interface SplatSource {
    */
   readonly rotations: Float32Array;
   /**
-   * Three per splat, 0 to 1, **linear**.
+   * Three per splat, 0 to 1, **as the capture stores them: display values**.
    *
-   * Not sRGB-decoded, which is what every reference viewer does and is also what is correct here:
-   * a capture's colour comes from a spherical-harmonic DC term, which is linear radiance, and this
-   * engine shades and composites in linear and grades once at the end. What would make it wrong is
-   * a capture authored by a tool that baked a display transform into the DC term — which produces
-   * a washed-out cloud, not a subtly wrong one.
+   * A capture is trained against photographs, so its spherical-harmonic DC term reproduces their
+   * pixels when drawn as it is, which is what every reference viewer does. This engine composes in
+   * linear light and grades once at the end, so the shader decodes the colour (after the
+   * view-dependent term) and the frame's encode gives it back. Until 4.13.0 these were read as
+   * linear, which drew the same under the old `outputTransform: 'none'` default and a washed-out
+   * cloud under `srgb`. What would make it wrong is a capture whose tool wrote linear radiance into
+   * the DC term, which would draw too dark rather than subtly wrong.
    */
   readonly colors: Float32Array;
   /** One per splat, 0 to 1, already through the logistic if the format stored a logit. */

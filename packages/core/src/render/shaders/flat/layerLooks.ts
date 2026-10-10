@@ -22,10 +22,9 @@ float layerExtras() { return uLayers[1].y; }
 vec3 layerTint(int i) { return vec3(1.0); }
 vec2 layerRanges(int i, vec2 roughMetal) { return roughMetal; }
 vec3 layerStrengthen(int i, vec3 texel) { return texel; }
-float layerSpecular(int i, float own) { return own; }
+float layerNamedSpecular(int i) { return -1.0; }
 float layerRepeatDown(int i, float across) { return across; }
-float layerOcclusionStrength() { return 0.0; }
-bool layerOcclusionAmbient() { return false; }
+vec2 layerOcclusionStrengths() { return vec2(0.0); }
 vec2 layerOcclusionRange() { return vec2(0.0, 1.0); }
 `;
   }
@@ -35,7 +34,7 @@ const bool LAYER_LOOKS = true;  // wgsl:override
 /*
  * Fifteen vectors, as surfaceLayerLooks.ts packs them: the array layer each of the five reads, base
  * first (floats 0 to 4); where the maps beyond the layers start (5), the mesh occlusion's strength
- * (6) and whether it darkens the ambient light rather than the colour (7); then two vectors a
+ * on the colour, from 0 up (6), and on the ambient light (7); then two vectors a
  * layer, base first: its tint (x y z) and normal strength (w), then its roughness range (x to y)
  * and metalness range (z to w); then each layer's specular, -1 for the surface's own (48 to 52), its
  * repeat down (53 to 57), and the occlusion's range (58 to 59).
@@ -83,13 +82,10 @@ vec3 layerStrengthen(int i, vec3 texel) {
   return texel;
 }
 
-/* The layer's specular, or the surface's own where it names none. */
-float layerSpecular(int i, float own) {
-  if (LAYER_LOOKS) {
-    float named = layerLook(48 + i);
-    return named < 0.0 ? own : named;
-  }
-  return own;
+/* The specular the layer names, or -1 where it names none and the surface's own stands. */
+float layerNamedSpecular(int i) {
+  if (LAYER_LOOKS) return layerLook(48 + i);
+  return -1.0;
 }
 
 /* The layer's repeat down, which is its repeat across unless it gave two. */
@@ -98,14 +94,10 @@ float layerRepeatDown(int i, float across) {
   return across;
 }
 
-float layerOcclusionStrength() {
-  if (LAYER_LOOKS) return uLayerLooks[1].z;
-  return 0.0;
-}
-
-bool layerOcclusionAmbient() {
-  if (LAYER_LOOKS) return uLayerLooks[1].w > 0.5;
-  return false;
+/* The mesh occlusion's strength on the colour (x), from 0 up, and on the ambient light (y). */
+vec2 layerOcclusionStrengths() {
+  if (LAYER_LOOKS) return uLayerLooks[1].zw;
+  return vec2(0.0);
 }
 
 vec2 layerOcclusionRange() {

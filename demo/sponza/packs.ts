@@ -97,10 +97,6 @@ export class SponzaPacks {
   private readonly blended: boolean;
   /** One material, rewritten per part, so the part loop allocates nothing. */
   private readonly material: SurfaceMaterial<SurfaceTextureHandle> = {};
-  /** The same, for the shadow casters, which run inside a pass the draw loop is not in. */
-  private readonly casterMaterial: SurfaceMaterial<SurfaceTextureHandle> & {
-    glass?: GlassOptions | undefined;
-  } = {};
   /** A glass part's draw options, one per glass its loader made, so a frame builds none. */
   private readonly glassDraws = new Map<GlassOptions, TranslucentMeshOptions>();
   /** Every pack's parts, for the sun's map and every probe face. */
@@ -131,27 +127,13 @@ export class SponzaPacks {
       this.loaders.push({ pack, loader, presence: 1 });
     }
     /*
-     * Each caster offers its material, so a cutout (a leaf card, a chain link) casts the shape in its
-     * texture rather than its whole quad. One object rewritten per part, so the list allocates nothing.
+     * Each pack's parts as its loader casts them: every part but a dirt decal, which would shadow
+     * the stone it lies on, each with its material so a leaf card casts its leaf, a lantern's glass
+     * as glass, and the copies through the instanced path.
      */
     this.casters = (sink) => {
-      const material = this.casterMaterial;
       for (const { loader, presence } of this.loaders) {
-        if (presence <= 0) continue;
-        const textures = loader.textures;
-        for (const part of loader.parts) {
-          /* A blended part here is a dirt decal off the stone, which would shadow the stone; a
-             lantern's glass is offered as glass, which lets its flame's light through in its own
-             colour — or casts nothing, where glass shadows are off. */
-          if (part.blend && part.glass === null) continue;
-          writePartMaterial(part, textures, material);
-          material.glass = part.glass ?? undefined;
-          if (part.instances !== null) {
-            sink.instanced?.(part.instances.batch, part.instances.data, material);
-          } else {
-            sink.mesh(part.mesh, IDENTITY, material);
-          }
-        }
+        if (presence > 0) loader.casters(sink);
       }
     };
   }

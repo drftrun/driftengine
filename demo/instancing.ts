@@ -32,6 +32,7 @@ import {
   createEnvironment,
   createMeshInstances,
   createRenderer,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   InstancedHandle,
@@ -59,14 +60,14 @@ const RANK_OFFSET = 11;
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 const SKY: SkyColors = {
-  top: [0.08, 0.11, 0.19],
-  horizon: [0.34, 0.37, 0.44],
-  deep: [0.02, 0.03, 0.05],
+  top: srgbColor(0.08, 0.11, 0.19),
+  horizon: srgbColor(0.34, 0.37, 0.44),
+  deep: srgbColor(0.02, 0.03, 0.05),
   sunDir: [0.4, 0.7, 0.35],
-  sunColor: [1, 0.95, 0.85],
+  sunColor: srgbColor(1, 0.95, 0.85),
   sunAngularRadius: 0.005,
   moonDir: [-0.4, 0.5, -0.3],
-  moonColor: [0.5, 0.55, 0.7],
+  moonColor: srgbColor(0.5, 0.55, 0.7),
   moonAngularRadius: 0.006,
   moonPhase: 0.4,
   nightFactor: 0.2,
@@ -77,11 +78,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: [0.4, 0.7, 0.35],
   directionalColor: [1, 0.96, 0.9],
-  ambient: [0.2, 0.22, 0.28],
-  ambientGround: [0.08, 0.08, 0.1],
+  ambient: srgbColor(0.2, 0.22, 0.28),
+  ambientGround: srgbColor(0.08, 0.08, 0.1),
   emissiveGain: 0,
   nightFactor: 0.2,
-  fogColor: [0.18, 0.2, 0.26],
+  fogColor: srgbColor(0.18, 0.2, 0.26),
   fogDensity: 0.003,
   fogHeightFalloff: 0.03,
   fogBaseY: 0,
@@ -170,7 +171,7 @@ class InstancingHandle implements DemoHandle {
     const builder = new MeshBuilder();
     /* White, so the tint decides the colour outright rather than modulating one. */
     builder.addBox([0, 0, 0], [0.7, 0.9, 0.7], [1, 1, 1]);
-    this.block = renderer.createMesh(builder.build());
+    this.block = renderer.createMesh(builder.build({ colorSpace: 'srgb' }));
 
     this.instances = createMeshInstances(PER_RANK);
     this.instances.count = PER_RANK;
@@ -180,7 +181,7 @@ class InstancingHandle implements DemoHandle {
     }
     const ground = new MeshBuilder();
     ground.addBox([0, -0.4, 0], [26, 0.4, 12], [0.5, 0.52, 0.55]);
-    this.ground = renderer.createMesh(ground.build());
+    this.ground = renderer.createMesh(ground.build({ colorSpace: 'srgb' }));
 
     this.batch = renderer.createInstanced(this.block, PER_RANK);
     /* Uploaded once: these instances do not move. A batch that moved would upload per frame,

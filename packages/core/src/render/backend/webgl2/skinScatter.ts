@@ -147,6 +147,9 @@ export class GlSkinScatter {
     empty: WebGLTexture,
     projection: ArrayLike<number>,
     inverse: ArrayLike<number>,
+    /** The frame's grade, which the second axis applies to the light it adds. */
+    outputTransform = 0,
+    outputExposure = 1,
   ): void {
     const { gl } = this;
     if (this.multisampled !== null) {
@@ -163,6 +166,8 @@ export class GlSkinScatter {
     gl.uniform1i(u['uSkin'] ?? null, SKIN_BLUR_TEXTURE_UNIT);
     gl.uniform1i(u['uDepth'] ?? null, SKIN_BLUR_DEPTH_UNIT);
     gl.uniform1i(u['uAlbedo'] ?? null, SKIN_BLUR_ALBEDO_UNIT);
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
     gl.activeTexture(gl.TEXTURE0 + SKIN_BLUR_ALBEDO_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, this.albedo ?? empty);
     /* The four terms that carry a depth back to view-space metres: the occlusion blur's own. */

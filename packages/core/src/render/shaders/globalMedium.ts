@@ -1,6 +1,7 @@
 import { SUN_DYNAMIC_LAYER, SUN_PEELED_LAYER, SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
 import { MAX_GLOBAL_MEDIUM_STEPS } from '../globalMedium.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * A medium filling the whole frustum: the march, and the upsample that puts it back on screen.
@@ -324,6 +325,7 @@ uniform vec2 uMediumTexel;
 uniform vec4 uDepthToViewZ;
 
 out vec4 fragColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 /**
  * How far apart two view depths may be, as a fraction of the nearer one, before a tap is refused.
@@ -403,6 +405,17 @@ void main() {
    * to interpolate. The nearest by depth is the least wrong of the four, and it is a point sample,
    * which is what a half-res effect always degrades to at a feature it cannot resolve.
    */
-  fragColor = weight > 1e-4 ? total / weight : nearest;
+  vec4 medium = weight > 1e-4 ? total / weight : nearest;
+  /*
+   * **Over a frame its passes graded, the medium composites in the same terms**: the light it
+   * scatters in graded as every pass grades what it adds, and the light it lets through as an
+   * encoded pixel takes a factor, encoded, which is exact through the sRGB encode's power and close
+   * through a curve. A frame graded at the resolve composites linear light, with code 0.
+   */
+  if (uOutputTransform != 0) {
+    medium.rgb = applyOutputTransform(medium.rgb);
+    medium.a = linearToSrgb(vec3(medium.a)).x;
+  }
+  fragColor = medium;
 }
 `;

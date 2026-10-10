@@ -19,6 +19,7 @@
  */
 import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
 import { SKIN_BLUR_EDGES, SKIN_BLUR_TAPS, SKIN_PROFILES } from '../skinBlur.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 const list = (values: readonly number[]): string => values.map((v) => v.toFixed(2)).join(', ');
 
@@ -47,6 +48,7 @@ uniform sampler2D uAlbedo;
 uniform float uApplyAlbedo;
 
 out vec4 fragColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 const float TAPS[${SKIN_BLUR_TAPS.length}] = float[${SKIN_BLUR_TAPS.length}](${list(SKIN_BLUR_TAPS)});
 const float EDGES[${SKIN_BLUR_EDGES.length}] = float[${SKIN_BLUR_EDGES.length}](${list(SKIN_BLUR_EDGES)});
@@ -69,7 +71,9 @@ vec3 burleyMass(float x, vec3 d) {
 vec3 withAlbedo(vec3 light) {
   if (uApplyAlbedo < 0.5) return light;
   vec4 albedo = textureLod(uAlbedo, vUv, 0.0);
-  return light * albedo.rgb / max(albedo.a, 1e-4);
+  /* Graded on the axis that adds into the frame, as every pass grades what it adds where nothing
+     after it will: 0 where the resolve grades the frame, and the first axis keeps linear light. */
+  return applyOutputTransform(light * albedo.rgb / max(albedo.a, 1e-4));
 }
 
 void main() {

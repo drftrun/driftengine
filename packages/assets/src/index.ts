@@ -19,6 +19,11 @@ export { DrftLoader } from './drftLoader.ts';
  */
 export { writePartMaterial } from './partMaterial.ts';
 /*
+ * Parts drawn, cast and prepared by every rule a container needs, which `DrftLoader.draw` is: here
+ * for a caller drawing parts of its own choosing, several loaders' or a list it filtered.
+ */
+export { PartDraws } from './partDraws.ts';
+/*
  * **A `DTEX` chunk's tile table as the grid residency asks about.** The other constructor of a
  * `MaterialTileGrid` — `latentTileGrid` cuts one from a latent a baker holds, and this reads one a
  * consumer downloaded. The hashes are the file's, over the bytes a fetch returns, which is what

@@ -1,3 +1,4 @@
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 /**
  * Visible wind: streaks of dust and debris carried past the camera.
  *
@@ -117,6 +118,7 @@ in float vFade;
 in float vAlong;
 uniform vec3 uTint;
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 void main() {
   // Tapered at both ends, so a streak reads as motion rather than as a stick.
@@ -125,6 +127,7 @@ void main() {
   float taper = sin(vAlong * 3.14159);
   float alpha = vFade * taper * taper * 0.13;
   if (alpha <= 0.002) discard;
-  outColor = vec4(uTint, alpha);
+  /* Graded where nothing after this will grade it, as every pass is. The alpha is coverage. */
+  outColor = vec4(applyOutputTransform(uTint), alpha);
 }
 `;

@@ -42,9 +42,11 @@ import {
   createEnvironment,
   createPointLightBuffer,
   createRenderer,
+  scaleColor,
   selectPointLights,
   shellFillMatrix,
   shellSkin,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   Environment,
@@ -148,6 +150,13 @@ const TURNTABLE_RADIUS = 6.5;
 /** The disc is centred at half its own half-height, so its surface is twice that. See buildRoom. */
 const TURNTABLE_HALF_HEIGHT = 0.05;
 const TURNTABLE_TOP_Y = TURNTABLE_HALF_HEIGHT * 2;
+
+/**
+ * How much light the room holds, every source at once. Its colours are picked by eye and its lights
+ * are intensities, and light adds in linear values, so the room this was graded as — panels and
+ * fill summing well past the white of its walls — takes half again the numbers it was written with.
+ */
+const ROOM_LIGHT = 1.4;
 
 const FLOOR: Vec3 = [0.2, 0.21, 0.23];
 const FLOOR_DARK: Vec3 = [0.14, 0.145, 0.16];
@@ -538,10 +547,12 @@ function paint(mesh: MeshData, material: DrftMaterial | undefined): MeshData {
   const out: MeshData = { ...mesh };
   if (wanted.color !== undefined) {
     const colors = new Float32Array(vertices * 3);
+    /* The table's colours are picked by eye; the renderer lights linear values. */
+    const linear = srgbColor(wanted.color[0], wanted.color[1], wanted.color[2]);
     for (let i = 0; i < vertices; i++) {
-      colors[i * 3] = wanted.color[0];
-      colors[i * 3 + 1] = wanted.color[1];
-      colors[i * 3 + 2] = wanted.color[2];
+      colors[i * 3] = linear[0];
+      colors[i * 3 + 1] = linear[1];
+      colors[i * 3 + 2] = linear[2];
     }
     /* Only where the file has no map of its own: a tyre's tread and a badge are the
        asset's, and overpainting them would throw away the textures just embedded. */
@@ -865,7 +876,7 @@ function buildRoom(): MeshData {
     barrel.setRoughness(0.35);
     barrel.addBox([0, 0, -0.16], [0.07, 0.2, 0.16], TRIM, 0, 0.4);
     builder.addOrientedMesh(
-      barrel.build(),
+      barrel.build({ colorSpace: 'srgb' }),
       [x, originY, z],
       [rx, 0, rz],
       [upx / upLength, upy / upLength, upz / upLength],
@@ -898,7 +909,7 @@ function buildRoom(): MeshData {
   builder.setRoughness(0.9);
   builder.addCylinder([0, 0.015, 0], TURNTABLE_RADIUS + 0.5, 0.015, 'y', COVE_LIGHT, 0.85, 64, 0.1);
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 function buildEnvironment(): Environment {
@@ -909,12 +920,12 @@ function buildEnvironment(): Environment {
    */
   return createEnvironment({
     directionalDir: [-0.25, 0.93, 0.27],
-    directionalColor: [0.62, 0.63, 0.7],
-    ambient: [0.52, 0.53, 0.58],
-    ambientGround: [0.26, 0.265, 0.29],
+    directionalColor: scaleColor([0.62, 0.63, 0.7], ROOM_LIGHT),
+    ambient: scaleColor([0.52, 0.53, 0.58], ROOM_LIGHT),
+    ambientGround: scaleColor([0.26, 0.265, 0.29], ROOM_LIGHT),
     emissiveGain: 1,
     nightFactor: 1,
-    fogColor: [0.28, 0.29, 0.32],
+    fogColor: srgbColor(0.28, 0.29, 0.32),
     fogDensity: 0.004,
     fogHeightFalloff: 0.02,
     fogBaseY: 0,
@@ -938,13 +949,16 @@ function buildEnvironment(): Environment {
  * sit above one — a panel is brighter than the white it illuminates.
  */
 function buildLights(): PointLightSource[] {
+  /* Light, as intensities above the white it illuminates; the room's colours are picked by eye. */
+  const panel = scaleColor([1.15, 1.12, 1.05], ROOM_LIGHT);
+  const spot = scaleColor([1.25, 1.18, 1.04], ROOM_LIGHT);
   const panels: PointLightSource[] = PANELS.map(([x, z]) => ({
     x,
     y: WALL_HEIGHT - 0.9,
     z,
-    r: 1.15,
-    g: 1.12,
-    b: 1.05,
+    r: panel[0],
+    g: panel[1],
+    b: panel[2],
     radius: 26,
     /* A panel is mains-powered and steady. Flicker belongs to a flame. */
     flicker: 0,
@@ -971,9 +985,9 @@ function buildLights(): PointLightSource[] {
     x: x * 0.86,
     y: WALL_HEIGHT - 1.75,
     z: z * 0.86,
-    r: 1.25,
-    g: 1.18,
-    b: 1.04,
+    r: spot[0],
+    g: spot[1],
+    b: spot[2],
     radius: 17,
     flicker: 0,
     shadowNear: 0.6,
@@ -1463,7 +1477,7 @@ class ShowroomHandle implements DemoHandle {
        * the phase that means every part exists.
        */
       if (this.fillBuilder !== null && this.fillMesh === null) {
-        this.fillMesh = this.renderer.createMesh(this.fillBuilder.build());
+        this.fillMesh = this.renderer.createMesh(this.fillBuilder.build({ colorSpace: 'srgb' }));
         /* It holds a second copy of the whole model, so let it go the moment it is uploaded. */
         this.fillBuilder = null;
       }

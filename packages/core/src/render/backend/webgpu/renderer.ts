@@ -253,8 +253,9 @@ import {
   OUTPUT_TRANSFORM_CODE,
   RUSH_REACH_UV,
   clampMotionShare,
-  forwardTransformCode,
 } from '../../vertexDefaults.ts';
+import { gradeColorInto } from '../../gradeColor.ts';
+import { interfaceGrade, passGradeCode, passGradeExposure } from '../../passGrade.ts';
 import { FRINGE_FLOATS, resolveFringe } from '../../shaders/fringe.ts';
 import { displayHeadroom, type DisplayRange } from '../../displayRange.ts';
 import {
@@ -1512,7 +1513,7 @@ export class WebGPURenderer implements RendererApi {
    * **Resolved by the caller and held, rather than defaulted per use.** Every shadow term
    * below reads it, and the constants they replaced were `DEFAULT_RENDER_QUALITY` copies —
    * which measured wrong the moment a scene overrode one. `demo/dayClock` resolves
-   * `directionalShadowMaxSlope` to 9 where the default is 3.
+   * `directionalShadowMaxSlope` to 9 where the default was 3 (60 since 4.13.0).
    */
   readonly quality: Readonly<RenderQuality>;
 
@@ -2226,6 +2227,7 @@ export class WebGPURenderer implements RendererApi {
   private readonly mediumUpsampleUniforms: GPUBuffer;
   private readonly mediumUpsampleStaging = new ArrayBuffer(MEDIUM_UPSAMPLE_SIZE);
   private readonly mediumUpsampleFloats = new Float32Array(this.mediumUpsampleStaging);
+  private readonly mediumUpsampleInts = new Int32Array(this.mediumUpsampleStaging);
   private mediumUpsampleGroup: GPUBindGroup | null = null;
   /** The inverse projection the composite linearises a depth with, built once per frame. */
   private readonly mediumInvProjection = mat4.create();
@@ -2476,6 +2478,12 @@ export class WebGPURenderer implements RendererApi {
    */
   private readonly skyUniforms: UniformRing;
   private readonly skyFloats = new Float32Array(SKY_UNIFORM_SIZE / 4);
+  /** The same block's ints: the grade the sky draws with. */
+  private readonly skyInts = new Int32Array(this.skyFloats.buffer);
+  /** `clearOf`'s scratch: a clear colour as the open target takes it. */
+  private readonly gradedClear: Vec3 = [0, 0, 0];
+  /** An inset's clear as its quad's uniform, rewritten in place: the colour and an alpha of 1. */
+  private readonly insetClear = new Float32Array([0, 0, 0, 1]);
   private readonly skyBindGroup: GPUBindGroup;
   /** The camera's inverse with the clip correction undone, rebuilt once a frame. */
   private readonly skyInvViewProj = new Float32Array(16);
@@ -2560,6 +2568,8 @@ export class WebGPURenderer implements RendererApi {
   private decalUniforms!: GPUBuffer;
   private readonly decalStaging = new ArrayBuffer(DECAL_SLOT * MAX_DRAWN_DECALS);
   private readonly decalFloats = new Float32Array(this.decalStaging);
+  /** The same slots' ints: the grade the frame under the marks was drawn with. */
+  private readonly decalInts = new Int32Array(this.decalStaging);
   private decalBindGroup: GPUBindGroup | null = null;
   /** Said once where a mark cannot be drawn at all, rather than dropped in silence. */
   private decalsRefused = false;
@@ -2743,9 +2753,10 @@ export class WebGPURenderer implements RendererApi {
      * still owed.
      */
     this.pass = null;
-    this.mirrorClearColor[0] = clearColor[0];
-    this.mirrorClearColor[1] = clearColor[1];
-    this.mirrorClearColor[2] = clearColor[2];
+    const mirrorClear = this.clearOf(clearColor);
+    this.mirrorClearColor[0] = mirrorClear[0];
+    this.mirrorClearColor[1] = mirrorClear[1];
+    this.mirrorClearColor[2] = mirrorClear[2];
     this.pendingClearMask |= MIRROR_TARGET;
     this.reflectionPassActive = true;
     /* Closed in `endPlanarReflection`, matching `renderer.ts:2054`. */
@@ -2916,6 +2927,8 @@ export class WebGPURenderer implements RendererApi {
     i[atF('uClipEnabled')] = this.reflectionPassActive ? 1 : 0;
     f.set(this.reflection?.clipPlane ?? NO_CLIP_PLANE, atF('uClipPlane'));
     f[atF('uSheen')] = sheen;
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
     f[atF('uFilmRoughness')] = Math.min(1, Math.max(0, options.roughness ?? 0));
     f[atF('uFilmRoughnessCycles')] = Math.max(0.01, options.roughnessCyclesPerMetre ?? 60);
 
@@ -3888,6 +3901,13 @@ export class WebGPURenderer implements RendererApi {
     const fragAt = (name: string): number => PANEL_FRAG_FIELDS[name]?.offset ?? 0;
     this.panelFrags.writeFloats(fragmentSlot, fragAt('uColor'), color);
     this.panelFrags.writeFloat(fragmentSlot, fragAt('uAlpha'), alpha);
+    /* An interface: the screen encode, never the curve. See `interfaceGrade`. */
+    this.panelFrags.writeInt(
+      fragmentSlot,
+      fragAt('uOutputTransform'),
+      interfaceGrade(this.passGrade()),
+    );
+    this.panelFrags.writeFloat(fragmentSlot, fragAt('uOutputExposure'), 1);
 
     const panelPipe = panelPipeline(this.targetPipelines(), this.surface.device, this.panelLayout);
     /* `allocate` already returns a byte offset, not an index. Multiplying by the stride
@@ -4021,8 +4041,8 @@ export class WebGPURenderer implements RendererApi {
       font.atlasWidth,
       font.atlasHeight,
     ]);
-    this.sdfTextFrags.writeInt(fragmentSlot, fragAt('uOutputTransform'), this.gradeCode());
-    this.sdfTextFrags.writeFloat(fragmentSlot, fragAt('uOutputExposure'), this.gradeExposure());
+    this.sdfTextFrags.writeInt(fragmentSlot, fragAt('uOutputTransform'), this.passGrade());
+    this.sdfTextFrags.writeFloat(fragmentSlot, fragAt('uOutputExposure'), this.passGradeExposure());
 
     const sdfPipe = sdfTextPipeline(
       this.blendedPipelines(),
@@ -4143,6 +4163,13 @@ export class WebGPURenderer implements RendererApi {
     this.textFrags.writeFloats(fragmentSlot, fragAt('uColor'), style.color);
     this.textFrags.writeFloat(fragmentSlot, fragAt('uGlow'), style.glow);
     this.textFrags.writeFloat(fragmentSlot, fragAt('uAlpha'), style.alpha);
+    /* An interface: the screen encode, never the curve. See `interfaceGrade`. */
+    this.textFrags.writeInt(
+      fragmentSlot,
+      fragAt('uOutputTransform'),
+      interfaceGrade(this.passGrade()),
+    );
+    this.textFrags.writeFloat(fragmentSlot, fragAt('uOutputExposure'), 1);
 
     const pass = this.openTextPass();
     if (pass === null) return;
@@ -4505,20 +4532,29 @@ export class WebGPURenderer implements RendererApi {
    * array allocated with the batch, so the frame loop still allocates nothing.
    */
   /**
-   * The output transform a forward pass should apply, and the exposure it should apply it at.
-   *
-   * The WebGPU half of `Renderer.gradeCode`, and it has to agree with it draw for draw: this is
-   * one verb with two implementations, and a frame that grades on one backend and not the other
-   * is the silent kind of disagreement. See that method for what the gate is protecting.
+   * The grade a pass applies to what it draws into the target open now, and the exposure it
+   * applies it at: the WebGPU half of `Renderer.passGrade`, and it has to agree with it draw for
+   * draw. The decision is `passGrade.ts`'s, so both halves only gather the state it is taken from.
    */
-  private gradeCode(): number {
-    return !this.hasComposite || !this.quality.hdrScene
-      ? forwardTransformCode(this.quality.outputTransform)
-      : 0;
+  private passGrade(): number {
+    const storing = this.probePassActive || this.capturePassActive;
+    const transform = this.quality.outputTransform;
+    return passGradeCode(storing, this.framePresented, this.resolveGrades(), transform);
   }
 
-  private gradeExposure(): number {
-    return !this.hasComposite || !this.quality.hdrScene ? this.exposure : 1;
+  private passGradeExposure(): number {
+    const storing = this.probePassActive || this.capturePassActive;
+    return passGradeExposure(storing, this.framePresented, this.resolveGrades(), this.exposure);
+  }
+
+  /** Whether the frame's resolve applies the transform, so the passes before it draw linear. */
+  private resolveGrades(): boolean {
+    return this.hasComposite && this.quality.hdrScene;
+  }
+
+  /** A clear colour as the open target takes it, graded as a pass would. See `gradeColor.ts`. */
+  private clearOf(color: Readonly<Vec3>): Vec3 {
+    return gradeColorInto(this.passGrade(), this.passGradeExposure(), color, this.gradedClear);
   }
 
   drawParticles(
@@ -4641,8 +4677,8 @@ export class WebGPURenderer implements RendererApi {
     if (has('uFogEnabled')) i[atF('uFogEnabled')] = batch.fog ? 1 : 0;
     /* Every material's fragment stage declares these, so they are unconditional like
        `uCameraPos` rather than guarded like the material-specific fields above. */
-    i[atF('uOutputTransform')] = this.gradeCode();
-    f[atF('uOutputExposure')] = this.gradeExposure();
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
 
     const spriteGroup = batch.material === 'sprite' ? this.spriteFades(batch, camera, f) : null;
 
@@ -4896,6 +4932,8 @@ export class WebGPURenderer implements RendererApi {
     frags.writeInt(fragmentSlot, atF('uFogMode'), medium.fogMode);
     frags.writeFloat(fragmentSlot, atF('uFogNear'), medium.fogNear);
     frags.writeFloat(fragmentSlot, atF('uFogFar'), medium.fogFar);
+    frags.writeInt(fragmentSlot, atF('uOutputTransform'), this.passGrade());
+    frags.writeFloat(fragmentSlot, atF('uOutputExposure'), this.passGradeExposure());
     /*
      * **Written for every material, not only the one that reads it.** `arcane` is the only
      * plume whose block declares `uTint`, and the slot it lands in is past the end of fire's
@@ -5096,6 +5134,8 @@ export class WebGPURenderer implements RendererApi {
     /* No reflection pass yet: the shader's own "off" path, not an improvised one. */
     i[atF('uReflectionEnabled')] = mirror === null ? 0 : 1;
     i[atF('uReflectionFilterTaps')] = water.reflectionFilterTaps;
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
     f[atF('uReflectionTexelSize')] = mirror === null ? 1 : 1 / mirror.width;
     f[atF('uReflectionTexelSize') + 1] = mirror === null ? 1 : 1 / mirror.height;
 
@@ -5248,6 +5288,8 @@ export class WebGPURenderer implements RendererApi {
     ring.writeFloats(fragmentSlot, at('uDustOffset'), options.driftM ?? NO_DRIFT);
     ring.writeFloat(fragmentSlot, at('uNear'), options.nearM ?? 0);
     ring.writeInt(fragmentSlot, at('uSamples'), this.quality.lightVolumeSamples);
+    ring.writeInt(fragmentSlot, at('uOutputTransform'), this.passGrade());
+    ring.writeFloat(fragmentSlot, at('uOutputExposure'), this.passGradeExposure());
 
     /*
      * The clamp that makes a beam end on the floor, and the snapshot it reads.
@@ -5471,6 +5513,10 @@ export class WebGPURenderer implements RendererApi {
     v[at('uTime')] = timeSeconds;
 
     this.windStreakFragFloats.set(tint, (WIND_STREAK_FRAG_FIELDS.uTint.offset ?? 0) / 4);
+    this.windStreakFragBlock[WIND_STREAK_FRAG_FIELDS.uOutputTransform.offset / 4] =
+      this.passGrade();
+    this.windStreakFragFloats[WIND_STREAK_FRAG_FIELDS.uOutputExposure.offset / 4] =
+      this.passGradeExposure();
 
     this.windStreakVerts.writeBlock(vertexSlot, this.windStreakVertBlock);
     this.windStreakFrags.writeBlock(fragmentSlot, this.windStreakFragBlock);
@@ -5576,6 +5622,8 @@ export class WebGPURenderer implements RendererApi {
     v[at('uWind') + 1] = windZ;
 
     this.flockFragFloats.set(tint, (FLOCK_FRAG_FIELDS.uTint.offset ?? 0) / 4);
+    this.flockFragBlock[FLOCK_FRAG_FIELDS.uOutputTransform.offset / 4] = this.passGrade();
+    this.flockFragFloats[FLOCK_FRAG_FIELDS.uOutputExposure.offset / 4] = this.passGradeExposure();
 
     this.flockVerts.writeBlock(vertexSlot, this.flockVertBlock);
     this.flockFrags.writeBlock(fragmentSlot, this.flockFragBlock);
@@ -5687,6 +5735,8 @@ export class WebGPURenderer implements RendererApi {
     f.set(core, atF('uCoreColor'));
     f.set(edge, atF('uEdgeColor'));
     f[atF('uCoreGain')] = coreGain;
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
     f.set(camera.position, atF('uCameraPos'));
     /* The medium, through the same resolver every other pass here binds from. */
     const medium = resolveAtmosphere(
@@ -5823,8 +5873,8 @@ export class WebGPURenderer implements RendererApi {
     this.lineFrags.writeFloat(fragmentSlot, atF('uOpacity'), opacity);
     this.lineFrags.writeFloats(fragmentSlot, atF('uCameraPos'), camera.position);
     this.lineFrags.writeFloat(fragmentSlot, atF('uSoftness'), softness);
-    this.lineFrags.writeInt(fragmentSlot, atF('uOutputTransform'), this.gradeCode());
-    this.lineFrags.writeFloat(fragmentSlot, atF('uOutputExposure'), this.gradeExposure());
+    this.lineFrags.writeInt(fragmentSlot, atF('uOutputTransform'), this.passGrade());
+    this.lineFrags.writeFloat(fragmentSlot, atF('uOutputExposure'), this.passGradeExposure());
     /* The medium, through the same resolver every other pass here binds from. */
     const medium = resolveAtmosphere(
       env,
@@ -8482,9 +8532,10 @@ export class WebGPURenderer implements RendererApi {
      * at 92 MB a frame at 824x1830. `ensurePass` opens it on the first draw that wants it, which
      * for such a scene is after the last mirror, so it is opened once and cleared once.
      */
-    this.pendingClearColor[0] = clearColor[0];
-    this.pendingClearColor[1] = clearColor[1];
-    this.pendingClearColor[2] = clearColor[2];
+    const frameClear = this.clearOf(clearColor);
+    this.pendingClearColor[0] = frameClear[0];
+    this.pendingClearColor[1] = frameClear[1];
+    this.pendingClearColor[2] = frameClear[2];
     this.pendingClearMask = SCENE_TARGET;
     if (this.quality.deferFramePass) {
       this.pass = null;
@@ -9241,8 +9292,8 @@ export class WebGPURenderer implements RendererApi {
      * `screenEffects` off, or on without `hdrScene`, the mesh pass writes what reaches the
      * canvas and grades as it always did.
      */
-    i[at('uOutputTransform')] = this.gradeCode();
-    f[at('uOutputExposure')] = this.gradeExposure();
+    i[at('uOutputTransform')] = this.passGrade();
+    f[at('uOutputExposure')] = this.passGradeExposure();
     /* The projection occlusion needs, settled by the pass that has a camera. */
     this.frameProjection = camera.projection as Float32Array;
 
@@ -10096,7 +10147,7 @@ export class WebGPURenderer implements RendererApi {
     /* `1` is sRGB alone: the conversion without the curve. `Math.min` rather than a literal, so
        a renderer asked for `none` stays at none. See `TranslucentMeshOptions.toneMapped`. */
     if (!toneMapped) {
-      this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.gradeCode(), 1);
+      this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.passGrade(), 1);
     }
     /*
      * **Refraction, and the snapshot it reads is taken here or the draw does not refract.**
@@ -10268,7 +10319,7 @@ export class WebGPURenderer implements RendererApi {
        shared, so a strength left set is worn by everything drawn after it. */
     if (refracting) this.releaseSeeThrough();
     if (!toneMapped) {
-      this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
+      this.perFrameInts[this.materialField('uOutputTransform')] = this.passGrade();
     }
     if (ditheredBlend) {
       this.perFrameFloats[this.materialField('uCutout') + 1] =
@@ -10736,7 +10787,7 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameInts[this.materialField('uFogEnabled')] = fog;
     }
     if (!toneMapped) {
-      this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.gradeCode(), 1);
+      this.perFrameInts[this.materialField('uOutputTransform')] = Math.min(this.passGrade(), 1);
     }
 
     const depthWrite = options.depthWrite ?? true;
@@ -10846,7 +10897,7 @@ export class WebGPURenderer implements RendererApi {
       this.perFrameInts[this.materialField('uFogEnabled')] = this.surfaceFog;
     }
     if (!toneMapped) {
-      this.perFrameInts[this.materialField('uOutputTransform')] = this.gradeCode();
+      this.perFrameInts[this.materialField('uOutputTransform')] = this.passGrade();
     }
     if (refracting) this.releaseSeeThrough();
     if (ditheredBlend) {
@@ -10963,6 +11014,8 @@ export class WebGPURenderer implements RendererApi {
     i[atF('uFogMode')] = medium.fogMode;
     f[atF('uFogNear')] = medium.fogNear;
     f[atF('uFogFar')] = medium.fogFar;
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
 
     const fragmentSlot = this.scatterFrags.allocate();
     if (fragmentSlot === null) return;
@@ -12583,6 +12636,8 @@ export class WebGPURenderer implements RendererApi {
     );
     f.set(medium.underwaterColor, at('uUnderwaterColor'));
     f[at('uUnderwaterFactor')] = medium.underwaterFactor;
+    this.skyInts[at('uOutputTransform')] = this.passGrade();
+    f[at('uOutputExposure')] = this.passGradeExposure();
 
     const slot = this.skyUniforms.allocate();
     if (slot === null) {
@@ -12747,6 +12802,8 @@ export class WebGPURenderer implements RendererApi {
       ? (OUTPUT_TRANSFORM_CODE[this.quality.outputTransform] ?? 0)
       : 0;
     f[at('uOutputExposure')] = graded ? this.exposure : 1;
+    /* The occlusion multiplied in as an encoded pixel takes it, where the passes graded the scene. */
+    i[at('uSceneGraded')] = this.passGrade() !== 0 ? 1 : 0;
     f.set(this.filmA, at('uFilmA'));
     f.set(this.filmB, at('uFilmB'));
     f[at('uDisplayHeadroom')] = this.headroom;
@@ -13376,8 +13433,8 @@ export class WebGPURenderer implements RendererApi {
       });
       const context = this.passContext;
       context.pass = pass;
-      context.outputTransform = this.gradeCode();
-      context.outputExposure = this.gradeExposure();
+      context.outputTransform = this.passGrade();
+      context.outputExposure = this.passGradeExposure();
       context.jitter = this.latePassJitter;
       context.format = RECON_HISTORY_FORMAT;
       context.depthFormat = DEPTH_FORMAT;
@@ -14026,6 +14083,7 @@ export class WebGPURenderer implements RendererApi {
       f[base + at('uDecalOpacity')] = decal.opacity;
       f[base + at('uDecalFacingCos')] = decal.facingCos;
       f[base + at('uDecalSoftness')] = decal.softness;
+      this.decalInts[base + at('uOutputTransform')] = this.passGrade();
       slot++;
     });
     device.queue.writeBuffer(this.decalUniforms, 0, this.decalStaging, 0, slot * DECAL_SLOT);
@@ -14272,6 +14330,8 @@ export class WebGPURenderer implements RendererApi {
     g[upsampleAt('uDepthToViewZ') + 1] = inv[14] ?? 0;
     g[upsampleAt('uDepthToViewZ') + 2] = inv[11] ?? 0;
     g[upsampleAt('uDepthToViewZ') + 3] = inv[15] ?? 1;
+    this.mediumUpsampleInts[upsampleAt('uOutputTransform')] = this.passGrade();
+    g[upsampleAt('uOutputExposure')] = this.passGradeExposure();
     device.queue.writeBuffer(this.mediumUpsampleUniforms, 0, this.mediumUpsampleStaging);
 
     const march = encoder.beginRenderPass({
@@ -14997,6 +15057,8 @@ export class WebGPURenderer implements RendererApi {
       projection,
       this.skinInverseProjection,
       () => this.gpuTimer.writesFor(),
+      this.passGrade(),
+      this.passGradeExposure(),
     );
     this.pass = encoder.beginRenderPass({
       label: 'skin.scattered',
@@ -16207,8 +16269,8 @@ export class WebGPURenderer implements RendererApi {
     const context = this.passContext;
     context.pass = pass;
     /* The frame's grade, so a contributed pass can obey the 2026-08-17 rule. See `PassContext`. */
-    context.outputTransform = this.gradeCode();
-    context.outputExposure = this.gradeExposure();
+    context.outputTransform = this.passGrade();
+    context.outputExposure = this.passGradeExposure();
     context.format = target.format;
     context.samples = target.sampleCount;
     return context as PassContext;
@@ -16705,8 +16767,11 @@ export class WebGPURenderer implements RendererApi {
     const slot = this.insetUniforms.allocate();
     if (slot !== null) {
       /* Only the colour: the quad covers the viewport set above, so it needs no geometry. */
-      const color = clearColor ?? BLACK_CLEAR;
-      this.insetUniforms.writeFloats(slot, 0, [color[0], color[1], color[2], 1]);
+      const color = this.clearOf(clearColor ?? BLACK_CLEAR);
+      this.insetClear[0] = color[0];
+      this.insetClear[1] = color[1];
+      this.insetClear[2] = color[2];
+      this.insetUniforms.writeFloats(slot, 0, this.insetClear);
       const insetPipe = insetPipeline(
         this.targetPipelines(),
         this.surface.device,
@@ -17368,6 +17433,8 @@ export class WebGPURenderer implements RendererApi {
     f[atF('uTime')] = timeSeconds;
     f[atF('uMaxDrop')] = CAUSTICS_MAX_DROP_M;
     f[atF('uStrength')] = strength;
+    i[atF('uOutputTransform')] = this.passGrade();
+    f[atF('uOutputExposure')] = this.passGradeExposure();
     f.set(env.directionalDir, atF('uLightDir'));
 
     /*

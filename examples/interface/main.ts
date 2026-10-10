@@ -14,6 +14,7 @@ import {
   MeshBuilder,
   computeLightMatrix,
   createEnvironment,
+  srgbColor,
 } from '@driftengine/core';
 import type { TextHandle, TextStyle } from '@driftengine/core';
 import {
@@ -33,6 +34,9 @@ import { patchModule } from 'driftscript';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as menuScript from './menu.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.52, 0.6, 0.72);
 
 const stage = await openStage({ directionalShadows: true, outputTransform: 'aces' });
 const { renderer, camera, canvas } = stage;
@@ -340,7 +344,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters((caster) => caster.mesh(sculpture, model));
     renderer.endShadowPass();
-    renderer.beginFrame([0.52, 0.6, 0.72]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(scene, IDENTITY);
     renderer.drawMesh(sculpture, model);

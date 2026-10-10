@@ -214,7 +214,7 @@ time too, so an intro or a music cue doesn't play behind it.
 
 **Keeping it is a request, and the licence doesn't require it.** Pass `{ splash: false }` as the
 third argument to `createRenderer` to turn it off, which is the right choice for anything that isn't a game booting:
-a canvas that is one section of a web page, a tool, a product page. `?splash=0` turns it off from the
+a canvas that is one section of a web page, an embed, a tool, a product page, a benchmark. `?splash=0` turns it off from the
 address bar without a code change.
 
 ## Licence

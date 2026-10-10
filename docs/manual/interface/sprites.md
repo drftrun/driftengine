@@ -9,7 +9,7 @@ areas: ['ui2d']
 
 `@driftengine/ui2d` is the engine's 2D layer: quads with a texture on them, batched, drawn in the
 order you submitted them. It draws a whole 2D game, a heads-up display over a 3D one, or the
-interface tree in the [next chapter](interface.md), and it is 8.8 KB gzipped on top of core.
+interface tree in the [next chapter](interface.md), and it is 10.1 KB gzipped on top of core.
 
 The example is a garden, all of it one sprite pass over one sheet painted when the page loads: a
 tilemap, a gardener walking it, and flowers to pick. `garden.drs` walks the gardener, keeps it out of
@@ -24,6 +24,9 @@ how the sheet is filtered, and repaint it at dusk.
 /* One pass of sprites, drawn wherever in the frame it is asked for, over one sheet. A sheet of
    pixel art is filtered nearest, so its texels stay square at any zoom. */
 const pass = createSpritePass({ capacity: 4096, slots: 1, label: 'garden' });
+/** The ground behind the tiles at each hour, picked by eye and so stated through `srgbColor`. */
+const DUSK_CLEAR = srgbColor(0.08, 0.1, 0.14);
+const DAY_CLEAR = srgbColor(0.3, 0.45, 0.25);
 const handle = renderer.registerPass(pass);
 const painted = new OffscreenCanvas(SHEET_WIDTH, SHEET_HEIGHT);
 let palette = flag('light', 'day') === 'dusk' ? DUSK : DAY;
@@ -266,6 +269,6 @@ exported<Draw>(script, 'draw')(
   seenW,
   seenH,
 );
-renderer.beginFrame(palette === DUSK ? [0.08, 0.1, 0.14] : [0.3, 0.45, 0.25]);
+renderer.beginFrame(palette === DUSK ? DUSK_CLEAR : DAY_CLEAR);
 renderer.drawPass(handle);
 ```

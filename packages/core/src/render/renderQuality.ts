@@ -61,22 +61,35 @@ export type SkinScattering = 'pre-integrated' | 'screen-space';
 
 export interface RenderQuality {
   /**
-   * The transfer curve applied at the end of every shaded pass.
+   * The transfer curve applied at the end of every shaded pass. Construction-time, like every
+   * other quality control here.
    *
-   * Construction-time, like every other quality control here, and `none` by default so
-   * no existing world changes by a single bit.
+   * **`srgb` by default since 4.13.0, the encoding a display expects**: the light the renderer
+   * computes is linear, and a texture's colours are decoded to linear when they are read, so a
+   * frame written without encoding them back is a frame of linear values read as display values —
+   * every midtone far too dark. It is the encoding most renderers apply by default, so a model
+   * drawn here with no options reads as it does elsewhere. **What it gives up** is a highlight's
+   * colour: above 1 each channel clips on its own, so a bright saturated source goes to white
+   * rather than rolling off, which a curve with a shoulder (`aces`, `shoulder`) is for.
    *
-   * **The symptom, written down because nobody searches for a transfer curve they do not know
-   * exists.** With `none`, values above 1 clip flat rather than rolling off, so a scene with
-   * bright sources against dark surroundings reads as crushed and desaturated: the highlights
-   * go to a hard white with no colour left in them and the midtones look muddy. That is
-   * reported by eye as "dark", "flat" or "not vivid", which sounds like a lighting problem, so
-   * that is where people look. A consumer built, tuned and shipped six worlds before anybody
-   * said the word. If a scene looks like that, try `outputTransform: 'aces'` with an
-   * `outputExposure` before touching a single light.
+   * **`none` was the default until 4.13.0, and it is the frame that reads as dark**: values
+   * written as they are computed, which is right only for a world whose colours were chosen by
+   * eye as display values and lit to match. It was reported by eye as "dark", "flat" or "not
+   * vivid", which sounds like a lighting problem, so that is where people looked; a consumer
+   * built, tuned and shipped six worlds under it before anybody said the word, and a model drawn
+   * from the manual came out darker than in any other engine. A world graded under it says
+   * `outputTransform: 'none'` and draws exactly as it did. **What would make `srgb` the wrong
+   * default** is a renderer whose colours are not linear, which this one's are not.
    *
-   * The default stays `none`, and that is not the fault: a curve that changed every existing
-   * consumer's output would be far worse than one nobody found.
+   * **Every pass applies it where nothing after it will**, and the clear colour with them, so a
+   * colour handed to the renderer is linear wherever it lands: a frame with `hdrScene` is graded
+   * once at the resolve, and one without it is graded pass by pass to the same curve. A colour
+   * picked by eye is a display value, so it is stated through `srgbColor` (or a mesh built with
+   * `colorSpace: 'srgb'`), which gives back exactly the colour picked where a surface is lit at 1
+   * under `srgb`, and through the curve under a tone curve. **An interface** (screen text, a panel,
+   * the 2D layer) takes the screen encode and never the curve or the exposure, so its colours come
+   * out as picked under every transform; inside an `hdrScene` frame it is part of the picture the
+   * resolve grades, and is drawn after `endFrame` to stay out of the curve.
    */
   readonly outputTransform: OutputTransform;
   /**
@@ -270,9 +283,35 @@ export interface RenderQuality {
    * at a shadow's edge — that is what the blur is for.
    */
   readonly skinScattering: SkinScattering;
-  /** Horizontal world-space reach over which a directional shadow dissolves. */
+  /**
+   * How far a sun shadow may reach along the ground from its caster, in metres, before it
+   * dissolves. **Not a distance from the camera**: a shadow's own length, from where it leaves its
+   * caster to where it lands, fading from 35% of this to all of it.
+   *
+   * **1,000 since 4.13.0, so no building's shadow dissolves**: the fade starts at 350 m, past any
+   * wall, tower or canyon a shadow map covers at a useful resolution, so what bounds a shadow is
+   * its map, whose edge already fades. **What it gives up** is a way to hide a long shadow's
+   * stair-stepping at a low sun, which is what a short reach was for. It was 6 until 4.13.0: a
+   * tuning for short casters, which left a building's walls and arcades casting nothing on its
+   * floor under a high sun — the shadows vanished silently and read as random lighting. **What
+   * would make it wrong** is a scene whose shadows are too coarse to show at their full length;
+   * there a reach of the length that looks right is the setting, and the map around the viewer
+   * (`computeLightMatrix`) the better fix.
+   */
   readonly directionalShadowMaxDistance: number;
-  /** Maximum horizontal projection per vertical metre before low-angle shadows vanish. */
+  /**
+   * How low the sun may stand before its shadows fade, as the ground a metre of height may shadow:
+   * the sun's horizontal reach per vertical metre, so 1 is 45° of elevation and 60 about 1°. Every
+   * sun shadow fades from 65% of this to all of it.
+   *
+   * **60 since 4.13.0: shadows hold until the sun is about a degree above the horizon**, the
+   * stretch of a day when they are longest and most worth seeing. **What it gives up**: a sun on
+   * the horizon throws shadows kilometres long that a map can hold only as stripes, and the
+   * last degree is where they fade rather than show. It was 3 until 4.13.0, which dropped every
+   * sun shadow below about 18° — an evening without shadows. **What would make it wrong** is a
+   * scene whose low sun streaks; a smaller number here is the setting, at the cost of the
+   * shadows going earlier in the evening.
+   */
   readonly directionalShadowMaxSlope: number;
   /**
    * Metres a point light may drift from where its shadow was baked before re-baking.
@@ -958,7 +997,7 @@ export const DIRECTIONAL_SHADOW_FADE_START = 0.65;
  * six times, while the directional map spends all of it on one focused area.
  */
 export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
-  outputTransform: 'none',
+  outputTransform: 'srgb',
   outputExposure: 1,
   pointLightFalloff: 'smooth',
   /**
@@ -1006,8 +1045,8 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   glassShadows: 'full',
   pipelineCompile: 'wait',
   skinScattering: 'pre-integrated',
-  directionalShadowMaxDistance: 6,
-  directionalShadowMaxSlope: 3,
+  directionalShadowMaxDistance: 1000,
+  directionalShadowMaxSlope: 60,
   pointShadowRebakeDistance: 0.001,
   pointShadowFacesPerFrame: 2,
   /*

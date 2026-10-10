@@ -74,9 +74,14 @@ export class FlockRenderer {
     tint: Vec3,
     windX = 0,
     windZ = 0,
+    outputTransform = 0,
+    outputExposure = 1,
   ): void {
     const u = this.uniforms;
     gl.useProgram(this.program);
+    /* The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
     gl.uniformMatrix4fv(u['uViewProj'] ?? null, false, camera.viewProjection);
     /*
      * No `uCameraPos` here, and the shader no longer declares one. It fed the banking that

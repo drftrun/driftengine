@@ -16,6 +16,7 @@ import {
   frustumFromViewProjection,
   mulberry32,
   projectionScaleOf,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshData, MeshHandle, Vec3 } from '@driftengine/core';
 import { createReadout } from '../common/readout';
@@ -152,7 +153,7 @@ const env = createEnvironment({
   fogColor: [0.55, 0.62, 0.72],
   fogDensity: 0.0008,
 });
-const SKY: Vec3 = [0.55, 0.62, 0.72];
+const SKY = srgbColor(0.55, 0.62, 0.72);
 const frustum = new Float32Array(24);
 const eye = new Float32Array(3);
 const shown = [0, 0, 0];

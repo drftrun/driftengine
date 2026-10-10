@@ -15,6 +15,7 @@ import {
   createEnvironment,
   createPointLightBuffer,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { MeshHandle, PointLightSource, Vec3 } from '@driftengine/core';
 import { ORGANIC } from '@driftengine/chemistry/library/organic';
@@ -32,6 +33,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as campScript from './camp.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.02, 0.025, 0.04);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -375,7 +379,7 @@ stage.run(
       env.lightRadii = chosen.radii;
       env.lightSourceRadii = chosen.sourceRadii;
       env.lightWeights = chosen.weights;
-      renderer.beginFrame([0.02, 0.025, 0.04]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, env);
       renderer.drawMesh(stoneMesh, IDENTITY);
       renderer.drawMesh(emberMesh, IDENTITY);

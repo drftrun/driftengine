@@ -20,6 +20,7 @@ import {
   computeLightMatrix,
   createEnvironment,
   createLineSegments,
+  srgbColor,
 } from '@driftengine/core';
 import { bindModule, registerEntityModule } from '@driftengine/script';
 import type { ComponentRegistry } from '@driftengine/script';
@@ -27,6 +28,9 @@ import { loadModule, patchModule } from 'driftscript';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
 import * as pondScript from './pond.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.12, 0.1, 0.18);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -247,7 +251,7 @@ stage.run({
       for (const model of frogModels) sink.mesh(frogMesh, model);
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.12, 0.1, 0.18]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(sceneryMesh, IDENTITY);
     renderer.drawMesh(reedMesh, IDENTITY);

@@ -1,3 +1,4 @@
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 /**
  * Birds: two triangles each, circling on a path computed entirely in the vertex
  * shader.
@@ -96,8 +97,10 @@ precision highp float;
 in float vShade;
 uniform vec3 uTint;
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 void main() {
-  outColor = vec4(uTint * vShade, 1.0);
+  /* Graded where nothing after this will grade it, as every pass is. */
+  outColor = vec4(applyOutputTransform(uTint * vShade), 1.0);
 }
 `;

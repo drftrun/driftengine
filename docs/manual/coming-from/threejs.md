@@ -52,6 +52,9 @@ renderer.setAnimationLoop((time) => {
 The same program here:
 
 ```ts sample=snippets/coming-from.ts#program
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.3, 0.3, 0.7);
+
 /** A lit box on a canvas, turning. Every piece is a value the program holds. */
 export async function spinningBox(canvas: HTMLCanvasElement): Promise<void> {
   /* WebGPU where the browser has it, WebGL2 where it does not; `backend` says which. */
@@ -91,7 +94,7 @@ export async function spinningBox(canvas: HTMLCanvasElement): Promise<void> {
       node.setRotationAxisAngle(0, 1, 0, previous + (angle - previous) * alpha);
       node.updateWorld();
       camera.updateMatrices(canvas.width / Math.max(1, canvas.height));
-      renderer.beginFrame([0.3, 0.3, 0.7]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(camera, environment);
       renderer.drawMesh(box, node.worldMatrix);
       renderer.endFrame();

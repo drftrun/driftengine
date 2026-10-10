@@ -112,21 +112,13 @@ async function main(): Promise<void> {
   const sunShadow = asked.get('sunshadow') === '0' ? 0 : 0.95;
 
   /*
-   * **The surfaces' own shadows reach as far as the medium's do, which they do not by default.**
-   *
-   * `directionalShadowMaxDistance` is 6 m: a surface shadow fades out once its caster is further
-   * than that along the ground, because a shadow map's resolution and its bias are both tuned for
-   * contact and a distant one is unreliable. The medium's lookup has no such fade — a shaft
-   * through a high window is the whole point of the feature, and it is long-range by nature.
-   *
-   * The two disagreeing is what this page photographed first: a clean shaft standing in the air
-   * over a floor that showed no shadow at all, because the ceiling nine metres up was past the
-   * surfaces' reach and not past the march's. It is a real property of the engine rather than a
-   * defect in either half, and it is recorded in `docs/IMPROVEMENTS.md`. Here the surfaces are
-   * simply told to reach as far, so that what the air says and what the floor says agree and a
-   * measurement of one is not confounded by the other.
+   * **The surfaces' own shadows reach as far as the medium's do**, by default since 4.13.0, whose
+   * `directionalShadowMaxDistance` is 1,000 m. It was 6 m before, and the two disagreeing is what
+   * this page photographed first: a clean shaft standing in the air over a floor that showed no
+   * shadow at all, because the ceiling nine metres up was past the surfaces' reach and not past the
+   * march's. `docs/IMPROVEMENTS.md` records it; this page set its own 40 m until the default did.
    */
-  const quality = { ...askedQuality(), directionalShadowMaxDistance: 40 };
+  const quality = askedQuality();
   const created = await createRenderer(canvas, quality, DEV_RENDERER);
   /* Pipelines compiled before the first frame rather than inside it; on WebGPU
      `createRenderPipeline` defers the shader to the first draw. Engine 1.4.2. */

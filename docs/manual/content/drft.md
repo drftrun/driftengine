@@ -12,7 +12,7 @@ and index arrays sit in the file at the alignment a GPU takes, so reading one is
 over the bytes, with nothing parsed and nothing copied. Its pictures are inside it, so a level is
 one fetch and cannot half load. And a file written today opens in every reader to come.
 
-`@driftengine/drft` reads and writes the container and depends on nothing; it is 14.0 KB gzipped.
+`@driftengine/drft` reads and writes the container and depends on nothing; it is 14.3 KB gzipped.
 `DrftLoader`, in `@driftengine/assets`, streams one onto the screen. The
 [models example](importing-models.md) writes a container in a worker and streams it with that
 loader.

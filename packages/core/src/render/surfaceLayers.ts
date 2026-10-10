@@ -112,8 +112,8 @@ export interface SurfaceLayers<Texture> {
    * layers and any mask or added mask the array carries — darkening the surface by a strength from 0
    * to 1: the large shading of a cliff that layers repeating across it cannot carry, as
    * `meshNormal` carries its shape. A number is that strength, darkening the blended colour; the
-   * object form also chooses what it darkens and the range its red is spread over. Absent or 0:
-   * none.
+   * object form also chooses what it darkens, the colour and the ambient light at strengths of their
+   * own, and the range its red is spread over. Absent or 0: none.
    */
   readonly meshOcclusion?: number | SurfaceMeshOcclusion;
 }

@@ -52,7 +52,11 @@ test('a sprite lands where the script put it, on the texture it named', () => {
   expect(batch.instances[13]).toBe(20);
 });
 
-test('a tint reaches the instance rather than being dropped on the way', () => {
+/*
+ * A tint is picked for the screen and reaches the instance decoded, alpha as given: 0.25, 0.5 and
+ * 0.75 are 0.050876, 0.214041 and 0.522522 by ((c + 0.055) / 1.055) ^ 2.4.
+ */
+test('a tint reaches the instance decoded rather than being dropped on the way', () => {
   const api = spritesImplementation() as Record<string, (...args: never[]) => unknown>;
   const batch = createSpriteBatch(8);
   (
@@ -68,8 +72,12 @@ test('a tint reaches the instance rather than being dropped on the way', () => {
       b2: number,
       a: number,
     ) => void
-  )(batch, 0, 0, 0, 1, 1, 0.25, 0.5, 0.75, 1);
-  expect(Array.from(batch.instances.subarray(8, 12))).toEqual([0.25, 0.5, 0.75, 1]);
+  )(batch, 0, 0, 0, 1, 1, 0.25, 0.5, 0.75, 0.5);
+  const [r, g, b, a] = Array.from(batch.instances.subarray(8, 12));
+  expect(r).toBeCloseTo(0.050876, 5);
+  expect(g).toBeCloseTo(0.214041, 5);
+  expect(b).toBeCloseTo(0.522522, 5);
+  expect(a).toBe(0.5);
 });
 
 test('a frame draws from the sheet its own texture is on, not from slot zero', () => {

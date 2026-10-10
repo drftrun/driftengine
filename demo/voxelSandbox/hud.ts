@@ -16,7 +16,7 @@ import {
   DEFAULT_TEXT_STYLE,
   textHeightPx,
   type RendererApi,
-  type Vec3,
+  srgbColor,
 } from '../../packages/core/src/index';
 
 import { Block, blockDef, HOTBAR } from './blocks';
@@ -24,10 +24,10 @@ import { hotbarLayout, slotLeft } from './hotbarLayout';
 
 type TextHandle = ReturnType<RendererApi['createText']>;
 
-const PANEL_DIM: Vec3 = [0.04, 0.05, 0.08];
-const CROSSHAIR: Vec3 = [0.94, 0.95, 0.98];
-const TEXT_DIM: Vec3 = [0.72, 0.77, 0.86];
-const TEXT_BRIGHT: Vec3 = [1, 0.92, 0.62];
+const PANEL_DIM = srgbColor(0.04, 0.05, 0.08);
+const CROSSHAIR = srgbColor(0.94, 0.95, 0.98);
+const TEXT_DIM = srgbColor(0.72, 0.77, 0.86);
+const TEXT_BRIGHT = srgbColor(1, 0.92, 0.62);
 
 /** How long a toast stays up, in seconds. */
 const TOAST_SEC = 2.4;

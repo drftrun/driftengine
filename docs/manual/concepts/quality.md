@@ -51,11 +51,20 @@ what it changes. The full list, with what each option costs, is in the reference
 
 ## The tone curve, first
 
-The default output transform is `'none'`: values above 1 clip flat. A scene with bright lamps in dark
-surroundings then reads as dark, muddy and desaturated, which sounds like a lighting problem, so
-lighting is where people look. **Try `outputTransform: 'aces'` with an `outputExposure` before you
-touch a single light.** `'srgb'` is the third choice, a plain transfer with no tone curve. The
-default stays `'none'` only so that no existing game changes.
+The default output transform is `'srgb'`: the renderer lights in linear values and encodes them for
+the screen at the end, as the display expects, so a model reads as it does in any other engine. It
+has no tone curve, so a channel above 1 clips on its own and a bright coloured light goes to white.
+**`'aces'` with an `outputExposure` rolls those highlights off**, and is what the examples use.
+`'none'` writes values as they are computed, which reads as dark and muddy unless every colour in
+the world was chosen under it; it was the default until 4.13.0, and a game made then says it.
+
+Every pass applies the transform where nothing after it will, and the clear colour with them, so
+every colour the renderer draws means the same thing. A colour picked by eye is a display value, so
+it goes through `srgbColor(r, g, b)`, and a mesh whose colours were picked by eye is built with
+`build({ colorSpace: 'srgb' })`; either gives back exactly the colour picked where a surface is lit
+at 1. Text, panels and the 2D layer take the screen encode and not the tone curve, so their colours
+come out exactly as picked under any transform, and `@driftengine/ui2d` decodes a theme's hex tokens
+for you. A light's intensity is an amount rather than a look, and stays as it is.
 
 ## Resolution
 

@@ -86,7 +86,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | Function | Signature | Deterministic | What it does |
 |---|---|---|---|
 | `sprite` | `fn(batch: SpriteBatch, texture: i32, x: f32, y: f32, w: f32, h: f32) -> void` | no | Put one quad in the batch, covering the whole of a texture. |
-| `tinted` | `fn(batch: SpriteBatch, texture: i32, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> void` | no | The same, multiplied by a colour. |
+| `tinted` | `fn(batch: SpriteBatch, texture: i32, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32, a: f32) -> void` | no | The same, multiplied by a colour picked for the screen: sRGB, 0 to 1, decoded to linear as a tint on a node is, with alpha kept as given. |
 | `frame` | `fn(batch: SpriteBatch, sheet: SpriteSheet, frame: i32, x: f32, y: f32, w: f32, h: f32) -> void` | no | Put one frame of a sheet in the batch. |
 | `named` | `fn(sheet: SpriteSheet, name: String) -> i32` | yes | The index a name has in a sheet, or -1. |
 | `frames` | `fn(sheet: SpriteSheet) -> i32` | yes | How many frames the sheet was cut into. |
@@ -559,7 +559,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `visible` | `fn(tree: UiTree, name: String) -> bool` | yes | Whether a node is shown. |
 | `show` | `fn(tree: UiTree, name: String, visible: bool) -> void` | no | Show or hide a node and everything under it. |
 | `setText` | `fn(tree: UiTree, name: String, text: String) -> void` | no | Change what a node says. |
-| `tint` | `fn(tree: UiTree, name: String, r: f32, g: f32, b: f32, a: f32) -> void` | no | Change a node's background colour. |
+| `tint` | `fn(tree: UiTree, name: String, r: f32, g: f32, b: f32, a: f32) -> void` | no | Change a node's background colour, given as picked for the screen: sRGB, 0 to 1, decoded here to the linear light the renderer draws, as a theme's hex token is. |
 | `hovered` | `fn(tree: UiTree, name: String) -> bool` | no | Whether the pointer is over a node. |
 | `pressed` | `fn(tree: UiTree, name: String) -> bool` | no | Whether the pointer went down on a node and has not come up. |
 | `focused` | `fn(tree: UiTree, name: String) -> bool` | no | Whether a node has the keyboard. |

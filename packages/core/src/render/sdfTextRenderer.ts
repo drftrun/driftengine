@@ -112,7 +112,7 @@ export class SdfTextRenderer {
    */
   /**
    * `outputTransform` and `outputExposure` come from the renderer rather than from here, because
-   * whether this pass grades depends on whether anything after it will. See `Renderer.gradeCode`.
+   * whether this pass grades depends on whether anything after it will. See `passGrade.ts`.
    */
   draw(
     viewProj: ReadonlyMat4,

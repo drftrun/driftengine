@@ -160,10 +160,11 @@ describe("a button's colour", () => {
     expect(paintButton(toggle, theme)).toBe(0x2060c0ff);
   });
 
-  it('writes the colour into the node, so a caller does not', () => {
+  /* Decoded, as every hex token is: 0x30 is 0.188235, and ((0.188235 + 0.055) / 1.055) ^ 2.4. */
+  it('writes the colour into the node, decoded, so a caller does not', () => {
     const button = laidOut(createButton({ label: 'Save', width: 100, height: 20 }));
     paintButton(button, theme);
-    expect(button.node.background?.[0]).toBeCloseTo(0x30 / 255, 6);
+    expect(button.node.background?.[0]).toBeCloseTo(0.029557, 6);
     expect(button.node.background?.[3]).toBe(1);
   });
 });

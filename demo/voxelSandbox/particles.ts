@@ -16,6 +16,7 @@ import {
   type Environment,
   type RendererApi,
   type Vec3,
+  srgbColor,
 } from '../../packages/core/src/index';
 
 import { blockColor } from './blocks';
@@ -70,7 +71,8 @@ export class Particles {
    * but a counter is smaller than reaching for one.
    */
   burst(x: number, y: number, z: number, blockId: number): void {
-    const colour = blockColor(blockId);
+    /* A block's colour is picked by eye; the particles light it as linear. */
+    const colour = srgbColor(...blockColor(blockId));
     this.tint[0] = colour[0];
     this.tint[1] = colour[1];
     this.tint[2] = colour[2];

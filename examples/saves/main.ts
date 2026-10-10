@@ -16,6 +16,7 @@ import {
   createEnvironment,
   defaultSaveTimer,
   defaultStore,
+  srgbColor,
 } from '@driftengine/core';
 import type { PreferenceSchema, SaveBackend } from '@driftengine/core';
 import {
@@ -33,6 +34,9 @@ import { createReadout } from '../common/readout';
 import { exported } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as gardenScript from './garden.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.68, 0.82);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -337,7 +341,7 @@ stage.run({
       if (plant !== undefined) drawPlants((matrix) => sink.mesh(plant, matrix));
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.55, 0.68, 0.82]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(soil, identity);
     if (plant !== undefined) drawPlants((matrix) => renderer.drawMesh(plant, matrix));

@@ -44,10 +44,10 @@ let plateStyle: TextStyle = DEFAULT_TEXT_STYLE;
 let keyStyle: TextStyle = DEFAULT_TEXT_STYLE;
 function restyle(size: number): void {
   cell = size;
-  titleStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [1, 0.85, 0.35], glow: 1 };
-  bodyStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.8, 0.84, 0.92] };
-  plateStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: [0.9, 0.9, 0.95] };
-  keyStyle = { ...plateStyle, color: [0.08, 0.09, 0.12] };
+  titleStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(1, 0.85, 0.35), glow: 1 };
+  bodyStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(0.8, 0.84, 0.92) };
+  plateStyle = { ...DEFAULT_TEXT_STYLE, cellSize: size, color: srgbColor(0.9, 0.9, 0.95) };
+  keyStyle = { ...plateStyle, color: srgbColor(0.08, 0.09, 0.12) };
 }
 ```
 
@@ -64,7 +64,7 @@ const left = Math.round(width * 0.06);
 const baseline = Math.round(height * 0.18);
 renderer.fillPanel(
   { left: left - cell * 3, top: baseline - cell * 10, width: cell * 72, height: cell * 22 },
-  [0.14, 0.16, 0.22],
+  PANEL,
   0.8,
 );
 renderer.drawText(title, width, height, left, baseline, titleStyle, seconds);
@@ -91,14 +91,17 @@ baseline-relative cells the glyphs use. A row of block glyphs would come out str
 whole glyph widths. Draw the plate first and the word over it.
 
 Overlays may be drawn before `endFrame`, as here, or after it, over the presented frame, on both
-backends.
+backends. Text and panels are encoded for the screen and never put through a tone curve or an
+exposure, so a colour picked by eye goes through `srgbColor` and comes out exactly as picked under
+any `outputTransform`. Under `hdrScene` an overlay drawn before `endFrame` is part of the picture the
+resolve tone maps; draw it after `endFrame` to keep it as picked.
 
 ## A portrait in a box
 
 ```ts sample=overlay-text/main.ts#inset
 /* A box in the corner with its own camera and its own backdrop, drawn into the same frame. */
 const box = { left: width - 220, top: 24, width: 196, height: 196 };
-const aspect = renderer.beginInset(box, [0.1, 0.12, 0.16]);
+const aspect = renderer.beginInset(box, INSET_CLEAR);
 gemNode.setRotationAxisAngle(0, 1, 0, seconds);
 gemNode.updateWorld();
 portrait.updateMatrices(aspect);

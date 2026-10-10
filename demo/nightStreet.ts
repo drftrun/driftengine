@@ -42,6 +42,7 @@ import {
   createPointLightBuffer,
   createRenderer,
   selectPointLights,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   Environment,
@@ -236,7 +237,7 @@ function buildStreet(): MeshData {
   }
 
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 /**
@@ -271,7 +272,7 @@ function buildPavement(): MeshData {
     );
   }
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 function buildEnvironment(): Environment {
@@ -282,12 +283,12 @@ function buildEnvironment(): Environment {
   return createEnvironment({
     directionalDir: [-0.35, 0.86, 0.37],
     directionalColor: [0.02, 0.024, 0.04],
-    ambient: [0.05, 0.056, 0.08],
-    ambientGround: [0.015, 0.015, 0.02],
+    ambient: srgbColor(0.05, 0.056, 0.08),
+    ambientGround: srgbColor(0.015, 0.015, 0.02),
     emissiveGain: 1,
     nightFactor: 1,
     shadowStrength: 0.85,
-    fogColor: [0.024, 0.028, 0.042],
+    fogColor: srgbColor(0.024, 0.028, 0.042),
     fogDensity: 0.012,
     fogHeightFalloff: 0.05,
     fogBaseY: 0,

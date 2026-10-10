@@ -11,10 +11,13 @@
  * the composite as the same colour and a threshold of 1 finds nothing at all — so the lamp
  * below is emissive, and it only blooms once the range is kept.
  */
-import { MeshBuilder, SceneNode, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, SceneNode, createEnvironment, srgbColor } from '@driftengine/core';
 import type { RendererApi } from '@driftengine/core';
 import { controls, flag, openScene } from '../common/stage';
 import type { SceneHooks } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.04, 0.045, 0.07);
 
 /**
  * Dusk rather than the shared daylight, and that is a requirement rather than a mood.
@@ -95,7 +98,7 @@ function build(renderer: RendererApi): SceneHooks {
       lampNode.updateWorld();
 
       renderer.setBloom(bloomShare);
-      renderer.beginFrame([0.04, 0.045, 0.07]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(scene.camera, DUSK);
       renderer.drawMesh(huddle, still.worldMatrix);
       renderer.drawMesh(lamp, lampNode.worldMatrix);

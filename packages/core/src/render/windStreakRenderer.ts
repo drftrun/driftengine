@@ -86,6 +86,9 @@ export class WindStreakRenderer {
     tint: Vec3,
     /** True when the camera is below the waterline. */
     submerged = false,
+    /** The renderer's `passGrade`: the frame's, but none in a probe's face or a capture. */
+    outputTransform = 0,
+    outputExposure = 1,
   ): boolean {
     /* Chosen in `windStreakDraw.ts` so both backends show the same weather. */
     const settled = resolveWindStreaks(
@@ -111,6 +114,8 @@ export class WindStreakRenderer {
     gl.uniform1f(u['uCellSize'] ?? null, this.cellSize);
     gl.uniform1f(u['uTime'] ?? null, timeSeconds);
     gl.uniform3fv(u['uTint'] ?? null, tint);
+    gl.uniform1i(u['uOutputTransform'] ?? null, outputTransform);
+    gl.uniform1f(u['uOutputExposure'] ?? null, outputExposure);
 
     gl.enable(gl.BLEND);
     blendCovering(gl, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

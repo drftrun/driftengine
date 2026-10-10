@@ -19,9 +19,11 @@ covers: ['A world bigger than a float']
 - **Rotations are quaternions** on scene nodes and physics bodies, stored `x, y, z, w`.
 - **Matrices are column-major `Float32Array`s of sixteen**, the layout WebGPU, WebGL2 and gl-matrix
   all use. A translation is in elements 12, 13 and 14.
-- **Colours are RGB triples from 0 to 1**, written `[r, g, b]`. A light's colour may go above 1,
-  which means brighter than white. How the shaded result maps to the screen is the `outputTransform`
-  quality option, covered in [Render quality](quality.md).
+- **Colours are RGB triples from 0 to 1**, written `[r, g, b]`, and linear: the light they reflect
+  adds as light does. A light's colour may go above 1, which means brighter than white. A colour
+  picked by eye is a display value, so it is written `srgbColor(r, g, b)`. How the shaded
+  result maps to the screen is the `outputTransform` quality option, covered in
+  [Render quality](quality.md).
 
 ## Worlds bigger than a float
 

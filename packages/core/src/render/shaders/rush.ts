@@ -66,6 +66,12 @@ uniform float uReach;
  */
 uniform int uOutputTransform;
 uniform float uOutputExposure;
+/*
+ * Whether the scene arrives graded: 1 where the forward passes graded what they drew because this
+ * resolve does not (a frame without \`hdrScene\`), so a factor multiplied into it — the occlusion —
+ * is multiplied as an encoded pixel takes it. 0 where the scene is linear light and this grades it.
+ */
+uniform int uSceneGraded;
 /**
  * The \`filmic\` curve's eight constants, solved once a curve by \`resolveFilmicCurve\`: (slope, black
  * clip, white clip, toe scale) and (shoulder scale, toe match, straight match, shoulder match).
@@ -406,6 +412,8 @@ void main() {
    */
   float share = clamp(sampled.a, 0.0, 1.0);
   float ao = mix(1.0, textureLod(uAo, vUv + uAoOffset, 0.0).r, uAoStrength * share);
+  /* Darkening a graded pixel's light by a factor is darkening the pixel by that factor encoded. */
+  if (uSceneGraded != 0) ao = linearToSrgb(vec3(ao)).x;
 
   /*
    * Distance from the centre, corrected so the falloff is a circle on screen rather than

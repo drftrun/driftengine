@@ -15,6 +15,11 @@
  *     /layerLooks.html?mode=ambientsun `ambientocc` with that sun: the sun's share left as it was, so
  *                                      lighter at the left than `occludedsun`
  *     /layerLooks.html?mode=ranged     `occluded`, its red spread over 0.5 to 1: half dark at the left
+ *     /layerLooks.html?mode=bothsun    `ambientsun`, the colour darkened as well at strength 1: darker at
+ *                                      the left than `occludedsun`, the ambient's share taken twice
+ *     /layerLooks.html?mode=both0sun   `ambientsun` with the colour's strength 0: the same picture
+ *     /layerLooks.html?mode=colour2    `occluded` at the colour's strength 2: black over the left half,
+ *                                      rising from there to none at the right
  *     /layerLooks.html?mode=stretched  `plain`, red's repeat 4 across and 1 down: its checker stretched
  *     /layerLooks.html?mode=stretchedsame  red's repeat 4 across and 4 down: the same picture as `plain`
  *     /layerLooks.html?mode=flat       a sphere under a low sun, a flat normal map (the control)
@@ -27,6 +32,9 @@
  *                                      reflects, a metal's colour being its reflection
  *     /layerLooks.html?mode=dull       `flat`, its layer's specular 0: no highlight
  *     /layerLooks.html?mode=samespec   `flat`, its layer's specular 1, the vertices' own: the same picture
+ *     /layerLooks.html?mode=summed     `flat` as three layers summed, each a third of its colour and
+ *                                      its ORM, their weights adding to 3 and naming no specular: the
+ *                                      same picture, the surface's own specular once, not three times
  *
  * The sphere carries a full specular and draws with the physical highlight, so roughness has a
  * highlight to change: with neither, `glossy` and `matte` are the same picture, which is how the
@@ -124,6 +132,9 @@ async function main(): Promise<void> {
     'occludedsun',
     'ambientsun',
     'ranged',
+    'bothsun',
+    'both0sun',
+    'colour2',
     'stretched',
     'stretchedsame',
   ];
@@ -165,7 +176,13 @@ async function main(): Promise<void> {
           ? { into: 'ambient' }
           : MODE === 'ranged'
             ? { range: [0.5, 1] }
-            : undefined;
+            : MODE === 'bothsun'
+              ? { into: 'ambient', colorStrength: 1 }
+              : MODE === 'both0sun'
+                ? { into: 'ambient', colorStrength: 0 }
+                : MODE === 'colour2'
+                  ? { colorStrength: 2 }
+                  : undefined;
     const red: number | [number, number] =
       MODE === 'stretched' ? [4, 1] : MODE === 'stretchedsame' ? [4, 4] : 4;
     material = {
@@ -179,6 +196,30 @@ async function main(): Promise<void> {
         repeats: [1, red, 8],
         meshOcclusion: occlusion,
       },
+    };
+  } else if (MODE === 'summed') {
+    /*
+     * The sphere's white vertices weigh layers 1 to 3 at 1 each, so summed they take it all, the base
+     * none, and their shares add to 3. Everything a layer reads adds, so each is a third of `flat`'s:
+     * a third as bright, its occlusion a third (85 of 255) and its roughness spread over 0 to a
+     * third. Naming no specular, the surface's own is what is left to compare.
+     */
+    const grey = checker([200, 200, 200]);
+    const thirdOrm = paint(() => [85, 128, 0, 255]);
+    const third: SurfaceLayerLook = { tint: [1 / 3, 1 / 3, 1 / 3], roughness: [0, 1 / 3] };
+    material = {
+      ...arrays(
+        [grey, grey, grey, grey],
+        [neutral, thirdOrm, thirdOrm, thirdOrm],
+        [flat, flat, flat, flat],
+      ),
+      layers: {
+        mask: 'vertex',
+        repeats: [1, 1, 1, 1],
+        blend: 'sum',
+        looks: [null, third, third, third],
+      },
+      physicalSpecular: true,
     };
   } else {
     /* The sphere: one layer, its normal map flat or ridged, its look the mode's. */

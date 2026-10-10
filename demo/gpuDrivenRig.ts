@@ -23,10 +23,12 @@ import {
   Camera,
   GpuDrivenPass,
   StreamingScene,
-  streamingScene,
   createEnvironment,
   createRenderer,
+  decodeSrgbInPlace,
   programFromEncoded,
+  srgbColor,
+  streamingScene,
 } from '../packages/core/src/index';
 import type { MeshHandle } from '../packages/core/src/index';
 import type {
@@ -65,14 +67,14 @@ import type { DemoHandle, DemoStats } from './types';
 const SUN: [number, number, number] = [0.4, 0.66, 0.35];
 
 const SKY: SkyColors = {
-  top: [0.07, 0.11, 0.2],
-  horizon: [0.3, 0.36, 0.44],
-  deep: [0.02, 0.03, 0.06],
+  top: srgbColor(0.07, 0.11, 0.2),
+  horizon: srgbColor(0.3, 0.36, 0.44),
+  deep: srgbColor(0.02, 0.03, 0.06),
   sunDir: SUN,
-  sunColor: [1, 0.96, 0.88],
+  sunColor: srgbColor(1, 0.96, 0.88),
   sunAngularRadius: 0.005,
   moonDir: [-0.3, 0.6, -0.4],
-  moonColor: [0.5, 0.55, 0.7],
+  moonColor: srgbColor(0.5, 0.55, 0.7),
   moonAngularRadius: 0.006,
   moonPhase: 0.5,
   nightFactor: 0,
@@ -83,11 +85,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: SUN,
   directionalColor: [0.95, 0.9, 0.8],
-  ambient: [0.22, 0.26, 0.34],
-  ambientGround: [0.07, 0.06, 0.05],
+  ambient: srgbColor(0.22, 0.26, 0.34),
+  ambientGround: srgbColor(0.07, 0.06, 0.05),
   emissiveGain: 1,
   nightFactor: 0,
-  fogColor: [0.3, 0.36, 0.44],
+  fogColor: srgbColor(0.3, 0.36, 0.44),
   fogDensity: 0,
   fogHeightFalloff: 0.05,
   fogBaseY: 0,
@@ -271,6 +273,8 @@ function terrain(cells: number, extent: number, height: number, material: number
       out += 6;
     }
   }
+  /* Picked by eye: decoded to the linear values both pipelines light. */
+  decodeSrgbInPlace(colours);
   return { positions, normals, colours, indices, material };
 }
 
@@ -370,6 +374,7 @@ function box(
     indices[out + 4] = base + 3;
     indices[out + 5] = base + 2;
   }
+  decodeSrgbInPlace(colours);
   return { positions, normals, colours, uvs, indices, material };
 }
 
@@ -507,7 +512,7 @@ export function denseRig(): Rig {
   /* 708 cells is 1,002,528 triangles, which is the plan's "a dense mesh at a million". */
   return {
     meshes: [terrain(708, 20, 2.4, 0)],
-    materials: [{ tint: [1, 1, 1], emissive: 0 }],
+    materials: [{ tint: srgbColor(1, 1, 1), emissive: 0 }],
     distance: 34,
     pitch: 26,
     target: [0, 0, 0],
@@ -553,8 +558,8 @@ export function occlusionRig(): Rig {
   return {
     meshes,
     materials: [
-      { tint: [1, 1, 1], emissive: 0 },
-      { tint: [1, 1, 1], emissive: 0 },
+      { tint: srgbColor(1, 1, 1), emissive: 0 },
+      { tint: srgbColor(1, 1, 1), emissive: 0 },
     ],
     distance: 26,
     pitch: 12,
@@ -848,7 +853,7 @@ export function materialsRig(): Rig {
    * geometry the frame does not hold — so the boxes behind this panel are visible through it.
    */
   materials.push({
-    tint: [1, 1, 1],
+    tint: srgbColor(1, 1, 1),
     emissive: 0,
     roughness: 0.6,
     specular: 0,
@@ -877,7 +882,7 @@ export function materialsRig(): Rig {
    * exists to make visible — the box behind it is the measurement.
    */
   materials.push({
-    tint: [0.35, 0.65, 0.95],
+    tint: srgbColor(0.35, 0.65, 0.95),
     /*
      * **It glows a little, so it reads as glass rather than as absence.** The sun in this rig is on
      * the far side and the pane faces away from it, so at four tenths of a lit-by-ambient colour
@@ -893,7 +898,7 @@ export function materialsRig(): Rig {
 
   /* An ordinary picture, as one `SAMPLE_BLOCK` instruction. See `imageProgram`. */
   materials.push({
-    tint: [1, 1, 1],
+    tint: srgbColor(1, 1, 1),
     emissive: 0,
     roughness: 0.8,
     specular: 0,
@@ -1277,8 +1282,8 @@ class GpuDrivenHandle implements DemoHandle {
         : createEnvironment({
             directionalDir: sun,
             directionalColor: [0.95, 0.9, 0.8],
-            ambient: [0.22, 0.26, 0.34],
-            ambientGround: [0.07, 0.06, 0.05],
+            ambient: srgbColor(0.22, 0.26, 0.34),
+            ambientGround: srgbColor(0.07, 0.06, 0.05),
             emissiveGain: 1,
             /*
              * **One, so the materials rig's glowing boxes glow on both pipelines.** The forward
@@ -1287,7 +1292,7 @@ class GpuDrivenHandle implements DemoHandle {
              * It gates nothing else in the flat shader; the sky reads its own.
              */
             nightFactor: 1,
-            fogColor: [0.3, 0.36, 0.44],
+            fogColor: srgbColor(0.3, 0.36, 0.44),
             fogDensity: 0,
             fogHeightFalloff: 0.05,
             fogBaseY: 0,
@@ -1299,8 +1304,8 @@ class GpuDrivenHandle implements DemoHandle {
       /* No `time`: nothing this rig textures is animated, and the default is 0. */
       lightDir: sun,
       lightColour: [0.95, 0.9, 0.8],
-      ambient: [0.22, 0.26, 0.34],
-      ambientGround: [0.07, 0.06, 0.05],
+      ambient: srgbColor(0.22, 0.26, 0.34),
+      ambientGround: srgbColor(0.07, 0.06, 0.05),
       lodThreshold: 1.5,
       fovY: (this.camera.fovYDeg * Math.PI) / 180,
       /*
@@ -1503,7 +1508,10 @@ export async function mountRig(
      * untouched: at its default of zero no cube is allocated at all and `bakeReflectionProbe`
      * answers false. 256 is what `showroom` bakes at.
      */
-    { ...overrides, ...(rig.room === undefined ? {} : { reflectionProbeSize: 256 }) },
+    {
+      ...overrides,
+      ...(rig.room === undefined ? {} : { reflectionProbeSize: 256 }),
+    },
     /* No `pipeline` where the comparison asked for the first one: selecting `gpu-driven` and then
        drawing with the engine's verbs would be a scene claiming a pipeline it is not using. */
     forward ? { splash: false } : { splash: false, pipeline: 'gpu-driven' },

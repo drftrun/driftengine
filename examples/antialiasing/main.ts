@@ -11,10 +11,13 @@
  * looks broken without multisampling and fixed with it. Lean in — the difference is a pixel
  * wide, and a comparison you have to zoom into is still a real one.
  */
-import { MeshBuilder, SceneNode } from '@driftengine/core';
+import { MeshBuilder, SceneNode, srgbColor } from '@driftengine/core';
 import type { RendererApi } from '@driftengine/core';
 import { DAYLIGHT, controls, flag, openScene } from '../common/stage';
 import type { SceneHooks } from '../common/stage';
+
+/** The background, picked by eye like every colour here, and so stated through `srgbColor`. */
+const CLEAR = srgbColor(0.06, 0.07, 0.1);
 
 /*
  * Built once, held, and never rebuilt in the frame loop. A `SceneNode` per post is the cheap
@@ -35,15 +38,15 @@ still.updateWorld();
 /** What one renderer draws: a picket fence, each post leaning a little differently. */
 function build(renderer: RendererApi): SceneHooks {
   const posts = new MeshBuilder();
-  posts.addBox([0, -0.25, 0], [9, 0.25, 9], [0.32, 0.34, 0.38]);
+  posts.addBox([0, -0.25, 0], [9, 0.25, 9], srgbColor(0.32, 0.34, 0.38));
   const ground = renderer.createMesh(posts.build());
   const postMesh = new MeshBuilder();
-  postMesh.addBox([0, 1.6, 0], [0.09, 1.6, 0.09], [0.82, 0.84, 0.88]);
+  postMesh.addBox([0, 1.6, 0], [0.09, 1.6, 0.09], srgbColor(0.82, 0.84, 0.88));
   const post = renderer.createMesh(postMesh.build());
 
   return {
     render() {
-      renderer.beginFrame([0.06, 0.07, 0.1]);
+      renderer.beginFrame(CLEAR);
       renderer.bindMeshPass(scene.camera, DAYLIGHT);
       renderer.drawMesh(ground, still.worldMatrix);
       for (const node of fence) renderer.drawMesh(post, node.worldMatrix);

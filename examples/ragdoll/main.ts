@@ -7,7 +7,13 @@
  * ragdoll go: limp, or driven back toward the pose so it staggers and tries to stand. The flag and
  * the sheet are cloth; the sheet hands the crate the momentum it loses on it, so it pushes it.
  */
-import { MeshBuilder, computeLightMatrix, createEnvironment, hashToUnit } from '@driftengine/core';
+import {
+  MeshBuilder,
+  computeLightMatrix,
+  createEnvironment,
+  hashToUnit,
+  srgbColor,
+} from '@driftengine/core';
 import type { MeshData, MeshHandle, Vec3 } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
@@ -20,6 +26,9 @@ import {
 } from '@driftengine/physics';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.58, 0.64, 0.72);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -352,7 +361,7 @@ stage.run({
     renderer.beginShadowPass(lightMatrix, 'static');
     renderer.drawShadowCasters((sink) => drawAll((mesh, matrix) => sink.mesh(mesh, matrix)));
     renderer.endShadowPass();
-    renderer.beginFrame([0.58, 0.64, 0.72]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     drawAll((mesh, matrix) => renderer.drawMesh(mesh, matrix));
     readout.set(0, `${doll.boneCount} BONES  SHOVE ${shoves}`);

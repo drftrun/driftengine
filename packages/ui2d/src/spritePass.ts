@@ -1,5 +1,6 @@
 /** The 2D layer as a pass a consumer registers: one batch of quads, drawn where the caller says. */
 
+import { interfaceGrade } from '@driftengine/core';
 import type { PassContext, PassDefinition, PassDevice } from '@driftengine/core';
 
 import { SPRITE_BINDINGS } from './shaders/generated/sprite.wgsl.ts';
@@ -191,8 +192,8 @@ export function createSpritePass(options: SpritePassOptions = {}): SpritePass {
           batch,
           toNdc,
           clipCorrection,
-          ctx.outputTransform,
-          ctx.outputExposure,
+          interfaceGrade(ctx.outputTransform),
+          1,
         );
         return;
       }
@@ -205,8 +206,11 @@ export function createSpritePass(options: SpritePassOptions = {}): SpritePass {
       f[VERT.fields.uToNdc1.offset / 4] = toNdc[4] as number;
       f[VERT.fields.uToNdc1.offset / 4 + 1] = toNdc[5] as number;
       f.set(clipCorrection, VERT.fields.uClipCorrection.offset / 4);
-      gpu.fragmentInts[FRAG.fields.uOutputTransform.offset / 4] = ctx.outputTransform;
-      gpu.fragmentFloats[FRAG.fields.uOutputExposure.offset / 4] = ctx.outputExposure;
+      /* A 2D layer is painted for the screen: encoded, never put through the scene's curve. */
+      gpu.fragmentInts[FRAG.fields.uOutputTransform.offset / 4] = interfaceGrade(
+        ctx.outputTransform,
+      );
+      gpu.fragmentFloats[FRAG.fields.uOutputExposure.offset / 4] = 1;
       /*
        * Written from inside an open render pass, which is allowed and ordered: a queue write
        * issued now lands before the command buffer this pass is being recorded into is submitted.

@@ -962,7 +962,16 @@ export class GpuDrivenPass implements PassDefinition {
     shadowed: true,
     blended: false,
   };
-  private gradeWarned = false;
+  /**
+   * The frame's grade for the blit, `PassContext.outputTransform` and its exposure, and the code it
+   * was last written with, so a frame writes it only when it changes. See `present.wgsl.ts`.
+   */
+  private gradeBuffer: GPUBuffer | null = null;
+  private readonly gradeStaging = new ArrayBuffer(16);
+  private readonly gradeInts = new Int32Array(this.gradeStaging);
+  private readonly gradeFloats = new Float32Array(this.gradeStaging);
+  private gradeWrittenCode = Number.NaN;
+  private gradeWrittenExposure = Number.NaN;
 
   constructor(
     scene: StreamingScene,
@@ -2410,10 +2419,17 @@ export class GpuDrivenPass implements PassDefinition {
       ],
     });
 
+    this.gradeBuffer ??= device.createBuffer({
+      label: 'gpu-driven blit grade',
+      size: this.gradeStaging.byteLength,
+      usage: UNIFORM | COPY_DST,
+    });
+    this.gradeWrittenCode = Number.NaN;
     this.blitGroup = device.createBindGroup({
       layout: (this.blitPipeline as GPURenderPipeline).getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: this.colourView as GPUTextureView },
+        { binding: 2, resource: { buffer: this.gradeBuffer } },
         /* The depth the raster wrote, sampled so the blit can hand it to the frame. */
         ...(this.presentDepth
           ? [
@@ -3429,18 +3445,16 @@ export class GpuDrivenPass implements PassDefinition {
     /* The same gate as `prepare`: an unanswered or refused pipeline set encodes nothing at all. */
     if (!this.usable) return;
     if (this.blitPipeline === null || this.blitGroup === null) return;
-    if (ctx.outputTransform !== 0 && !this.gradeWarned) {
-      this.gradeWarned = true;
-      /*
-       * The pass writes linear light and expects a composite to grade it. A frame with no
-       * composite grades per pass, and applying the curve here would be a second copy of it —
-       * which is the thing `SHADE_MATERIAL_WGSL` is built to avoid. Said once, out loud, because
-       * a silently ungraded frame is a difference somebody would attribute to the pipeline.
-       */
-      console.warn(
-        '[driftengine] the gpu-driven pass writes linear light and this frame has no composite ' +
-          'to grade it, so the picture will be flat. Use a quality profile with a scene target.',
-      );
+    /* The frame's grade, written when it changes: 0 where the resolve grades. See present.wgsl.ts. */
+    const changed =
+      ctx.outputTransform !== this.gradeWrittenCode ||
+      ctx.outputExposure !== this.gradeWrittenExposure;
+    if (changed && this.device !== null && this.gradeBuffer !== null) {
+      this.gradeWrittenCode = ctx.outputTransform;
+      this.gradeWrittenExposure = ctx.outputExposure;
+      this.gradeInts[0] = ctx.outputTransform;
+      this.gradeFloats[1] = ctx.outputExposure;
+      this.device.queue.writeBuffer(this.gradeBuffer, 0, this.gradeStaging);
     }
     ctx.pass.setPipeline(this.blitPipeline);
     ctx.pass.setBindGroup(0, this.blitGroup);
@@ -3452,6 +3466,8 @@ export class GpuDrivenPass implements PassDefinition {
     this.scene.detach();
     if (device.backend !== 'webgpu') return;
     this.disposeTargets();
+    this.gradeBuffer?.destroy();
+    this.gradeBuffer = null;
     this.shadowTexture?.destroy();
     this.glassTintTexture?.destroy();
     this.glassTintNone?.destroy();

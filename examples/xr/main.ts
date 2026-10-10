@@ -18,6 +18,7 @@ import {
   createEnvironment,
   createPointLightBuffer,
   selectPointLights,
+  srgbColor,
 } from '@driftengine/core';
 import type { PointLightSource } from '@driftengine/core';
 import type { XrRuntime } from '@driftengine/script';
@@ -38,6 +39,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as headsetScript from './headset.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.05, 0.055, 0.07);
 
 const stage = await openStage({ outputTransform: 'aces', sceneSamples: 4 });
 const { renderer, camera } = stage;
@@ -347,7 +351,7 @@ stage.run({
     env.lightSourceRadii = chosen.sourceRadii;
     env.lightWeights = chosen.weights;
 
-    renderer.beginFrame([0.05, 0.055, 0.07]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(room, still.worldMatrix);
     renderer.drawMesh(

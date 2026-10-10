@@ -331,29 +331,35 @@ describe('the sprite pass on WebGL2', () => {
     expect(zeroth.map((call) => call.args[5])).toEqual([0, 14 * 4]);
   });
 
-  it("hands the frame's own grade to the shader", () => {
+  /*
+   * **A 2D LAYER TAKES THE FRAME'S SCREEN ENCODE AND NEVER ITS CURVE.** Handed `aces` (2) at an
+   * exposure of 1.5, it encodes (1) at 1: a sheet painted for the screen comes out as painted, where
+   * the curve made a menu's white text grey and crushed its dark panels. Where the frame does not
+   * grade at all (0), neither does the layer.
+   */
+  it("A 2D LAYER TAKES THE FRAME'S SCREEN ENCODE AND NEVER ITS CURVE", () => {
     const { pass, gl, calls } = registered();
     pass.setTexture(0, IMAGE);
-    drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
-    calls.length = 0;
-    pass.draw({
-      backend: 'webgl2',
-      gl,
-      outputTransform: 2,
-      outputExposure: 1.5,
-      sceneColor: null,
-      sceneDepth: null,
-    });
-    const ints = named(calls, 'uniform1i').map((call) => [
-      (call.args[0] as { name: string }).name,
-      call.args[1],
+    const drawn = (outputTransform: number): unknown[][] => {
+      drawSprite(pass.batch, 0, { x: 0, y: 0, w: 1, h: 1 }, null, null);
+      calls.length = 0;
+      pass.draw({
+        backend: 'webgl2',
+        gl,
+        outputTransform,
+        outputExposure: 1.5,
+        sceneColor: null,
+        sceneDepth: null,
+      });
+      return [...named(calls, 'uniform1i'), ...named(calls, 'uniform1f')]
+        .map((call) => [(call.args[0] as { name: string }).name, call.args[1]])
+        .filter(([name]) => name === 'uOutputTransform' || name === 'uOutputExposure');
+    };
+    expect(drawn(2)).toEqual([
+      ['uOutputTransform', 1],
+      ['uOutputExposure', 1],
     ]);
-    expect(ints).toContainEqual(['uOutputTransform', 2]);
-    const floats = named(calls, 'uniform1f').map((call) => [
-      (call.args[0] as { name: string }).name,
-      call.args[1],
-    ]);
-    expect(floats).toContainEqual(['uOutputExposure', 1.5]);
+    expect(drawn(0)).toContainEqual(['uOutputTransform', 0]);
   });
 
   it('uploads the affine it was given, as two vec4s', () => {

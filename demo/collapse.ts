@@ -39,6 +39,7 @@ import {
   createRenderer,
   moveAxis,
   mulberry32,
+  srgbColor,
 } from '../packages/core/src/index';
 import type {
   Body,
@@ -169,7 +170,7 @@ function buildRamp(): { mesh: MeshData; colliders: Collider[] } {
   }
 
   builder.setRoughness(null);
-  return { mesh: builder.build(), colliders };
+  return { mesh: builder.build({ colorSpace: 'srgb' }), colliders };
 }
 
 /** One ball, centred on its own origin so an instance transform is a translation. */
@@ -187,7 +188,7 @@ function buildBall(color: Vec3): MeshData {
   // in the frame, and every one of them is in the shadow pass as well.
   builder.addSphere([0, 0, 0], BALL_R, color, 0, 16, 8);
   builder.setRoughness(null);
-  return builder.build();
+  return builder.build({ colorSpace: 'srgb' });
 }
 
 const PROFILES: Readonly<Record<DemoBudget, RenderQualityOptions>> = {
@@ -291,17 +292,17 @@ class CollapseHandle implements DemoHandle {
       ambientGround: [0.2, 0.19, 0.18],
       emissiveGain: 0,
       nightFactor: 0,
-      fogColor: [0.62, 0.65, 0.7],
+      fogColor: srgbColor(0.62, 0.65, 0.7),
       fogDensity: 0.006,
       fogHeightFalloff: 0.02,
       fogBaseY: 0,
     });
     this.sky = {
-      top: [0.24, 0.38, 0.62],
-      horizon: [0.68, 0.72, 0.77],
-      deep: [0.16, 0.27, 0.5],
+      top: srgbColor(0.24, 0.38, 0.62),
+      horizon: srgbColor(0.68, 0.72, 0.77),
+      deep: srgbColor(0.16, 0.27, 0.5),
       sunDir: this.env.directionalDir,
-      sunColor: [1, 0.95, 0.84],
+      sunColor: srgbColor(1, 0.95, 0.84),
       sunAngularRadius: 0.0046,
       moonDir: [0, -1, 0],
       moonColor: [0, 0, 0],

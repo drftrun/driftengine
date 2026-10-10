@@ -15,6 +15,7 @@ import {
   computeLightMatrix,
   createEnvironment,
   defaultStore,
+  srgbColor,
 } from '@driftengine/core';
 import type { Binding, GamepadButton, Vec3 } from '@driftengine/core';
 import { patchModule } from 'driftscript';
@@ -22,6 +23,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as puckScript from './puck.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.13, 0.14, 0.18);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -365,7 +369,7 @@ stage.run({
       sink.mesh(puckMesh, model);
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.13, 0.14, 0.18]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(arenaMesh, IDENTITY);
     renderer.drawMesh(puckMesh, model);

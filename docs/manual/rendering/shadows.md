@@ -225,13 +225,15 @@ meshes](translucency.md) describes.
 | `directionalShadowMapSize`     | 2048     | The map's side, in texels. `renderer.shadowMapSize` reports it.                                         |
 | `shadowFilterTaps`             | 12       | Filter taps per shadow lookup, 4, 8 or 12, shared with point lights.                                    |
 | `directionalShadowDepthLayers` | 2        | 2 keeps the peel, 1 drops it.                                                                           |
-| `directionalShadowMaxDistance` | 6        | Metres of horizontal reach over which a shadow dissolves.                                               |
-| `directionalShadowMaxSlope`    | 3        | How long a shadow may get, in horizontal metres per vertical metre, before shadows fade with a low sun. |
+| `directionalShadowMaxDistance` | 1000     | How far a shadow may reach along the ground from its caster before it dissolves. Not a camera distance. |
+| `directionalShadowMaxSlope`    | 60       | How low the sun may stand, as horizontal metres per vertical metre, before shadows fade: 60 is 1°.      |
 | `glassShadows`                 | `'full'` | Coloured light through glass: `'full'`, `'half'` or `'off'`.                                            |
 
-Indoors, raise `directionalShadowMaxDistance`. Under a sun 30 degrees up, a ceiling four metres
-high throws its shadow about seven metres from itself, past the default, and a room whose ceiling
-shadow has dissolved is lit as if it had no roof.
+The defaults keep a shadow to the edge of its map, which fades it there, and keep shadows until the
+sun is about a degree above the horizon. Until 4.13.0 they were 6 and 3, which dissolved any shadow
+longer than six metres, so a building's walls cast nothing on its floor, and dropped every shadow
+below about 18° of sun. A scene whose long shadows streak at a low sun lowers
+`directionalShadowMaxSlope`, and gives up the evening's last shadows for it.
 
 There is no bias to tune. The filter follows the plane of the surface it lands on, so a grazing
 surface does not stripe itself, and a small fixed tolerance keeps contact shadows attached.

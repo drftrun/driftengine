@@ -297,8 +297,12 @@ along the view at grazing angles. 14.9% against 11.7%.
 
 ### The medium's shadow reaches further than a surface's, and the two disagree
 
+**Closed in 4.13.0 by the default, which is 1,000 metres now**: a surface shadow reaches as far as
+its map holds, as the medium's does, so the two agree unless a game shortens the reach. The rest is
+the record of the finding, under the old default.
+
 **Found on 2026-09-05 while building `demo/dev/medium.html`, and it is a property rather than a
-defect in either half.** `directionalShadowMaxDistance` is 6 metres: a _surface_ shadow fades out
+defect in either half.** `directionalShadowMaxDistance` was 6 metres: a _surface_ shadow fades out
 once its caster is further than that along the ground, because a shadow map's resolution and its
 bias are both tuned for contact and a distant shadow is unreliable. The global medium's `sunReach`
 has no such fade, because a shaft through a high window is the whole point of the feature and is

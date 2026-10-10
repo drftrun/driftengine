@@ -14,6 +14,7 @@
  *
  * Output is split by render mode so each batch can be drawn with the pipeline it needs.
  */
+import { decodeSrgbInPlace } from '../../packages/core/src/index';
 import type { MeshData } from '../../packages/core/src/index';
 
 import type { BlockAtlas, TileRect } from './atlas';
@@ -185,7 +186,8 @@ class Batch {
     return {
       positions: new Float32Array(this.pos),
       normals: new Float32Array(this.nrm),
-      colors: new Float32Array(this.col),
+      /* Shade and tint folded as a display value multiplies, so decoded as one: see `decodeSrgbInPlace`. */
+      colors: decodeSrgbInPlace(new Float32Array(this.col)),
       /* Block light, which is what survives nightfall — and is gated on the environment's
          `nightFactor`, so it stays invisible until the day-night clock drives one. */
       emissive: new Float32Array(this.emi),

@@ -7,12 +7,21 @@
  * film look are TypeScript, since a script reaches the render dials and not those. Every switch in
  * the strip changes the running scene.
  */
-import { MeshBuilder, SceneNode, createEnvironment, identityGradeLut } from '@driftengine/core';
+import {
+  MeshBuilder,
+  SceneNode,
+  createEnvironment,
+  identityGradeLut,
+  srgbColor,
+} from '@driftengine/core';
 import type { ColourGradeLut, RendererApi } from '@driftengine/core';
 import { patchModule } from 'driftscript';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as lensScript from './lens.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.3, 0.27, 0.3);
 
 // #region quality
 /** The ceilings: what each effect may cost. The per-frame dials below say how much of it to use. */
@@ -169,7 +178,7 @@ stage.run({
     renderer.setFilmGrain(0.025, Math.floor(time * 60));
     // #endregion
 
-    renderer.beginFrame([0.3, 0.27, 0.3]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(setMesh, still.worldMatrix);
     renderer.endFrame();

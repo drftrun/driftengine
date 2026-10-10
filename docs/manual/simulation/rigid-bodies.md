@@ -10,7 +10,7 @@ areas: ['physics']
 `@driftengine/physics` is a rigid-body world stepped on the fixed clock. It imports no other engine
 package, so a deterministic simulation runs with no renderer in its module graph: in Node, in a
 worker, or on a server holding the authoritative copy of a game. Core re-exports every name in it,
-so reaching for physics through the core barrel works as well. It costs 45.4 KB gzipped on its own.
+so reaching for physics through the core barrel works as well. It costs 47.0 KB gzipped on its own.
 
 The example is a wall of crates, a ramp with wheels, a capsule, a ball and a rock rolling down it,
 and a cannon firing at the wall. The cannon is a DriftScript module. The readout's fingerprint is

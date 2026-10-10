@@ -288,7 +288,7 @@ last = now;
 const timer = renderer.gpuTimer;
 timer.beginFrame();
 drawShadows();
-renderer.beginFrame([0.08, 0.09, 0.12]);
+renderer.beginFrame(CLEAR);
 timer.begin('rest');
 drawScene();
 timer.end();

@@ -25,6 +25,7 @@ import {
   type MeshData,
   type RendererApi,
   type Vec3,
+  decodeSrgbInPlace,
 } from '../../packages/core/src/index';
 
 import { blockDef } from './blocks';
@@ -823,7 +824,8 @@ function bakeBoxes(boxes: readonly BoxDef[]): MeshData {
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
-    colors: new Float32Array(colors),
+    /* Picked by eye, so decoded to the renderer's linear values. */
+    colors: decodeSrgbInPlace(new Float32Array(colors)),
     emissive: new Float32Array(positions.length / 3),
     indices: new Uint32Array(indices),
   };

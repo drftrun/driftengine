@@ -18,8 +18,9 @@ import {
   computeLightMatrix,
   createEnvironment,
   heightSurface,
+  srgbColor,
 } from '@driftengine/core';
-import type { MeshHandle, Vec3, WaterBody } from '@driftengine/core';
+import type { MeshHandle, WaterBody } from '@driftengine/core';
 import {
   BODY_DYNAMIC,
   BODY_STATIC,
@@ -304,14 +305,14 @@ const body = renderer.createMesh(
 const pond = renderer.createWater();
 const pondBody: WaterBody = {
   level: POND.level,
-  deepColor: [0.05, 0.12, 0.14],
-  shallowColor: [0.15, 0.3, 0.3],
+  deepColor: srgbColor(0.05, 0.12, 0.14),
+  shallowColor: srgbColor(0.15, 0.3, 0.3),
   density: 0.6,
   waveScale: 0.1,
   bounds: { centreX: POND.x, centreZ: POND.z, halfM: POND.half },
 };
 
-const SKY: Vec3 = [0.62, 0.7, 0.8];
+const SKY = srgbColor(0.62, 0.7, 0.8);
 const env = createEnvironment({
   directionalDir: [-0.4, 0.7, 0.45],
   directionalColor: [1.8, 1.7, 1.5],
@@ -396,9 +397,9 @@ function drawFrame(): void {
   renderer.drawSky(
     camera,
     {
-      top: [0.25, 0.42, 0.72],
+      top: srgbColor(0.25, 0.42, 0.72),
       horizon: SKY,
-      deep: [0.3, 0.34, 0.4],
+      deep: srgbColor(0.3, 0.34, 0.4),
       sunDir: env.directionalDir,
       sunColor: [1.8, 1.6, 1.3],
       sunAngularRadius: 0.02,

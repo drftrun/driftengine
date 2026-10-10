@@ -18,6 +18,7 @@ import {
   createRenderer,
   createVisitResult,
   frustumFromViewProjection,
+  srgbColor,
   visitVisible,
 } from '../packages/core/src/index';
 import type {
@@ -46,14 +47,14 @@ const RING_RADIUS = 34;
 const EYE_RADIUS = 9;
 
 const SKY: SkyColors = {
-  top: [0.07, 0.1, 0.18],
-  horizon: [0.3, 0.33, 0.4],
-  deep: [0.02, 0.03, 0.05],
+  top: srgbColor(0.07, 0.1, 0.18),
+  horizon: srgbColor(0.3, 0.33, 0.4),
+  deep: srgbColor(0.02, 0.03, 0.05),
   sunDir: [0.4, 0.6, 0.3],
-  sunColor: [1, 0.94, 0.82],
+  sunColor: srgbColor(1, 0.94, 0.82),
   sunAngularRadius: 0.005,
   moonDir: [-0.4, 0.5, -0.3],
-  moonColor: [0.5, 0.55, 0.7],
+  moonColor: srgbColor(0.5, 0.55, 0.7),
   moonAngularRadius: 0.006,
   moonPhase: 0.4,
   nightFactor: 0.55,
@@ -64,11 +65,11 @@ const SKY: SkyColors = {
 const ENV = createEnvironment({
   directionalDir: [0.4, 0.6, 0.3],
   directionalColor: [1, 0.96, 0.88],
-  ambient: [0.18, 0.2, 0.26],
-  ambientGround: [0.08, 0.08, 0.1],
+  ambient: srgbColor(0.18, 0.2, 0.26),
+  ambientGround: srgbColor(0.08, 0.08, 0.1),
   emissiveGain: 0,
   nightFactor: 0.55,
-  fogColor: [0.16, 0.18, 0.24],
+  fogColor: srgbColor(0.16, 0.18, 0.24),
   fogDensity: 0.004,
   fogHeightFalloff: 0.03,
   fogBaseY: 0,
@@ -108,7 +109,7 @@ class HierarchyHandle implements DemoHandle {
     this.renderer.resize();
     const builder = new MeshBuilder();
     builder.addBox([0, 0, 0], [0.8, 0.8, 0.8], [0.72, 0.74, 0.8]);
-    this.block = renderer.createMesh(builder.build());
+    this.block = renderer.createMesh(builder.build({ colorSpace: 'srgb' }));
 
     for (let tower = 0; tower < TOWERS; tower += 1) {
       const angle = (tower / TOWERS) * Math.PI * 2;

@@ -5,14 +5,23 @@
  * streamed onto the screen by `DrftLoader`: an outline first where the model is big enough to want
  * one, then the parts fading in a few a frame, then the finished model merged down to a draw per
  * material. A baked `.drft` fetched from a server takes the same path from its first byte; reading
- * a source format at load is for a file a person brings, and a bake is for a file you ship.
+ * a source format at load is for a file a person brings, and a bake is for a file you ship. A
+ * container made here is also larger than the baker's, since it neither quantises its vertices nor
+ * finds the meshes a model repeats: a 154 MB glTF scene comes to 197 MB here and bakes to 80 MB.
+ *
+ * The loader draws what it loaded, casts its shadows and fits the sun to it, each by the rules a
+ * container needs, so nothing below reads a part's fields.
  */
 import { DrftLoader, extensionOf, readerFor } from '@driftengine/assets';
 import type { DrftFit } from '@driftengine/assets';
-import { MeshBuilder, computeLightMatrix, createEnvironment } from '@driftengine/core';
+import { MeshBuilder, computeLightMatrix, createEnvironment, srgbColor } from '@driftengine/core';
+import type { ShadowCasters } from '@driftengine/core';
 import { createReadout } from '../common/readout';
 import { controls, flag, openStage } from '../common/stage';
 import type { ConvertReply, ConvertRequest } from './convert';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.2, 0.22, 0.26);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -26,6 +35,8 @@ const { renderer, camera } = stage;
 const FIT: DrftFit = { footprint: 1.8, height: 1.6, baseY: 0.1 };
 const worker = new Worker(new URL('./convert.ts', import.meta.url), { type: 'module' });
 let loader: DrftLoader | null = null;
+/** The loader whose pipelines have been compiled, so each is prepared once. */
+let prepared: DrftLoader | null = null;
 
 /** Send a file's bytes to the worker, and stream the container it answers with. */
 function open(request: ConvertRequest): void {
@@ -114,6 +125,7 @@ const env = createEnvironment({
 const lightMatrix = new Float32Array(16);
 env.lightViewProj = lightMatrix;
 env.shadowStrength = 0.7;
+/* Around the turntable until a model says how large it is: see `shadowFit` below. */
 env.shadowDepthSpan = computeLightMatrix(
   env.directionalDir,
   0,
@@ -123,6 +135,11 @@ env.shadowDepthSpan = computeLightMatrix(
   renderer.shadowMapSize,
   lightMatrix,
 );
+/** What stands in the sun: the plinth, and every part of the model but a decal. Made once. */
+const casters: ShadowCasters = (sink) => {
+  sink.mesh(plinth, IDENTITY);
+  loader?.casters(sink);
+};
 const readout = createReadout(renderer, 3);
 let time = 0;
 
@@ -130,6 +147,14 @@ stage.run({
   simulate(dt) {
     time += dt;
     loader?.update(dt);
+    // #region prepare
+    /* Once the finished model is in, every pipeline its parts draw with is compiled off the frame,
+       so no later frame waits on one. A game would hold its loading screen until this resolves. */
+    if (loader !== null && loader !== prepared && loader.progress.phase === 'ready') {
+      prepared = loader;
+      void loader.prepare();
+    }
+    // #endregion
   },
   render() {
     camera.fovYDeg = 40;
@@ -137,35 +162,21 @@ stage.run({
     camera.position[1] = 2.2;
     camera.position[2] = Math.cos(time * 0.25) * 4.2;
     camera.lookAt(0, 0.8, 0);
-    const parts = loader?.parts ?? [];
+    // #region shadow
+    /* The sun's map around the model as it was fitted, once its file has said how large it is. */
+    const span = loader?.shadowFit(env.directionalDir, renderer.shadowMapSize, lightMatrix) ?? null;
+    if (span !== null) env.shadowDepthSpan = span;
     renderer.beginShadowPass(lightMatrix, 'static');
-    renderer.drawShadowCasters((sink) => {
-      sink.mesh(plinth, IDENTITY);
-      for (const part of parts) sink.mesh(part.mesh, IDENTITY);
-    });
+    renderer.drawShadowCasters(casters);
     renderer.endShadowPass();
-    renderer.beginFrame([0.2, 0.22, 0.26]);
+    // #endregion
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(plinth, IDENTITY);
     // #region draw
-    /* Each part with the images its material names: colour, the packed occlusion, roughness and
-       metal map, normals and emission, each -1 where the file had none. */
-    const textures = loader?.textures ?? null;
-    const image = (index: number) => (index >= 0 ? (textures?.at(index) ?? null) : null);
-    for (const part of parts) {
-      renderer.setMaterial({
-        albedo: image(part.albedo),
-        orm: image(part.orm),
-        normal: image(part.normal),
-        emissive: image(part.emissive),
-        roughnessScale: part.roughnessScale,
-        metallicScale: part.metallicScale,
-        occlusionStrength: part.occlusionStrength,
-      });
-      if (part.opacity >= 1) renderer.drawMesh(part.mesh, IDENTITY);
-      else renderer.drawTranslucentMesh(part.mesh, IDENTITY, part.opacity);
-    }
-    renderer.setMaterial(null);
+    /* Every part in its whole material: its copies through one instanced draw, a blended part
+       translucent and writing no depth, glass as glass, each with its own reflectivity. */
+    loader?.draw();
     // #endregion
     const progress = loader?.progress;
     /* A refusal can be long, so the first line carries what fits and the second the rest. */

@@ -1,4 +1,5 @@
 import { FOG_GLSL } from './fog.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
  * Procedural flames: camera-facing quads whose shape and colour come entirely
@@ -116,6 +117,7 @@ uniform vec4 uClipPlane;
 uniform int uClipEnabled;
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 float hash21(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -175,6 +177,7 @@ void main() {
   col = mix(col, mediumColor(), fog);
   alpha *= 1.0 - fog;
 
-  outColor = vec4(col, alpha);
+  /* Graded where nothing after this will grade it, as every pass is. The alpha is coverage. */
+  outColor = vec4(applyOutputTransform(col), alpha);
 }
 `;

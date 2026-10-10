@@ -1,4 +1,5 @@
 import { glslFarDepth } from '../depthConvention.ts';
+import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 /**
  * Procedural gradient sky drawn as a single attribute-less fullscreen triangle.
  * Ray direction is reconstructed per-fragment from the inverse view-projection,
@@ -77,6 +78,7 @@ uniform vec3 uUnderwaterColor;
 uniform float uUnderwaterFactor;
 
 out vec4 outColor;
+${OUTPUT_TRANSFORM_GLSL}
 
 float hash21(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -273,6 +275,8 @@ void main() {
   float waterLight = mix(0.62, 1.08, clamp(dir.y * 0.5 + 0.5, 0.0, 1.0));
   col = mix(col, uUnderwaterColor * waterLight, uUnderwaterFactor);
 
-  outColor = vec4(col, 1.0);
+  /* Graded where nothing after this will grade it, as every pass is: its colours are the same
+     light as the fog the world fades into. 0 in a probe's face, whose cube stores radiance. */
+  outColor = vec4(applyOutputTransform(col), 1.0);
 }
 `;

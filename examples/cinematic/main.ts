@@ -21,6 +21,7 @@ import {
   curveOffsetSec,
   defineCinematic,
   sampleCameraPath,
+  srgbColor,
   timeCurve,
 } from '@driftengine/core';
 import type { ShotParams, Vec3 } from '@driftengine/core';
@@ -29,6 +30,9 @@ import { createReadout } from '../common/readout';
 import { exported, hostScript } from '../common/script';
 import { controls, flag, openStage } from '../common/stage';
 import * as directorScript from './director.drs';
+
+/** The background, picked by eye and so stated through `srgbColor`: the renderer grades a clear. */
+const CLEAR = srgbColor(0.55, 0.66, 0.8);
 
 const stage = await openStage({
   directionalShadows: true,
@@ -353,7 +357,7 @@ stage.run({
       sink.mesh(buggy, model);
     });
     renderer.endShadowPass();
-    renderer.beginFrame([0.55, 0.66, 0.8]);
+    renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(groundMesh, IDENTITY);
     renderer.drawMesh(buggy, model);

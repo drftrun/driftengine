@@ -41,7 +41,9 @@ const STORAGE = 0x0080;
  * can look at, and looking is what a number cannot replace: if the geometry is in the right places
  * at the right sizes the composition is right, and if a cascade boundary shows as a seam the fade
  * is wrong. Wave 4A's own recorded failure — a phantom surface that passed 111,907 parity samples
- * and was found by looking at a picture — is why this exists at all.
+ * and was found by looking at a picture — is why this exists at all. **So it is not graded**, alone
+ * of the passes that draw into a frame: what it shows are the field's values, which a curve would
+ * bend into a picture of something else.
  *
  * **The field it marches is one frame old**, because the renderer composes at `endFrame` and
  * `prepare` runs at `beginFrame`. `PrepareContext.distanceField` says why that is right rather

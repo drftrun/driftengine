@@ -13,11 +13,75 @@
  * texture needs no `filterable` sample type, which `rgba16float` has but which a future `r32float`
  * would not.
  *
- * **It writes linear light.** The output transform is the composite's, for the reason
- * `PassContext` gives: with a composite the resolve grades and a pass that also graded would apply
- * the curve twice. A frame without one is refused in words rather than papered over — see the
- * pass's `draw`.
+ * **It grades where nothing after it will**, as every pass in this engine does: the pipeline shades
+ * linear light into its own target, and `PassContext.outputTransform` is 0 where the frame's resolve
+ * grades and the frame's code where it does not. The colour is premultiplied by its coverage, so it
+ * is graded as a colour and covered again: a pane against the sky keeps the share it had.
  */
+
+/**
+ * `applyOutputTransform` in WGSL: the WGSL twin of `OUTPUT_TRANSFORM_BODY_GLSL` in
+ * `shaders/outputTransform.ts`, for a blit the generator cannot reach because it is hand-written —
+ * it reads a storage texture and writes depth, which the GLSL path has no form for. **Two copies of
+ * one curve**, held together by `present.test.ts`, which reads every constant out of both and asks
+ * that they be the same numbers in the same order. Code 4, the filmic curve, never arrives here: a
+ * forward grade is never the composite's own (`forwardTransformCode`).
+ */
+export const GRADE_WGSL = `
+struct Grade {
+  transform: i32,
+  exposure: f32,
+}
+
+@group(0) @binding(2) var<uniform> grade: Grade;
+
+fn rrtAndOdtFit(v: vec3<f32>) -> vec3<f32> {
+  let a = v * (v + 0.0245786) - 0.000090537;
+  let b = v * (0.983729 * v + 0.4329510) + 0.238081;
+  return a / b;
+}
+
+fn acesFilmic(colour: vec3<f32>) -> vec3<f32> {
+  let x = colour * grade.exposure;
+  let acesInput = mat3x3<f32>(
+    vec3<f32>(0.59719, 0.07600, 0.02840),
+    vec3<f32>(0.35458, 0.90834, 0.13383),
+    vec3<f32>(0.04823, 0.01566, 0.83777),
+  );
+  let acesOutput = mat3x3<f32>(
+    vec3<f32>(1.60475, -0.10208, -0.00327),
+    vec3<f32>(-0.53108, 1.10813, -0.07276),
+    vec3<f32>(-0.07367, -0.00605, 1.07602),
+  );
+  return clamp(acesOutput * rrtAndOdtFit(acesInput * x), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn linearToSrgb(c: vec3<f32>) -> vec3<f32> {
+  let low = c * 12.92;
+  let high = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+  return select(high, low, c <= vec3<f32>(0.0031308));
+}
+
+fn highlightShoulder(c: vec3<f32>) -> vec3<f32> {
+  let m = max(c.r, max(c.g, c.b));
+  if (m <= 0.8) { return c; }
+  let e = m - 0.8;
+  return c * ((0.8 + 0.2 * e / (e + 0.2)) / m);
+}
+
+fn applyOutputTransform(colour: vec3<f32>) -> vec3<f32> {
+  var c = colour;
+  if (grade.transform == 2) { c = acesFilmic(c); }
+  if (grade.transform == 3) { c = highlightShoulder(c * grade.exposure); }
+  return linearToSrgb(c);
+}
+
+/* Premultiplied in and out: the colour graded, its coverage kept. Untouched at code 0. */
+fn graded(texel: vec4<f32>) -> vec4<f32> {
+  if (grade.transform == 0) { return texel; }
+  return vec4<f32>(applyOutputTransform(texel.rgb / texel.a) * texel.a, texel.a);
+}
+`;
 
 export const GPU_DRIVEN_BLIT_WGSL = `
 struct Varying {
@@ -25,7 +89,7 @@ struct Varying {
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
-
+${GRADE_WGSL}
 @vertex
 fn vertexMain(@builtin(vertex_index) vertex: u32) -> Varying {
   /* One triangle covering the frame rather than two: no shared edge, no diagonal seam, and the
@@ -62,7 +126,7 @@ fn fragmentMain(in: Varying) -> @location(0) vec4<f32> {
    * over black and dropped a light one altogether.
    */
   if (texel.a <= 0.0) { discard; }
-  return texel;
+  return graded(texel);
 }
 `;
 
@@ -99,7 +163,7 @@ struct Presented {
 
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var sourceDepth: texture_depth_2d;
-
+${GRADE_WGSL}
 @vertex
 fn vertexMain(@builtin(vertex_index) vertex: u32) -> Varying {
   var corners = array<vec2<f32>, 3>(
@@ -121,7 +185,7 @@ fn fragmentMain(in: Varying) -> Presented {
      clear, so the write would change nothing. The colour blit above says how that was measured. */
   if (texel.a <= 0.0) { discard; }
   var out: Presented;
-  out.colour = texel;
+  out.colour = graded(texel);
   /* The depth this pixel was rastered at, so the frame tests against the surface it can see. */
   out.depth = textureLoad(sourceDepth, at, 0);
   return out;
