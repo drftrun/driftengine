@@ -235,6 +235,15 @@ export interface SurfaceTextureHandle {
  * `WebGLBuffer` in a private field, so no WebGPU object can satisfy it however identical its
  * shape. It is not meant to be read; it is meant to be enforced.
  */
+/** Which of a draw's pipelines `prepareMesh` and `prepareInstanced` compile beside the opaque ones. */
+export interface PrepareOptions {
+  /**
+   * The blended ones too, for a draw made with `drawTranslucentMesh` or `drawTranslucentInstanced`.
+   * Off by default: an opaque surface would pay a compile it never draws with.
+   */
+  readonly translucent?: boolean;
+}
+
 /** What a mesh needs to be told at creation that its geometry cannot say. */
 export interface MeshOptions {
   /**
@@ -312,6 +321,8 @@ export type RendererApi = Omit<
   | 'disposeSurfaceTexture'
   | 'setSurfaceTexture'
   | 'setMaterial'
+  | 'prepareMesh'
+  | 'prepareInstanced'
   | 'setSurfaceOverlay'
   | 'createClothBinding'
   | 'createClothParticles'
@@ -455,6 +466,26 @@ export type RendererApi = Omit<
    * setter each — and `setSurfaceTexture` is now a wrapper over it.
    */
   setMaterial(material: SurfaceMaterial<SurfaceTextureHandle> | null): void;
+  /**
+   * Compile, off the main thread, every pipeline a draw of `mesh` in `material` takes that making
+   * the mesh did not — a two-sided, cut-out or shaded-by-a-model variant, a material's lit switches,
+   * a skin's halves — so the first frame that draws it waits on none; `ready()` resolves once they
+   * have. For `pipelineCompile: 'skip'` above all, where a draw whose pipeline is new is left out
+   * until it lands: a figure brought on screen whole rather than without its face for a few frames.
+   * A rigged mesh is prepared as drawn with a palette, and one with targets both with weights and
+   * without. Call it between frames: it sets `material` to read it and leaves none set after.
+   */
+  prepareMesh(
+    mesh: MeshHandle,
+    material: SurfaceMaterial<SurfaceTextureHandle> | null,
+    options?: PrepareOptions,
+  ): void;
+  /** `prepareMesh` for an instanced batch drawn in `material`, its own pipelines being its own. */
+  prepareInstanced(
+    batch: InstancedHandle,
+    material: SurfaceMaterial<SurfaceTextureHandle> | null,
+    options?: PrepareOptions,
+  ): void;
 
   /**
    * A 3D text object: one string, drawn as instanced glyph cubes over the scene.

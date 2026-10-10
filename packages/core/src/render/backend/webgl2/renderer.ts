@@ -106,8 +106,16 @@ import {
   type SurfaceOverlay,
 } from '../../surfaceOverlay.ts';
 import { PROJECTION_FLOATS, packSurfaceProjection, projects } from '../../surfaceProjection.ts';
+import { resolveTransmission } from '../../transmission.ts';
+import { resolveOcclusionFade } from '../../occlusionFade.ts';
 import { orthographicDepthSpan } from '../../lightMatrix.ts';
-import { LAYER_FLOATS, packSurfaceLayers } from '../../surfaceLayers.ts';
+import {
+  LAYER_FLOATS,
+  layerMaskMap,
+  layeredProjection,
+  layersFitBeside,
+  packSurfaceLayers,
+} from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
 import type { SurfaceProjection } from '../../surfaceProjection.ts';
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
@@ -282,7 +290,7 @@ import type { BufferSize } from '../../drawingBuffer.ts';
 import { Mesh, createMeshIncremental } from '../../mesh.ts';
 import type { IncrementalMesh } from '../../mesh.ts';
 import type { MeshData } from '../../mesh.ts';
-import type { MeshOptions } from '../api.ts';
+import type { MeshOptions, PrepareOptions } from '../api.ts';
 import { SurfaceTexture } from '../../surfaceTexture.ts';
 import { sceneCaptureTexels } from '../../sceneCapture.ts';
 import { GlSceneCaptureTarget } from './sceneCaptureTarget.ts';
@@ -1599,6 +1607,8 @@ export class WebGL2Renderer implements RendererApi {
   private readonly aoProjScale = new Float32Array(2);
   /** Where this frame's jitter put the occlusion, in the composite's uv. See `uAoOffset`. */
   private readonly aoOffset = new Float32Array(2);
+  /** Where occlusion fades out with distance, `uFade`: none until a caller sets one. */
+  private readonly aoFade = new Float32Array([-1, 0]);
   /**
    * Whether this frame has already been resolved to the canvas.
    *
@@ -1766,14 +1776,18 @@ export class WebGL2Renderer implements RendererApi {
   private warnedProjectionRoom = false;
   /** `uWorldUv`, the current material's projection packed. See `surfaceProjection.ts`. */
   private readonly projection = new Float32Array(PROJECTION_FLOATS);
-  /** The current material's `diffuseTransmission`, `uGlassTint.w`, 0 to 1. */
-  private diffuseTransmission = 0;
+  /**
+   * `uGlassTint` as the current material leaves it: its light from behind and that light's colour,
+   * which a pane overwrites for its own draw and `unbindSeeThrough` puts back. See `transmission.ts`.
+   */
+  private readonly transmission = new Float32Array([-1, -1, -1, 0]);
   /** `uLayers`, the current material's layers packed. See `surfaceLayers.ts`. */
   private readonly layerFloats = new Float32Array(LAYER_FLOATS);
   /** Whether the lit stage has room for layers' two vectors, and which refusals were said. */
   private layersRoom: boolean | null = null;
   private warnedLayersRoom = false;
   private warnedLayersModelMap = false;
+  private warnedLayersTriplanar = false;
   private warnedOverlayRoom = false;
   private warnedOverlayBlocks = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
@@ -3930,6 +3944,58 @@ export class WebGL2Renderer implements RendererApi {
    * metres is textured at whatever density the material wants without rebuilding it.
    */
   /**
+   * Compile, off the frame, every program a draw of `mesh` in `material` takes that making the mesh
+   * did not, so the first frame that draws it waits on none: the program of the material's shading
+   * model for each vertex variant the mesh can be drawn with (its rig, with a palette; its targets,
+   * with weights and without), a skin's halves under the screen-space blur, and the lit switches
+   * the material turns on. `ready()` resolves once they have.
+   *
+   * **For `pipelineCompile: 'skip'` above all**, where a draw whose program is new is left out until
+   * it lands: a figure brought on screen whole rather than without its face and hair for the frames
+   * those take. Where draws wait, the programs compile here, at the call, rather than in a frame.
+   * Two-sided and cut-out surfaces are draw state on this backend and need nothing; on WebGPU they
+   * are pipelines of their own, prepared the same way.
+   *
+   * **Call it between frames**: it sets `material` to read it and leaves no material set after, as
+   * `setMaterial(null)` does. `options` is the other backend's; blended draws share a program here.
+   */
+  prepareMesh(mesh: Mesh, material: SurfaceMaterial | null, _options: PrepareOptions = {}): void {
+    if (this.contextLost) return;
+    this.setMaterial(material);
+    const kind = material?.model?.kind ?? null;
+    if (kind !== null) {
+      const eight = mesh.isSkinnedEight;
+      const morphs = mesh.morph !== null;
+      const plain = mesh.isSkinned ? (eight ? 'skinned8' : 'skinned') : 'plain';
+      const morphed = mesh.isSkinned ? (eight ? 'both8' : 'both') : 'morphed';
+      for (const variant of morphs ? [plain, morphed] : [plain]) {
+        this.modelProgram(variant, kind);
+        /* A skin under the screen-space blur draws three halves, each a program of its own. */
+        if (kind === 'skin' && this.skinScatter !== null && this.sceneTarget !== null) {
+          for (const half of SPLIT_SKIN_HALVES) this.modelProgram(variant, kind, half);
+        }
+      }
+    }
+    this.setMaterial(null);
+  }
+
+  /** `prepareMesh` for an instanced batch: its own programs, and its model's for its variant. */
+  prepareInstanced(
+    batch: InstancedBatch,
+    material: SurfaceMaterial | null,
+    _options: PrepareOptions = {},
+  ): void {
+    if (this.contextLost) return;
+    this.setMaterial(material);
+    const animated = batch.animation !== null;
+    this.ensureInstancedProgram();
+    if (animated) this.ensureAnimatedProgram();
+    const kind = material?.model?.kind ?? null;
+    if (kind !== null) this.modelProgram(animated ? 'animated' : 'instanced', kind);
+    this.setMaterial(null);
+  }
+
+  /**
    * Choose the joint palette the following `drawMesh` calls skin by, or null for none.
    *
    * Null is what an unskinned draw needs and is the default, so a game that never animates never
@@ -4323,9 +4389,9 @@ export class WebGL2Renderer implements RendererApi {
      * and read neither — one decision for every program, as `setMaterial` says.
      */
     const modelMap = material?.modelMap ?? null;
-    /* A layered material's mask goes where a model's map would: see `SurfaceMaterial.layers`. */
+    /* A layered material's mask, where it is a map, goes where a model's would: surfaceLayers.ts. */
     const layers = this.layersOf(material);
-    const boundMap = modelMap ?? layers?.mask ?? null;
+    const boundMap = modelMap ?? layerMaskMap(layers);
     gl.activeTexture(gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (boundMap !== null) boundMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
@@ -4345,11 +4411,12 @@ export class WebGL2Renderer implements RendererApi {
     /* The draw's overlay, which a program born mid-pass must wear too: see `setSurfaceOverlay`. */
     gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
     gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
-    /* How much light from behind the surface lets through, in the glass tint's spare lane. */
-    this.diffuseTransmission = Math.min(Math.max(material?.diffuseTransmission ?? 0, 0), 1) || 0;
-    gl.uniform4f(u['uGlassTint'] ?? null, 1, 1, 1, this.diffuseTransmission);
+    /* How much light from behind the surface lets through, and its colour: transmission.ts. */
+    resolveTransmission(material, this.transmission);
+    this.writeTransmission(u);
     /* Maps placed by the world, where the material asks and the lit stage has room: worldUv.ts. */
-    const projection = material?.projection ?? null;
+    const projection = layeredProjection(material?.projection, layers);
+    if (projection !== (material?.projection ?? null)) this.warnLayersTriplanar();
     packSurfaceProjection(this.projectionFits(projection) ? projection : null, this.projection);
     if ((this.projection[0] as number) > 0) this.askLit('WORLD_UVS');
     gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
@@ -4598,14 +4665,15 @@ export class WebGL2Renderer implements RendererApi {
    * no room for their two vectors each leave one layer, the last two said once each.
    */
   private layersOf(material: SurfaceMaterial | null): SurfaceLayers<SurfaceTexture> | null {
-    const layers = material?.layers ?? null;
+    const layers = (material?.layers ?? null) as SurfaceLayers<SurfaceTexture> | null;
     if (layers === null || layers.repeats.length === 0) return null;
-    if ((material?.modelMap ?? null) !== null) {
+    if (!layersFitBeside(layers, material?.modelMap)) {
       if (!this.warnedLayersModelMap) {
         this.warnedLayersModelMap = true;
         console.warn(
-          "Renderer: a material's layers are drawn as one: its mask is read where a model's map " +
-            'goes, and this material carries a `modelMap` too.',
+          "Renderer: a material's layers are drawn as one: its mask is a map, read where a " +
+            "model's map goes, and this material carries a `modelMap` too. A mask in the ORM " +
+            "array (`mask: 'orm'`) or the vertex colour (`mask: 'vertex'`) leaves the slot free.",
         );
       }
       return null;
@@ -4615,12 +4683,22 @@ export class WebGL2Renderer implements RendererApi {
     if (!this.warnedLayersRoom) {
       this.warnedLayersRoom = true;
       console.warn(
-        "Renderer: a material's layers are refused on this device. They take two fragment uniform " +
+        "Renderer: a material's layers are refused on this device. They take four fragment uniform " +
           'vectors the lit shader does not have; the material is drawn as its base layer. A lower ' +
           '`maxLights` makes the room, or WebGPU has it.',
       );
     }
     return null;
+  }
+
+  /** Says once that a layered material's triplanar projection is laid on the horizontal plane. */
+  private warnLayersTriplanar(): void {
+    if (this.warnedLayersTriplanar) return;
+    this.warnedLayersTriplanar = true;
+    console.warn(
+      "Renderer: a layered material's triplanar projection is laid on the horizontal plane: every " +
+        "layer's maps on three planes would be three times the reads. See `SurfaceMaterial.layers`.",
+    );
   }
 
   /** Whether the lit shader with `feature` compiled in fits this GPU's fragment uniform vectors. */
@@ -4786,7 +4864,8 @@ export class WebGL2Renderer implements RendererApi {
    *
    * What it gives up: a fade reads as grain while it lasts, which a temporal resolve smooths and a
    * plain frame does not; a blended draw that asks spends its opacity here and blends none of it;
-   * and a lightmapped batch carries regions where the opacities would be, so it has none to fade.
+   * and a lightmapped batch's opacities ride its page regions, so they fade in steps of a
+   * sixty-fourth, which is the pattern's own resolution (`MeshInstances.lightmapRegions`).
    */
   setDitherOpacity(on: boolean): void {
     if (this.contextLost) return;
@@ -5281,15 +5360,23 @@ export class WebGL2Renderer implements RendererApi {
       glass.tint[0] ?? 1,
       glass.tint[1] ?? 1,
       glass.tint[2] ?? 1,
-      this.diffuseTransmission,
+      this.transmission[3] as number,
     );
     return true;
+  }
+
+  /** `uGlassTint` as the current material leaves it. See `transmission`. */
+  private writeTransmission(u: Record<string, WebGLUniformLocation>): void {
+    const t = this.transmission;
+    this.gl.uniform4f(u['uGlassTint'] ?? null, t[0] ?? -1, t[1] ?? -1, t[2] ?? -1, t[3] ?? 0);
   }
 
   /** Put back what `bindSeeThrough` bound: the binding outlives its frame (the 2026-08-27 rule). */
   private unbindSeeThrough(u: Record<string, WebGLUniformLocation>): void {
     const { gl } = this;
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
+    /* The material's light through, over the pane's tint: transmission.ts. */
+    this.writeTransmission(u);
     gl.activeTexture(gl.TEXTURE0 + REFRACT_SCENE_TEXTURE_UNIT);
     /* The overlay's atlas, where one is held: it shares the unit. See `setSurfaceOverlay`. */
     gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture ?? this.emptyTexture2D);
@@ -7801,6 +7888,20 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * Where ambient occlusion fades out with distance: whole up to `distance` metres from the eye and
+   * gone `radius` metres past it, so the far depth buffer's steps — a sky dome kilometres off, a
+   * mountain range — are not shaded in rings, and those pixels skip the occlusion's sampling.
+   *
+   * A distance that is not a finite number at or above zero is no fade, which is the default, and
+   * `Infinity` reads as "never fades"; a radius below zero is a cut at `distance`. Set before
+   * `endFrame` and held until changed, like `setDepthOfField`. Nothing at all when
+   * `ambientOcclusion` is 0. See `occlusionFade.ts` for what it gives up.
+   */
+  setAmbientOcclusionFade(distance: number, radius: number): void {
+    resolveOcclusionFade(distance, radius, this.aoFade);
+  }
+
+  /**
    * Where this frame's lens is focused, how deep the sharp zone is, and how much of the ceiling
    * to take.
    *
@@ -8453,6 +8554,7 @@ export class WebGL2Renderer implements RendererApi {
           radius: number;
           projScale: Float32Array;
           invProjection: Float32Array;
+          fade: Float32Array;
           offset: Float32Array;
         }
       | undefined;
@@ -8476,6 +8578,7 @@ export class WebGL2Renderer implements RendererApi {
         radius: this.quality.ambientOcclusionRadius,
         projScale: this.aoProjScale,
         invProjection: this.aoInvProjection as Float32Array,
+        fade: this.aoFade,
         offset: this.aoOffset,
       };
     }
@@ -9010,7 +9113,7 @@ export class WebGL2Renderer implements RendererApi {
     /* Nor a projection: maps follow the mesh's coordinates until a material asks otherwise. */
     this.projection.fill(0);
     /* Nor light through from behind. See `SurfaceMaterial.diffuseTransmission`. */
-    this.diffuseTransmission = 0;
+    resolveTransmission(null, this.transmission);
     /* Nor layers: one layer until a material asks for more. */
     this.layerFloats.fill(0);
     this.overlayMaps = null;
@@ -9191,8 +9294,15 @@ export class WebGL2Renderer implements RendererApi {
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
     gl.uniform4f(u['uRefractTint'] ?? null, 1, 1, 1, 1);
-    /* White, and no light through from behind: no material at a pass's start. */
-    gl.uniform4f(u['uGlassTint'] ?? null, 1, 1, 1, this.diffuseTransmission);
+    /* No light through from behind: no material at a pass's start. See `writeTransmission`. */
+    const through = this.transmission;
+    gl.uniform4f(
+      u['uGlassTint'] ?? null,
+      through[0] ?? -1,
+      through[1] ?? -1,
+      through[2] ?? -1,
+      through[3] ?? 0,
+    );
     gl.uniform3fv(u['uDirectionalDir'] ?? null, env.directionalDir);
     gl.uniform3fv(u['uDirectionalColor'] ?? null, env.directionalColor);
     gl.uniform3fv(u['uAmbient'] ?? null, env.ambient);

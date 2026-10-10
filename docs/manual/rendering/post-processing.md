@@ -111,6 +111,12 @@ lands while tuning.
 from across the room as from close up. Match it to the gaps that matter: half a metre, the default,
 for a room or a vehicle, more for a landscape.
 
+`setAmbientOcclusionFade(distance, radius)` fades it out with distance: whole up to `distance` metres
+from the eye and gone `radius` metres past it. Far off, the depth buffer's steps are metres apart and
+the estimate shades them in rings across a sky dome or a mountain range; past the fade those pixels
+are left open and skip the work. It is held until changed and does nothing where `ambientOcclusion`
+is 0. A negative distance, the default, fades nothing.
+
 Occlusion is measured from the depth the opaque world leaves, and glass, smoke, water, text and
 lines write none, so it darkens only the part of a pixel they let through: smoke in front of a
 corner stays the colour of the smoke, and a pane at 0.85 opacity takes 0.15 of the darkening behind

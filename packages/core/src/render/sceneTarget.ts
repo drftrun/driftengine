@@ -800,6 +800,8 @@ export class SceneTarget {
       /** The projection's x and y scales, which turn a world radius into a screen one. */
       readonly projScale: Float32Array;
       readonly invProjection: Float32Array;
+      /** Where it fades out with distance, `uFade`: see `occlusionFade.ts`. */
+      readonly fade: Float32Array;
       /** Where the frame's jitter put the occlusion, in uv: see the shader's `uAoOffset`. */
       readonly offset?: Float32Array;
     },
@@ -959,6 +961,7 @@ export class SceneTarget {
         ao.radius,
         ao.projScale,
         ao.invProjection,
+        ao.fade,
       );
     }
 

@@ -622,15 +622,37 @@ the base, green layer 2, blue layer 3, alpha layer 4. `emissiveLayer` gives the 
 layer, glowing where that layer shows; absent, it glows everywhere, as on any material. It is
 compiled into the lit stage the first time a material asks.
 
+Other families of layered surface blend differently, and `layers` takes them too:
+
+- **`mask: 'orm'`** reads the mask from the ORM array's layer just past the material's layers, which
+  leaves the model's slot to a lightmap's page, so a lightmapped surface blends its layers.
+- **`mask: 'vertex'`** takes the weights from the vertex colour's red, green and blue, which then
+  tints nothing.
+- **`blend: 'sum'`** mixes the base toward the sum of each layer times its weight, by the weights'
+  sum held to 1, where the default lays each over the ones before it.
+- **Under a `projection`** the layers are placed by the world, each at its own repeats a metre, and
+  `addMask: { layer, repeat, intensity }` adds a mask placed the same way, the ORM array's next
+  layer, to one layer's weight: sand drifting into the gravel at a scale of its own.
+- **`facing: { layer, bias, sharpness }`** weighs one layer by how much the surface faces up,
+  `saturate(bias + sharpness × (up / 2 + 1/2))`, in place of its channel: snow on the tops of rocks.
+- **`meshNormal: true`** lays a normal map read at the mesh's own coordinates, the normal array's
+  layer just past the layers, under the layers' blended normal: a cliff's large shape beneath detail
+  that repeats forty times across it.
+
 What it gives up:
 
 - **Every layer present is read wherever any shows**: five layers are fifteen reads where one
   material is three.
-- **The mask is read where a shading model's map goes**, so a layered material carries no `modelMap`;
-  given both, it is drawn as one layer, said once. Upload the mask as data, `colorSpace: 'linear'`.
+- **A mask that is a map is read where a shading model's map goes**, so such a material carries no
+  `modelMap`; given both, it is drawn as one layer, said once. A mask in the ORM array or the vertex
+  colour leaves the slot free. Upload a mask as data, `colorSpace: 'linear'`.
+- **A mask, an added mask or a mesh normal in an array shares its size and format**, so a
+  four-channel mask wants an ORM array that stores four.
+- **A triplanar projection lays layers on the horizontal plane**, said once: every layer read on three
+  planes would be three times the reads.
 - **Layers share an array**, so they share its size and format, and a cutout reads the base layer's
   alpha.
-- **On WebGL2 it takes two fragment uniform vectors**, refused, said once, where a part has no room.
+- **On WebGL2 it takes four fragment uniform vectors**, refused, said once, where a part has no room.
 
 ## Light through a thin surface
 
@@ -645,6 +667,9 @@ export function banner(cloth: SurfaceTextureHandle): SurfaceMaterial<SurfaceText
   return { albedo: cloth, doubleSided: true, diffuseTransmission: 0.7 };
 }
 ```
+
+`transmissionColor` names the colour the light takes instead, linear: a printed banner whose cloth
+glows a flat red behind the print, rather than lit through in the colours of the print.
 
 The surface is treated as thin: a sheet, not a volume, so a thick object lets as much through as a
 sheet would, and what passes is not blurred. A lamp's own shadow does not hide its light from the

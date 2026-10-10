@@ -213,6 +213,27 @@
  * one pass, and its kernels' bookkeeping, paid only by a game that imports cloth. The small packages
  * moved by at most two bytes, none of it this release's.
  */
+/**
+ * **Every core entry re-measured 2026-10-10 for 4.11.1, written to the byte.**
+ *
+ * | `core-only` | |
+ * | --- | --- |
+ * | Floor as recorded | 919,791 |
+ * | 4.11.1, measured | **926,289**: 6,498 bytes |
+ *
+ * Apportioned as 4.11.0's was, by bundling `core-only` at each of the release's commits from a
+ * worktree, which reads the recorded floor exactly at the commit before: a thin surface's light in a
+ * colour of its own, with a pane putting it back, 1,229; ambient occlusion that fades with distance,
+ * 412; a lightmapped instance's opacity in its region, 322; layers beside a lightmap, laid by the
+ * vertex colour, summed, placed by the world with an added mask, laid by facing up and over a normal
+ * at the mesh's own coordinates, **3,793**; preparing a draw's pipelines before its first frame, 545;
+ * and the badge held for a load, 197. **The layers are the step worth a sentence**: lit-stage code
+ * behind the switch 4.11.0 added, so a device compiles none of it in until a material blends layers.
+ *
+ * `core-and-script` moved 183 bytes more than core: `drift/render`'s `occlusionFade`. The other
+ * entries carried by core moved with it, within 220 bytes of its 6,498, and the small packages did
+ * not move.
+ */
 export const FLOORS = {
   /*
    * Raised 2026-08-22 by MATL's four texture indices: three more `setInt32`, three more guarded
@@ -910,7 +931,7 @@ export const FLOORS = {
    * TypeScript and the trace's material mode. Both sit behind lit switches, so a frame that sets no
    * overlay and asks for no reflections compiles neither in on a device.
    */
-  'core-only': 919791,
+  'core-only': 926289,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -931,7 +952,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-gizmo': 924568,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-gizmo': 930990,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -945,7 +967,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0, and the garment set. */
-  'core-and-cloth': 937004,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-cloth': 943589,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -966,7 +989,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-audio': 926209,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-audio': 932638,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -996,7 +1020,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-animation': 926064,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-animation': 932408,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -1039,7 +1064,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-script': 961019,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade, and drift/render's occlusionFade. */
+  'core-and-script': 967566,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1233,7 +1259,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-splats': 936969,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-splats': 943427,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1258,7 +1285,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-terrain': 921152,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-terrain': 927682,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1292,7 +1320,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-ui2d': 930065,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-ui2d': 936584,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1304,7 +1333,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-and-assets': 947684,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-and-assets': 953963,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1323,7 +1353,8 @@ export const FLOORS = {
   /* Raised 2026-10-06 with `core-only`: 4.8.6's parked rise and 4.8.7's lit-stage code. */
   /* Raised 2026-10-07 with `core-only`: 4.9.0, its overlay and reflections. */
   /* Raised 2026-10-10 with `core-only`: 4.11.0's lit-stage materials and vertex packing. */
-  'core-audio-spatial': 928320,
+  /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
+  'core-audio-spatial': 934782,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

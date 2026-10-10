@@ -6,7 +6,7 @@ WebGL2 everywhere else, behind one API, and carries the fixed-step loop, the ren
 input, the scene graph, geometry, text and the whole of `@driftengine/physics`, which it re-exports.
 Everything else is a separate package a game adds when it reaches for it.
 
-**Cost: 898.2 KB gzipped, importing `createRenderer`.** Measured by `scripts/size-gate.test.mjs`,
+**Cost: 904.6 KB gzipped, importing `createRenderer`.** Measured by `scripts/size-gate.test.mjs`,
 which fails the build if the figure drifts by more than 3%.
 
 The manual is at **[driftengine.dev/docs](https://driftengine.dev/docs)**, with an example running

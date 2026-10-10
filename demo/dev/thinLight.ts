@@ -8,6 +8,9 @@
  *     /thinLight.html?light=lamp&through=0.8&shadows=1   the lamp casting, the banner in its map: the
  *                                          light through must be what it is with no map, since the
  *                                          banner is the only thing between, and it is not in its own way
+ *     /thinLight.html?light=sun&through=0.8&color=0,0.4,1   the light through in a colour of its own
+ *                                          (`transmissionColor`): blue through the red banner, where
+ *                                          the control above lets red through
  *
  * Held at frame 30. Nothing under `src/` may import this.
  */
@@ -36,6 +39,9 @@ async function main(): Promise<void> {
   const stats = document.getElementById('stats') as HTMLElement;
   const light = ASKED.get('light') ?? 'sun';
   const through = Number(ASKED.get('through') ?? '0');
+  const named = ASKED.get('color')?.split(',').map(Number);
+  const color: [number, number, number] | null =
+    named?.length === 3 ? [named[0] ?? 0, named[1] ?? 0, named[2] ?? 0] : null;
   const created = await createRenderer(canvas, askedQuality(), DEV_RENDERER);
   await created.renderer.ready();
   const renderer: RendererApi = created.renderer;
@@ -120,13 +126,19 @@ async function main(): Promise<void> {
     renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.setSurfaceGrain(0);
-    renderer.setMaterial({ doubleSided: true, diffuseTransmission: through });
+    renderer.setMaterial({
+      doubleSided: true,
+      diffuseTransmission: through,
+      transmissionColor: color,
+    });
     renderer.drawMesh(banner, identity);
     renderer.setMaterial(null);
     renderer.endFrame();
     frame += 1;
     stats.textContent =
-      `${created.backend} · ${light} behind · through ${through}` + (shadows ? ' · shadows' : '');
+      `${created.backend} · ${light} behind · through ${through}` +
+      (color === null ? '' : ` in ${color.join(',')}`) +
+      (shadows ? ' · shadows' : '');
     if (frame < FRAMES) requestAnimationFrame(draw);
     else (globalThis as unknown as { __drawn?: boolean }).__drawn = true;
   };

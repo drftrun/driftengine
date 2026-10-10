@@ -357,7 +357,7 @@ describe('every binding, as a set', () => {
    * **`drift/render` is bound, and it binds the dials rather than the profile.**
    *
    * `RenderQuality` has fifty fields and none of them are reachable from a script. What is
-   * here is the nine per-frame presentation dials — the split `renderQuality.ts` already argues for
+   * here is the ten per-frame presentation dials — the split `renderQuality.ts` already argues for
    * depth of field, where a ceiling says what a pass may cost and a dial says how much of it this
    * frame takes. A profile is chosen once from what a device can afford and is clamped against what
    * the adapter reports; a dial is what a game drives, and only the second is a script's business.
@@ -379,6 +379,7 @@ describe('every binding, as a set', () => {
       'focus',
       'medium',
       'motionBlur',
+      'occlusionFade',
       'speedBlur',
       'veil',
     ]);
@@ -386,6 +387,22 @@ describe('every binding, as a set', () => {
       expect(dial.effects, `${dial.name} declares more than the view`).toEqual(['scene.write']);
       expect(dial.deterministic, `${dial.name} claims determinism`).toBe(false);
     }
+  });
+
+  /**
+   * **`occlusionFade` hands the renderer both of its numbers, in its order.** A distance and a
+   * radius swapped is occlusion fading over eighty metres from fifty, which is merely a little
+   * wrong on screen and so worth asserting here.
+   */
+  it('OCCLUSION FADE SETS THE DISTANCE AND THE RADIUS, IN THAT ORDER', async () => {
+    const { renderImplementation } = await import('./bindings/render.ts');
+    const calls: unknown[][] = [];
+    const renderer = {
+      setAmbientOcclusionFade: (...args: unknown[]) => calls.push(args),
+    };
+    const fade = renderImplementation()['occlusionFade'] as (...args: unknown[]) => void;
+    fade(renderer, 80, 50);
+    expect(calls).toEqual([[80, 50]]);
   });
 
   /**

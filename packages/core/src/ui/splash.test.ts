@@ -2,7 +2,9 @@ import { expect, test } from 'vitest';
 import {
   SPLASH_HARD_CAP_MS,
   SPLASH_MIN_MS,
+  SplashState,
   forcedSplash,
+  holdSplash,
   splashDecision,
   splashWanted,
 } from './splash.ts';
@@ -95,4 +97,50 @@ test('a badge holds until the game has painted, and never past the cap', () => {
      so the cap is checked first rather than last. */
   expect(splashDecision(19_999, 60_000, true)).toBe('hold');
   expect(splashDecision(20_000, 60_000, true)).toBe('swap');
+});
+
+/*
+ * **A game can keep the badge up until its own load settles, under a cap of its own.** The first
+ * frame alone is ready no longer once a hold is asked for: ready waits for every promise the game
+ * handed over, a rejected one included — a load that failed must not pin the logo — and the cap
+ * becomes the game's where it names one, longer or shorter than the engine's, the longest of several.
+ */
+test('A BADGE HELD BY THE GAME IS READY WHEN EVERY HOLD HAS SETTLED, UNDER THE LONGEST CAP ASKED', async () => {
+  const state = new SplashState();
+  expect(state.capMs).toBe(SPLASH_HARD_CAP_MS);
+  let finish = (): void => {};
+  let fail = (): void => {};
+  const loaded = new Promise<void>((resolve) => (finish = resolve));
+  const broken = new Promise<void>(
+    (_, reject) => (fail = () => reject(new Error('a load failed'))),
+  );
+  let settled = 0;
+  state.hold(loaded, 45_000, () => settled++);
+  state.hold(broken, 30_000, () => settled++);
+  expect(state.capMs, 'the longest cap asked').toBe(45_000);
+  state.painted = true;
+  expect(state.ready, 'painted, still loading').toBe(false);
+  finish();
+  await loaded;
+  expect(state.ready, 'one hold left').toBe(false);
+  fail();
+  await broken.catch(() => {});
+  await Promise.resolve();
+  expect(state.ready, 'a failed load settles too').toBe(true);
+  expect(settled).toBe(2);
+  /* And the clock reads it: held past the engine's twenty seconds, gone at the game's own cap. */
+  expect(splashDecision(SPLASH_HARD_CAP_MS + 1, SPLASH_MIN_MS, false, state.capMs)).toBe('hold');
+  expect(splashDecision(45_000, SPLASH_MIN_MS, false, state.capMs)).toBe('swap');
+  /* A cap that is not a positive number leaves the engine's; a shorter one is the game's to ask. */
+  const plain = new SplashState();
+  plain.hold(Promise.resolve(), Number.NaN, () => {});
+  expect(plain.capMs).toBe(SPLASH_HARD_CAP_MS);
+  const brief = new SplashState();
+  brief.hold(Promise.resolve(), 8_000, () => {});
+  expect(brief.capMs, 'the game’s own, shorter than the engine’s').toBe(8_000);
+});
+
+/* With no badge on the page — a test, a worker, `splash: false` — holding is nothing, and says so. */
+test('HOLDING WITH NO BADGE UP DOES NOTHING AND SAYS SO', () => {
+  expect(holdSplash(Promise.resolve())).toBe(false);
 });

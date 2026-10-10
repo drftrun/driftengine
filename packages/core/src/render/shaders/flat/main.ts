@@ -102,6 +102,8 @@ export const MAIN_GLSL = `void main() {
         }
       }
     }
+    /* A layered material whose mask is the vertex colour takes no tint from it: layered.ts. */
+    if (LAYERED && layered()) albedo = layeredColor(albedo);
     albedo *= texel.rgb;
     coverage = kept;
   }
@@ -172,7 +174,8 @@ export const MAIN_GLSL = `void main() {
   /*
    * **A thin surface lets light from behind through, coloured by itself**: a banner, a leaf, a
    * lampshade, an opaque material's \`diffuseTransmission\`, in the glass tint's spare lane. It
-   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour.
+   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour,
+   * or through the \`transmissionColor\` it names in the tint's colour lanes (transmission.ts).
    * None on glass, which has its own way through.
    */
   float thin = glassTransmission > 0.0 ? 0.0 : uGlassTint.w;
@@ -1957,8 +1960,12 @@ export const MAIN_GLSL = `void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
-    /* What a thin surface lets through from behind, through its own colour; a metal lets none. */
-    if (thin > 0.0) lit += albedo * glassGlow * (thin * (1.0 - metal));
+    /* What a thin surface lets through from behind, in its own colour or the one it names (below
+       zero: none named, transmission.ts); a metal lets none. */
+    if (thin > 0.0) {
+      vec3 through = uGlassTint.r < 0.0 ? albedo : uGlassTint.rgb;
+      lit += through * glassGlow * (thin * (1.0 - metal));
+    }
     diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*

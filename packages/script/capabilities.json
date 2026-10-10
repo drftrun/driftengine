@@ -6261,6 +6261,32 @@
     },
     {
       "module": "drift/render",
+      "name": "occlusionFade",
+      "signature": "fn(renderer: Renderer, distance: f32, radius: f32) -> void",
+      "params": [
+        {
+          "name": "renderer",
+          "type": "Renderer"
+        },
+        {
+          "name": "distance",
+          "type": "f32"
+        },
+        {
+          "name": "radius",
+          "type": "f32"
+        }
+      ],
+      "returns": "void",
+      "effects": [
+        "scene.write"
+      ],
+      "deterministic": false,
+      "doc": "Where ambient occlusion fades out with distance: whole up to `distance` metres from the eye and gone `radius` metres past it, so far scenery and a distant sky are not shaded in rings that follow the depth buffer. A negative distance is no fade, the default. Held until changed. Does nothing when the quality profile's `ambientOcclusion` is 0.",
+      "implementation": "drift/render.occlusionFade"
+    },
+    {
+      "module": "drift/render",
       "name": "medium",
       "signature": "fn(renderer: Renderer, density: f32, albedo: f32, anisotropy: f32, maxDistance: f32) -> void",
       "params": [

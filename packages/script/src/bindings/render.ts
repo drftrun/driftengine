@@ -147,6 +147,14 @@ export const RENDER_CAPABILITIES: readonly CapabilityDefinition[] = [
       'answer and a script author is further from that cost than a TypeScript caller.',
   ),
   define(
+    'occlusionFade',
+    [R, { name: 'distance', type: 'f32' }, { name: 'radius', type: 'f32' }],
+    'Where ambient occlusion fades out with distance: whole up to `distance` metres from the eye ' +
+      'and gone `radius` metres past it, so far scenery and a distant sky are not shaded in rings ' +
+      'that follow the depth buffer. A negative distance is no fade, the default. Held until ' +
+      "changed. Does nothing when the quality profile's `ambientOcclusion` is 0.",
+  ),
+  define(
     'medium',
     [
       R,
@@ -213,6 +221,8 @@ export function renderImplementation(): Record<string, unknown> {
     speedBlur: (renderer: RendererApi, strength: number) => renderer.setSpeedRush(strength),
     focus: (renderer: RendererApi, distance: number, range: number, scale: number) =>
       renderer.setDepthOfField(distance, range, scale),
+    occlusionFade: (renderer: RendererApi, distance: number, radius: number) =>
+      renderer.setAmbientOcclusionFade(distance, radius),
     medium: (
       renderer: RendererApi,
       density: number,

@@ -113,7 +113,8 @@ export class AmbientOcclusionPass {
    * by, or null if this pass could not run, which the caller must read as "no occlusion"
    * rather than as black.
    *
-   * `invProjection` is column-major, as `gl-matrix` produces it.
+   * `invProjection` is column-major, as `gl-matrix` produces it. `fade` is `uFade`, where the
+   * occlusion fades out with distance (`occlusionFade.ts`).
    */
   run(
     depth: WebGLTexture,
@@ -122,6 +123,7 @@ export class AmbientOcclusionPass {
     radius: number,
     projScale: Float32Array,
     invProjection: Float32Array,
+    fade: Float32Array,
   ): WebGLTexture | null {
     if (!this.ensureSize(width, height)) return null;
     const { gl } = this;
@@ -142,6 +144,7 @@ export class AmbientOcclusionPass {
     gl.uniform1i(this.estimateUniforms['uDepth'] ?? null, 0);
     gl.uniform2fv(this.estimateUniforms['uProjScale'] ?? null, projScale);
     gl.uniform1f(this.estimateUniforms['uRadius'] ?? null, radius);
+    gl.uniform2fv(this.estimateUniforms['uFade'] ?? null, fade);
     gl.uniformMatrix4fv(this.estimateUniforms['uInvProjection'] ?? null, false, invProjection);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 

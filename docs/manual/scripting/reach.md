@@ -19,7 +19,7 @@ The page links each module to the chapters whose examples import it. The languag
 types, records and the rest, is at [script.driftengine.dev](https://script.driftengine.dev/docs).
 
 <!-- generated script-reach -->
-25 modules and 342 functions, written from `capabilities.json` by `npm run manual:sync`.
+25 modules and 343 functions, written from `capabilities.json` by `npm run manual:sync`.
 
 | Module | Functions | Deterministic | Bound from |
 |---|---|---|---|
@@ -41,7 +41,7 @@ types, records and the rest, is at [script.driftengine.dev](https://script.drift
 | [`drift/persistence`](#driftpersistence) | 5 | 0 | arguments |
 | [`drift/physics`](#driftphysics) | 42 | 32 | arguments |
 | [`drift/random`](#driftrandom) | 3 | 3 | arguments |
-| [`drift/render`](#driftrender) | 9 | 0 | arguments |
+| [`drift/render`](#driftrender) | 10 | 0 | arguments |
 | [`drift/rollback`](#driftrollback) | 6 | 0 | arguments |
 | [`drift/scene`](#driftscene) | 11 | 8 | arguments |
 | [`drift/terrain`](#driftterrain) | 8 | 8 | arguments |
@@ -482,6 +482,7 @@ Bound always: what each function acts on arrives as an argument the host passes 
 | `motionBlur` | `fn(renderer: Renderer, scale: f32) -> void` | no | How much of the camera motion blur ceiling this frame takes, 0 to 1. |
 | `speedBlur` | `fn(renderer: Renderer, strength: f32) -> void` | no | How much speed blur the frame resolves with, 0 to 1. |
 | `focus` | `fn(renderer: Renderer, distance: f32, range: f32, scale: f32) -> void` | no | Where this frame's lens is focused and how deep the sharp zone is, in metres, and how much of the depth-of-field ceiling to take, 0 to 1. |
+| `occlusionFade` | `fn(renderer: Renderer, distance: f32, radius: f32) -> void` | no | Where ambient occlusion fades out with distance: whole up to `distance` metres from the eye and gone `radius` metres past it, so far scenery and a distant sky are not shaded in rings that follow the depth buffer. |
 | `medium` | `fn(renderer: Renderer, density: f32, albedo: f32, anisotropy: f32, maxDistance: f32) -> void` | no | How thick the air is: a medium filling the whole frustum, rather than a beam inside a hull. |
 | `veil` | `fn(renderer: Renderer, red: f32, green: f32, blue: f32, alpha: f32) -> void` | no | Composite a flat colour over the finished frame, for a cut dipping to white or to black. |
 

@@ -221,8 +221,9 @@ pattern is the one `setDitherFade` uses, so a level of detail crossfading while 
 still covers that instance's share of the pixels once.
 
 What it gives up: a fade reads as grain while it lasts, which a temporal resolve smooths and a plain
-frame does not, so keep it to a few frames. Shadows are cast whole. A lightmapped batch carries its
-page regions where the opacities would be, so it has none to fade.
+frame does not, so keep it to a few frames. Shadows are cast whole. A lightmapped batch fades too:
+its opacities ride its page regions, in steps of a sixty-fourth, which is the pattern's own
+resolution.
 
 ### Each instance its own texture cell
 

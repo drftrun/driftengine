@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "963decea:273550",
-  "directionalShadows+environmentProbe": "dd7d23c6:299561",
-  "directionalShadows+environmentProbe+nightEmissive": "59da3b9e:302047",
-  "directionalShadows+nightEmissive": "5059aa74:276036",
-  "environmentProbe": "5775e51a:276321",
-  "environmentProbe+nightEmissive": "cca4dd7c:278807",
-  "nightEmissive": "2b8063b2:252796",
-  "none": "314e027e:250310",
-  "pointShadows": "15a5a560:289747",
-  "pointShadows+directionalShadows": "1f908a68:312987",
-  "pointShadows+directionalShadows+environmentProbe": "5a10536c:338998",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "a8f55cde:341484",
-  "pointShadows+directionalShadows+nightEmissive": "2b584394:315473",
-  "pointShadows+environmentProbe": "7187295c:315758",
-  "pointShadows+environmentProbe+nightEmissive": "c93d4958:318244",
-  "pointShadows+nightEmissive": "b33e166e:292233",
+  "directionalShadows": "b1517200:276951",
+  "directionalShadows+environmentProbe": "9d7fe22e:302962",
+  "directionalShadows+environmentProbe+nightEmissive": "1aedad3c:305448",
+  "directionalShadows+nightEmissive": "60c93cf0:279437",
+  "environmentProbe": "0e102e4c:279722",
+  "environmentProbe+nightEmissive": "2911dac8:282208",
+  "nightEmissive": "f9ecc0a4:256197",
+  "none": "7cf525e6:253711",
+  "pointShadows": "63928608:293148",
+  "pointShadows+directionalShadows": "3173dc36:316388",
+  "pointShadows+directionalShadows+environmentProbe": "0c65886c:342399",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "e44e595c:344885",
+  "pointShadows+directionalShadows+nightEmissive": "858a0080:318874",
+  "pointShadows+environmentProbe": "4318ce56:319159",
+  "pointShadows+environmentProbe+nightEmissive": "82a736ec:321645",
+  "pointShadows+nightEmissive": "d89cd650:295634",
 }
 `;
 
@@ -4068,39 +4068,96 @@ vec3 triplanarNormal(vec3 n, float layer) {
 
 /* Whether this program blends a material's layers. Off but where one has asked: layered.ts. */
 const bool LAYERED = true;  // wgsl:override
-/* The five repeats, base first (x y z w, then x), the count (y) and the glowing layer, or -1 (z). */
-uniform vec4 uLayers[2]; // wgsl:material
+/*
+ * Four vectors, as surfaceLayers.ts packs them: the five repeats, base first (x y z w, then x); the
+ * count (y), the glowing layer or -1 (z) and where the mask is, 0 a map, 1 the ORM array, 2 the
+ * vertex colour (w); the blend, 0 over and 1 summed (x), whether a mesh normal is laid under the
+ * layers (y), the added mask's layer or -1 (z) and its repeat (w); its intensity (x), the facing
+ * layer or -1 (y), its bias (z) and its sharpness (w).
+ */
+uniform vec4 uLayers[4]; // wgsl:material
 
-/* The mask's channels that lay a layer, zero past the count: read once, in layeredBegin. */
-vec4 lMask;
+/* Each layer's share of this point, the base's and layers 1 to 4's: worked out once, in layeredBegin. */
+float lShareBase;
+vec4 lShare;
 
 bool layered() {
   return uLayers[1].y > 0.5;
-}
-
-/* The mask, at the mesh's coordinates, where a model's map is. Under a branch on uniforms. */
-void layeredBegin() {
-  vec4 m = texture(uModelMap, vec3(vUv.xy, 0.0));
-  float n = uLayers[1].y;
-  lMask = vec4(n > 1.5 ? m.r : 0.0, n > 2.5 ? m.g : 0.0, n > 3.5 ? m.b : 0.0, n > 4.5 ? m.a : 0.0);
-}
-
-/* Layer i's share of this point: its channel, less every later layer's. */
-float layerShare(int i) {
-  float keep = 1.0;
-  for (int j = 3; j >= 0; j--) {
-    if (j + 1 == i) return lMask[j] * keep;
-    keep *= 1.0 - lMask[j];
-  }
-  return keep;
 }
 
 float layerRepeat(int i) {
   return i < 4 ? uLayers[0][i] : uLayers[1].x;
 }
 
+/* Where the layers are laid: the world's horizontal plane under a projection, the mesh's otherwise. */
+vec2 layerPlace() {
+  if (WORLD_UVS && projected()) return planarAt();
+  return vUv.xy;
+}
+
 vec3 layerAt(int i) {
-  return vec3(vUv.xy * layerRepeat(i), float(i));
+  return vec3(layerPlace() * layerRepeat(i), float(i));
+}
+
+/* The weights as the material keeps them: the mask's channels, at the mesh's own coordinates. */
+vec4 layerWeights() {
+  float source = uLayers[1].w;
+  if (source > 1.5) return vec4(vColor, 0.0);
+  if (source > 0.5) return texture(uOrmMap, vec3(vUv.xy, uLayers[1].y));
+  return texture(uModelMap, vec3(vUv.xy, 0.0));
+}
+
+/* Which of layers 1 to 4 a packed layer number names, as a vector of one 1: none for -1. */
+vec4 layerPick(float layer) {
+  return vec4(equal(vec4(layer), vec4(1.0, 2.0, 3.0, 4.0)));
+}
+
+/*
+ * The weights, changed where the material asks and zero past the count, and every share from them.
+ * Under a branch on uniforms, as its reads are.
+ */
+void layeredBegin() {
+  vec4 m = layerWeights();
+  if (uLayers[2].z > 0.5) {
+    /* The ORM array's layer past the layers, and past the mask where the array carries that too. */
+    float at = uLayers[1].y + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0);
+    float added = texture(uOrmMap, vec3(layerPlace() * uLayers[2].w, at)).r * uLayers[3].x;
+    m = mix(m, clamp(m + added, 0.0, 1.0), layerPick(uLayers[2].z));
+  }
+  if (uLayers[3].y > 0.5) {
+    float up = normalize(vNormal).y * 0.5 + 0.5;
+    float facing = clamp(uLayers[3].z + uLayers[3].w * up, 0.0, 1.0);
+    m = mix(m, vec4(facing), layerPick(uLayers[3].y));
+  }
+  float n = uLayers[1].y;
+  m *= vec4(n > 1.5 ? 1.0 : 0.0, n > 2.5 ? 1.0 : 0.0, n > 3.5 ? 1.0 : 0.0, n > 4.5 ? 1.0 : 0.0);
+  if (uLayers[2].x > 0.5) {
+    float taken = min(m.x + m.y + m.z + m.w, 1.0);
+    lShare = m * taken;
+    lShareBase = 1.0 - taken;
+    return;
+  }
+  /* Each over everything before it: a layer keeps its weight of what every later one leaves. */
+  float keep = 1.0;
+  lShare.w = m.w * keep;
+  keep *= 1.0 - m.w;
+  lShare.z = m.z * keep;
+  keep *= 1.0 - m.z;
+  lShare.y = m.y * keep;
+  keep *= 1.0 - m.y;
+  lShare.x = m.x * keep;
+  keep *= 1.0 - m.x;
+  lShareBase = keep;
+}
+
+float layerShare(int i) {
+  if (i == 0) return lShareBase;
+  return lShare[i - 1];
+}
+
+/* The vertex colour's part in the albedo: none where it is the mask instead. */
+vec3 layeredColor(vec3 color) {
+  return uLayers[1].w > 1.5 ? vec3(1.0) : color;
 }
 
 /* Colour by the shares, and the base layer's coverage, which a cutout reads. */
@@ -4124,17 +4181,32 @@ vec3 layeredOrm() {
   return sum;
 }
 
-/* The tangent-space texels blended, each with its z rebuilt where a two-channel map stored none. */
+/* A tangent-space texel off the normal array, its z rebuilt where a two-channel map stored none. */
+vec3 layerNormalTexel(vec3 at) {
+  vec3 t = texture(uNormalMap, at).xyz * 2.0 - 1.0;
+  t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
+  return t;
+}
+
+/* The tangent-space texels blended by the shares. */
 vec3 layeredTexel() {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     if (float(i) >= uLayers[1].y) break;
-    vec3 t = texture(uNormalMap, layerAt(i)).xyz * 2.0 - 1.0;
-    t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
-    sum += t * layerShare(i);
+    sum += layerNormalTexel(layerAt(i)) * layerShare(i);
   }
   float len = length(sum);
   return len > 1e-5 ? sum / len : vec3(0.0, 0.0, 1.0);
+}
+
+/* Whether a normal read at the mesh's own coordinates lies under the layers. */
+bool layeredMeshNormal() {
+  return uLayers[2].y > 0.5;
+}
+
+/* That normal's texel: the normal array's layer past the layers, at the mesh's coordinates. */
+vec3 layeredMeshTexel() {
+  return layerNormalTexel(vec3(vUv.xy, uLayers[1].y));
 }
 
 /* Whether the emissive map belongs to one layer rather than to the whole surface. */
@@ -4181,9 +4253,18 @@ vec3 emissiveTexel(vec3 at) {
 vec3 normalMapped(vec3 n, vec3 at, vec2 frameAt, int hasTangents) {
   /* On three planes where the material projects them so: worldUv.ts. */
   if (WORLD_UVS && triplanar()) return triplanarNormal(n, at.z);
-  /* A layered material's texels, blended by its mask before the frame turns them: layered.ts. */
+  /*
+   * A layered material's texels, blended by its mask before the frame turns them, around a normal
+   * read at the mesh's own coordinates and tangents where the material lays one under them, which is
+   * the surface's large shape the layers' detail rides on: layered.ts.
+   */
   if (LAYERED && layered()) {
-    mat3 layeredFrame = tangentFrame(n, vWorldPos, frameAt, vTangent, hasTangents);
+    vec3 under = n;
+    if (layeredMeshNormal()) {
+      mat3 meshFrame = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
+      under = normalize(meshFrame * layeredMeshTexel());
+    }
+    mat3 layeredFrame = tangentFrame(under, vWorldPos, frameAt, vTangent, hasTangents);
     return normalize(mix(n, normalize(layeredFrame * layeredTexel()), uNormalStrength));
   }
   vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;
@@ -4435,6 +4516,8 @@ void main() {
         }
       }
     }
+    /* A layered material whose mask is the vertex colour takes no tint from it: layered.ts. */
+    if (LAYERED && layered()) albedo = layeredColor(albedo);
     albedo *= texel.rgb;
     coverage = kept;
   }
@@ -4505,7 +4588,8 @@ void main() {
   /*
    * **A thin surface lets light from behind through, coloured by itself**: a banner, a leaf, a
    * lampshade, an opaque material's \`diffuseTransmission\`, in the glass tint's spare lane. It
-   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour.
+   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour,
+   * or through the \`transmissionColor\` it names in the tint's colour lanes (transmission.ts).
    * None on glass, which has its own way through.
    */
   float thin = glassTransmission > 0.0 ? 0.0 : uGlassTint.w;
@@ -6268,8 +6352,12 @@ void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
-    /* What a thin surface lets through from behind, through its own colour; a metal lets none. */
-    if (thin > 0.0) lit += albedo * glassGlow * (thin * (1.0 - metal));
+    /* What a thin surface lets through from behind, in its own colour or the one it names (below
+       zero: none named, transmission.ts); a metal lets none. */
+    if (thin > 0.0) {
+      vec3 through = uGlassTint.r < 0.0 ? albedo : uGlassTint.rgb;
+      lit += through * glassGlow * (thin * (1.0 - metal));
+    }
     diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*
@@ -6729,10 +6817,16 @@ void main() {
   vAlpha = aInstanceTint.w;
   vThickness = 1.0;
   if (LIGHTMAP_REGIONS) {
+    /*
+     * The opacity's transparency rides the U offset as whole steps of 2, the offset itself under 1
+     * (\`MeshInstances.lightmapRegions\`): taken off, and none where the instance is opaque.
+     */
+    float steps = floor(aInstanceTint.z * 0.5);
+    float offsetU = aInstanceTint.z - 2.0 * steps;
     /* Out of the lane's \`-1 - uv\`, through the region, and back into it. See lightmap.ts. */
-    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + aInstanceTint.z);
+    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + offsetU);
     vRelief = -1.0 - ((-1.0 - aRelief) * aInstanceTint.y + aInstanceTint.w);
-    vAlpha = 1.0;
+    vAlpha = 1.0 - steps / 64.0;
   }
   vHasTangents = uHasTangents;
   gl_Position = uViewProj * world;

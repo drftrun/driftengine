@@ -125,7 +125,12 @@ it, from a few hundred milliseconds to several seconds on a phone. With `'skip'`
 off the frame and the draw is left out until it lands, a few frames later, so nothing waits.
 
 Either way, a loading screen can prepare a scene: draw what the scene will use once, then
-`await renderer.ready()`, which waits for every compile started. On WebGL2 only a surface model's
+`await renderer.ready()`, which waits for every compile started. Or prepare it without drawing:
+`prepareMesh(mesh, material)` and `prepareInstanced(batch, material)` compile every shader a draw of
+that mesh in that material will ask for, its surface model, its two-sided and cut-out variants and
+its lit switches, and `ready()` waits for those too. Under `'skip'` that is what keeps a figure
+brought on screen from missing its skin and hair for the frames they take. `{ translucent: true }`
+prepares the blended draws as well. Call them between frames. On WebGL2 only a surface model's
 program compiles at a draw, and `'skip'` helps there only where the browser offers parallel shader
 compiling, which ANGLE on OpenGL does and ANGLE on Vulkan does not.
 

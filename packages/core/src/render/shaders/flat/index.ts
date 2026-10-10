@@ -18,6 +18,7 @@ import { modelsGlsl } from './models.ts';
 import { AREA_LIGHT_GLSL } from './areaLight.ts';
 import { NORMAL_MAP_GLSL } from './normalMap.ts';
 import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
+import { LIGHTMAP_OPACITY_STEPS } from '../../instances.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { overlayGlsl } from './overlay.ts';
 import { reflectionSurfaceGlsl } from './reflectionSurface.ts';
@@ -342,10 +343,16 @@ void main() {
   vAlpha = aInstanceTint.w;
   vThickness = 1.0;
   if (LIGHTMAP_REGIONS) {
+    /*
+     * The opacity's transparency rides the U offset as whole steps of 2, the offset itself under 1
+     * (\`MeshInstances.lightmapRegions\`): taken off, and none where the instance is opaque.
+     */
+    float steps = floor(aInstanceTint.z * 0.5);
+    float offsetU = aInstanceTint.z - 2.0 * steps;
     /* Out of the lane's \`-1 - uv\`, through the region, and back into it. See lightmap.ts. */
-    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + aInstanceTint.z);
+    vGrain = -1.0 - ((-1.0 - aGrain) * aInstanceTint.x + offsetU);
     vRelief = -1.0 - ((-1.0 - aRelief) * aInstanceTint.y + aInstanceTint.w);
-    vAlpha = 1.0;
+    vAlpha = 1.0 - steps / ${LIGHTMAP_OPACITY_STEPS.toFixed(1)};
   }
 #else
   vSkyDirect = aChannel.y;

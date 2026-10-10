@@ -125,6 +125,33 @@ test('AN INSTANCE CARRIES ITS OWN OPACITY IN THE TWENTIETH FLOAT, 1 WHERE NONE W
   expect(out[19], 'a batch from before opacities existed').toBe(1);
 });
 
+/*
+ * **A lightmapped instance's opacity rides its region, in sixty-fourths, and an opaque one is its
+ * region to the bit.** The region takes the lane the tint and the opacity would, so the opacity's
+ * transparency travels as whole steps of 2 added to the U offset, which is a place in a page and so
+ * under 1: 0.5 is 32 steps, 64.125 over an offset of 0.125; nothing is 64, 128.125; and 0.999 rounds
+ * to no step at all, which is what keeps a scene with no fades drawing exactly as it did.
+ */
+test('A LIGHTMAPPED INSTANCE CARRIES ITS OPACITY IN ITS REGION, IN SIXTY-FOURTHS, AND AN OPAQUE ONE ITS REGION TO THE BIT', () => {
+  const instances = {
+    ...createMeshInstances(4),
+    lightmapRegions: new Float32Array([
+      0.5, 0.25, 0.125, 0.375, 0.5, 0.25, 0.125, 0.375, 0.5, 0.25, 0.125, 0.375, 0.5, 0.25, 0.125,
+      0.375,
+    ]),
+  };
+  instances.alphas?.set([1, 0.5, 0, 0.999]);
+  instances.count = 4;
+  const out = new Float32Array(4 * INSTANCE_FLOATS);
+  packInstances(instances, out);
+  const lanes = (i: number): number[] =>
+    Array.from(out.subarray(i * INSTANCE_FLOATS + 16, i * INSTANCE_FLOATS + 20));
+  expect(lanes(0)).toEqual([0.5, 0.25, 0.125, 0.375]);
+  expect(lanes(1)).toEqual([0.5, 0.25, 64.125, 0.375]);
+  expect(lanes(2)).toEqual([0.5, 0.25, 128.125, 0.375]);
+  expect(lanes(3), 'a hair under opaque is no step').toEqual([0.5, 0.25, 0.125, 0.375]);
+});
+
 test('a culled batch keeps each survivor’s own opacity', () => {
   const instances = createMeshInstances(3);
   for (let i = 0; i < 3; i++) {

@@ -236,11 +236,20 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    */
   diffuseTransmission?: number;
   /**
+   * The colour the light from behind takes through the surface, linear, in place of its own colour:
+   * a banner whose cloth glows a flat red behind a printed face, a leaf whose veins are not what the
+   * light through it shows. Absent, the surface's colour, as `diffuseTransmission` has always used.
+   * Each component is held at zero or above. Read only where `diffuseTransmission` lets light through.
+   */
+  transmissionColor?: readonly [number, number, number] | null;
+  /**
    * Up to five layers blended by a mask, each at its own repeat: `albedo`, `normal` and `orm` arrays
-   * whose layers are the material's, and a mask laying each over the ones before it. Absent, the
-   * material is one layer, as every material was. **A lit switch**, compiled in the first time a
-   * material asks. The mask is read where `modelMap` goes, so a material carries one or the other.
-   * See `surfaceLayers.ts` for what it gives up.
+   * whose layers are the material's, and a mask laying each over the ones before it or summing them,
+   * from a map, the ORM array or the vertex colour; under a `projection` the layers are placed by the
+   * world. Absent, the material is one layer, as every material was. **A lit switch**, compiled in the
+   * first time a material asks. A mask that is a map is read where `modelMap` goes, so such a
+   * material carries one or the other; a lightmapped one keeps its mask in its ORM array or its
+   * vertices. See `surfaceLayers.ts` for the rest and what it gives up.
    */
   layers?: SurfaceLayers<Texture> | null;
 }

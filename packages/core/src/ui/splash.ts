@@ -101,8 +101,9 @@ export const SPLASH_FADE_MS = 420;
 /**
  * When the badge gives the screen to the game. Two conditions and a cap, each for a named failure.
  *
- *   - **The game has painted.** Swapping before that shows the empty canvas the badge exists to
- *     cover.
+ *   - **The game has painted**, and every promise it asked the badge to wait for has settled
+ *     (`holdSplash`). Swapping before that shows the empty canvas, or the half-loaded first screen,
+ *     the badge exists to cover.
  *   - **The minimum has passed.** A badge that vanishes the instant a fast machine paints is a
  *     flicker, and the machines that boot fastest are the ones a developer tests on.
  *   - **The cap overrides both**, and is checked first so that a minimum longer than the cap
@@ -138,6 +139,65 @@ export interface MountedSplash {
   present(): void;
   /** Take it down now, whatever the clock says. Idempotent. */
   release(): void;
+  /** Keep it up until `until` settles as well, under `capMs`. False once it has left. */
+  holdUntil(until: PromiseLike<unknown>, capMs?: number): boolean;
+}
+
+/**
+ * What a badge waits for besides the clock: the game's first frame, and every promise the game asked
+ * it to wait for (`holdSplash`), under the cap the game named, the longest of several, or the engine's.
+ *
+ * **A hold settles whichever way its promise does.** A load that failed must not pin the logo: the
+ * game is shown, broken and visible, which is the cap's own argument. Pure apart from the promises,
+ * so the rule is testable in Node.
+ */
+export class SplashState {
+  /** Whether a frame of the game has reached the screen. */
+  painted = false;
+  private pending = 0;
+  /** The longest cap a hold has named, or 0 for none. */
+  private asked = 0;
+
+  /** The longest the badge may stay: the cap a hold named, the longest of several, or the engine's. */
+  get capMs(): number {
+    return this.asked > 0 ? this.asked : SPLASH_HARD_CAP_MS;
+  }
+
+  /** Wait for `until` too, under `capMs` where it names one; `settled` once it has. */
+  hold(until: PromiseLike<unknown>, capMs: number | undefined, settled: () => void): void {
+    this.pending += 1;
+    if (capMs !== undefined && Number.isFinite(capMs) && capMs > this.asked) this.asked = capMs;
+    const done = (): void => {
+      this.pending -= 1;
+      settled();
+    };
+    Promise.resolve(until).then(done, done);
+  }
+
+  /** Painted, with every hold settled: what `splashDecision` calls the content being ready. */
+  get ready(): boolean {
+    return this.painted && this.pending === 0;
+  }
+}
+
+/** The badge on the page, which `holdSplash` holds. One screen, so one badge: see `bootGate.ts`. */
+let mounted: MountedSplash | null = null;
+
+/**
+ * Keep the engine's badge up until `until` settles, as well as until the game's first frame: a game
+ * whose first screen loads for longer than that frame — a stage, figures and their pictures on a
+ * first visit — is seen whole rather than loading. **`capMs` is the game's own ceiling** on the
+ * badge in place of the engine's twenty seconds, longer for a slow first visit or shorter, so a load
+ * that never settles is still shown in the end; the longest of several holds' wins, and the minimum
+ * hold is unchanged.
+ *
+ * **Frames run while the game loads behind the plate**, since a load may need them, and are held
+ * once it has settled, for whatever is left of the minimum, as they are after a first frame with no
+ * hold. Returns whether there was a badge to hold: none in a packaged build, whose shell shows its
+ * own until the first frame, nor where `splash: false` or `?splash=0` turned it off.
+ */
+export function holdSplash(until: PromiseLike<unknown>, options: { capMs?: number } = {}): boolean {
+  return mounted?.holdUntil(until, options.capMs) ?? false;
 }
 
 /**
@@ -275,18 +335,19 @@ export function mountSplash(options: SplashOptions = {}): MountedSplash | null {
     }
   }
 
-  let painted = false;
+  const state = new SplashState();
   let leaving = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   /*
-   * **Freeze the game the moment it has proved it can draw.**
+   * **Freeze the game the moment it has proved it can draw and has loaded.**
    *
-   * `painted` is the first `endFrame`, and everything after it until the plate leaves is time the
-   * game would otherwise spend running behind an opaque screen. `bootGate` is read by `startLoop`
+   * Ready is the first `endFrame` with every hold settled (`SplashState`), and everything after it
+   * until the plate leaves is time the game would otherwise spend running behind an opaque screen.
+   * Before it, frames run: a load the game is holding the badge for may need them. `bootGate` is read by `startLoop`
    * and named by neither of them; see its own comment for why the state is shared that way.
    */
-  const openGate = holdFrames(() => painted && !leaving);
+  const openGate = holdFrames(() => state.ready && !leaving);
 
   const remove = (): void => {
     /* Leaving the top layer is what `hidePopover` is for. `remove()` alone takes the element out
@@ -304,6 +365,7 @@ export function mountSplash(options: SplashOptions = {}): MountedSplash | null {
   const release = (): void => {
     if (leaving) return;
     leaving = true;
+    if (mounted === badge) mounted = null;
     /* Before the fade, not after it: the game resumes as the plate becomes transparent, so what
        shows through is a running frame rather than the still one it was frozen on. */
     openGate();
@@ -325,23 +387,30 @@ export function mountSplash(options: SplashOptions = {}): MountedSplash | null {
   const settle = (): void => {
     if (leaving) return;
     const elapsed = performance.now() - started;
-    if (splashDecision(elapsed, minMs, painted) === 'swap') {
+    if (splashDecision(elapsed, minMs, state.ready, state.capMs) === 'swap') {
       release();
       return;
     }
     if (timer !== null) clearTimeout(timer);
-    const next = painted ? minMs - elapsed : SPLASH_HARD_CAP_MS - elapsed;
+    const next = state.ready ? minMs - elapsed : state.capMs - elapsed;
     timer = setTimeout(settle, Math.max(0, next));
   };
 
-  settle();
-
-  return {
+  const badge: MountedSplash = {
     present(): void {
-      if (painted || leaving) return;
-      painted = true;
+      if (state.painted || leaving) return;
+      state.painted = true;
       settle();
     },
     release,
+    holdUntil(until: PromiseLike<unknown>, capMs?: number): boolean {
+      if (leaving) return false;
+      state.hold(until, capMs, settle);
+      settle();
+      return true;
+    },
   };
+  mounted = badge;
+  settle();
+  return badge;
 }

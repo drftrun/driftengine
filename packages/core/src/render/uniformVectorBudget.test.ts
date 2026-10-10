@@ -94,11 +94,11 @@ describe('countUniformVectors', () => {
       countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, true)) -
         countUniformVectors(lit(FULL_LIGHT_BUDGET)),
     ).toBe(5);
-    /* A material's layers, two: layered.ts. */
+    /* A material's layers, four: layered.ts. */
     expect(
       countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true)) -
         countUniformVectors(lit(FULL_LIGHT_BUDGET)),
-    ).toBe(2);
+    ).toBe(4);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,

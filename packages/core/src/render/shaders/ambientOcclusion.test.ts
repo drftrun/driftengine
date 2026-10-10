@@ -138,6 +138,10 @@ test('the blur carries the same arithmetic, and the estimate is stored at scale 
     'float w = max(0.0, 1.0 - abs(z * (inverse + slope * float(i)) - 1.0) / AO_BLUR_DEPTH_TOLERANCE);',
   );
   expect(AO_FRAG).toContain(`const float AO_STORE = ${AO_STORE.toFixed(1)};`);
-  expect(AO_FRAG).toContain('fragColor = clamp(visible / float(AO_SLICES) * AO_STORE, 0.0, 1.0);');
+  expect(AO_FRAG).toContain(
+    'fragColor = clamp(mix(visible / float(AO_SLICES), 1.0, faded) * AO_STORE, 0.0, 1.0);',
+  );
+  /* And a pixel past the caller's fade stores open at the same scale (occlusionFade.ts). */
+  expect(AO_FRAG).toContain('fragColor = AO_STORE;');
   expect(AO_BLUR_FRAG).toContain('fragColor = min(blurred * uAoScale, 1.0);');
 });

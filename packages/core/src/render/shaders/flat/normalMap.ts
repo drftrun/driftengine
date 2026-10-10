@@ -15,9 +15,18 @@ export const NORMAL_MAP_GLSL = /* glsl */ `
 vec3 normalMapped(vec3 n, vec3 at, vec2 frameAt, int hasTangents) {
   /* On three planes where the material projects them so: worldUv.ts. */
   if (WORLD_UVS && triplanar()) return triplanarNormal(n, at.z);
-  /* A layered material's texels, blended by its mask before the frame turns them: layered.ts. */
+  /*
+   * A layered material's texels, blended by its mask before the frame turns them, around a normal
+   * read at the mesh's own coordinates and tangents where the material lays one under them, which is
+   * the surface's large shape the layers' detail rides on: layered.ts.
+   */
   if (LAYERED && layered()) {
-    mat3 layeredFrame = tangentFrame(n, vWorldPos, frameAt, vTangent, hasTangents);
+    vec3 under = n;
+    if (layeredMeshNormal()) {
+      mat3 meshFrame = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
+      under = normalize(meshFrame * layeredMeshTexel());
+    }
+    mat3 layeredFrame = tangentFrame(under, vWorldPos, frameAt, vTangent, hasTangents);
     return normalize(mix(n, normalize(layeredFrame * layeredTexel()), uNormalStrength));
   }
   vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;

@@ -2,19 +2,27 @@
  * A material blended from layers by a mask: `SurfaceMaterial.layers`, packed into `uLayers` by
  * `surfaceLayers.ts`.
  *
- * **Layer `i` is layer `i` of the material's arrays**, each read at the mesh's coordinates times its
- * own repeat; the mask is layer 0 of the map a shading model would read, at the mesh's coordinates.
- * Each channel lays a layer over everything before it — red layer 1, green 2, blue 3, alpha 4 — so a
- * layer's share is its channel times one less each later channel, and the base keeps what none of
- * them took. Colour, roughness and occlusion are blended by those shares, and the normal map's
- * tangent-space texels too, before the frame turns them into the world.
+ * **Layer `i` is layer `i` of the material's arrays**, each read at its own repeat of where the
+ * layers are laid: the mesh's coordinates, or the world's horizontal plane where the material has a
+ * projection (`worldUv.ts`). The mask's channels weigh layers 1 to 4 — red, green, blue, alpha — and
+ * come from a map read where a shading model's would be, from the ORM array's layer past the layers,
+ * or from the vertex colour; an added mask placed as the layers are raises one layer's weight, and
+ * one layer may be weighed by how much the surface faces up instead of by its channel.
+ *
+ * **Two ways to combine them.** Laid over, each layer covers everything before it, so a layer's
+ * share is its weight times one less each later weight, and the base keeps what none took. Summed,
+ * the base is mixed toward each layer times its weight by the weights' sum held to 1, so each
+ * layer's share is its weight times that and the base keeps the rest. The shares are worked out once
+ * a pixel, in `layeredBegin`; colour, roughness and occlusion are blended by them, and the normal
+ * map's tangent-space texels too, before the frame turns them into the world — around a normal read
+ * at the mesh's own coordinates, where the material lays one under the layers.
  *
  * **Every layer present is read, whatever its share.** A read whose level is implicit is legal only
  * in uniform control flow (AGENTS.md 2026-08-07), so the loop is bounded by the layer count, a
  * uniform, and never skips on a share, which is the pixel's own.
  *
  * **A lit switch, `LAYERED`**, off until a material first asks, declared last so every switch before
- * it keeps its id. Compiled out, its two vectors are not declared and its calls are constants.
+ * it keeps its id. Compiled out, its four vectors are not declared and its calls are constants.
  */
 export function layeredGlsl(on: boolean): string {
   if (!on) {
@@ -22,9 +30,12 @@ export function layeredGlsl(on: boolean): string {
 const bool LAYERED = false;  // wgsl:override
 bool layered() { return false; }
 void layeredBegin() {}
+vec3 layeredColor(vec3 color) { return color; }
 vec4 layeredAlbedo() { return vec4(1.0); }
 vec3 layeredOrm() { return vec3(1.0); }
 vec3 layeredTexel() { return vec3(0.0, 0.0, 1.0); }
+bool layeredMeshNormal() { return false; }
+vec3 layeredMeshTexel() { return vec3(0.0, 0.0, 1.0); }
 bool layeredGlows() { return false; }
 vec3 layeredEmissive() { return vec3(0.0); }
 `;
@@ -32,39 +43,96 @@ vec3 layeredEmissive() { return vec3(0.0); }
   return /* glsl */ `
 /* Whether this program blends a material's layers. Off but where one has asked: layered.ts. */
 const bool LAYERED = true;  // wgsl:override
-/* The five repeats, base first (x y z w, then x), the count (y) and the glowing layer, or -1 (z). */
-uniform vec4 uLayers[2]; // wgsl:material
+/*
+ * Four vectors, as surfaceLayers.ts packs them: the five repeats, base first (x y z w, then x); the
+ * count (y), the glowing layer or -1 (z) and where the mask is, 0 a map, 1 the ORM array, 2 the
+ * vertex colour (w); the blend, 0 over and 1 summed (x), whether a mesh normal is laid under the
+ * layers (y), the added mask's layer or -1 (z) and its repeat (w); its intensity (x), the facing
+ * layer or -1 (y), its bias (z) and its sharpness (w).
+ */
+uniform vec4 uLayers[4]; // wgsl:material
 
-/* The mask's channels that lay a layer, zero past the count: read once, in layeredBegin. */
-vec4 lMask;
+/* Each layer's share of this point, the base's and layers 1 to 4's: worked out once, in layeredBegin. */
+float lShareBase;
+vec4 lShare;
 
 bool layered() {
   return uLayers[1].y > 0.5;
-}
-
-/* The mask, at the mesh's coordinates, where a model's map is. Under a branch on uniforms. */
-void layeredBegin() {
-  vec4 m = texture(uModelMap, vec3(vUv.xy, 0.0));
-  float n = uLayers[1].y;
-  lMask = vec4(n > 1.5 ? m.r : 0.0, n > 2.5 ? m.g : 0.0, n > 3.5 ? m.b : 0.0, n > 4.5 ? m.a : 0.0);
-}
-
-/* Layer i's share of this point: its channel, less every later layer's. */
-float layerShare(int i) {
-  float keep = 1.0;
-  for (int j = 3; j >= 0; j--) {
-    if (j + 1 == i) return lMask[j] * keep;
-    keep *= 1.0 - lMask[j];
-  }
-  return keep;
 }
 
 float layerRepeat(int i) {
   return i < 4 ? uLayers[0][i] : uLayers[1].x;
 }
 
+/* Where the layers are laid: the world's horizontal plane under a projection, the mesh's otherwise. */
+vec2 layerPlace() {
+  if (WORLD_UVS && projected()) return planarAt();
+  return vUv.xy;
+}
+
 vec3 layerAt(int i) {
-  return vec3(vUv.xy * layerRepeat(i), float(i));
+  return vec3(layerPlace() * layerRepeat(i), float(i));
+}
+
+/* The weights as the material keeps them: the mask's channels, at the mesh's own coordinates. */
+vec4 layerWeights() {
+  float source = uLayers[1].w;
+  if (source > 1.5) return vec4(vColor, 0.0);
+  if (source > 0.5) return texture(uOrmMap, vec3(vUv.xy, uLayers[1].y));
+  return texture(uModelMap, vec3(vUv.xy, 0.0));
+}
+
+/* Which of layers 1 to 4 a packed layer number names, as a vector of one 1: none for -1. */
+vec4 layerPick(float layer) {
+  return vec4(equal(vec4(layer), vec4(1.0, 2.0, 3.0, 4.0)));
+}
+
+/*
+ * The weights, changed where the material asks and zero past the count, and every share from them.
+ * Under a branch on uniforms, as its reads are.
+ */
+void layeredBegin() {
+  vec4 m = layerWeights();
+  if (uLayers[2].z > 0.5) {
+    /* The ORM array's layer past the layers, and past the mask where the array carries that too. */
+    float at = uLayers[1].y + (abs(uLayers[1].w - 1.0) < 0.5 ? 1.0 : 0.0);
+    float added = texture(uOrmMap, vec3(layerPlace() * uLayers[2].w, at)).r * uLayers[3].x;
+    m = mix(m, clamp(m + added, 0.0, 1.0), layerPick(uLayers[2].z));
+  }
+  if (uLayers[3].y > 0.5) {
+    float up = normalize(vNormal).y * 0.5 + 0.5;
+    float facing = clamp(uLayers[3].z + uLayers[3].w * up, 0.0, 1.0);
+    m = mix(m, vec4(facing), layerPick(uLayers[3].y));
+  }
+  float n = uLayers[1].y;
+  m *= vec4(n > 1.5 ? 1.0 : 0.0, n > 2.5 ? 1.0 : 0.0, n > 3.5 ? 1.0 : 0.0, n > 4.5 ? 1.0 : 0.0);
+  if (uLayers[2].x > 0.5) {
+    float taken = min(m.x + m.y + m.z + m.w, 1.0);
+    lShare = m * taken;
+    lShareBase = 1.0 - taken;
+    return;
+  }
+  /* Each over everything before it: a layer keeps its weight of what every later one leaves. */
+  float keep = 1.0;
+  lShare.w = m.w * keep;
+  keep *= 1.0 - m.w;
+  lShare.z = m.z * keep;
+  keep *= 1.0 - m.z;
+  lShare.y = m.y * keep;
+  keep *= 1.0 - m.y;
+  lShare.x = m.x * keep;
+  keep *= 1.0 - m.x;
+  lShareBase = keep;
+}
+
+float layerShare(int i) {
+  if (i == 0) return lShareBase;
+  return lShare[i - 1];
+}
+
+/* The vertex colour's part in the albedo: none where it is the mask instead. */
+vec3 layeredColor(vec3 color) {
+  return uLayers[1].w > 1.5 ? vec3(1.0) : color;
 }
 
 /* Colour by the shares, and the base layer's coverage, which a cutout reads. */
@@ -88,17 +156,32 @@ vec3 layeredOrm() {
   return sum;
 }
 
-/* The tangent-space texels blended, each with its z rebuilt where a two-channel map stored none. */
+/* A tangent-space texel off the normal array, its z rebuilt where a two-channel map stored none. */
+vec3 layerNormalTexel(vec3 at) {
+  vec3 t = texture(uNormalMap, at).xyz * 2.0 - 1.0;
+  t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
+  return t;
+}
+
+/* The tangent-space texels blended by the shares. */
 vec3 layeredTexel() {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     if (float(i) >= uLayers[1].y) break;
-    vec3 t = texture(uNormalMap, layerAt(i)).xyz * 2.0 - 1.0;
-    t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
-    sum += t * layerShare(i);
+    sum += layerNormalTexel(layerAt(i)) * layerShare(i);
   }
   float len = length(sum);
   return len > 1e-5 ? sum / len : vec3(0.0, 0.0, 1.0);
+}
+
+/* Whether a normal read at the mesh's own coordinates lies under the layers. */
+bool layeredMeshNormal() {
+  return uLayers[2].y > 0.5;
+}
+
+/* That normal's texel: the normal array's layer past the layers, at the mesh's coordinates. */
+vec3 layeredMeshTexel() {
+  return layerNormalTexel(vec3(vUv.xy, uLayers[1].y));
 }
 
 /* Whether the emissive map belongs to one layer rather than to the whole surface. */

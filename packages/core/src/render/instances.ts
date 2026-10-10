@@ -46,9 +46,16 @@ export interface MeshInstances {
    * read by a draw whose material is a `lightmapModel` — instances of one mesh in one material sit
    * in different regions of one page, each applied before the material's own region. **They ride
    * the tint and the opacity**, which a lightmapped instance gives up (see `lightmap.ts`): where
-   * these are given, those are not read. **A lightmapped batch needs them**, since a bake is
+   * these are given, the tints are not read. **A lightmapped batch needs them**, since a bake is
    * different light at each instance; one drawn without them reads its tints as its regions, and
    * either mismatch is said once on the console.
+   *
+   * **The opacity survives, in sixty-fourths**, so a lightmapped instance fades by
+   * `setDitherOpacity` as any other does: its transparency travels as whole steps of 2 added to the
+   * region's U offset, which is a place in a page and so under 1, and the vertex stage takes them
+   * back off (`LIGHTMAP_OPACITY_STEPS`). Sixty-four is the screen door's own resolution, an 8x8
+   * pattern. **What it gives up**: a fading instance's offset keeps 16 bits of fraction rather than
+   * 23, a sixteenth of a texel on a 4,096 page; an opaque one is written to the bit as before.
    */
   readonly lightmapRegions?: Float32Array;
   /**
@@ -109,6 +116,12 @@ export function createMeshInstances(capacity: number): MeshInstances {
  */
 export const INSTANCE_FLOATS = 20;
 
+/**
+ * How finely a lightmapped instance's opacity travels in its region: transparency in steps of
+ * 1/64, each 2 on the U offset. See `MeshInstances.lightmapRegions`; the vertex stage reads it back.
+ */
+export const LIGHTMAP_OPACITY_STEPS = 64;
+
 /** Bytes one instance occupies. See `INSTANCE_FLOATS`. */
 export const INSTANCE_STRIDE = INSTANCE_FLOATS * 4;
 
@@ -138,6 +151,10 @@ export function packInstances(instances: MeshInstances, out: Float32Array): void
     if (lightmapRegions !== undefined) {
       /* The region in the tint's and the opacity's place. See `lightmapRegions`. */
       for (let c = 0; c < 4; c += 1) out[at + 16 + c] = lightmapRegions[i * 4 + c] as number;
+      /* And the opacity's transparency in whole steps of 2 on the U offset, none where opaque. */
+      const alpha = Math.min(Math.max(alphas?.[i] ?? 1, 0), 1);
+      const steps = Math.round((1 - alpha) * LIGHTMAP_OPACITY_STEPS);
+      if (steps > 0) out[at + 18] = (out[at + 18] as number) + 2 * steps;
       continue;
     }
     const t = i * 3;

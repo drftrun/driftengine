@@ -311,3 +311,9 @@ the loop is held while it shows, so the first seconds of a game are not spent be
 false` declines it, which is right for a canvas that is one part of a page or a tool that opens into
 its own interface, and `{ minMs }` holds it longer. `?splash=0` and `?splash=1` in the address
 override it either way on a deployed build. A packaged shell shows its own and suppresses this one.
+
+A game whose first screen takes longer to load than its first frame can hold the badge for it:
+`holdSplash(promise, { capMs })` keeps it up until the promise settles, either way, as well as until
+the first frame. Frames run while the game loads behind it, since a load may need them, and are held
+for whatever is left of the three seconds once it has settled. `capMs` is the game's own ceiling in
+place of the twenty seconds. It returns whether there was a badge to hold.

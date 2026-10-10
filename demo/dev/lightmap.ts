@@ -8,6 +8,9 @@
  *                                    region its own instance's, composed with the floor's
  *     /lightmap.html?mode=each       the same sixteen tiles drawn one at a time, each with its
  *                                    region in its material: the control for `tiles`
+ *     /lightmap.html?mode=tiles&fade=0.5   every other tile at opacity 0.5 through
+ *                                    `setDitherOpacity`: about half its pixels kept, each lit as in
+ *                                    `tiles`, and the opaque tiles exactly as in `tiles`
  *     /lightmap.html?mode=flat       the floor alone under a page of one value, 0.25 arriving
  *                                    straight down, which adds exactly half the albedo
  *     /lightmap.html?mode=flatref    the floor alone with no page and its own ambient 0.5 higher,
@@ -41,6 +44,7 @@ import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 const BACKGROUND: Vec3 = [0.02, 0.022, 0.026];
 const mode = new URLSearchParams(location.search).get('mode') ?? 'room';
+const fade = Number(new URLSearchParams(location.search).get('fade') ?? '1');
 /** Texels a side of each of the page's three regions. */
 const SIDE = 64;
 /** The lamp the bake was made from, and its intensity: warm, with nothing in the scene at it. */
@@ -247,6 +251,8 @@ async function main(): Promise<void> {
       tileModels.push(model);
       instances.models.set(model, k * 16);
       instances.lightmapRegions.set([1 / TILES, 1 / TILES, i / TILES, j / TILES], k * 4);
+      /* Every other tile faded, where the page asks: the rest stay opaque, the control. */
+      if (instances.alphas !== undefined) instances.alphas[k] = (i + j) % 2 === 1 ? fade : 1;
       /* The instance's region composed with the floor's, by hand: what `each` hands a material. */
       tileRegions.push([1 / (3 * TILES), 1 / TILES, i / (3 * TILES), j / TILES]);
     }
@@ -267,7 +273,9 @@ async function main(): Promise<void> {
     renderer.bindMeshPass(camera, env);
     if (mode === 'tiles') {
       renderer.setMaterial(floorMaterial);
+      if (fade < 1) renderer.setDitherOpacity(true);
       renderer.drawInstanced(batch, instances);
+      renderer.setDitherOpacity(false);
     } else if (mode === 'each') {
       for (let k = 0; k < tileModels.length; k++) {
         renderer.setMaterial(eachMaterials[k] ?? null);
@@ -288,10 +296,14 @@ async function main(): Promise<void> {
       renderer.drawMesh(box, identity);
     }
     renderer.endFrame();
+    drawn += 1;
+    if (drawn === 3) (globalThis as unknown as { __drawn?: boolean }).__drawn = true;
     requestAnimationFrame(frame);
   };
+  let drawn = 0;
   frame();
-  stats.textContent = `${created.backend} · lightmap · ${mode}`;
+  stats.textContent =
+    `${created.backend} · lightmap · ${mode}` + (fade < 1 ? ` · every other tile at ${fade}` : '');
 }
 
 void main();

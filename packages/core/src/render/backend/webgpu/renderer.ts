@@ -59,7 +59,7 @@ import type {
   SkyColors,
   TranslucentMeshOptions,
 } from '../webgl2/renderer.ts';
-import type { IncrementalMeshHandle, MeshOptions } from '../api.ts';
+import type { IncrementalMeshHandle, MeshOptions, PrepareOptions } from '../api.ts';
 import { resolveAtmosphere, type ResolvedAtmosphere } from '../../atmosphere.ts';
 import { AMBIENT_SH_FLOATS, packAmbientSH } from '../../ambientHarmonics.ts';
 import {
@@ -197,8 +197,16 @@ import {
   type SurfaceOverlay,
 } from '../../surfaceOverlay.ts';
 import { PROJECTION_FLOATS, packSurfaceProjection } from '../../surfaceProjection.ts';
+import { resolveTransmission } from '../../transmission.ts';
+import { resolveOcclusionFade } from '../../occlusionFade.ts';
 import { orthographicDepthSpan } from '../../lightMatrix.ts';
-import { LAYER_FLOATS, packSurfaceLayers } from '../../surfaceLayers.ts';
+import {
+  LAYER_FLOATS,
+  layerMaskMap,
+  layeredProjection,
+  layersFitBeside,
+  packSurfaceLayers,
+} from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
 import {
   frameReflectionsRefused,
@@ -755,6 +763,12 @@ const MAX_OVERLAYS = 64;
  * and passes nobody has written yet; the cost is sixteen kilobytes.
  */
 const MAX_SKY_DRAWS = 64;
+
+/** The draw a preparation asks pipelines for: every option at its default. See `prepareMesh`. */
+const PREPARED_DRAW: TranslucentMeshOptions = {};
+/** A preparation's morph states for a mesh with no targets, and for one with some. */
+const NOT_MORPHED: readonly boolean[] = [false];
+const MORPHED_OR_NOT: readonly boolean[] = [false, true];
 
 /**
  * Whether the environment probe's permutation fits this device's per-stage binding limits.
@@ -2347,6 +2361,8 @@ export class WebGPURenderer implements RendererApi {
 
   private readonly aoStaging = new ArrayBuffer(AO_FRAG_SIZE);
   private readonly aoFloats = new Float32Array(this.aoStaging);
+  /** Where occlusion fades out with distance, `uFade`: none until a caller sets one. */
+  private readonly aoFade = new Float32Array([-1, 0]);
   private aoBindGroup: GPUBindGroup | null = null;
   private readonly aoBlurLayout: GPUBindGroupLayout;
   /**
@@ -2999,7 +3015,13 @@ export class WebGPURenderer implements RendererApi {
   private readonly projection = new Float32Array(PROJECTION_FLOATS);
   /** `uLayers`, the material's layers packed by `packSurfaceLayers`. */
   private readonly layerFloats = new Float32Array(LAYER_FLOATS);
+  /**
+   * `uGlassTint` as the material leaves it, its light from behind and that light's colour, which a
+   * pane overwrites for its own draw and `releaseSeeThrough` puts back. See `transmission.ts`.
+   */
+  private readonly transmission = new Float32Array([-1, -1, -1, 0]);
   private warnedLayersModelMap = false;
+  private warnedLayersTriplanar = false;
   /** Its numbers, `uModelParams`, packed by `packModel`. */
   private readonly modelParams = new Float32Array(MODEL_PARAM_FLOATS);
   /**
@@ -3475,9 +3497,9 @@ export class WebGPURenderer implements RendererApi {
     const orm = (material?.orm ?? null) as GpuSurfaceTexture | null;
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
     const ownModelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
-    /* A layered material's mask goes where a model's map would: see `SurfaceMaterial.layers`. */
+    /* A layered material's mask, where it is a map, goes where a model's would: surfaceLayers.ts. */
     const layers = this.layersOf(material);
-    const modelMap = ownModelMap ?? ((layers?.mask ?? null) as GpuSurfaceTexture | null);
+    const modelMap = ownModelMap ?? layerMaskMap(layers);
     this.materialModel = material?.model ?? null;
     const reflectivity = material?.reflectivity;
     const environmentGain = material?.environmentGain;
@@ -3554,11 +3576,13 @@ export class WebGPURenderer implements RendererApi {
       /* The first physical highlight asked for is when the lit pipelines start carrying one. */
       if (material?.physicalSpecular === true) this.enableLit('PHYSICAL_SPECULAR');
       /* Maps placed by the world: the first material that asks is when lit pipelines carry it. */
-      packSurfaceProjection(material?.projection, this.projection);
+      const projection = layeredProjection(material?.projection, layers);
+      if (projection !== (material?.projection ?? null)) this.warnLayersTriplanar();
+      packSurfaceProjection(projection, this.projection);
       f.set(this.projection, this.materialField('uWorldUv'));
-      /* How much light from behind it lets through, in the glass tint's spare lane. */
-      f[this.materialField('uGlassTint') + 3] =
-        Math.min(Math.max(material?.diffuseTransmission ?? 0, 0), 1) || 0;
+      /* How much light from behind it lets through, and its colour: transmission.ts. */
+      resolveTransmission(material, this.transmission);
+      f.set(this.transmission, this.materialField('uGlassTint'));
       if ((this.projection[0] as number) > 0) this.enableLit('WORLD_UVS');
       /* And its layers, the first time a material blends any: layered.ts. */
       packSurfaceLayers(layers, this.layerFloats);
@@ -6325,15 +6349,26 @@ export class WebGPURenderer implements RendererApi {
   ): SurfaceLayers<GpuSurfaceTexture> | null {
     const layers = material?.layers ?? null;
     if (layers === null || layers.repeats.length === 0) return null;
-    if ((material?.modelMap ?? null) === null) return layers;
+    if (layersFitBeside(layers, material?.modelMap)) return layers;
     if (!this.warnedLayersModelMap) {
       this.warnedLayersModelMap = true;
       console.warn(
-        "WebGPU: a material's layers are drawn as one: its mask is read where a model's map goes, " +
-          'and this material carries a `modelMap` too.',
+        "WebGPU: a material's layers are drawn as one: its mask is a map, read where a model's map " +
+          "goes, and this material carries a `modelMap` too. A mask in the ORM array (`mask: 'orm'`) " +
+          "or the vertex colour (`mask: 'vertex'`) leaves the slot free.",
       );
     }
     return null;
+  }
+
+  /** Says once that a layered material's triplanar projection is laid on the horizontal plane. */
+  private warnLayersTriplanar(): void {
+    if (this.warnedLayersTriplanar) return;
+    this.warnedLayersTriplanar = true;
+    console.warn(
+      "WebGPU: a layered material's triplanar projection is laid on the horizontal plane: every " +
+        "layer's maps on three planes would be three times the reads. See `SurfaceMaterial.layers`.",
+    );
   }
 
   /**
@@ -8937,7 +8972,8 @@ export class WebGPURenderer implements RendererApi {
     /* And no projection: maps follow the mesh's coordinates until a material asks otherwise. */
     f.fill(0, at('uWorldUv'), at('uWorldUv') + 4);
     /* Nor light through from behind. See `SurfaceMaterial.diffuseTransmission`. */
-    f[at('uGlassTint') + 3] = 0;
+    resolveTransmission(null, this.transmission);
+    f.set(this.transmission, at('uGlassTint'));
     /* Nor layers: one layer until a material asks for more. */
     f.fill(0, at('uLayers'), at('uLayers') + LAYER_FLOATS);
     f[at('uCutout')] = 0;
@@ -9733,6 +9769,225 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /**
+   * Compile off the main thread every pipeline a draw of `mesh` in `material` takes. **The other
+   * backend's `prepareMesh` carries the contract**; here a draw's key is `meshShape`'s, so a prepared
+   * key is exactly the one the draw asks for, and the compiles are started as a skipping draw starts
+   * them (`PipelineCache.lit`) whatever `pipelineCompile` says, into the frame's own caches.
+   */
+  prepareMesh(
+    mesh: GpuMesh,
+    material: SurfaceMaterial<GpuSurfaceTexture> | null,
+    options: PrepareOptions = {},
+  ): void {
+    if (this.surface.lost) return;
+    this.preparing(
+      material,
+      (into, blend) => {
+        const skinned = mesh.isSkinned;
+        const eight = skinned && mesh.isSkinnedEight;
+        for (const morphed of mesh.morph === null ? NOT_MORPHED : MORPHED_OR_NOT) {
+          this.meshShape(mesh, blend, PREPARED_DRAW, skinned, morphed, eight, false);
+          this.meshPipeline(blend, false, skinned, morphed, eight, false, into);
+        }
+      },
+      options,
+    );
+  }
+
+  /** `prepareMesh` for an instanced batch. See the other backend's `prepareInstanced`. */
+  prepareInstanced(
+    batch: GpuInstancedBatch,
+    material: SurfaceMaterial<GpuSurfaceTexture> | null,
+    options: PrepareOptions = {},
+  ): void {
+    if (this.surface.lost) return;
+    this.preparing(
+      material,
+      (into, blend) => {
+        const coverage = !blend && this.cutoutResolveStaged === 'coverage';
+        this.instancedPipeline(
+          batch.mesh,
+          batch.animation !== null,
+          blend,
+          false,
+          PREPARED_DRAW,
+          true,
+          0,
+          coverage,
+          into,
+        );
+      },
+      options,
+    );
+  }
+
+  /**
+   * `material` set, every cache a draw in it may build into passed to `start` with whether that draw
+   * blends, compiles started rather than built (`PipelineCache.lit`), and then no material set and
+   * each cache back to what `pipelineCompile` says.
+   */
+  private preparing(
+    material: SurfaceMaterial<GpuSurfaceTexture> | null,
+    start: (into: PipelineCache, blend: boolean) => void,
+    options: PrepareOptions,
+  ): void {
+    this.setMaterial(material);
+    this.skipCompiling(true);
+    try {
+      start(this.pipelines, false);
+      if (options.translucent === true) {
+        start(this.pipelines, true);
+        /* A blended draw in a reconstructing frame lands in the late pass, whose cache is its own. */
+        if (this.latePipelines !== this.pipelines) start(this.latePipelines, true);
+      }
+    } finally {
+      this.skipCompiling(this.quality.pipelineCompile === 'skip');
+      this.setMaterial(null);
+    }
+  }
+
+  /** What `meshShape` worked out for the mesh draw at hand. Reused, so a draw allocates no record. */
+  private readonly drawShape = {
+    base: '',
+    key: '',
+    depthWrite: true,
+    layer: 0,
+    adds: false,
+    coverage: false,
+    splits: false,
+    modelKind: null as SurfaceModelKind | null,
+  };
+
+  /**
+   * The key a mesh draw's pipeline is cached under, and the pipeline state that key encodes, under
+   * the current material and these options, into `drawShape`. **The one statement of it**:
+   * `submitMesh` draws by it and `prepareMesh` compiles by it, so the two cannot disagree about a key.
+   */
+  private meshShape(
+    mesh: GpuMesh,
+    blend: boolean,
+    options: TranslucentMeshOptions,
+    skinned: boolean,
+    morphed: boolean,
+    eight: boolean,
+    clothed: boolean,
+  ): WebGPURenderer['drawShape'] {
+    const modelKind = this.materialModel?.kind ?? null;
+    const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
+    const keyed =
+      `${base}${morphed ? '|morph' : ''}${skinned ? (eight ? '|skin8' : '|skin') : ''}` +
+      `${clothed ? '|cloth' : ''}`;
+    /*
+     * Depth writing and the overlay layer are pipeline state on this backend, so they belong in
+     * the key: two draws of one mesh differing only in these would otherwise share a cached
+     * pipeline and the second would silently take the first one's depth behaviour.
+     *
+     * **Both suffixes are empty for the defaults**, which is what keeps the keys `createMesh`
+     * warms — `fullKey` and `${'`'}${'$'}{fullKey}|blend${'`'}` — the ones an ordinary draw still asks for. A
+     * caller that opts in pays one compile on its first draw, the same bargain the overlay
+     * pipelines above already make.
+     */
+    const depthWrite = options.depthWrite ?? true;
+    const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
+    /* Added rather than blended over: its own blend state, so its own pipeline. */
+    const adds = blend && options.additive === true;
+    const coverage = !blend && this.cutoutResolveStaged === 'coverage';
+    /* Skin under the screen-space blur draws its two halves; see `keepSkinDiffuse`. */
+    const splits = modelKind === 'skin' && !blend && this.skinSplits();
+    const key =
+      `${keyed}${blend ? (adds ? '|add' : '|blend') : ''}` +
+      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
+      /* The two order-independent buffers are two formats and two blend states, so a draw into
+         one must never share a cached pipeline with the same mesh drawn into the other. */
+      `${this.oitMode === 'none' ? '' : `|oit${this.oitMode}`}` +
+      /* Culling is pipeline state here: a two-sided surface culls nothing. */
+      `${this.materialDoubleSided ? '|2s' : ''}` +
+      /* And so is alpha-to-coverage, for a dithered cutout in a multisampled frame. */
+      `${coverage ? '|a2c' : ''}` +
+      /* And the material's shading model, which is the fragment stage's own switch. */
+      `${modelKind === null ? '' : `|m:${modelKind}`}` +
+      /* And which half of a skin it draws, under the screen-space blur. */
+      `${splits ? '|ss' : ''}`;
+
+    const shape = this.drawShape;
+    shape.base = base;
+    shape.key = key;
+    shape.depthWrite = depthWrite;
+    shape.layer = layer;
+    shape.adds = adds;
+    shape.coverage = coverage;
+    shape.splits = splits;
+    shape.modelKind = modelKind;
+    return shape;
+  }
+
+  /**
+   * The pipeline `drawShape` names: the one built, one built here, or none where draws skip a
+   * compile and this one has not landed (`PipelineCache.lit`) — and none for a split skin until all
+   * of its halves have.
+   */
+  private meshPipeline(
+    blend: boolean,
+    lands: boolean,
+    skinned: boolean,
+    morphed: boolean,
+    eight: boolean,
+    clothed: boolean,
+    /** Which cache to build into: the one the draw's target reads, unless a preparation says. */
+    into: PipelineCache | null = null,
+  ): GPURenderPipeline | null {
+    const { base, key, depthWrite, layer, adds, coverage, splits, modelKind } = this.drawShape;
+    /*
+     * **Asynchronous by default, synchronous if it has to be, and never absent.**
+     *
+     * `createMesh` compiles off the main thread, so a draw can legitimately arrive before the
+     * driver has finished — a consumer that awaits `ready()` never sees this, and one that
+     * draws immediately gets the old behaviour rather than an exception. Correctness cannot be
+     * allowed to depend on which of those happened, so the miss builds the pipeline here and
+     * pays the compile it was trying to avoid. That is a slow frame; the alternative is a
+     * thrown error in the middle of one.
+     */
+    const pipelines = into ?? (blend ? this.blendedPipelines(lands) : this.targetPipelines());
+    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
+    if (pipeline === null) {
+      const present = this.meshPresent.get(base);
+      if (present === undefined) {
+        throw new Error(`WebGPU: no pipeline for ${key}; createMesh builds it`);
+      }
+      pipeline = flatPipeline(
+        pipelines,
+        this.surface.device,
+        this.flatLayoutFor(skinned, morphed),
+        this.variant,
+        key,
+        present,
+        adds ? 'additive' : blend,
+        skinned,
+        morphed,
+        depthWrite,
+        layer,
+        false,
+        this.oitMode,
+        this.materialDoubleSided,
+        coverage,
+        eight,
+        clothed,
+        modelKind,
+        splits ? 'scene' : 'whole',
+      );
+    }
+    /* A split skin draws its three halves or none of them. */
+    if (
+      pipeline !== null &&
+      splits &&
+      !this.skinHalvesReady(key, base, skinned, morphed, layer, eight, clothed)
+    ) {
+      pipeline = null;
+    }
+    return pipeline;
+  }
+
+  /**
    * @param blend Which of the two entry points above this came through, and **not** something to
    * infer from `opacity`.
    *
@@ -9857,7 +10112,6 @@ export class WebGPURenderer implements RendererApi {
     /* An eye's axis is the draw's, written into the open material. See `eyeAxisInWorld`. */
     const modelKind = this.materialModel?.kind ?? null;
     if (modelKind === 'eye') this.writeEyeAxis(model, this.skinPaletteSlot >= 0 && mesh.isSkinned);
-    const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
     /*
      * A rigged mesh takes the skinned vertex variant, an unrigged one the plain variant, and the
      * key carries the flag so the two never share a cached pipeline. A rigged mesh whose caller
@@ -9872,41 +10126,6 @@ export class WebGPURenderer implements RendererApi {
     /* A cloth set and a skinned draw: the pipeline built with CLOTH_BOUND on, warmed when the
        binding was made. See `createClothBinding`. */
     const clothed = skinned && this.cloth !== null;
-    const keyed =
-      `${base}${morphed ? '|morph' : ''}${skinned ? (eight ? '|skin8' : '|skin') : ''}` +
-      `${clothed ? '|cloth' : ''}`;
-    /*
-     * Depth writing and the overlay layer are pipeline state on this backend, so they belong in
-     * the key: two draws of one mesh differing only in these would otherwise share a cached
-     * pipeline and the second would silently take the first one's depth behaviour.
-     *
-     * **Both suffixes are empty for the defaults**, which is what keeps the keys `createMesh`
-     * warms — `fullKey` and `${'`'}${'$'}{fullKey}|blend${'`'}` — the ones an ordinary draw still asks for. A
-     * caller that opts in pays one compile on its first draw, the same bargain the overlay
-     * pipelines above already make.
-     */
-    const depthWrite = options.depthWrite ?? true;
-    const layer = Math.min(Math.max(Math.round(options.depthLayer ?? 0), 0), MAX_DEPTH_LAYER);
-    /* Added rather than blended over: its own blend state, so its own pipeline. */
-    const adds = blend && options.additive === true;
-    const coverage = !blend && this.cutoutResolveStaged === 'coverage';
-    /* Skin under the screen-space blur draws its two halves; see `keepSkinDiffuse`. */
-    const splits = modelKind === 'skin' && !blend && this.skinSplits();
-    const key =
-      `${keyed}${blend ? (adds ? '|add' : '|blend') : ''}` +
-      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
-      /* The two order-independent buffers are two formats and two blend states, so a draw into
-         one must never share a cached pipeline with the same mesh drawn into the other. */
-      `${this.oitMode === 'none' ? '' : `|oit${this.oitMode}`}` +
-      /* Culling is pipeline state here: a two-sided surface culls nothing. */
-      `${this.materialDoubleSided ? '|2s' : ''}` +
-      /* And so is alpha-to-coverage, for a dithered cutout in a multisampled frame. */
-      `${coverage ? '|a2c' : ''}` +
-      /* And the material's shading model, which is the fragment stage's own switch. */
-      `${modelKind === null ? '' : `|m:${modelKind}`}` +
-      /* And which half of a skin it draws, under the screen-space blur. */
-      `${splits ? '|ss' : ''}`;
-
     /*
      * The morph uniforms, written only for a morphed draw and read from the *morphed* variant's
      * field table. `FLAT_VERT_FIELDS` is the plain variant's and does not name them at all — every
@@ -9919,53 +10138,17 @@ export class WebGPURenderer implements RendererApi {
       this.perDraw.writeInt(slot, fields.uMorphTargetCount.offset, mesh.morph.targetCount);
       this.perDraw.writeInt(slot, fields.uMorphTextureWidth.offset, mesh.morph.width);
     }
-    /*
-     * **Asynchronous by default, synchronous if it has to be, and never absent.**
-     *
-     * `createMesh` compiles off the main thread, so a draw can legitimately arrive before the
-     * driver has finished — a consumer that awaits `ready()` never sees this, and one that
-     * draws immediately gets the old behaviour rather than an exception. Correctness cannot be
-     * allowed to depend on which of those happened, so the miss builds the pipeline here and
-     * pays the compile it was trying to avoid. That is a slow frame; the alternative is a
-     * thrown error in the middle of one.
-     */
-    const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
-    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
-    if (pipeline === null) {
-      const present = this.meshPresent.get(base);
-      if (present === undefined) {
-        throw new Error(`WebGPU: no pipeline for ${key}; createMesh builds it`);
-      }
-      pipeline = flatPipeline(
-        pipelines,
-        this.surface.device,
-        this.flatLayoutFor(skinned, morphed),
-        this.variant,
-        key,
-        present,
-        adds ? 'additive' : blend,
-        skinned,
-        morphed,
-        depthWrite,
-        layer,
-        false,
-        this.oitMode,
-        this.materialDoubleSided,
-        coverage,
-        eight,
-        clothed,
-        modelKind,
-        splits ? 'scene' : 'whole',
-      );
-    }
-    /* A split skin draws its three halves or none of them. */
-    if (
-      pipeline !== null &&
-      splits &&
-      !this.skinHalvesReady(key, base, skinned, morphed, layer, eight, clothed)
-    ) {
-      pipeline = null;
-    }
+    /* Its pipeline, by the key a prepared draw compiled too: see `meshShape`. */
+    const { base, key, layer, depthWrite, splits } = this.meshShape(
+      mesh,
+      blend,
+      options,
+      skinned,
+      morphed,
+      eight,
+      clothed,
+    );
+    let pipeline = this.meshPipeline(blend, lands, skinned, morphed, eight, clothed);
 
     /*
      * Guards the draw call only, not the restore below.
@@ -10356,6 +10539,8 @@ export class WebGPURenderer implements RendererApi {
     const seeAt = this.materialField('uSeeThrough');
     this.perFrameFloats[seeAt] = 0;
     this.perFrameFloats[seeAt + 2] = 0;
+    /* The material's light through, over the pane's tint: transmission.ts. */
+    this.perFrameFloats.set(this.transmission, this.materialField('uGlassTint'));
   }
 
   /**
@@ -10370,6 +10555,76 @@ export class WebGPURenderer implements RendererApi {
    * **What it gives up** against `drawMesh` is skinning and morphing, refused where the variant
    * is built, and a per-instance opacity: `opacity` here dims the whole batch.
    */
+  /**
+   * An instanced draw's pipeline under the current material and these options: the one built, one
+   * built here, or none while it compiles (`PipelineCache.lit`), its key, base and model left in
+   * `drawShape`. **The one statement of an instanced key**: `submitInstanced` draws by it and
+   * `prepareInstanced` compiles by it.
+   */
+  private instancedPipeline(
+    mesh: GpuMesh,
+    animated: boolean,
+    blend: boolean,
+    lands: boolean,
+    options: TranslucentMeshOptions,
+    depthWrite: boolean,
+    layer: number,
+    coverage: boolean,
+    /** Which cache to build into: the one the draw's target reads, unless a preparation says. */
+    into: PipelineCache | null = null,
+  ): GPURenderPipeline | null {
+    /* A batch shades by its material's model too; an eye's axis is a placement's, not a batch's. */
+    const modelKind = this.materialModel?.kind ?? null;
+    const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
+    /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
+       a third vertex buffer and a different vertex module, and sharing a cache entry with the
+       plain one would hand a draw the wrong layout. */
+    const adds = blend && options.additive === true;
+    const key =
+      `${base}|inst${!animated ? '' : '|anim'}${blend ? (adds ? '|add' : '|blend') : ''}` +
+      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
+      `${this.materialDoubleSided ? '|2s' : ''}${coverage ? '|a2c' : ''}` +
+      `${modelKind === null ? '' : `|m:${modelKind}`}`;
+
+    const shape = this.drawShape;
+    shape.base = base;
+    shape.key = key;
+    shape.modelKind = modelKind;
+    const pipelines = into ?? (blend ? this.blendedPipelines(lands) : this.targetPipelines());
+    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
+    if (pipeline === null) {
+      const present = this.meshPresent.get(base);
+      if (present === undefined) {
+        throw new Error(`WebGPU: no mesh attributes recorded for ${base}; createMesh records them`);
+      }
+      pipeline = flatPipeline(
+        pipelines,
+        this.surface.device,
+        !animated ? this.flatLayoutFor(false, false) : this.animatedBindGroupLayout,
+        this.variant,
+        key,
+        present,
+        adds ? 'additive' : blend,
+        false,
+        false,
+        depthWrite,
+        layer,
+        true,
+        'none',
+        this.materialDoubleSided,
+        coverage,
+        false,
+        false,
+        modelKind,
+        'whole',
+        false,
+        animated,
+      );
+    }
+
+    return pipeline;
+  }
+
   /**
    * The next of a batch's cull slots this frame, with its cull queued against the current view; null
    * when the batch has drawn from `MAX_CULL_SLOTS` views already or the frame's job ring is full,
@@ -10488,50 +10743,18 @@ export class WebGPURenderer implements RendererApi {
     const own =
       ownsMaterial({ opacity, lit, fog, toneMapped, refracting }, this.surfaceFog) || ditheredBlend;
     if (own) this.materials.dirty();
-    /* A batch shades by its material's model too; an eye's axis is a placement's, not a batch's. */
-    const modelKind = this.materialModel?.kind ?? null;
-    const base = (mesh as GpuMesh & { key?: string }).key ?? 'flat:s0:u0';
-    /* `|inst` in the key, for the reason every other suffix is there: an instanced pipeline binds
-       a third vertex buffer and a different vertex module, and sharing a cache entry with the
-       plain one would hand a draw the wrong layout. */
-    const adds = blend && options.additive === true;
-    const key =
-      `${base}|inst${animation === null ? '' : '|anim'}${blend ? (adds ? '|add' : '|blend') : ''}` +
-      `${depthWrite ? '' : '|nodepth'}${layer > 0 ? `|dl${layer}` : ''}` +
-      `${this.materialDoubleSided ? '|2s' : ''}${coverage ? '|a2c' : ''}` +
-      `${modelKind === null ? '' : `|m:${modelKind}`}`;
-
-    const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
-    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
-    if (pipeline === null) {
-      const present = this.meshPresent.get(base);
-      if (present === undefined) {
-        throw new Error(`WebGPU: no mesh attributes recorded for ${base}; createMesh records them`);
-      }
-      pipeline = flatPipeline(
-        pipelines,
-        this.surface.device,
-        animation === null ? this.flatLayoutFor(false, false) : this.animatedBindGroupLayout,
-        this.variant,
-        key,
-        present,
-        adds ? 'additive' : blend,
-        false,
-        false,
-        depthWrite,
-        layer,
-        true,
-        'none',
-        this.materialDoubleSided,
-        coverage,
-        false,
-        false,
-        modelKind,
-        'whole',
-        false,
-        animation !== null,
-      );
-    }
+    /* Its pipeline, by the key a prepared batch compiled too: see `instancedPipeline`. */
+    const pipeline = this.instancedPipeline(
+      mesh,
+      animation !== null,
+      blend,
+      lands,
+      options,
+      depthWrite,
+      layer,
+      coverage,
+    );
+    const { base, key, modelKind } = this.drawShape;
 
     /* A batch whose pipeline is still compiling is left out, as a mesh is. */
     const material = pipeline === null ? null : this.materialSlotForDraw();
@@ -14106,6 +14329,7 @@ export class WebGPURenderer implements RendererApi {
     const f = this.aoFloats;
     const at = (name: string): number => this.postField(AO_FRAG_FIELDS, name);
     f[at('uRadius')] = this.quality.ambientOcclusionRadius;
+    f.set(this.aoFade, at('uFade'));
     f.set(this.aoProjScale, at('uProjScale'));
     f.set(this.aoInvProjection, at('uInvProjection'));
     device.queue.writeBuffer(this.aoUniforms, 0, this.aoStaging);
@@ -17005,6 +17229,14 @@ export class WebGPURenderer implements RendererApi {
     if (this.exposurePass !== null) return;
     this.exposurePass = new ExposurePass(this.surface.device, this.pipelines, this.postSampler);
     this.rebuildRushBindGroup();
+  }
+
+  /**
+   * Where ambient occlusion fades out with distance. **The other backend's
+   * `setAmbientOcclusionFade` carries the reasoning**; this is the same setter over the same state.
+   */
+  setAmbientOcclusionFade(distance: number, radius: number): void {
+    resolveOcclusionFade(distance, radius, this.aoFade);
   }
 
   /**

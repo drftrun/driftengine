@@ -20,7 +20,12 @@ import {
 import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
 import { computeLightMatrix } from '../../lightMatrix.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
-import { BLOOM_PREFILTER_FIELDS, BLOOM_UPSAMPLE_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
+import {
+  AO_FRAG_FIELDS,
+  BLOOM_PREFILTER_FIELDS,
+  BLOOM_UPSAMPLE_FIELDS,
+  RUSH_FRAG_FIELDS,
+} from './postPass.ts';
 import { SCATTER_DEPTH_FIELDS } from './scatterPass.ts';
 import { TEXT_VERT_FIELDS } from './textPass.ts';
 import { DEFAULT_TEXT_STYLE } from '../../textLayout.ts';
@@ -738,6 +743,38 @@ describe('the webgpu renderer', () => {
       .map(([descriptor]) => String(descriptor.label ?? ''))
       .filter((label) => label.startsWith('post.ao'));
     expect(targets.sort()).toEqual(['post.ao', 'post.aoScratch']);
+  });
+
+  /*
+   * **Occlusion fades past the distance the caller set, over its radius, and none until one is
+   * set**: the estimate is handed the two numbers, held from frame to frame, and a distance that is
+   * not a finite number at or above zero hands it "none" (−1) rather than a fade from the eye.
+   */
+  it('HANDS THE OCCLUSION ESTIMATE THE FADE THE CALLER SET, HELD, AND NONE UNTIL ONE IS SET', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ ambientOcclusion: 0.85, hdrScene: true }),
+    );
+    const { camera, env } = stubScene();
+    const frame = (): number[] => {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.endFrame();
+      const at = (AO_FRAG_FIELDS['uFade']?.offset ?? Number.NaN) / 4;
+      return Array.from(new Float32Array(ringUpload(stub.device, 'post.aoUniforms'))).slice(
+        at,
+        at + 2,
+      );
+    };
+    expect(frame()).toEqual([-1, 0]);
+    renderer.setAmbientOcclusionFade(80, 50);
+    expect(frame()).toEqual([80, 50]);
+    expect(frame(), 'held until changed').toEqual([80, 50]);
+    renderer.setAmbientOcclusionFade(Number.POSITIVE_INFINITY, 50);
+    expect(frame(), 'never fading is no fade').toEqual([-1, 0]);
+    renderer.setAmbientOcclusionFade(20, -3);
+    expect(frame(), 'a radius below zero is a cut at the distance').toEqual([20, 0]);
   });
 
   /**
@@ -3575,6 +3612,52 @@ describe('the webgpu renderer', () => {
   });
 
   /*
+   * **A draw prepared before its first frame is drawn in it, where draws skip a compile.** Three
+   * materials whose pipelines no mesh warms — two-sided, a surface model, and both on an instanced
+   * batch — are prepared, `ready()` awaited, and each is drawn in the very first frame; the control,
+   * the same draws unprepared, leaves all three out of that frame.
+   */
+  it('DRAWS A PREPARED MESH AND BATCH IN THEIR FIRST FRAME WHERE DRAWS SKIP, AND LEAVES THE UNPREPARED OUT', async () => {
+    for (const prepared of [false, true]) {
+      const stub = stubSurface();
+      const renderer = new WebGPURenderer(
+        stub.surface,
+        resolveRenderQuality({ pipelineCompile: 'skip' }),
+      );
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      const batch = renderer.createInstanced(mesh, 1);
+      const one = createMeshInstances(1);
+      one.count = 1;
+      one.models.set(mat4.create());
+      renderer.uploadInstanced(batch, one);
+      const twoSided = { doubleSided: true };
+      const hair = { model: hairModel() };
+      const both = { doubleSided: true, model: hairModel() };
+      if (prepared) {
+        renderer.prepareMesh(mesh, twoSided);
+        renderer.prepareMesh(mesh, hair);
+        renderer.prepareInstanced(batch, both);
+      }
+      await renderer.ready();
+      stub.pass.drawIndexed.mockClear();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setMaterial(twoSided);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setMaterial(hair);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setMaterial(both);
+      renderer.drawInstanced(batch, one);
+      renderer.setMaterial(null);
+      renderer.endFrame();
+      expect(stub.pass.drawIndexed.mock.calls.length, prepared ? 'prepared' : 'control').toBe(
+        prepared ? 3 : 0,
+      );
+    }
+  });
+
+  /*
    * **A material's projection is the material's, and a pass starts without one.** A planar material
    * writes its kind, repeats a metre and sharpness into `uWorldUv` and turns the lit switch on; a
    * material after it with none writes zeros; and a draw in a new pass that sets no material wears
@@ -3638,6 +3721,41 @@ describe('the webgpu renderer', () => {
   });
 
   /*
+   * **A thin surface's light through is its own colour where it names one, and a pane does not keep
+   * it**, as WebGL2's twin asserts from its uniforms: the colour in the glass tint's colour lanes,
+   * −1 for "the albedo", and a pane drawn between two draws of the material leaving the material's
+   * colour for the draw after it rather than its own tint.
+   */
+  it("CARRIES A THIN SURFACE'S TRANSMISSION COLOUR IN THE GLASS TINT, AND A PANE PUTS IT BACK", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({ screenEffects: true });
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ diffuseTransmission: 0.5, transmissionColor: [0.18, 0, 0.003] });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.drawTranslucentMesh(mesh, mat4.create(), 1, {
+      glass: { transmission: 0.9, frost: 0, tint: [1, 0.5, 0.25] },
+    });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ diffuseTransmission: 0.5 });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const variant = variantFor(quality);
+    const lanes = [0, 1, 2].map((c) => drawnMaterial(stub, variant, 'uGlassTint', 'float', c));
+    const drawn = (lanes[0] ?? []).map((_, i) => lanes.map((lane) => lane[i] as number));
+    expect(drawn, 'the control: the pane drew in its own tint').toContainEqual([1, 0.5, 0.25]);
+    const opaque = drawn.filter((tint) => tint[0] !== 1);
+    expect(opaque).toEqual([
+      [0.18, 0, 0.003].map(Math.fround),
+      [0.18, 0, 0.003].map(Math.fround),
+      [-1, -1, -1],
+    ]);
+  });
+
+  /*
    * **A material's layers are its own, their mask where a model's map goes, and a pass forgets
    * them.** Two layers write their repeats, their count and no glow, and turn the switch on; the
    * model is told it has no map of its own, so no model reads the mask as one; a material with a
@@ -3663,18 +3781,31 @@ describe('the webgpu renderer', () => {
     renderer.setMaterial({ model, layers: { mask, repeats: [4, 2] } });
     renderer.bindMeshPass(camera, env);
     renderer.drawMesh(mesh, mat4.create());
+    /* A mask in the ORM array leaves the model's slot to its own map, a lightmap's page among them. */
+    renderer.setMaterial({ model, modelMap: map, layers: { mask: 'orm', repeats: [4, 2] } });
+    renderer.drawMesh(mesh, mat4.create());
+    /* And a layered material asking for three planes is laid on one, and said so. */
+    renderer.setMaterial({
+      projection: { kind: 'triplanar', scale: 0.5, sharpness: 8 },
+      layers: { mask: 'vertex', repeats: [4, 2] },
+    });
+    renderer.drawMesh(mesh, mat4.create());
     renderer.endFrame();
+    const warned = warn.mock.calls.length;
     warn.mockRestore();
     const variant = variantFor(quality);
     const lane = (k: number): number[] => drawnMaterial(stub, variant, 'uLayers', 'float', k);
-    expect([lane(0), lane(1), lane(5), lane(6)]).toEqual([
-      [4, 0, 0],
-      [2, 0, 0],
-      [2, 0, 0],
-      [-1, 0, 0],
+    expect([lane(0), lane(1), lane(5), lane(6), lane(7)]).toEqual([
+      [4, 0, 0, 4, 4],
+      [2, 0, 0, 2, 2],
+      [2, 0, 0, 2, 2],
+      [-1, 0, 0, -1, -1],
+      [0, 0, 0, 1, 2],
     ]);
     /* The model's map flag, uModelParams[1].w: off for the mask, on for a real model map. */
-    expect(drawnMaterial(stub, variant, 'uModelParams', 'float', 7)).toEqual([0, 1, 0]);
+    expect(drawnMaterial(stub, variant, 'uModelParams', 'float', 7)).toEqual([0, 1, 0, 1, 0]);
+    expect(drawnMaterial(stub, variant, 'uWorldUv', 'float', 0).at(-1), 'planar').toBe(1);
+    expect(warned, 'the model map beside a map mask, and the planes, once each').toBe(2);
     const switches = (
       renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } }
     ).pipelines.litSwitches;

@@ -76,6 +76,11 @@ uniform vec2 uProjScale;
 uniform mat4 uInvProjection;
 /** How far the sampling reaches, in metres of the world. */
 uniform float uRadius;
+/**
+ * Where occlusion fades out: whole up to x metres from the eye, gone y metres past it, and no fade
+ * where x is below zero. See occlusionFade.ts.
+ */
+uniform vec2 uFade;
 
 out float fragColor;
 
@@ -166,6 +171,12 @@ void main() {
   /* Nothing occludes the sky, and there is no surface here to occlude. */
   if (${glslIsFarDepth('depth')}) {
     fragColor = 1.0;
+    return;
+  }
+  /* How far past the caller's fade this pixel is, and open with no walk where it is all the way. */
+  float faded = uFade.x < 0.0 ? 0.0 : clamp((length(p) - uFade.x) / max(uFade.y, 1e-4), 0.0, 1.0);
+  if (faded >= 1.0) {
+    fragColor = AO_STORE;
     return;
   }
 
@@ -308,7 +319,7 @@ void main() {
     visible += projectedLength * gtaoArc(h0, h1, normalAngle);
   }
 
-  fragColor = clamp(visible / float(AO_SLICES) * AO_STORE, 0.0, 1.0);
+  fragColor = clamp(mix(visible / float(AO_SLICES), 1.0, faded) * AO_STORE, 0.0, 1.0);
 }
 `;
 

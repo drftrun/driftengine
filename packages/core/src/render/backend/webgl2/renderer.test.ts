@@ -1449,6 +1449,49 @@ test('LEAVES OUT A DRAW WHOSE MODEL PROGRAM IS COMPILING WHERE DRAWS SKIP, AND D
 });
 
 /**
+ * **A draw prepared before its first frame is drawn in it, where draws skip a compile**, as WebGPU's
+ * twin asserts: a skin material on a mesh and a hair material on an instanced batch, prepared and
+ * `ready()` awaited while the driver finishes, are each drawn in the very first frame; the control,
+ * the same draws unprepared, starts their programs there and leaves both out.
+ */
+test('DRAWS A PREPARED MESH AND BATCH IN THEIR FIRST FRAME WHERE DRAWS SKIP, AND LEAVES THE UNPREPARED OUT', async () => {
+  for (const prepared of [false, true]) {
+    const driver = { done: false };
+    const { gl, canvas, calls } = recordingGl({
+      extensions: ['KHR_parallel_shader_compile'],
+      compiling: driver,
+    });
+    const renderer = new Renderer(canvas, resolveRenderQuality({ pipelineCompile: 'skip' }));
+    const mesh = new Mesh(gl, GEOMETRY);
+    const batch = renderer.createInstanced(mesh, 1);
+    const one = createMeshInstances(1);
+    one.count = 1;
+    one.models.set(mat4.create());
+    renderer.uploadInstanced(batch, one);
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    if (prepared) {
+      renderer.prepareMesh(mesh, { model: skinModel() });
+      renderer.prepareInstanced(batch, { model: hairModel() });
+    }
+    driver.done = true;
+    await renderer.ready();
+    calls.length = 0;
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, createEnvironment());
+    renderer.setMaterial({ model: skinModel() });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ model: hairModel() });
+    renderer.drawInstanced(batch, one);
+    renderer.setMaterial(null);
+    const drawn = calls.filter(
+      (call) => call.name === 'drawElements' || call.name === 'drawElementsInstanced',
+    ).length;
+    expect(drawn, prepared ? 'prepared' : 'control').toBe(prepared ? 2 : 0);
+  }
+});
+
+/**
  * **The sun's moving layer is read through the matrix its pass was drawn with**, on the next frame,
  * which is when a switch asked for is compiled in. With the environment's own matrix nothing changes
  * and the layer is read through it; with a tight one of its own, that one and its span.
@@ -1520,6 +1563,37 @@ test("WRITES A MATERIAL'S PROJECTION FOR ITS DRAWS, AND A PASS FORGETS IT", () =
 });
 
 /**
+ * **Occlusion fades past the distance the caller set, over its radius, and none until one is set**,
+ * as WebGPU's twin asserts from its uniform block: the estimate is handed the two numbers, held from
+ * frame to frame, and a distance that is not a finite number at or above zero hands it "none".
+ */
+test('HANDS THE OCCLUSION ESTIMATE THE FADE THE CALLER SET, HELD, AND NONE UNTIL ONE IS SET', () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uFade'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ ambientOcclusion: 0.85 }));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const frame = (): number[] => {
+    const from = calls.length;
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.endFrame();
+    const call = calls
+      .slice(from)
+      .filter((c) => (c.args[0] as { name?: string } | null)?.name === 'uFade')
+      .at(-1);
+    return call === undefined ? [] : Array.from(call.args[1] as Float32Array);
+  };
+  expect(frame()).toEqual([-1, 0]);
+  renderer.setAmbientOcclusionFade(80, 50);
+  expect(frame()).toEqual([80, 50]);
+  expect(frame(), 'held until changed').toEqual([80, 50]);
+  renderer.setAmbientOcclusionFade(Number.POSITIVE_INFINITY, 50);
+  expect(frame(), 'never fading is no fade').toEqual([-1, 0]);
+  renderer.setAmbientOcclusionFade(20, -3);
+  expect(frame(), 'a radius below zero is a cut at the distance').toEqual([20, 0]);
+});
+
+/**
  * **A thin surface's light from behind is its material's, and a pass starts without one**: the
  * glass tint's spare lane, held to 0..1, as WebGPU's twin asserts from its blocks.
  */
@@ -1537,11 +1611,59 @@ test("CARRIES A MATERIAL'S LIGHT FROM BEHIND IN THE GLASS TINT'S SPARE LANE, AND
       .at(-1)?.args[4] ?? -1) as number;
   renderer.bindMeshPass(camera, env);
   renderer.setMaterial({ diffuseTransmission: 0.6 });
-  expect(lane()).toBe(0.6);
+  expect(lane()).toBe(Math.fround(0.6));
   renderer.setMaterial({ diffuseTransmission: 3 });
   expect(lane()).toBe(1);
   renderer.bindMeshPass(camera, env);
   expect(lane()).toBe(0);
+});
+
+/**
+ * **A thin surface's light through is its own colour where it names one, and a pane does not keep
+ * it.** The colour rides the glass tint's colour lanes, which no opaque material reads otherwise,
+ * with −1 meaning "the albedo"; a pane drawn between two draws of the material writes its own tint
+ * there, and must put the material's back, or the next draw lets light through in the pane's colour.
+ */
+test("CARRIES A THIN SURFACE'S TRANSMISSION COLOUR IN THE GLASS TINT, AND A PANE PUTS IT BACK", () => {
+  const { gl, canvas, calls } = recordingGl({
+    uniforms: ['uGlassTint'],
+    extensions: ['EXT_color_buffer_float'],
+  });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ screenEffects: true }));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const mesh = new Mesh(gl, GEOMETRY);
+  const tint = (): number[] =>
+    (calls
+      .filter(
+        (c) =>
+          c.name === 'uniform4f' && (c.args[0] as { name?: string } | null)?.name === 'uGlassTint',
+      )
+      .at(-1)
+      ?.args.slice(1) ?? []) as number[];
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ diffuseTransmission: 0.5, transmissionColor: [0.18, 0, 0.003] });
+  const named = [0.18, 0, 0.003, 0.5].map(Math.fround);
+  expect(tint()).toEqual(named);
+  const before = calls.length;
+  renderer.drawTranslucentMesh(mesh, mat4.create(), 1, {
+    glass: { transmission: 0.9, frost: 0, tint: [1, 0.5, 0.25] },
+  });
+  const pane = calls
+    .slice(before)
+    .filter(
+      (c) =>
+        c.name === 'uniform4f' && (c.args[0] as { name?: string } | null)?.name === 'uGlassTint',
+    );
+  expect(pane[0]?.args.slice(1, 4), 'the control: the pane wrote its own tint').toEqual([
+    1, 0.5, 0.25,
+  ]);
+  expect(tint(), "and the material's colour is back after it").toEqual(named);
+  renderer.setMaterial({ diffuseTransmission: 0.5, transmissionColor: [-2, 0, 0] });
+  expect(tint().slice(0, 3), 'a colour below zero is no light, not the albedo').toEqual([0, 0, 0]);
+  renderer.setMaterial({ diffuseTransmission: 0.5 });
+  expect(tint(), 'none named: the albedo, as before').toEqual([-1, -1, -1, 0.5]);
 });
 
 /**
@@ -1550,7 +1672,7 @@ test("CARRIES A MATERIAL'S LIGHT FROM BEHIND IN THE GLASS TINT'S SPARE LANE, AND
  * told it has no map of its own, and zeros at the next pass.
  */
 test("WRITES A MATERIAL'S LAYERS, KEEPS THE MODEL OFF ITS MASK, AND A PASS FORGETS THEM", () => {
-  const { canvas, calls } = recordingGl({ uniforms: ['uLayers', 'uModelParams'] });
+  const { canvas, calls } = recordingGl({ uniforms: ['uLayers', 'uModelParams', 'uWorldUv'] });
   const renderer = new Renderer(canvas, resolveRenderQuality({}));
   const camera = new Camera();
   const env = createEnvironment();
@@ -1565,10 +1687,28 @@ test("WRITES A MATERIAL'S LAYERS, KEEPS THE MODEL OFF ITS MASK, AND A PASS FORGE
     );
   renderer.bindMeshPass(camera, env);
   renderer.setMaterial({ model: hairModel(), layers: { mask, repeats: [4, 2], emissiveLayer: 1 } });
-  expect(last('uLayers')).toEqual([4, 2, 1, 1, 1, 2, 1, 0]);
+  expect(last('uLayers')).toEqual([4, 2, 1, 1, 1, 2, 1, 0, 0, 0, -1, 0, 0, -1, 0, 0]);
   expect(last('uModelParams')[7], 'the mask is not the model’s map').toBe(0);
+  /* A mask in the ORM array leaves the model's slot to its own map, a lightmap's page among them. */
+  const page = renderer.createSurfaceTexture({ width: 4, height: 4 } as unknown as TexImageSource);
+  renderer.setMaterial({
+    model: hairModel(),
+    modelMap: page,
+    layers: { mask: 'orm', repeats: [4, 2] },
+  });
+  expect(last('uLayers').slice(5, 8), 'two layers, the mask in the ORM array').toEqual([2, -1, 1]);
+  expect(last('uModelParams')[7], 'and the model has its map').toBe(1);
+  /* A layered material asking for three planes is laid on one, and said so. */
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  renderer.setMaterial({
+    projection: { kind: 'triplanar', scale: 0.5, sharpness: 8 },
+    layers: { mask: 'vertex', repeats: [4, 2] },
+  });
+  expect(last('uWorldUv').slice(0, 2), 'planar, at its own scale').toEqual([1, 0.5]);
+  expect(warn).toHaveBeenCalledTimes(1);
+  warn.mockRestore();
   renderer.bindMeshPass(camera, env);
-  expect(last('uLayers')).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  expect(last('uLayers')).toEqual(new Array(16).fill(0));
 });
 
 /**
