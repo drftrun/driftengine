@@ -1046,7 +1046,8 @@ Four rules, each of which cost a session.
   counts rows gets this wrong and a caller that names the field cannot.**
 - **Never put a backtick or a `${...}` inside a WGSL template literal**, and avoid WGSL's reserved
   words as identifiers: `register`, `target`, `set`, `mod`, `filter`, `layout`, `pass`, `ref`,
-  `self`, `type`, `use`, `with`, `of`, `new`, `meta`, `match`, `static`, `resource`, `sample`.
+  `self`, `type`, `use`, `with`, `of`, `new`, `meta`, `match`, `static`, `resource`, `sample`,
+  `active`.
 - **An A/B of a shader constant changes WebGL2 and not WebGPU.** The GLSL is assembled from those
   constants at runtime; the WGSL is generated and committed, so a WebGPU capture keeps drawing the
   old number until `npm run wgsl` runs. Editing the constant and capturing twice on WebGPU

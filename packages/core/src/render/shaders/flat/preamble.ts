@@ -129,7 +129,12 @@ uniform vec4 uSeeThrough; // wgsl:material
  * the rows a screen coordinate counts. A vec4 where a vec3 already spent the row.
  */
 uniform vec4 uRefractTint; // wgsl:material
-uniform vec3 uGlassTint; // wgsl:material
+/*
+ * A pane's colour (rgb), and in w how much light from behind an opaque thin surface lets through:
+ * \`SurfaceMaterial.diffuseTransmission\`, read where the draw is not glass. A vec4 where a vec3
+ * already spent the row.
+ */
+uniform vec4 uGlassTint; // wgsl:material
 flat in int vHasTangents;
 
 /**
@@ -441,17 +446,30 @@ uniform float uOpacity; // wgsl:material
  * the grain is mirrored between backends and nothing else about it differs. What it gives up: a
  * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
  * draw that asks for it is dithered too, since the test is a discard.
+ *
+ * **\`.z\` — whether this draw spends its own opacity on the same screen door**: 1 keeps the cells
+ * under \`vAlpha\` (an instance's \`MeshInstances.alphas\`, a vertex's channel alpha) and blends none
+ * of it, so an opaque or cut-out draw can fade one instance at a time. 0 is off. **The same pattern
+ * as the fade, and that is the point**: a pixel is kept where its one threshold sits under both, so
+ * a crossfade at \`t\` and \`-t\` of an instance at opacity \`a\` still covers each pixel of the
+ * instance's share \`a\` once. Two independent patterns would leave holes where they disagree.
  */
-uniform vec2 uWriteMode; // wgsl:material
+uniform vec3 uWriteMode; // wgsl:material
 
-/** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
-bool ditherKeeps(float amount) {
+/** Where this fragment's cell of the 8×8 Bayer pattern falls, in (0, 1). Integer arithmetic,
+    per the device rule. */
+float ditherThreshold() {
   uvec2 p = uvec2(gl_FragCoord.xy) & 7u;
   uint a = p.x ^ p.y;
   uint b = p.y;
   uint cell = ((a & 1u) << 5) | ((b & 1u) << 4) | ((a & 2u) << 2) | ((b & 2u) << 1) |
     ((a & 4u) >> 1) | ((b & 4u) >> 2);
-  float threshold = (float(cell) + 0.5) / 64.0;
+  return (float(cell) + 0.5) / 64.0;
+}
+
+/** Whether this fragment is one \`uWriteMode.y\` keeps. */
+bool ditherKeeps(float amount) {
+  float threshold = ditherThreshold();
   return amount > 0.0 ? threshold < amount : threshold >= -amount;
 }
 

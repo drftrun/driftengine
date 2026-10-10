@@ -521,7 +521,11 @@ export function drawInHeat(
 - **`rim`** (`SurfaceRim`) glows along the silhouette: an edge `(1 − N·V)^falloff`, leaning toward
   normals that face up, raised to a contrast, times a noise laid in screen space and scrolled, a slow
   pulse on the environment's `surfaceTime`, and a mask in the mesh's uv that erases it. It is added
-  to what the surface emits and, unlike emission, is not gated on `nightFactor`.
+  to what the surface emits and, unlike emission, is not gated on `nightFactor`. With
+  `mode: 'blend'` it is a colour rather than a light: the base colour is pulled toward the rim's by
+  that edge times `alpha`, before any light reads it, so the edge is lit as the surface is and stays
+  dark where no light reaches. There `colour` times `intensity` is held at 1 a channel, as a base
+  colour is, and an `alpha` above 1 saturates the edge sooner.
 - **`dissolve`** (`SurfaceDissolve`) cuts the surface away where a noise in its uv falls under
   `threshold`, with a glowing band of width `edge` just above it, and can lay a colour over the
   surface through the same noise. 0 keeps everything and 1 cuts everything.
@@ -545,6 +549,107 @@ What it gives up:
   room for at the eight-light budget. There the overlay is refused, said once, and the draws wear
   none; a lower `maxLights` makes the room. WebGL2 also cannot copy a compressed atlas into the 2D
   image the stage reads, so upload the atlas from an image.
+
+## Maps placed by the world
+
+A material can take its texture coordinates from where a point is in the world rather than from the
+mesh. Ground imported with flat coordinates, or none worth reading, then shows its texture at the
+size the material asks, and a wall or a rock wears one without the stretch a single projection
+gives a steep face.
+
+```ts sample=snippets/projection.ts#projection
+/** Sand, two repeats a metre across the ground, whatever coordinates its mesh carries. */
+export function sand(
+  colour: SurfaceTextureHandle,
+  normal: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle> {
+  return { albedo: colour, normal, projection: { kind: 'planar', scale: 2 } };
+}
+
+/** Rock, once a metre on all three planes, blended where the surface turns between them. */
+export function rock(
+  colour: SurfaceTextureHandle,
+  orm: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle> {
+  return { albedo: colour, orm, projection: { kind: 'triplanar', scale: 1, sharpness: 6 } };
+}
+```
+
+`projection: { kind: 'planar', scale }` lays every map across the two horizontal axes at `scale`
+repeats a metre. `'triplanar'` reads each map on the three planes across x, y and z and blends them
+by how squarely the surface faces each; `sharpness`, 4 unless given, is how quickly one plane gives
+way to the next. A normal map follows either: on three planes it is blended so each keeps its own
+detail. It is compiled into the lit stage the first time a material asks, so a scene that never asks
+pays nothing for it.
+
+What it gives up:
+
+- **The world's coordinates do not move with a mesh**, so a moving mesh slides under its texture.
+  Projection is for ground, walls and rock that stand still.
+- **Triplanar reads every map three times**, and a texture is mirrored on the far side of each plane.
+- **The material's `uScale`, `vScale` and offsets do not apply**: they scale the mesh's coordinates,
+  which a projection does not read.
+- **A cut-out projected material casts by its mesh's coordinates**, since shadow and depth passes
+  read the cutout where the mesh lays it.
+- **On WebGL2 it takes one fragment uniform vector**, refused, said once, on a part with no room left
+  at the light budget; a lower `maxLights` makes the room.
+
+## Layers blended by a mask
+
+Rock with moss on it, a path worn through grass, sand drifted against a wall: one surface made of
+several, each with its own colour, normals and roughness at its own repeat. `layers` blends up to
+five of them by a mask.
+
+```ts sample=snippets/layers.ts#layers
+/**
+ * Three layers in three arrays — rock, moss, sand, the same order in each — and a mask whose red
+ * lays the moss and green the sand. The rock repeats forty times across the mesh, the moss three.
+ */
+export function mossyRock(
+  albedo: SurfaceTextureHandle,
+  normal: SurfaceTextureHandle,
+  orm: SurfaceTextureHandle,
+  mask: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle> {
+  return { albedo, normal, orm, layers: { mask, repeats: [40, 3, 12] } };
+}
+```
+
+Layer `i` is layer `i` of each array, so `albedo`, `normal` and `orm` are arrays whose layers are the
+material's in the same order, each read at the mesh's coordinates times its own repeat. The mask is
+read at the mesh's own coordinates and lays each layer over the ones before it: red lays layer 1 over
+the base, green layer 2, blue layer 3, alpha layer 4. `emissiveLayer` gives the emissive map to one
+layer, glowing where that layer shows; absent, it glows everywhere, as on any material. It is
+compiled into the lit stage the first time a material asks.
+
+What it gives up:
+
+- **Every layer present is read wherever any shows**: five layers are fifteen reads where one
+  material is three.
+- **The mask is read where a shading model's map goes**, so a layered material carries no `modelMap`;
+  given both, it is drawn as one layer, said once. Upload the mask as data, `colorSpace: 'linear'`.
+- **Layers share an array**, so they share its size and format, and a cutout reads the base layer's
+  alpha.
+- **On WebGL2 it takes two fragment uniform vectors**, refused, said once, where a part has no room.
+
+## Light through a thin surface
+
+A banner lit from behind, a leaf against the sun and a lampshade all show the light on their far side
+through themselves. `diffuseTransmission`, 0 to 1, is how much of it a material lets through: the
+sun, lamps, area lights and DriftLight falling on the far side reach the eye through the surface,
+coloured by its own colour, and are added to what lights its near side. A metal lets none through.
+
+```ts sample=snippets/transmission.ts#thin
+/** Cloth seen from either side, letting most of the light behind it through. */
+export function banner(cloth: SurfaceTextureHandle): SurfaceMaterial<SurfaceTextureHandle> {
+  return { albedo: cloth, doubleSided: true, diffuseTransmission: 0.7 };
+}
+```
+
+The surface is treated as thin: a sheet, not a volume, so a thick object lets as much through as a
+sheet would, and what passes is not blurred. A lamp's own shadow does not hide its light from the
+surface it shines through. Glass has its own way through (see [Translucent and additive
+meshes](translucency.md)) and ignores this.
 
 ## Reflections
 

@@ -90,7 +90,8 @@ import { clamp } from '../../../math/scalar.ts';
 import { attachContextLoss } from '../../contextLoss.ts';
 import { isWeakGpuFamily, webgl2RendererName } from '../../gpuCapability.ts';
 import { GpuTimer } from '../../gpuTimer.ts';
-import { compileProgram, uniformLocations } from '../../shader.ts';
+import { compileProgram, finishProgram, startProgram, uniformLocations } from '../../shader.ts';
+import type { StartedProgram } from '../../shader.ts';
 import {
   countUniformVectors,
   FULL_LIGHT_BUDGET,
@@ -104,6 +105,11 @@ import {
   packSurfaceOverlay,
   type SurfaceOverlay,
 } from '../../surfaceOverlay.ts';
+import { PROJECTION_FLOATS, packSurfaceProjection, projects } from '../../surfaceProjection.ts';
+import { orthographicDepthSpan } from '../../lightMatrix.ts';
+import { LAYER_FLOATS, packSurfaceLayers } from '../../surfaceLayers.ts';
+import type { SurfaceLayers } from '../../surfaceLayers.ts';
+import type { SurfaceProjection } from '../../surfaceProjection.ts';
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
 import { SceneTarget } from '../../sceneTarget.ts';
 import type { ColourGradeLut } from '../../colourGrade.ts';
@@ -1049,6 +1055,37 @@ const IDENTITY_CLIP = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0
 /** Standing still, for a caller that asked for dust and not for wind. */
 const NO_DRIFT: Vec3 = [0, 0, 0];
 
+/** Whether two matrices hold the same sixteen numbers. */
+function sameMatrix(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+  for (let k = 0; k < 16; k++) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+/** How often `ready` asks the driver whether a program is done, and how many times before waiting. */
+const READY_POLL_MS = 4;
+const READY_MAX_POLLS = 500;
+
+/** The halves a skin draws under the screen-space blur, each a program of its own. */
+const SPLIT_SKIN_HALVES = ['scene', 'diffuse', 'albedo'] as const;
+
+/** A lit program with its uniform table, as every flat program is kept. */
+interface FlatProgram {
+  program: WebGLProgram;
+  uniforms: Record<string, WebGLUniformLocation>;
+}
+
+/** The vertex variant a draw takes, and its program where it is not the plain one. */
+interface DrawVariant {
+  /** What a model's program is keyed by: `plain`, `skinned8`, `cloth4m` and the rest. */
+  name: string;
+  skinned: boolean;
+  morphed: boolean;
+  cloth: { binding: GlClothBinding; particles: GlClothParticles } | null;
+  clothed: FlatProgram | undefined;
+  program: WebGLProgram | null;
+  uniforms: Record<string, WebGLUniformLocation>;
+}
+
 export class WebGL2Renderer implements RendererApi {
   /**
    * Private on purpose. The GL context never leaves this directory, so a
@@ -1347,6 +1384,23 @@ export class WebGL2Renderer implements RendererApi {
     string,
     { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> }
   >();
+  /**
+   * Model programs still compiling, where draws skip a compile (`pipelineCompile: 'skip'`) and the
+   * context offers `KHR_parallel_shader_compile`; `parallelCompile` is its completion query then,
+   * and null where draws wait for a program here instead. See `modelProgram`.
+   */
+  private readonly modelPending = new Map<string, StartedProgram>();
+  /** What `drawVariantOf` answers, rewritten each draw rather than made. */
+  private readonly drawVariant: DrawVariant = {
+    name: 'plain',
+    skinned: false,
+    morphed: false,
+    cloth: null,
+    clothed: undefined,
+    program: null,
+    uniforms: {},
+  };
+  private readonly parallelCompile: { readonly COMPLETION_STATUS_KHR: number } | null;
   /** The last palette chosen, which an eye's axis is turned by. See `setSkinPalette`. */
   private paletteData: Float32Array | null = null;
 
@@ -1410,7 +1464,7 @@ export class WebGL2Renderer implements RendererApi {
   private oitReplaying = false;
   /** `uSurfaceScene`, resolved once a pass. See `surfaceScene.ts`. */
   private readonly surfaceScene = new Float32Array(4);
-  /** The two halves of `uWriteMode`, kept here because a `vec2` is written whole. */
+  /** The three lanes of `uWriteMode`, kept here because a `vec3` is written whole. */
   private oitWeight = 0;
   /**
    * How the surfaces drawn next meet the medium: what `setSurfaceFog` set, and `FOG_RECEDE` from
@@ -1418,6 +1472,7 @@ export class WebGL2Renderer implements RendererApi {
    */
   private surfaceFog = FOG_RECEDE;
   private ditherFade = 0;
+  private ditherOpacity = 0;
   /** Said once, not per frame, where the context cannot give the float target the sum needs. */
   private oitRefused = false;
   /** Said once for the whole renderer. See `refuseOitMultisampled`. */
@@ -1697,6 +1752,28 @@ export class WebGL2Renderer implements RendererApi {
   private overlayTexture: WebGLTexture | null = null;
   /** Whether this device's lit stage has room for the overlay's vectors: asked once. */
   private overlayRoom: boolean | null = null;
+  /**
+   * The matrix the sun's dynamic shadow pass was last drawn with, uncorrected, and whether one has
+   * been: what the moving layer is read through. See `movingLightFor`.
+   */
+  private readonly movingLightViewProj = new Float32Array(16);
+  private movingLightKnown = false;
+  /** Whether the lit stage has room for the moving layer's matrix, and whether its refusal was said. */
+  private movingRoom: boolean | null = null;
+  private warnedMovingRoom = false;
+  /** The same answer for a material's projection, and whether its refusal was said. */
+  private projectionRoom: boolean | null = null;
+  private warnedProjectionRoom = false;
+  /** `uWorldUv`, the current material's projection packed. See `surfaceProjection.ts`. */
+  private readonly projection = new Float32Array(PROJECTION_FLOATS);
+  /** The current material's `diffuseTransmission`, `uGlassTint.w`, 0 to 1. */
+  private diffuseTransmission = 0;
+  /** `uLayers`, the current material's layers packed. See `surfaceLayers.ts`. */
+  private readonly layerFloats = new Float32Array(LAYER_FLOATS);
+  /** Whether the lit stage has room for layers' two vectors, and which refusals were said. */
+  private layersRoom: boolean | null = null;
+  private warnedLayersRoom = false;
+  private warnedLayersModelMap = false;
   private warnedOverlayRoom = false;
   private warnedOverlayBlocks = false;
   /** Whether a probe is being baked, so the passes that would recurse into one can tell. */
@@ -3024,6 +3101,16 @@ export class WebGL2Renderer implements RendererApi {
      * Measured on an RX 9070 XT through ANGLE/Vulkan: offered. `scripts/depth-survey.mjs` is what
      * asks, and it also reports what WebGPU can do.
      */
+    /*
+     * Where draws skip a compile, the query that says a program is done without waiting for it;
+     * where the context has none, a program is waited for as it always was. See `modelProgram`.
+     */
+    this.parallelCompile =
+      this.quality.pipelineCompile === 'skip'
+        ? (gl.getExtension('KHR_parallel_shader_compile') as {
+            readonly COMPLETION_STATUS_KHR: number;
+          } | null)
+        : null;
     this.clipControl = gl.getExtension('EXT_clip_control') as ClipControlExtension | null;
     if (REVERSED_DEPTH && this.clipControl !== null) {
       this.clipControl.clipControlEXT(
@@ -3361,7 +3448,36 @@ export class WebGL2Renderer implements RendererApi {
    * this before its first frame gets the right behaviour on both without asking which backend
    * it has, which is the contract `RendererApi` exists to keep.
    */
-  async ready(): Promise<void> {}
+  /**
+   * Resolve once every program a draw has started compiling has finished, adopting each: what a
+   * loading screen awaits after drawing what its scene will use, where draws skip a compile. See
+   * `RenderQuality.pipelineCompile`; nothing is started anywhere else here, so otherwise it is now.
+   *
+   * **It waits without holding the thread**, as the other backend's does: it asks the driver
+   * whether each is done, which does not wait, and yields between asks. A driver that never says
+   * done is asked the way that waits after `READY_MAX_POLLS`, so this cannot hang a loading screen.
+   */
+  async ready(): Promise<void> {
+    for (let polls = 0; this.modelPending.size > 0 && !this.contextLost; polls++) {
+      for (const [key, started] of this.modelPending) {
+        const done =
+          polls >= READY_MAX_POLLS ||
+          this.parallelCompile === null ||
+          this.gl.getProgramParameter(
+            started.program,
+            this.parallelCompile.COMPLETION_STATUS_KHR,
+          ) === true;
+        if (!done) continue;
+        this.modelPending.delete(key);
+        this.adoptModel(key, finishProgram(this.gl, started), started.label);
+      }
+      this.useFlatProgram();
+      if (this.modelPending.size > 0) {
+        // platform: browser default — a yield between two asks of the driver, in a browser module
+        await new Promise<void>((resolve) => setTimeout(resolve, READY_POLL_MS));
+      }
+    }
+  }
 
   dispose(options: { releaseContext?: boolean } = {}): void {
     if (this.disposed) return;
@@ -3845,18 +3961,43 @@ export class WebGL2Renderer implements RendererApi {
     kind: SurfaceModelKind,
     /** Which half of a skin it draws under the screen-space blur. See `SkinHalf`. */
     half: SkinHalf = 'whole',
-  ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } {
+  ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } | null {
     const key = `${variant}|${kind}|${half}`;
     const held = this.modelFlat.get(key);
     if (held !== undefined) return held;
     const { gl } = this;
     const label = `flat.${variant}.${kind}.${half}`;
-    const program = compileProgram(
-      gl,
-      modelVertexOf(variant, kind),
-      skinHalfBound(modelBound(this.flatFragSource, kind), half),
-      label,
-    );
+    const vertex = modelVertexOf(variant, kind);
+    const fragment = skinHalfBound(modelBound(this.flatFragSource, kind), half);
+    /*
+     * **Where draws skip a compile, none until the driver says asking will not wait**: the program
+     * is started at the first draw that wants it and that draw, and every one before it is ready,
+     * is left out. See `RenderQuality.pipelineCompile`.
+     */
+    if (this.parallelCompile !== null) {
+      const started = this.modelPending.get(key);
+      if (started === undefined) {
+        this.modelPending.set(key, startProgram(gl, vertex, fragment, label));
+        return null;
+      }
+      if (
+        gl.getProgramParameter(started.program, this.parallelCompile.COMPLETION_STATUS_KHR) !== true
+      ) {
+        return null;
+      }
+      this.modelPending.delete(key);
+      return this.adoptModel(key, finishProgram(gl, started), label);
+    }
+    return this.adoptModel(key, compileProgram(gl, vertex, fragment, label), label);
+  }
+
+  /** A model program compiled: kept, written to by every material setter, and fed the pass. */
+  private adoptModel(
+    key: string,
+    program: WebGLProgram,
+    label: string,
+  ): { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation> } {
+    const { gl } = this;
     const made = { program, uniforms: uniformLocations(gl, program, label) };
     this.modelFlat.set(key, made);
     this.flatTargets.push(made);
@@ -4182,9 +4323,15 @@ export class WebGL2Renderer implements RendererApi {
      * and read neither — one decision for every program, as `setMaterial` says.
      */
     const modelMap = material?.modelMap ?? null;
+    /* A layered material's mask goes where a model's map would: see `SurfaceMaterial.layers`. */
+    const layers = this.layersOf(material);
+    const boundMap = modelMap ?? layers?.mask ?? null;
     gl.activeTexture(gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
-    if (modelMap !== null) modelMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
+    if (boundMap !== null) boundMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
+    packSurfaceLayers(layers, this.layerFloats);
+    if (layers !== null) this.askLit('LAYERED');
+    gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
     gl.uniform1i(u['uModelMap'] ?? null, MODEL_MAP_TEXTURE_UNIT);
     packModel(
       material?.model ?? null,
@@ -4197,6 +4344,15 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform4fv(u['uModelParams'] ?? null, this.modelParams);
     /* The draw's overlay, which a program born mid-pass must wear too: see `setSurfaceOverlay`. */
     gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
+    gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
+    /* How much light from behind the surface lets through, in the glass tint's spare lane. */
+    this.diffuseTransmission = Math.min(Math.max(material?.diffuseTransmission ?? 0, 0), 1) || 0;
+    gl.uniform4f(u['uGlassTint'] ?? null, 1, 1, 1, this.diffuseTransmission);
+    /* Maps placed by the world, where the material asks and the lit stage has room: worldUv.ts. */
+    const projection = material?.projection ?? null;
+    packSurfaceProjection(this.projectionFits(projection) ? projection : null, this.projection);
+    if ((this.projection[0] as number) > 0) this.askLit('WORLD_UVS');
+    gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
 
     /* The albedo's effects table, or the stand-in the shader reads as none. Before the early
        return, so a material with no albedo still leaves a complete texture on the unit. */
@@ -4371,15 +4527,108 @@ export class WebGL2Renderer implements RendererApi {
   /** What the lit shader at this renderer's budget leaves of the limit, with no overlay. */
   private overlayRoomLeft(): number {
     return (
-      this.fragmentVectorLimit() - countUniformVectors(this.flatFragAt(this.lightBudget, false))
+      this.fragmentVectorLimit() -
+      countUniformVectors(this.flatFragAt(this.lightBudget, { SURFACE_OVERLAY: false }))
     );
   }
 
   /** Whether the lit shader with the overlay compiled in fits this GPU: counted once. */
   private overlayFits(): boolean {
-    this.overlayRoom ??=
-      countUniformVectors(this.flatFragAt(this.lightBudget, true)) <= this.fragmentVectorLimit();
+    this.overlayRoom ??= this.switchFits('SURFACE_OVERLAY');
     return this.overlayRoom;
+  }
+
+  /**
+   * Whether a material's projection can be drawn: none asked, or the lit stage has the room for its
+   * one vector. **Refused, said once, where it has not**, as the overlay is, and the material's
+   * maps are then laid by the mesh's coordinates, as they were before it existed.
+   */
+  private projectionFits(projection: SurfaceProjection | null): boolean {
+    if (!projects(projection)) return true;
+    this.projectionRoom ??= this.switchFits('WORLD_UVS');
+    if (!this.projectionRoom && !this.warnedProjectionRoom) {
+      this.warnedProjectionRoom = true;
+      console.warn(
+        "Renderer: a material's projection is refused on this device. It takes one fragment " +
+          'uniform vector and the lit shader already uses all ' +
+          `${this.fragmentVectorLimit()} this GPU offers; its maps follow the mesh's coordinates. ` +
+          'A lower `maxLights` makes the room, or WebGPU has it.',
+      );
+    }
+    return this.projectionRoom;
+  }
+
+  /**
+   * What the sun's moving layer is read through: the matrix its shadow pass was last drawn with,
+   * where the lit stage carries one (`MOVING_SUN`); the environment's otherwise, which every caller
+   * drawing both layers with one matrix hands it anyway.
+   */
+  private movingLightFor(env: Environment): ReadonlyMat4 {
+    return this.movingLightKnown && this.litOn.MOVING_SUN
+      ? this.movingLightViewProj
+      : env.lightViewProj;
+  }
+
+  /**
+   * Turn the moving layer's own matrix on the first time a frame draws that layer with one the
+   * environment's does not share. **Refused, said once, where the lit stage has no room for its five
+   * vectors**: the layer is then read through the environment's matrix, so its shadows land where
+   * that matrix puts them, and a caller there draws both layers with one.
+   */
+  private askMovingSun(env: Environment): void {
+    if (this.litWanted.MOVING_SUN || !this.movingLightKnown) return;
+    if (sameMatrix(this.movingLightViewProj, env.lightViewProj)) return;
+    this.movingRoom ??= this.switchFits('MOVING_SUN');
+    if (this.movingRoom) {
+      this.askLit('MOVING_SUN');
+      return;
+    }
+    if (this.warnedMovingRoom) return;
+    this.warnedMovingRoom = true;
+    console.warn(
+      "Renderer: the sun's moving layer cannot be read through a matrix of its own on this " +
+        'device; it takes five fragment uniform vectors the lit shader does not have. It is read ' +
+        "through the environment's `lightViewProj`, so draw the dynamic shadow pass with that " +
+        'matrix here, or lower `maxLights` to make the room. WebGPU has it.',
+    );
+  }
+
+  /**
+   * A material's layers where they can be drawn: none asked, a model's map in the mask's place, or
+   * no room for their two vectors each leave one layer, the last two said once each.
+   */
+  private layersOf(material: SurfaceMaterial | null): SurfaceLayers<SurfaceTexture> | null {
+    const layers = material?.layers ?? null;
+    if (layers === null || layers.repeats.length === 0) return null;
+    if ((material?.modelMap ?? null) !== null) {
+      if (!this.warnedLayersModelMap) {
+        this.warnedLayersModelMap = true;
+        console.warn(
+          "Renderer: a material's layers are drawn as one: its mask is read where a model's map " +
+            'goes, and this material carries a `modelMap` too.',
+        );
+      }
+      return null;
+    }
+    this.layersRoom ??= this.switchFits('LAYERED');
+    if (this.layersRoom) return layers as SurfaceLayers<SurfaceTexture>;
+    if (!this.warnedLayersRoom) {
+      this.warnedLayersRoom = true;
+      console.warn(
+        "Renderer: a material's layers are refused on this device. They take two fragment uniform " +
+          'vectors the lit shader does not have; the material is drawn as its base layer. A lower ' +
+          '`maxLights` makes the room, or WebGPU has it.',
+      );
+    }
+    return null;
+  }
+
+  /** Whether the lit shader with `feature` compiled in fits this GPU's fragment uniform vectors. */
+  private switchFits(feature: LitSwitch): boolean {
+    const asIf: Partial<Record<LitSwitch, boolean>> = { [feature]: true };
+    return (
+      countUniformVectors(this.flatFragAt(this.lightBudget, asIf)) <= this.fragmentVectorLimit()
+    );
   }
 
   /**
@@ -4525,9 +4774,37 @@ export class WebGL2Renderer implements RendererApi {
     this.useFlatProgram();
   }
 
-  /** `uWriteMode`: the order-independent weight and the dither, which share one uniform row. */
+  /**
+   * Whether the draws that follow spend their own opacity on a screen door rather than on blending:
+   * an instance's `MeshInstances.alphas`, or a vertex's channel alpha, keeps that share of the
+   * pixels `setDitherFade` would and draws the rest not at all. So an opaque or cut-out batch fades
+   * one instance at a time, with no sorting and no blend, and an instance at 1 is drawn whole.
+   *
+   * Off is what `bindMeshPass` restores. It shares the fade's pattern, so a crossfade at `t` and
+   * `-t` of an instance at opacity `a` covers that instance's share once, without holes. Material
+   * state like `setDitherFade`; instanced draws read it, and shadow casters do not.
+   *
+   * What it gives up: a fade reads as grain while it lasts, which a temporal resolve smooths and a
+   * plain frame does not; a blended draw that asks spends its opacity here and blends none of it;
+   * and a lightmapped batch carries regions where the opacities would be, so it has none to fade.
+   */
+  setDitherOpacity(on: boolean): void {
+    if (this.contextLost) return;
+    this.materials.dirty();
+    this.ditherOpacity = on ? 1 : 0;
+    for (const target of this.flatTargets) {
+      this.gl.useProgram(target.program);
+      this.writeMode(target.uniforms);
+    }
+    this.useFlatProgram();
+  }
+
+  /**
+   * `uWriteMode`: the order-independent weight, the fade and whether the opacity is dithered, which
+   * share one uniform row.
+   */
   private writeMode(u: Record<string, WebGLUniformLocation>): void {
-    this.gl.uniform2f(u['uWriteMode'] ?? null, this.oitWeight, this.ditherFade);
+    this.gl.uniform3f(u['uWriteMode'] ?? null, this.oitWeight, this.ditherFade, this.ditherOpacity);
   }
 
   /**
@@ -4852,6 +5129,8 @@ export class WebGL2Renderer implements RendererApi {
       modelKind === null
         ? null
         : this.modelProgram(clip === null ? 'instanced' : 'animated', modelKind);
+    /* Its model's program still compiling, where draws skip a compile: left out until it lands. */
+    if (modelKind !== null && modelled === null) return;
     const program =
       modelled?.program ?? (clip === null ? this.flatInstancedProgram : this.flatAnimatedProgram);
     const u =
@@ -4996,7 +5275,14 @@ export class WebGL2Renderer implements RendererApi {
     /* w: this framebuffer's first row is the bottom, so up the screen is up the rows. */
     const tint = options.refractTint ?? WHITE_TINT;
     gl.uniform4f(u['uRefractTint'] ?? null, tint[0] ?? 1, tint[1] ?? 1, tint[2] ?? 1, 1);
-    gl.uniform3fv(u['uGlassTint'] ?? null, glass.tint);
+    /* The pane's colour; w is the material's light through from behind, which glass never reads. */
+    gl.uniform4f(
+      u['uGlassTint'] ?? null,
+      glass.tint[0] ?? 1,
+      glass.tint[1] ?? 1,
+      glass.tint[2] ?? 1,
+      this.diffuseTransmission,
+    );
     return true;
   }
 
@@ -6144,6 +6430,11 @@ export class WebGL2Renderer implements RendererApi {
     this.shadowPassActive = true;
     this.activeSunLayer = layer;
     this.glassCasters.clear();
+    /* The moving layer is read through the matrix it is drawn with: see `movingLightFor`. */
+    if (layer === 'dynamic') {
+      this.movingLightViewProj.set(lightViewProj as Float32Array);
+      this.movingLightKnown = true;
+    }
     /* The static layer opens first, so a frame's peel counts from here. See `peelFilled`. */
     if (layer === 'static') this.peelFilled = false;
     /*
@@ -6560,7 +6851,11 @@ export class WebGL2Renderer implements RendererApi {
    * throws a sentence with the device's numbers in it rather than a bare driver string.
    */
   /** The lit fragment source this renderer's profile compiles, at a light budget. */
-  private flatFragAt(budget: LightBudget, overlay = this.litOn.SURFACE_OVERLAY): string {
+  private flatFragAt(
+    budget: LightBudget,
+    /* A switch counted as it would be, for asking whether it fits: see `switchFits`. */
+    asIf: Partial<Record<LitSwitch, boolean>> = {},
+  ): string {
     return flatFrag({
       pointShadows: this.quality.pointShadows,
       directionalShadows: this.quality.directionalShadows,
@@ -6573,8 +6868,11 @@ export class WebGL2Renderer implements RendererApi {
       surfaceEffects: this.litOn.SURFACE_EFFECTS,
       driftLight: this.litOn.DRIFT_LIGHT,
       physicalSpecular: this.litOn.PHYSICAL_SPECULAR,
-      surfaceOverlay: overlay,
+      surfaceOverlay: asIf.SURFACE_OVERLAY ?? this.litOn.SURFACE_OVERLAY,
       reflectionMaps: this.litOn.REFLECTION_MAPS,
+      worldUvs: asIf.WORLD_UVS ?? this.litOn.WORLD_UVS,
+      movingSun: asIf.MOVING_SUN ?? this.litOn.MOVING_SUN,
+      layered: asIf.LAYERED ?? this.litOn.LAYERED,
       maxLights: budget.maxLights,
       maxAreaLights: budget.maxAreaLights,
     });
@@ -6662,6 +6960,9 @@ export class WebGL2Renderer implements RendererApi {
       this.clothFlat.set(key, { program, uniforms: uniformLocations(gl, program, label) });
     }
 
+    /* Started against the source before this switch: begun again at the next draw that asks. */
+    for (const started of this.modelPending.values()) gl.deleteProgram(started.program);
+    this.modelPending.clear();
     for (const [key, entry] of this.modelFlat) {
       const [variant, kind, half] = key.split('|') as [string, SurfaceModelKind, SkinHalf];
       const label = `flat.${variant}.${kind}.${half}`;
@@ -8450,6 +8751,7 @@ export class WebGL2Renderer implements RendererApi {
             ambient: env?.ambient ?? [0, 0, 0],
             sunShadow,
             lightViewProj: env?.lightViewProj ?? IDENTITY_MAT4,
+            movingLightViewProj: env === null ? IDENTITY_MAT4 : this.movingLightFor(env),
             /* The placeholder rather than null where a map is merely absent, for the reason
                `emptyTexture.ts` gives. It is black, which as a depth is an occluder at the light,
                so it is safe only because `sunShadow` is 0 whenever these maps do not exist. */
@@ -8705,6 +9007,12 @@ export class WebGL2Renderer implements RendererApi {
     this.currentSurfaceTexture = null;
     /* Nor an overlay: the atlas's unit is given the empty texture with the refraction copy's. */
     this.overlayFloats.fill(0);
+    /* Nor a projection: maps follow the mesh's coordinates until a material asks otherwise. */
+    this.projection.fill(0);
+    /* Nor light through from behind. See `SurfaceMaterial.diffuseTransmission`. */
+    this.diffuseTransmission = 0;
+    /* Nor layers: one layer until a material asks for more. */
+    this.layerFloats.fill(0);
     this.overlayMaps = null;
     this.overlayTexture = null;
     /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
@@ -8718,6 +9026,12 @@ export class WebGL2Renderer implements RendererApi {
     this.environmentDials[2] = 1;
     this.emission[0] = env.emissiveGain;
     this.emission[1] = env.nightFactor;
+    /* The moving layer's own matrix, the first time a frame draws that layer with one. */
+    this.askMovingSun(env);
+    /* No dither and no weighting: every draw whole, until a crossfade or an opacity asks. */
+    this.oitWeight = 0;
+    this.ditherFade = 0;
+    this.ditherOpacity = 0;
     for (const target of this.flatTargets) {
       this.gl.useProgram(target.program);
       this.writeMeshPassState(target.uniforms, camera, env);
@@ -8871,11 +9185,14 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1i(u['uRefractScene'] ?? null, REFRACT_SCENE_TEXTURE_UNIT);
     /* The draws' overlay, none at a pass's start, and its atlas above: see `setSurfaceOverlay`. */
     gl.uniform4fv(u['uOverlay'] ?? null, this.overlayFloats);
+    gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
+    gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
     /* Neither refracting nor glass, which is every draw that does not say otherwise. See
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);
     gl.uniform4f(u['uRefractTint'] ?? null, 1, 1, 1, 1);
-    gl.uniform3fv(u['uGlassTint'] ?? null, WHITE_TINT);
+    /* White, and no light through from behind: no material at a pass's start. */
+    gl.uniform4f(u['uGlassTint'] ?? null, 1, 1, 1, this.diffuseTransmission);
     gl.uniform3fv(u['uDirectionalDir'] ?? null, env.directionalDir);
     gl.uniform3fv(u['uDirectionalColor'] ?? null, env.directionalColor);
     gl.uniform3fv(u['uAmbient'] ?? null, env.ambient);
@@ -8942,10 +9259,9 @@ export class WebGL2Renderer implements RendererApi {
     this.surfaceFog = FOG_RECEDE;
     /* Grain on by default, so every scene written before it was a choice looks unchanged. */
     gl.uniform1f(u['uGrain'] ?? null, 1);
-    /* No dither and no weighting: every draw whole, until a crossfade asks. See `setDitherFade`. */
-    this.oitWeight = 0;
-    this.ditherFade = 0;
-    gl.uniform2f(u['uWriteMode'] ?? null, 0, 0);
+    /* The weighting and the dither as they stand, which `bindMeshPass` has just cleared: a program
+       built in the middle of a pass takes what the caller set. See `setDitherFade`. */
+    this.writeMode(u);
     /* The draw's own ambient as it stands, which `bindMeshPass` has just cleared: a program built
        in the middle of a pass takes what the caller set. See `setAmbientSH`. */
     gl.uniform4fv(u['uAmbientSH[0]'] ?? null, this.ambientSH);
@@ -8993,6 +9309,10 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform1f(u['uShadowStrength'] ?? null, this.sunShadows === null ? 0 : env.shadowStrength);
     gl.uniform1f(u['uShadowMapSize'] ?? null, this.quality.directionalShadowMapSize);
     gl.uniform1f(u['uShadowDepthSpan'] ?? null, env.shadowDepthSpan);
+    /* The moving layer's own matrix and span, where the program reads one: see `movingLightFor`. */
+    const moving = this.movingLightFor(env);
+    gl.uniformMatrix4fv(u['uMovingLightViewProj'] ?? null, false, moving);
+    gl.uniform1f(u['uMovingShadowDepthSpan'] ?? null, orthographicDepthSpan(moving));
     gl.uniform1f(u['uShadowMaxDistance'] ?? null, this.quality.directionalShadowMaxDistance);
     gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
     gl.uniform1f(u['uShadowMaxSlope'] ?? null, this.quality.directionalShadowMaxSlope);
@@ -9330,6 +9650,8 @@ export class WebGL2Renderer implements RendererApi {
      * light and its colour, each into the blur's own target.
      */
     const splits = this.skinSplits();
+    /* A split skin draws its three halves or none, where a half may still be compiling. */
+    if (splits && this.parallelCompile !== null && !this.skinHalvesReady(mesh)) return;
     /* An opaque lit draw into the frame writes its material's reflection too: see `reflectionKeeps`. */
     const keeps = this.reflectionKeeps();
     if (keeps) this.reflectionTargets?.on();
@@ -9410,14 +9732,25 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /** One draw of a mesh, as `drawMesh` describes, of the half of a skin `half` names. */
-  private drawMeshHalf(
-    mesh: Mesh,
-    model: ReadonlyMat4,
-    depthLayer: number,
-    tint: Vec3 | null,
-    half: SkinHalf,
-  ): void {
-    const { gl } = this;
+  /**
+   * Whether every half a split skin draws has its program, starting any that has not: a skin drawn
+   * without its kept halves would lose its diffuse light for the frames they take to compile.
+   */
+  private skinHalvesReady(mesh: Mesh): boolean {
+    const variant = this.drawVariantOf(mesh).name;
+    let ready = true;
+    for (const half of SPLIT_SKIN_HALVES) {
+      if (this.modelProgram(variant, 'skin', half) === null) ready = false;
+    }
+    return ready;
+  }
+
+  /**
+   * The vertex variant a draw of `mesh` takes now, and its program and uniforms where it is not the
+   * plain one: what a model's program is keyed by, and what `drawMeshHalf` draws with.
+   */
+  private drawVariantOf(mesh: Mesh): DrawVariant {
+    const out = this.drawVariant;
     /*
      * A rigged mesh takes the skinned program, an unrigged one the plain program.
      *
@@ -9445,10 +9778,8 @@ export class WebGL2Renderer implements RendererApi {
      * when none were asked for — an unbound sampler would default to a shadow map's unit.
      */
     const cloth = wantSkin ? this.cloth : null;
-    const clothed =
-      cloth === null
-        ? undefined
-        : this.clothFlat.get(`${eight ? 8 : 4}|${mesh.morph !== null ? 'm' : '-'}`);
+    const clothKey = `${eight ? 8 : 4}|${mesh.morph !== null ? 'm' : '-'}`;
+    const clothed = cloth === null ? undefined : this.clothFlat.get(clothKey);
     const bothUniforms = eight ? this.flatBoth8Uniforms : this.flatBothUniforms;
     const skinnedUniforms = eight ? this.flatSkinned8Uniforms : this.flatSkinnedUniforms;
     const both = wantSkin && wantMorph && bothUniforms !== null;
@@ -9462,8 +9793,12 @@ export class WebGL2Renderer implements RendererApi {
           : morphed
             ? this.flatMorphedUniforms
             : null;
-    let u = clothed?.uniforms ?? variant ?? this.flatUniforms;
-    let program =
+    out.skinned = skinned;
+    out.morphed = morphed;
+    out.cloth = cloth;
+    out.clothed = clothed;
+    out.uniforms = clothed?.uniforms ?? variant ?? this.flatUniforms;
+    out.program =
       clothed !== undefined
         ? clothed.program
         : skinned && morphed
@@ -9477,26 +9812,41 @@ export class WebGL2Renderer implements RendererApi {
             : morphed
               ? this.flatMorphedProgram
               : null;
+    out.name =
+      clothed !== undefined
+        ? `cloth${eight ? 8 : 4}${mesh.morph !== null ? 'm' : '-'}`
+        : skinned && morphed
+          ? eight
+            ? 'both8'
+            : 'both'
+          : skinned
+            ? eight
+              ? 'skinned8'
+              : 'skinned'
+            : morphed
+              ? 'morphed'
+              : 'plain';
+    return out;
+  }
+
+  private drawMeshHalf(
+    mesh: Mesh,
+    model: ReadonlyMat4,
+    depthLayer: number,
+    tint: Vec3 | null,
+    half: SkinHalf,
+  ): void {
+    const { gl } = this;
+    const drawn = this.drawVariantOf(mesh);
+    const { skinned, morphed, cloth, clothed } = drawn;
+    let u = drawn.uniforms;
+    let program = drawn.program;
     /* A material with a model takes that model's program for the same vertex variant. */
     const modelKind = this.currentMaterial?.model?.kind ?? null;
     if (modelKind !== null) {
-      const modelled = this.modelProgram(
-        clothed !== undefined
-          ? `cloth${eight ? 8 : 4}${mesh.morph !== null ? 'm' : '-'}`
-          : skinned && morphed
-            ? eight
-              ? 'both8'
-              : 'both'
-            : skinned
-              ? eight
-                ? 'skinned8'
-                : 'skinned'
-              : morphed
-                ? 'morphed'
-                : 'plain',
-        modelKind,
-        half,
-      );
+      const modelled = this.modelProgram(drawn.name, modelKind, half);
+      /* Still compiling, where draws skip a compile: left out until it lands. */
+      if (modelled === null) return;
       program = modelled.program;
       u = modelled.uniforms;
     }
@@ -9664,6 +10014,8 @@ export class WebGL2Renderer implements RendererApi {
     /* A material with a model takes that model's plain program; see `modelProgram`. */
     const modelKind = this.currentMaterial?.model?.kind ?? null;
     const modelled = modelKind === null ? null : this.modelProgram('plain', modelKind);
+    /* Still compiling, where draws skip a compile: left out until it lands. */
+    if (modelKind !== null && modelled === null) return;
     const u = modelled?.uniforms ?? this.flatUniforms;
     if (modelled === null) this.useFlatProgram();
     else gl.useProgram(modelled.program);
@@ -10195,6 +10547,7 @@ export class WebGL2Renderer implements RendererApi {
         /* Uncorrected, for the reason the lit program's copy of this line carries: the shaft's
            lookup does its own `* 0.5 + 0.5` and correcting the matrix as well doubles it. */
         gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, env.lightViewProj);
+        gl.uniformMatrix4fv(u['uMovingLightViewProj'] ?? null, false, this.movingLightFor(env));
         gl.uniform1f(u['uShadowMapSize'] ?? null, this.quality.directionalShadowMapSize);
         gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, this.peelFilled ? 1 : 0);
 

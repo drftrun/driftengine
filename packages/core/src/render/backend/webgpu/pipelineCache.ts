@@ -86,6 +86,16 @@ export class PipelineCache {
    * wait for readiness rather than discovering it mid-frame.
    */
   private readonly compiling = new Map<string, Promise<GPURenderPipeline>>();
+  /** Keys whose compile off the main thread failed, which `lit` then builds where asked for. */
+  private readonly failed = new Set<string>();
+
+  /**
+   * Whether a lit pipeline first asked for inside a frame is compiled off the main thread while
+   * its draw is left out — `RenderQuality.pipelineCompile` `'skip'` — rather than built where it is
+   * asked for, which holds the GPU process for the compile. The renderer turns it off while it
+   * records static draws, which must hold every draw they were given.
+   */
+  skipsCompiling = false;
 
   constructor(
     device: GPUDevice,
@@ -139,18 +149,27 @@ export class PipelineCache {
       typeof this.device.createRenderPipelineAsync === 'function'
         ? this.device.createRenderPipelineAsync(describe())
         : Promise.resolve(this.device.createRenderPipeline(describe()));
-    const promise = build.then((built) => {
-      /* A lit pipeline started before a switch is not kept: the switch rebuilds it. */
-      if (!lit || generation === this.litGeneration) this.pipelines.set(key, built);
-      this.compiling.delete(key);
-      return built;
-    });
+    const promise = build.then(
+      (built) => {
+        /* A lit pipeline started before a switch is not kept: the switch rebuilds it. */
+        if (!lit || generation === this.litGeneration) this.pipelines.set(key, built);
+        this.compiling.delete(key);
+        return built;
+      },
+      /* Out of the list, or `ready` waits on it for ever; `lit` builds it where asked next. */
+      (error: unknown) => {
+        this.compiling.delete(key);
+        this.failed.add(key);
+        throw error;
+      },
+    );
     this.compiling.set(key, promise);
     return promise;
   }
 
   /**
-   * Resolve once every pipeline asked for so far has finished compiling.
+   * Resolve once every pipeline asked for so far has finished compiling, a switch's rebuild
+   * among them.
    *
    * A renderer awaits this before its first frame, which is what moves the compile out of the
    * queue and in front of it. A failure is not rethrown: a pipeline that cannot be built will
@@ -161,6 +180,8 @@ export class PipelineCache {
     while (this.compiling.size > 0) {
       await Promise.allSettled([...this.compiling.values()]);
     }
+    /* And a switch's rebuild, whose set replaces the pipelines in one swap: see `enable`. */
+    await this.litRebuild;
   }
 
   /** The pipeline for this key if it is already built, without building one. */
@@ -192,6 +213,24 @@ export class PipelineCache {
     const built = this.device.createRenderPipeline(describe());
     this.pipelines.set(key, built);
     return built;
+  }
+
+  /**
+   * A lit pipeline for a draw inside a frame: the one built, or one built here — or, where draws
+   * skip (`skipsCompiling`), none, with its compile started off the main thread for a later frame to
+   * find. A draw handed none is left out.
+   *
+   * **What skipping gives up** is the draw for the frames its compile takes, a few to a few dozen on
+   * a phone, against a frame held for the compile where it is asked for: 130 to 400 ms, reported on
+   * a phone for a material first drawn mid-scene. A compile that fails is built here the next time,
+   * so the device reports it rather than the draw vanishing for good.
+   */
+  lit(key: string, describe: () => GPURenderPipelineDescriptor): GPURenderPipeline | null {
+    const existing = this.pipelines.get(key);
+    if (existing !== undefined) return existing;
+    if (!this.skipsCompiling || this.failed.has(key)) return this.get(key, describe, true);
+    if (!this.compiling.has(key)) void this.getAsync(key, describe, true).catch(() => {});
+    return null;
   }
 
   /**

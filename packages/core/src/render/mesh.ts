@@ -3,6 +3,13 @@
 import { MorphTexture } from './backend/webgl2/morphTexture.ts';
 import { ABSENT_ATTRIBUTE } from './vertexDefaults.ts';
 import { UPLOAD_BYTES_PER_STEP } from './uploadStep.ts';
+import { compactIndices } from './indexWidth.ts';
+import {
+  fixedArray,
+  sharedValue,
+  vertexPackingOf,
+  type AttributePacking,
+} from './vertexPacking.ts';
 
 /*
  * `MeshData` and its validator live in `@driftengine/drft`, because the container's whole
@@ -92,7 +99,14 @@ export class Mesh {
   private readonly vao: WebGLVertexArrayObject;
   private readonly buffers: WebGLBuffer[] = [];
   /** Every attribute bound from a buffer, so a batch can build a vertex array of its own. */
-  private readonly layout: { location: number; buffer: WebGLBuffer; size: number }[] = [];
+  private readonly layout: {
+    location: number;
+    buffer: WebGLBuffer;
+    size: number;
+    /** `FLOAT`, or a sixteen-bit type read normalised: `vertexPacking.ts`. */
+    type: number;
+    normalized: boolean;
+  }[] = [];
   private indexBuffer: WebGLBuffer | null = null;
   /**
    * The position and normal buffers, kept so `update` can rewrite them.
@@ -110,6 +124,8 @@ export class Mesh {
    * same frame.
    */
   readonly indexCount: number;
+  /** `UNSIGNED_SHORT` or `UNSIGNED_INT`, as `compactIndices` stored them: every draw says which. */
+  private readonly indexType: number;
   /**
    * The constant values this mesh's *absent* attributes are shaded with, re-applied on
    * every draw.
@@ -226,11 +242,13 @@ export class Mesh {
      * that has been told a lie every frame is the shape of a stall nobody can find.
      */
     const usage = dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW;
+    /* How each attribute travels: sixteen-bit fixed point, or one value as a constant. */
+    const packing = vertexPackingOf(data, dynamic);
     const positions = this.attachAttribute(gl, ATTR_POSITION, data.positions, 3, usage);
-    const normals = this.attachAttribute(gl, ATTR_NORMAL, data.normals, 3, usage);
+    const normals = this.attachAttribute(gl, ATTR_NORMAL, data.normals, 3, usage, packing.normals);
     if (dynamic) this.deformable = { positions, normals };
-    this.attachAttribute(gl, ATTR_COLOR, data.colors, 3);
-    this.attachAttribute(gl, ATTR_EMISSIVE, data.emissive, 1);
+    this.attachShared(gl, ATTR_COLOR, data.colors, 3, packing.colors);
+    this.attachShared(gl, ATTR_EMISSIVE, data.emissive, 1, packing.emissive);
     /*
      * Absent means "not shiny", supplied as a constant rather than as a buffer of
      * zeroes. `vertexAttrib1f` sets the value a *disabled* attribute reads, so this
@@ -304,7 +322,7 @@ export class Mesh {
       this.constants.push({ location: ATTR_WEIGHTS, value: ABSENT_ATTRIBUTE['weights'] });
     } else {
       this.attachAttribute(gl, ATTR_JOINTS, data.joints, 4);
-      this.attachAttribute(gl, ATTR_WEIGHTS, data.weights, 4);
+      this.attachAttribute(gl, ATTR_WEIGHTS, data.weights, 4, gl.STATIC_DRAW, packing.weights);
     }
     /* The fifth to eighth influences, or zeros, which add nothing. See `isSkinnedEight`. */
     this.isSkinnedEight = this.isSkinned && data.joints2 !== undefined;
@@ -313,7 +331,7 @@ export class Mesh {
       this.constants.push({ location: ATTR_WEIGHTS2, value: ABSENT_ATTRIBUTE['weights2'] });
     } else {
       this.attachAttribute(gl, ATTR_JOINTS2, data.joints2, 4);
-      this.attachAttribute(gl, ATTR_WEIGHTS2, data.weights2, 4);
+      this.attachAttribute(gl, ATTR_WEIGHTS2, data.weights2, 4, gl.STATIC_DRAW, packing.weights2);
     }
 
     this.hasTangents = data.tangents !== undefined;
@@ -321,7 +339,7 @@ export class Mesh {
       gl.disableVertexAttribArray(ATTR_TANGENT);
       this.constants.push({ location: ATTR_TANGENT, value: ABSENT_ATTRIBUTE['tangents'] });
     } else {
-      this.attachAttribute(gl, ATTR_TANGENT, data.tangents, 4);
+      this.attachAttribute(gl, ATTR_TANGENT, data.tangents, 4, gl.STATIC_DRAW, packing.tangents);
     }
 
     this.hasGrain = data.grain !== undefined;
@@ -351,7 +369,9 @@ export class Mesh {
     this.buffers.push(indexBuffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
     this.indexBuffer = indexBuffer;
-    this.allocate(gl, gl.ELEMENT_ARRAY_BUFFER, indexBuffer, data.indices, gl.STATIC_DRAW);
+    const indices = compactIndices(data.indices, this.vertexCount);
+    this.indexType = indices instanceof Uint16Array ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT;
+    this.allocate(gl, gl.ELEMENT_ARRAY_BUFFER, indexBuffer, indices, gl.STATIC_DRAW);
 
     gl.bindVertexArray(null);
   }
@@ -370,7 +390,7 @@ export class Mesh {
       const value = constant.value;
       applyConstant(gl, constant.location, value);
     }
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, this.indexCount, this.indexType, 0);
   }
 
   /**
@@ -394,7 +414,14 @@ export class Mesh {
     for (const attribute of this.layout) {
       gl.bindBuffer(gl.ARRAY_BUFFER, attribute.buffer);
       gl.enableVertexAttribArray(attribute.location);
-      gl.vertexAttribPointer(attribute.location, attribute.size, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribPointer(
+        attribute.location,
+        attribute.size,
+        attribute.type,
+        attribute.normalized,
+        0,
+        0,
+      );
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
     gl.bindBuffer(gl.ARRAY_BUFFER, instances);
@@ -424,7 +451,7 @@ export class Mesh {
       const value = constant.value;
       applyConstant(gl, constant.location, value);
     }
-    gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0, count);
+    gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, this.indexType, 0, count);
   }
 
   dispose(gl: WebGL2RenderingContext): void {
@@ -468,22 +495,47 @@ export class Mesh {
     }
   }
 
+  /**
+   * One attribute's buffer, as floats or in its sixteen-bit fixed point (`vertexPacking.ts`), which
+   * WebGL2 reads back through a normalised `SHORT` or `UNSIGNED_SHORT`: three lanes wide where
+   * WebGPU needs four, so a normal costs six bytes here.
+   */
   private attachAttribute(
     gl: WebGL2RenderingContext,
     location: number,
     data: Float32Array,
     size: number,
     usage: number = gl.STATIC_DRAW,
+    packing: AttributePacking = 'float',
   ): WebGLBuffer {
     const buffer = gl.createBuffer();
     if (buffer === null) throw new Error('createBuffer failed');
     this.buffers.push(buffer);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    this.allocate(gl, gl.ARRAY_BUFFER, buffer, data, usage);
+    const fixed = packing === 'snorm16' || packing === 'unorm16';
+    this.allocate(gl, gl.ARRAY_BUFFER, buffer, fixed ? fixedArray(data, packing) : data, usage);
+    const type =
+      packing === 'snorm16' ? gl.SHORT : packing === 'unorm16' ? gl.UNSIGNED_SHORT : gl.FLOAT;
     gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
-    this.layout.push({ location, buffer, size });
+    gl.vertexAttribPointer(location, size, type, fixed, 0, 0);
+    this.layout.push({ location, buffer, size, type, normalized: fixed });
     return buffer;
+  }
+
+  /** A buffer, or the one value every vertex shares as a constant, as the packing says. */
+  private attachShared(
+    gl: WebGL2RenderingContext,
+    location: number,
+    data: Float32Array,
+    size: number,
+    packing: AttributePacking,
+  ): void {
+    if (packing !== 'constant') {
+      this.attachAttribute(gl, location, data, size, gl.STATIC_DRAW, packing);
+      return;
+    }
+    gl.disableVertexAttribArray(location);
+    this.constants.push({ location, value: sharedValue(data, size) });
   }
 
   /**

@@ -7,7 +7,7 @@
  * each kernel there is an entry point here, one invocation a particle or a constraint, and the loop
  * over a batch is the dispatch. `clothPose.ts`' `skinParticles` is `pose`. The order of a step —
  * begin, then per substep predict, the batches, the limits, finish; then the blend — is
- * `gpuSkinnedCloth.ts`', taken from the same `ClothControl` the CPU solver is driven by.
+ * `gpuClothSet.ts`', taken from the same `ClothControl` the CPU solver is driven by.
  *
  * **Where it differs, it says so.** Single precision throughout, where the CPU rounds to single
  * only on a store. And the bending angle is `atan2(|n1 × n2|, n1 · n2)` rather than `acos(n1 · n2)`
@@ -28,33 +28,44 @@
  * start; `pose` the two skinned poses a step interpolates between and the latest skinned normals;
  * `statics` everything per particle that never changes. A section's offset is a multiple of the
  * particle count, which the constants carry — so no offset is a uniform to keep in step.
+ *
+ * **One dispatch serves every garment of a set** (`clothSetPack.ts`): the particles, constraints,
+ * joints and colliders of all of them in those buffers, and each garment's numbers — its step's
+ * fraction and blend, its damping, gravity and limits — a record of its own in `paces`, at the
+ * round's place. A kernel finds its garment from the particle, and returns at once where that
+ * garment has nothing to do this round: a garment that took fewer steps, or one settling alone after
+ * a reset, sits the round out while the rest of the set runs it.
  */
 export const CLOTH_WORKGROUP = 64;
 
 export const CLOTH_SOLVE_WGSL = /* wgsl */ `
+/* The set's: every garment's particles, records, skin matrices and colliders, and the step length
+   they all share. */
 struct Constants {
   count: u32,
   distances: u32,
   bendings: u32,
   joints: u32,
   colliders: u32,
-  /* 1 a max distance, 2 a backstop, 4 a frontstop: which limits the set-up has at all. */
-  limits: u32,
-  width: u32,
   pad0: u32,
+  pad1: u32,
+  pad2: u32,
   h: f32,
   invH: f32,
   invH2: f32,
-  keep: f32,
-  dragKeep: f32,
-  maxDistanceScale: f32,
-  margin: f32,
-  pad1: f32,
-  gravity: vec4<f32>,
+  pad3: f32,
 }
 
-/* One step's numbers, at a dynamic offset: every step of a frame has its own slot. */
-struct Step {
+/* Where this dispatch's round of records starts in paces, at a dynamic offset. */
+struct Round {
+  at: u32,
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
+}
+
+/* One garment's numbers for one round: its step's, and its own that never change. */
+struct Pace {
   fraction: f32,
   blend: f32,
   alpha: f32,
@@ -62,8 +73,10 @@ struct Step {
   /* Where the pose a step starts from and the one it moves toward sit in pose, in floats. */
   fromAt: u32,
   toAt: u32,
-  pad0: u32,
-  pad1: u32,
+  /* 0 where the garment sits this round out. Not active, which WGSL reserves. */
+  live: u32,
+  /* 1 a max distance, 2 a backstop, 4 a frontstop: which limits the garment has at all. */
+  limits: u32,
   /* The character's turn since the last step, by columns; origin.w is the share carried. */
   turn0: vec4<f32>,
   turn1: vec4<f32>,
@@ -72,9 +85,19 @@ struct Step {
   shift: vec4<f32>,
   /* The frame's wind: one wind, sampled once a frame, so a step's rather than the set-up's. */
   wind: vec4<f32>,
+  colliderBase: u32,
+  colliders: u32,
+  width: u32,
+  pad0: u32,
+  keep: f32,
+  dragKeep: f32,
+  maxDistanceScale: f32,
+  margin: f32,
+  gravity: vec4<f32>,
 }
 
-/* One batch of one kind of constraint, at a dynamic offset; first resets the multipliers. */
+/* One colour of one kind of constraint across the set, at a dynamic offset; first resets the
+   multipliers. Publishing reads one garment's particles as begin to end, and first is the garment. */
 struct Batch {
   begin: u32,
   end: u32,
@@ -83,7 +106,7 @@ struct Batch {
 }
 
 @group(0) @binding(0) var<uniform> c: Constants;
-@group(0) @binding(1) var<uniform> pace: Step;
+@group(0) @binding(1) var<uniform> round: Round;
 @group(0) @binding(2) var<uniform> batch: Batch;
 @group(0) @binding(3) var<storage, read_write> state: array<f32>;
 @group(0) @binding(4) var<storage, read_write> pose: array<f32>;
@@ -91,6 +114,12 @@ struct Batch {
 @group(0) @binding(6) var<storage, read> constraints: array<u32>;
 @group(0) @binding(7) var<storage, read_write> lambda: array<f32>;
 @group(0) @binding(8) var<storage, read> frame: array<f32>;
+@group(0) @binding(9) var<storage, read> paces: array<Pace>;
+
+/* The record of particle i's garment this round: which garment a particle is, in statics. */
+fn paceAt(i: u32) -> u32 {
+  return round.at + u32(statics[29u * c.count + i]);
+}
 
 fn stateAt(section: u32, i: u32) -> u32 {
   return section * 3u * c.count + i * 3u;
@@ -121,10 +150,10 @@ fn inverseMass(i: u32) -> f32 {
 }
 
 /* Where skinning puts particle i, fraction of the way from the last pose to the latest. */
-fn skinnedAt(i: u32) -> vec3<f32> {
-  let a = poseOf(pace.fromAt + i * 3u);
-  let b = poseOf(pace.toAt + i * 3u);
-  return a + (b - a) * pace.fraction;
+fn skinnedAt(i: u32, g: u32) -> vec3<f32> {
+  let a = poseOf(paces[g].fromAt + i * 3u);
+  let b = poseOf(paces[g].toAt + i * 3u);
+  return a + (b - a) * paces[g].fraction;
 }
 
 fn skinMatrix(j: u32) -> mat4x4<f32> {
@@ -141,6 +170,10 @@ fn skinMatrix(j: u32) -> mat4x4<f32> {
 fn clothPose(@builtin(global_invocation_id) id: vec3<u32>) {
   let i = id.x;
   if (i >= c.count) {
+    return;
+  }
+  let g = paceAt(i);
+  if (paces[g].live == 0u) {
     return;
   }
   let n = c.count;
@@ -162,7 +195,7 @@ fn clothPose(@builtin(global_invocation_id) id: vec3<u32>) {
       q += w * (mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz) * q0);
     }
   }
-  let to = pace.toAt + i * 3u;
+  let to = paces[g].toAt + i * 3u;
   pose[to] = p.x;
   pose[to + 1u] = p.y;
   pose[to + 2u] = p.z;
@@ -181,7 +214,11 @@ fn clothRest(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count) {
     return;
   }
-  let p = poseOf(pace.toAt + i * 3u);
+  let g = paceAt(i);
+  if (paces[g].live == 0u) {
+    return;
+  }
+  let p = poseOf(paces[g].toAt + i * 3u);
   store(stateAt(POSITION, i), p);
   store(stateAt(START, i), p);
   store(stateAt(VELOCITY, i), vec3<f32>(0.0));
@@ -194,21 +231,25 @@ fn clothBegin(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count) {
     return;
   }
+  let g = paceAt(i);
+  if (paces[g].live == 0u) {
+    return;
+  }
   let at = stateAt(POSITION, i);
   let p = load(at);
   store(stateAt(START, i), p);
   if (inverseMass(i) == 0.0) {
-    store(at, skinnedAt(i));
+    store(at, skinnedAt(i, g));
     return;
   }
-  if (pace.carry == 0u) {
+  if (paces[g].carry == 0u) {
     return;
   }
   /* carryParticles: the share of the character's turn about its old origin, and of its move. */
-  let turn = mat3x3<f32>(pace.turn0.xyz, pace.turn1.xyz, pace.turn2.xyz);
-  let share = pace.origin.w;
-  let x = p - pace.origin.xyz;
-  store(at, p + (turn * x - x) * share + pace.shift.xyz);
+  let turn = mat3x3<f32>(paces[g].turn0.xyz, paces[g].turn1.xyz, paces[g].turn2.xyz);
+  let share = paces[g].origin.w;
+  let x = p - paces[g].origin.xyz;
+  store(at, p + (turn * x - x) * share + paces[g].shift.xyz);
   let vAt = stateAt(VELOCITY, i);
   let v = load(vAt);
   store(vAt, v + (turn * v - v) * share);
@@ -221,6 +262,10 @@ fn clothPredict(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count) {
     return;
   }
+  let g = paceAt(i);
+  if (paces[g].live == 0u) {
+    return;
+  }
   let at = stateAt(POSITION, i);
   let p = load(at);
   store(stateAt(PREVIOUS, i), p);
@@ -228,8 +273,8 @@ fn clothPredict(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
   let vAt = stateAt(VELOCITY, i);
-  let air = pace.wind.xyz;
-  let v = air + (load(vAt) * c.keep - air) * c.dragKeep + c.gravity.xyz * c.h;
+  let air = paces[g].wind.xyz;
+  let v = air + (load(vAt) * paces[g].keep - air) * paces[g].dragKeep + paces[g].gravity.xyz * c.h;
   store(vAt, v);
   store(at, p + v * c.h);
 }
@@ -241,13 +286,17 @@ fn clothDistance(@builtin(global_invocation_id) id: vec3<u32>) {
   if (k >= batch.end) {
     return;
   }
+  let a = constraints[k * 4u];
+  let b = constraints[k * 4u + 1u];
+  /* A garment sitting the round out solves nothing, and its next step's first pass resets. */
+  if (paces[paceAt(a)].live == 0u) {
+    return;
+  }
   /* The first pass of a substep starts the multiplier at nothing, as the CPU's fill(0) does —
      written before any early return, so a skipped constraint does not carry the last one. */
   if (batch.first == 1u) {
     lambda[k] = 0.0;
   }
-  let a = constraints[k * 4u];
-  let b = constraints[k * 4u + 1u];
   let wa = inverseMass(a);
   let wb = inverseMass(b);
   let w = wa + wb;
@@ -284,6 +333,9 @@ fn clothBending(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   let at = c.distances * 4u + k * 6u;
   let slot = c.distances + k;
+  if (paces[paceAt(constraints[at])].live == 0u) {
+    return;
+  }
   if (batch.first == 1u) {
     lambda[slot] = 0.0;
   }
@@ -352,6 +404,9 @@ fn clothTether(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
   let at = c.distances * 4u + c.bendings * 6u + k * 3u;
+  if (paces[paceAt(constraints[at])].live == 0u) {
+    return;
+  }
   let pAt = stateAt(POSITION, constraints[at]);
   let anchor = load(stateAt(POSITION, constraints[at + 1u]));
   let d = load(pAt) - anchor;
@@ -380,14 +435,19 @@ fn clothLimit(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count || inverseMass(i) == 0.0) {
     return;
   }
+  let g = paceAt(i);
+  if (paces[g].live == 0u) {
+    return;
+  }
+  let limits = paces[g].limits;
   let n = c.count;
   let at = stateAt(POSITION, i);
   var p = load(at);
-  let t = skinnedAt(i);
+  let t = skinnedAt(i, g);
   /* A max distance below zero is none: the CPU's Infinity, which a device may not be handed. */
   let maxDistance = statics[n + i];
-  if ((c.limits & 1u) != 0u && maxDistance >= 0.0) {
-    let limit = maxDistance * c.maxDistanceScale;
+  if ((limits & 1u) != 0u && maxDistance >= 0.0) {
+    let limit = maxDistance * paces[g].maxDistanceScale;
     let d = p - t;
     let d2 = dot(d, d);
     if (d2 > limit * limit) {
@@ -395,22 +455,23 @@ fn clothLimit(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
   let normal = poseOf(6u * n + i * 3u);
-  if ((c.limits & 2u) != 0u) {
+  if ((limits & 2u) != 0u) {
     let radius = statics[2u * n + i * 2u + 1u];
     if (radius > 0.0) {
       p = pushOut(p, t - normal * (statics[2u * n + i * 2u] + radius), radius);
     }
   }
-  if ((c.limits & 4u) != 0u) {
+  if ((limits & 4u) != 0u) {
     let radius = statics[4u * n + i * 2u + 1u];
     if (radius > 0.0) {
       p = pushOut(p, t + normal * (statics[4u * n + i * 2u] + radius), radius);
     }
   }
-  let pad = statics[6u * n + i] + c.margin;
+  let pad = statics[6u * n + i] + paces[g].margin;
   let ends = c.joints * 16u;
   let radii = ends + c.colliders * 6u;
-  for (var k = 0u; k < c.colliders; k++) {
+  let first = paces[g].colliderBase;
+  for (var k = first; k < first + paces[g].colliders; k++) {
     let a = vec3<f32>(frame[ends + k * 6u], frame[ends + k * 6u + 1u], frame[ends + k * 6u + 2u]);
     let e = vec3<f32>(frame[ends + k * 6u + 3u], frame[ends + k * 6u + 4u], frame[ends + k * 6u + 5u]) - a;
     let e2 = dot(e, e);
@@ -432,6 +493,9 @@ fn clothFinish(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count) {
     return;
   }
+  if (paces[paceAt(i)].live == 0u) {
+    return;
+  }
   let vAt = stateAt(VELOCITY, i);
   if (inverseMass(i) == 0.0) {
     store(vAt, vec3<f32>(0.0));
@@ -447,24 +511,34 @@ fn clothBlend(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= c.count) {
     return;
   }
-  let t = skinnedAt(i);
+  /* A blend of 0 is none, not a last step of one: see ClothDevice.step. */
+  let g = paceAt(i);
+  let blend = paces[g].blend;
+  if (paces[g].live == 0u || blend <= 0.0) {
+    return;
+  }
+  let t = skinnedAt(i, g);
   let at = stateAt(POSITION, i);
-  store(at, t + (load(at) - t) * pace.blend);
+  store(at, t + (load(at) - t) * blend);
   let vAt = stateAt(VELOCITY, i);
-  store(vAt, load(vAt) * pace.blend);
+  store(vAt, load(vAt) * blend);
 }
 
 @group(1) @binding(0) var output: texture_storage_2d<rgba32float, write>;
 
-/* SkinnedCloth.interpolate, into the particle texture the vertex stage reads. */
+/* SkinnedCloth.interpolate, into the particle texture the vertex stage reads: one garment's, whose
+   particles are batch.begin to batch.end and whose record is batch.first's. */
 @compute @workgroup_size(64)
 fn clothPublish(@builtin(global_invocation_id) id: vec3<u32>) {
-  let i = id.x;
-  if (i >= c.count) {
+  let i = batch.begin + id.x;
+  if (i >= batch.end) {
     return;
   }
+  let g = round.at + batch.first;
   let a = load(stateAt(START, i));
-  let p = a + (load(stateAt(POSITION, i)) - a) * pace.alpha;
-  textureStore(output, vec2<u32>(i % c.width, i / c.width), vec4<f32>(p, 0.0));
+  let p = a + (load(stateAt(POSITION, i)) - a) * paces[g].alpha;
+  let local = id.x;
+  let width = paces[g].width;
+  textureStore(output, vec2<u32>(local % width, local / width), vec4<f32>(p, 0.0));
 }
 `;

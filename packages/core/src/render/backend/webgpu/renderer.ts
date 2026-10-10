@@ -1,3 +1,5 @@
+import { vertexPackingOf } from '../../vertexPacking.ts';
+import { markPacking, markPackingOfKey, packingKey } from './vertexFormats.ts';
 import { mat4 } from 'gl-matrix';
 import type { ProbeBakeOptions } from '../../reflectionProbe.ts';
 import { probeFaceRange } from '../../reflectionProbe.ts';
@@ -194,6 +196,10 @@ import {
   packSurfaceOverlay,
   type SurfaceOverlay,
 } from '../../surfaceOverlay.ts';
+import { PROJECTION_FLOATS, packSurfaceProjection } from '../../surfaceProjection.ts';
+import { orthographicDepthSpan } from '../../lightMatrix.ts';
+import { LAYER_FLOATS, packSurfaceLayers } from '../../surfaceLayers.ts';
+import type { SurfaceLayers } from '../../surfaceLayers.ts';
 import {
   frameReflectionsRefused,
   resolveFrameReflections,
@@ -1530,7 +1536,21 @@ export class WebGPURenderer implements RendererApi {
    * flight at the time, so a consumer that builds more meshes later can wait again.
    */
   async ready(): Promise<void> {
-    await Promise.all(this.pipelineTargets.map((cache) => cache.ready()));
+    await Promise.all(this.pipelineCaches().map((cache) => cache.ready()));
+  }
+
+  /** Every distinct cache a lit draw reaches: the frame's, the canvas's, the late pass's, skin's. */
+  private pipelineCaches(): PipelineCache[] {
+    const caches = [...this.pipelineTargets];
+    for (const cache of [this.latePipelines, this.skinPipelines]) {
+      if (cache !== null && !caches.includes(cache)) caches.push(cache);
+    }
+    return caches;
+  }
+
+  /** Whether a lit draw whose pipeline is not built is left out while it compiles. */
+  private skipCompiling(skips: boolean): void {
+    for (const cache of this.pipelineCaches()) cache.skipsCompiling = skips;
   }
 
   private presentedFrameCount = 0;
@@ -2927,6 +2947,7 @@ export class WebGPURenderer implements RendererApi {
       }
       filmCommand.vertexCount = geometry.vertexBuffers.length;
       filmCommand.indexBuffer = geometry.indexBuffer;
+      filmCommand.indexFormat = geometry.indexFormat;
       filmCommand.indexed = true;
       filmCommand.count = geometry.indexCount;
     } else {
@@ -2937,7 +2958,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount);
     }
   }
@@ -2974,6 +2995,11 @@ export class WebGPURenderer implements RendererApi {
   private modelMap: GpuSurfaceTexture | null = null;
   /** The material's shading model, which picks the lit pipeline: null the standard. */
   private materialModel: SurfaceModel | null = null;
+  /** `uWorldUv`, the material's projection packed by `packSurfaceProjection`. */
+  private readonly projection = new Float32Array(PROJECTION_FLOATS);
+  /** `uLayers`, the material's layers packed by `packSurfaceLayers`. */
+  private readonly layerFloats = new Float32Array(LAYER_FLOATS);
+  private warnedLayersModelMap = false;
   /** Its numbers, `uModelParams`, packed by `packModel`. */
   private readonly modelParams = new Float32Array(MODEL_PARAM_FLOATS);
   /**
@@ -3448,7 +3474,10 @@ export class WebGPURenderer implements RendererApi {
     const normal = (material?.normal ?? null) as GpuSurfaceTexture | null;
     const orm = (material?.orm ?? null) as GpuSurfaceTexture | null;
     const emissiveMap = (material?.emissive ?? null) as GpuSurfaceTexture | null;
-    const modelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
+    const ownModelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
+    /* A layered material's mask goes where a model's map would: see `SurfaceMaterial.layers`. */
+    const layers = this.layersOf(material);
+    const modelMap = ownModelMap ?? ((layers?.mask ?? null) as GpuSurfaceTexture | null);
     this.materialModel = material?.model ?? null;
     const reflectivity = material?.reflectivity;
     const environmentGain = material?.environmentGain;
@@ -3459,7 +3488,7 @@ export class WebGPURenderer implements RendererApi {
     this.writeEnvironmentDials();
     /* What the blur spreads this skin by: the last material to name a profile says. */
     const model = material?.model;
-    warnUnpagedLightmap(model, modelMap);
+    warnUnpagedLightmap(model, ownModelMap);
     if (model?.kind === 'skin' && this.skinScatter !== null) {
       this.skinScatter.setProfile(
         model.profile,
@@ -3518,12 +3547,23 @@ export class WebGPURenderer implements RendererApi {
       /* The model's numbers and whether its map is bound. See `packModel`. */
       packModel(
         material?.model ?? null,
-        modelMap !== null,
+        ownModelMap !== null,
         this.modelParams,
         material?.physicalSpecular === true,
       );
       /* The first physical highlight asked for is when the lit pipelines start carrying one. */
       if (material?.physicalSpecular === true) this.enableLit('PHYSICAL_SPECULAR');
+      /* Maps placed by the world: the first material that asks is when lit pipelines carry it. */
+      packSurfaceProjection(material?.projection, this.projection);
+      f.set(this.projection, this.materialField('uWorldUv'));
+      /* How much light from behind it lets through, in the glass tint's spare lane. */
+      f[this.materialField('uGlassTint') + 3] =
+        Math.min(Math.max(material?.diffuseTransmission ?? 0, 0), 1) || 0;
+      if ((this.projection[0] as number) > 0) this.enableLit('WORLD_UVS');
+      /* And its layers, the first time a material blends any: layered.ts. */
+      packSurfaceLayers(layers, this.layerFloats);
+      f.set(this.layerFloats, this.materialField('uLayers'));
+      if (layers !== null) this.enableLit('LAYERED');
       f.set(this.modelParams, this.materialField('uModelParams'));
     });
     /*
@@ -3728,6 +3768,14 @@ export class WebGPURenderer implements RendererApi {
     if (this.surface.lost) return;
     /* The second half of `uWriteMode`, which the order-independent weight shares. */
     this.perFrameFloats[this.materialField('uWriteMode') + 1] = Math.min(1, Math.max(-1, amount));
+    this.materials.dirty();
+  }
+
+  /** Whether the draws that follow spend their own opacity on that screen door. See `renderer.ts`. */
+  setDitherOpacity(on: boolean): void {
+    if (this.surface.lost) return;
+    /* The third lane of `uWriteMode`, beside the fade. */
+    this.perFrameFloats[this.materialField('uWriteMode') + 2] = on ? 1 : 0;
     this.materials.dirty();
   }
 
@@ -5228,6 +5276,11 @@ export class WebGPURenderer implements RendererApi {
         at('uLightViewProj'),
         env === undefined ? NO_LIGHT_MATRIX : (env.lightViewProj as Float32Array),
       );
+      ring.writeFloats(
+        fragmentSlot,
+        at('uMovingLightViewProj'),
+        env === undefined ? NO_LIGHT_MATRIX : (this.movingLightFor(env) as Float32Array),
+      );
       ring.writeFloat(fragmentSlot, at('uShadowMapSize'), this.quality.directionalShadowMapSize);
       /* Sampled only where a pass filled it — see `peelFilled` for why existing is not enough. */
       ring.writeInt(fragmentSlot, at('uPeeledShadowEnabled'), this.peelFilled ? 1 : 0);
@@ -5267,6 +5320,7 @@ export class WebGPURenderer implements RendererApi {
       }
       volumeCommand.vertexCount = mesh.vertexBuffers.length;
       volumeCommand.indexBuffer = mesh.indexBuffer;
+      volumeCommand.indexFormat = mesh.indexFormat;
       volumeCommand.indexed = true;
       volumeCommand.count = mesh.indexCount;
     } else {
@@ -5275,7 +5329,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < mesh.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
+      pass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
       pass.drawIndexed(mesh.indexCount);
     }
   }
@@ -6117,6 +6171,22 @@ export class WebGPURenderer implements RendererApi {
    */
   private readonly correctedLightViewProj = new Float32Array(16);
   /**
+   * What a receiver projects through to read the sun's static layers: the environment's
+   * `lightViewProj`, taken at `bindMeshPass` as WebGL2 takes it there.
+   *
+   * **It was the last shadow pass's matrix**, which is the environment's wherever both layers are
+   * drawn with one and the moving layer's wherever they are not: the static layer was then read
+   * through the moving layer's tight square, and a distant pillar lost its shadow on WebGPU and kept
+   * it on WebGL2, measured on demo/dev/sunLayers.html?moving=tight.
+   */
+  private readonly receiverLightViewProj = new Float32Array(16);
+  /**
+   * The matrix the sun's dynamic shadow pass was last drawn with, uncorrected as the lit stage
+   * projects with, and whether one has been. See `movingLightFor`.
+   */
+  private readonly movingLightViewProj = new Float32Array(16);
+  private movingLightKnown = false;
+  /**
    * The same matrix *uncorrected*, which is what the flat shader must project with.
    *
    * **The two differ on purpose and getting it wrong mirrors every shadow**, which is not a
@@ -6246,6 +6316,48 @@ export class WebGPURenderer implements RendererApi {
     this.enableLit('GLASS_SHADOWS');
   }
 
+  /**
+   * A material's layers where they can be drawn: none asked, or a model's map in the mask's place,
+   * said once, leave one layer.
+   */
+  private layersOf(
+    material: SurfaceMaterial<GpuSurfaceTexture> | null,
+  ): SurfaceLayers<GpuSurfaceTexture> | null {
+    const layers = material?.layers ?? null;
+    if (layers === null || layers.repeats.length === 0) return null;
+    if ((material?.modelMap ?? null) === null) return layers;
+    if (!this.warnedLayersModelMap) {
+      this.warnedLayersModelMap = true;
+      console.warn(
+        "WebGPU: a material's layers are drawn as one: its mask is read where a model's map goes, " +
+          'and this material carries a `modelMap` too.',
+      );
+    }
+    return null;
+  }
+
+  /**
+   * What the sun's moving layer is read through: the matrix its shadow pass was last drawn with,
+   * where the lit pipelines carry one (`MOVING_SUN`); the environment's otherwise, which every caller
+   * drawing both layers with one matrix hands it anyway.
+   */
+  private movingLightFor(env: Environment): ReadonlyMat4 {
+    return this.movingLightKnown && this.pipelines.litSwitches.MOVING_SUN
+      ? this.movingLightViewProj
+      : env.lightViewProj;
+  }
+
+  /** The moving layer's own matrix on, the first time a frame draws that layer with one. */
+  private enableMovingSun(env: Environment): void {
+    if (this.pipelines.litSwitches.MOVING_SUN || !this.movingLightKnown) return;
+    for (let k = 0; k < 16; k++) {
+      if (this.movingLightViewProj[k] !== env.lightViewProj[k]) {
+        this.enableLit('MOVING_SUN');
+        return;
+      }
+    }
+  }
+
   /** One of the lit stage's switches on, in every cache a lit pipeline can come from. */
   private enableLit(feature: LitSwitch): void {
     if (this.pipelines.litSwitches[feature]) return;
@@ -6311,7 +6423,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount);
     },
     /**
@@ -6401,7 +6513,7 @@ export class WebGPURenderer implements RendererApi {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
       pass.setVertexBuffer(index, gpuBatch.buffer);
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount, count);
     },
     skinnedMesh: (mesh, model, palette, material, cloth) => {
@@ -6463,7 +6575,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount);
     },
     /**
@@ -6886,6 +6998,8 @@ export class WebGPURenderer implements RendererApi {
       this.overlayPipelines === this.pipelines
         ? [this.pipelines]
         : [this.pipelines, this.overlayPipelines];
+    /* A lit draw first needed inside a frame waits for its compile or is left out while it runs. */
+    this.skipCompiling(quality.pipelineCompile === 'skip');
     this.variant = flatVariant({
       directionalShadows: quality.directionalShadows,
       /* No `bakeReflectionProbe` here; see the field. */
@@ -8138,6 +8252,8 @@ export class WebGPURenderer implements RendererApi {
     present['layers'] = key.includes(':layers');
     /* Nor is a dynamic mesh's split, which moves positions and normals into buffers of their own. */
     present['dynamic'] = key.includes(':dynamic');
+    /* Nor how each attribute travels, which moves every field after a packed one. */
+    markPackingOfKey(present, key);
     return present;
   }
 
@@ -8447,6 +8563,13 @@ export class WebGPURenderer implements RendererApi {
       present['dynamic'] = true;
       key += ':dynamic';
     }
+    /*
+     * And how each attribute travels (`vertexPacking.ts`): a field read as sixteen bits rather than
+     * thirty-two, or not interleaved at all, moves every field after it, so the key says so.
+     */
+    const packing = vertexPackingOf(data, dynamic);
+    markPacking(present, packing);
+    key += packingKey(packing);
     const fullKey = `${this.variant}|${key}`;
     /*
      * **For every target this mesh can land on, which is two when the overlay is its own.**
@@ -8691,6 +8814,8 @@ export class WebGPURenderer implements RendererApi {
    */
   bindMeshPass(camera: Camera, env: Environment): void {
     if (this.surface.lost) return;
+    /* The matrix every receiver projects through: the environment's, as WebGL2's. See the field. */
+    this.receiverLightViewProj.set(env.lightViewProj as Float32Array);
 
     /* Rectangles past the fixed arm's are the froxel table's, and without it nobody shades them. */
     if (
@@ -8809,6 +8934,12 @@ export class WebGPURenderer implements RendererApi {
     this.surfaceFog = FOG_RECEDE;
     /* Every material switch off — albedo, ORM map, emissive map, two-sided — as WebGL2 resets them. */
     i.fill(0, at('uMaterialFlags'), at('uMaterialFlags') + 4);
+    /* And no projection: maps follow the mesh's coordinates until a material asks otherwise. */
+    f.fill(0, at('uWorldUv'), at('uWorldUv') + 4);
+    /* Nor light through from behind. See `SurfaceMaterial.diffuseTransmission`. */
+    f[at('uGlassTint') + 3] = 0;
+    /* Nor layers: one layer until a material asks for more. */
+    f.fill(0, at('uLayers'), at('uLayers') + LAYER_FLOATS);
     f[at('uCutout')] = 0;
     f[at('uCutout') + 1] = 0;
     this.cutoutResolveStaged = 'hard';
@@ -8891,6 +9022,7 @@ export class WebGPURenderer implements RendererApi {
     /* No weighting and no dither until a pass or a crossfade asks. See `setDitherFade`. */
     f[at('uWriteMode')] = 0;
     f[at('uWriteMode') + 1] = 0;
+    f[at('uWriteMode') + 2] = 0;
     /* 1, not 0: a multiplier's identity is one. See `setEnvironmentGain`. */
     f[at('uEnvironmentDials') + 2] = 1;
     /* No overlay until a draw sets one. See `setSurfaceOverlay`. */
@@ -9184,6 +9316,11 @@ export class WebGPURenderer implements RendererApi {
       f[at('uShadowStrength')] = env.shadowStrength;
       f[at('uShadowMapSize')] = this.quality.directionalShadowMapSize;
       f[at('uShadowDepthSpan')] = env.shadowDepthSpan;
+      /* The moving layer's own matrix and span, where the lit stage reads one: `movingLightFor`. */
+      this.enableMovingSun(env);
+      const moving = this.movingLightFor(env);
+      f.set(moving as Float32Array, at('uMovingLightViewProj'));
+      f[at('uMovingShadowDepthSpan')] = orthographicDepthSpan(moving);
       f[at('uShadowMaxDistance')] = this.quality.directionalShadowMaxDistance;
       f[at('uShadowMaxSlope')] = this.quality.directionalShadowMaxSlope;
       /* Sampled only where a pass filled it — see `peelFilled` for why existing is not enough. */
@@ -9386,7 +9523,7 @@ export class WebGPURenderer implements RendererApi {
   /** A view block: the camera, the light's matrix and the frame's wind, into `ring` at `slot`. */
   private writeView(ring: UniformRing, slot: number, viewProj: Float32Array): void {
     ring.writeFloats(slot, FLAT_VIEW_FIELDS.uViewProj.offset, viewProj);
-    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uLightViewProj.offset, this.lightViewProj);
+    ring.writeFloats(slot, FLAT_VIEW_FIELDS.uLightViewProj.offset, this.receiverLightViewProj);
     /* The scene's clock, which a bone animation's instances read their moment from. */
     ring.writeFloat(slot, FLAT_VIEW_FIELDS.uSceneTime.offset, this.animationTime);
     const d = this.frameWind;
@@ -9793,8 +9930,8 @@ export class WebGPURenderer implements RendererApi {
      * thrown error in the middle of one.
      */
     const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
-    let pipeline = pipelines.peek(key);
-    if (pipeline === undefined) {
+    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
+    if (pipeline === null) {
       const present = this.meshPresent.get(base);
       if (present === undefined) {
         throw new Error(`WebGPU: no pipeline for ${key}; createMesh builds it`);
@@ -9821,6 +9958,14 @@ export class WebGPURenderer implements RendererApi {
         splits ? 'scene' : 'whole',
       );
     }
+    /* A split skin draws its three halves or none of them. */
+    if (
+      pipeline !== null &&
+      splits &&
+      !this.skinHalvesReady(key, base, skinned, morphed, layer, eight, clothed)
+    ) {
+      pipeline = null;
+    }
 
     /*
      * Guards the draw call only, not the restore below.
@@ -9838,8 +9983,9 @@ export class WebGPURenderer implements RendererApi {
      * close to the 256-slot budget before the gateway, the play controls, the waveform, the
      * label handles and the sparkles are even counted.
      */
-    const material = this.materialSlotForDraw();
-    if (material !== null) {
+    /* A draw whose pipeline is still compiling is left out, its state restored all the same. */
+    const material = pipeline === null ? null : this.materialSlotForDraw();
+    if (pipeline !== null && material !== null) {
       /*
        * Record rather than issue. Every per-draw value is already in `slot` and `material` —
        * the uniform rings are the state arena this design would otherwise have had to build —
@@ -9861,6 +10007,7 @@ export class WebGPURenderer implements RendererApi {
         }
         command.vertexCount = mesh.vertexBuffers.length;
         command.indexBuffer = mesh.indexBuffer;
+        command.indexFormat = mesh.indexFormat;
         command.indexed = true;
         command.count = mesh.indexCount;
       } else {
@@ -9876,7 +10023,7 @@ export class WebGPURenderer implements RendererApi {
         for (let index = 0; index < mesh.vertexBuffers.length; index++) {
           pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
         }
-        pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
+        pass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
         pass.drawIndexed(mesh.indexCount);
       }
       if (splits) {
@@ -10355,8 +10502,8 @@ export class WebGPURenderer implements RendererApi {
       `${modelKind === null ? '' : `|m:${modelKind}`}`;
 
     const pipelines = blend ? this.blendedPipelines(lands) : this.targetPipelines();
-    let pipeline = pipelines.peek(key);
-    if (pipeline === undefined) {
+    let pipeline: GPURenderPipeline | null = pipelines.peek(key) ?? null;
+    if (pipeline === null) {
       const present = this.meshPresent.get(base);
       if (present === undefined) {
         throw new Error(`WebGPU: no mesh attributes recorded for ${base}; createMesh records them`);
@@ -10386,8 +10533,9 @@ export class WebGPURenderer implements RendererApi {
       );
     }
 
-    const material = this.materialSlotForDraw();
-    if (material !== null) {
+    /* A batch whose pipeline is still compiling is left out, as a mesh is. */
+    const material = pipeline === null ? null : this.materialSlotForDraw();
+    if (pipeline !== null && material !== null) {
       const command = blend
         ? this.recordBlended(0, lands)
         : this.recordDraw(0, this.currentTarget());
@@ -10409,6 +10557,7 @@ export class WebGPURenderer implements RendererApi {
         command.vertexBuffers[index] = instanceBuffer;
         command.vertexCount = mesh.vertexBuffers.length + 1;
         command.indexBuffer = mesh.indexBuffer;
+        command.indexFormat = mesh.indexFormat;
         command.indexed = true;
         command.count = mesh.indexCount;
         command.instances = count;
@@ -10429,7 +10578,7 @@ export class WebGPURenderer implements RendererApi {
           pass.setVertexBuffer(index, mesh.vertexBuffers[index] as GPUBuffer);
         }
         pass.setVertexBuffer(index, instanceBuffer);
-        pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
+        pass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
         if (cut === null) pass.drawIndexed(mesh.indexCount, count);
         else pass.drawIndexedIndirect(cut.args, 0);
       }
@@ -10664,6 +10813,11 @@ export class WebGPURenderer implements RendererApi {
     if (view === null) return false;
 
     this.lightViewProj.set(lightViewProj as Float32Array);
+    /* The moving layer is read through the matrix it is drawn with: see `movingLightFor`. */
+    if (dynamic) {
+      this.movingLightViewProj.set(lightViewProj as Float32Array);
+      this.movingLightKnown = true;
+    }
     this.reopenViews();
     mat4.multiply(this.correctedLightViewProj, SHADOW_CLIP_CORRECTION, lightViewProj);
     this.shadowLayerIsPeel = peel;
@@ -10975,10 +11129,13 @@ export class WebGPURenderer implements RendererApi {
     this.lateViewBlock.slot = list.viewOffset(0);
     this.materials.dirty();
     this.staticRecording = recording;
+    /* A recorded list keeps what it recorded, so every draw of it waits for its pipeline. */
+    this.skipCompiling(false);
     try {
       this.sceneCasterMaterial = undefined;
       replayStaticDraws(list, this.sceneCasterSink);
     } finally {
+      this.skipCompiling(this.quality.pipelineCompile === 'skip');
       this.staticRecording = null;
       this.perDraw = perDraw;
       this.passRing = passRing;
@@ -11285,7 +11442,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount);
     },
     instanced: (batch, data, material, glass) => {
@@ -11330,7 +11487,7 @@ export class WebGPURenderer implements RendererApi {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
       pass.setVertexBuffer(index, gpuBatch.buffer);
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount, count);
     },
     skinnedMesh: (mesh, model, palette, _material, glass) => {
@@ -11366,7 +11523,7 @@ export class WebGPURenderer implements RendererApi {
       for (let index = 0; index < geometry.vertexBuffers.length; index++) {
         pass.setVertexBuffer(index, geometry.vertexBuffers[index] as GPUBuffer);
       }
-      pass.setIndexBuffer(geometry.indexBuffer, 'uint32');
+      pass.setIndexBuffer(geometry.indexBuffer, geometry.indexFormat);
       pass.drawIndexed(geometry.indexCount);
     },
   };
@@ -13865,6 +14022,10 @@ export class WebGPURenderer implements RendererApi {
     /* Uncorrected, for the reason the shaft's own copy of this line carries: the shader does its
        own `* 0.5 + 0.5`, and correcting the matrix as well doubles it. */
     f.set(env?.lightViewProj ?? this.mediumIdentity, at('uLightViewProj'));
+    f.set(
+      (env === null ? this.mediumIdentity : this.movingLightFor(env)) as Float32Array,
+      at('uMovingLightViewProj'),
+    );
     ints[at('uPeeledShadowEnabled')] = this.peelView === null || !this.peelFilled ? 0 : 1;
     device.queue.writeBuffer(this.mediumUniforms, 0, this.mediumStaging);
 
@@ -14389,6 +14550,8 @@ export class WebGPURenderer implements RendererApi {
         true,
         animation !== null,
       );
+    /* Still compiling where draws skip: the probe stands in for this surface until it lands. */
+    if (pipeline === null) return;
     /* A static list's surface halves go into its own pool, beside its draws. */
     const command =
       this.staticRecording === null ? surface.take() : takeRecorded(this.staticRecording.surface);
@@ -14409,6 +14572,7 @@ export class WebGPURenderer implements RendererApi {
     if (instanceBuffer !== null) command.vertexBuffers[index++] = instanceBuffer;
     command.vertexCount = index;
     command.indexBuffer = mesh.indexBuffer;
+    command.indexFormat = mesh.indexFormat;
     command.indexed = true;
     command.count = mesh.indexCount;
     command.instances = instances;
@@ -14421,6 +14585,78 @@ export class WebGPURenderer implements RendererApi {
    * light alone and its colour alone into the blur's targets and test for the depth its frame half
    * wrote.
    */
+  /**
+   * Whether a split skin draw's two kept halves have pipelines, starting the compile of either that
+   * has not: a skin drawn without them would lose its diffuse light for the frames they take, so a
+   * split skin draws all three halves or none. See `PipelineCache.lit`.
+   */
+  private skinHalvesReady(
+    frameKey: string,
+    base: string,
+    skinned: boolean,
+    morphed: boolean,
+    layer: number,
+    eight: boolean,
+    clothed: boolean,
+  ): boolean {
+    let ready = true;
+    for (const half of SKIN_KEPT_HALVES) {
+      const pipeline = this.skinHalfPipeline(
+        half,
+        frameKey,
+        base,
+        skinned,
+        morphed,
+        layer,
+        eight,
+        clothed,
+      );
+      if (pipeline === null) ready = false;
+    }
+    return ready;
+  }
+
+  /** One kept half's pipeline, or none where it is still compiling: see `PipelineCache.lit`. */
+  private skinHalfPipeline(
+    half: (typeof SKIN_KEPT_HALVES)[number],
+    frameKey: string,
+    base: string,
+    skinned: boolean,
+    morphed: boolean,
+    layer: number,
+    eight: boolean,
+    clothed: boolean,
+  ): GPURenderPipeline | null {
+    const pipelines = this.skinPipelines;
+    const present = this.meshPresent.get(base);
+    if (pipelines === null || present === undefined) return null;
+    const key = `${frameKey}|${half === 'diffuse' ? 'sd' : 'sa'}`;
+    return (
+      pipelines.peek(key) ??
+      flatPipeline(
+        pipelines,
+        this.surface.device,
+        this.flatLayoutFor(skinned, morphed),
+        this.variant,
+        key,
+        present,
+        false,
+        skinned,
+        morphed,
+        true,
+        layer,
+        false,
+        'none',
+        this.materialDoubleSided,
+        false,
+        eight,
+        clothed,
+        'skin',
+        half,
+      )
+    );
+  }
+
   private keepSkinDiffuse(
     mesh: GpuMesh,
     frameKey: string,
@@ -14446,30 +14682,18 @@ export class WebGPURenderer implements RendererApi {
     const bindGroup = this.flatBindGroupFor(skinned, morphed, deltas);
     /* The light alone, which the blur spreads, then the colour alone, which it is multiplied by. */
     for (const half of SKIN_KEPT_HALVES) {
-      const key = `${frameKey}|${half === 'diffuse' ? 'sd' : 'sa'}`;
-      const pipeline =
-        pipelines.peek(key) ??
-        flatPipeline(
-          pipelines,
-          this.surface.device,
-          this.flatLayoutFor(skinned, morphed),
-          this.variant,
-          key,
-          present,
-          false,
-          skinned,
-          morphed,
-          true,
-          layer,
-          false,
-          'none',
-          this.materialDoubleSided,
-          false,
-          eight,
-          clothed,
-          'skin',
-          half,
-        );
+      const pipeline = this.skinHalfPipeline(
+        half,
+        frameKey,
+        base,
+        skinned,
+        morphed,
+        layer,
+        eight,
+        clothed,
+      );
+      /* Both landed before the draw was let through: see `skinHalvesReady`. */
+      if (pipeline === null) return;
       const command = half === 'diffuse' ? skin.take() : skin.takeAlbedo();
       command.pipeline = pipeline;
       command.bindGroup = bindGroup;
@@ -14483,6 +14707,7 @@ export class WebGPURenderer implements RendererApi {
       }
       command.vertexCount = mesh.vertexBuffers.length;
       command.indexBuffer = mesh.indexBuffer;
+      command.indexFormat = mesh.indexFormat;
       command.indexed = true;
       command.count = mesh.indexCount;
       command.instances = 1;
@@ -14936,6 +15161,7 @@ export class WebGPURenderer implements RendererApi {
     command.offsetCount = 0;
     command.vertexCount = 0;
     command.indexBuffer = null;
+    command.indexFormat = 'uint32';
     command.indexed = false;
     command.instances = 1;
     command.indirect = null;
@@ -14995,7 +15221,7 @@ export class WebGPURenderer implements RendererApi {
       if (buffer != null) pass.setVertexBuffer(i, buffer);
     }
     if (command.indexed && command.indexBuffer !== null) {
-      pass.setIndexBuffer(command.indexBuffer, 'uint32');
+      pass.setIndexBuffer(command.indexBuffer, command.indexFormat);
       if (command.indirect !== null) pass.drawIndexedIndirect(command.indirect, 0);
       else pass.drawIndexed(command.count, command.instances);
     } else {

@@ -1,7 +1,8 @@
 /**
  * A draw's surface overlay in the lit stage: the rim, the dissolve and the wrinkles
- * `surfaceOverlay.ts` packs into `uOverlay`. Called from `main` at three places — the dissolve's cut
- * before anything is shaded, the wrinkles after the normal map, and the glow beside emission.
+ * `surfaceOverlay.ts` packs into `uOverlay`. Called from `main` at four places — the dissolve's cut
+ * before anything is shaded, the wrinkles after the normal map, a blending rim on the base colour
+ * once the normal is final and before any light reads the colour, and the glow beside emission.
  *
  * **A lit switch, `SURFACE_OVERLAY`**, off until a draw first sets an overlay and then on for good,
  * as `litSwitchesGlsl`'s are; declared after the models so every switch before it keeps its id.
@@ -19,6 +20,7 @@ export function overlayGlsl(on: boolean): string {
 const bool SURFACE_OVERLAY = false;  // wgsl:override
 bool overlayCuts(vec2 uv) { return false; }
 vec3 overlayWrinkle(vec3 mapped, vec3 unmapped, vec2 uv) { return mapped; }
+vec3 overlayRimBase(vec3 base, vec2 uv, vec3 n) { return base; }
 vec3 overlayGlow(vec2 uv, vec3 n) { return vec3(0.0); }
 `;
   }
@@ -84,8 +86,42 @@ vec2 overlayScreen() {
   return vec2(eye.x / depth + uClusterFrustum.w, eye.y / depth + 1.0) * 0.5;
 }
 
+/*
+ * The rim's weight here, 0 to 1 before the pulse and the mask: the edge leaning toward normals that
+ * face up, raised to the contrast, times the noise laid in screen space. Its strength is the
+ * caller's: an added rim takes it times its light, a blending one times its colour.
+ */
+float overlayRimWeight(vec2 uv, vec3 n) {
+  vec3 toEye = normalize(uCameraPos - vWorldPos);
+  float edge = pow(1.0 - clamp(dot(n, toEye), 0.0, 1.0), max(uOverlay[1].x, 1e-4));
+  float up = pow(clamp(n.y * 0.5 + 0.5, 0.0, 1.0), max(uOverlay[1].y, 1e-4));
+  float rim = pow(edge * up, max(uOverlay[1].z, 1e-4));
+  float time = uSurfaceScene.x;
+  if (uOverlay[2].x > 0.0 && overlayImagesBound()) {
+    vec2 at = overlayScreen() * uOverlay[3].z + uOverlay[3].xy * time;
+    rim *= overlayImage(uOverlay[2], at).r;
+  }
+  rim = min(rim, 1.0);
+  rim *= mix(uOverlay[4].x, uOverlay[4].y, 0.5 + 0.5 * sin(uOverlay[3].w * time));
+  if (uOverlay[5].x > 0.0 && overlayImagesBound()) {
+    rim *= 1.0 - uOverlay[1].w * overlayImage(uOverlay[5], uv).r;
+  }
+  return rim;
+}
+
+/*
+ * A blending rim: the base colour pulled toward the rim's by the weight times the alpha, held at
+ * one, before any light reads it, so the edge is lit as the surface is. The colour arrives already
+ * held at one a channel. Nothing where the rim adds instead, or where there is none.
+ */
+vec3 overlayRimBase(vec3 base, vec2 uv, vec3 n) {
+  if (uOverlay[0].w <= 0.0 || uOverlay[4].z < 0.5) return base;
+  float weight = clamp(uOverlay[0].w * overlayRimWeight(uv, n), 0.0, 1.0);
+  return mix(base, uOverlay[0].rgb, weight);
+}
+
 /* What the overlay adds to the light the surface gives off: the dissolve's band, the colour laid
-   over through its noise, and the rim. Zero where the draw sets none of them. */
+   over through its noise, and an adding rim. Zero where the draw sets none of them. */
 vec3 overlayGlow(vec2 uv, vec3 n) {
   vec3 glow = vec3(0.0);
   float noise = overlayDissolveNoise(uv);
@@ -94,22 +130,8 @@ vec3 overlayGlow(vec2 uv, vec3 n) {
     glow += uOverlay[8].rgb * uOverlay[8].w * band + uOverlay[9].rgb * uOverlay[9].w * noise;
   }
   float strength = uOverlay[0].w;
-  if (strength > 0.0) {
-    vec3 toEye = normalize(uCameraPos - vWorldPos);
-    float edge = pow(1.0 - clamp(dot(n, toEye), 0.0, 1.0), max(uOverlay[1].x, 1e-4));
-    float up = pow(clamp(n.y * 0.5 + 0.5, 0.0, 1.0), max(uOverlay[1].y, 1e-4));
-    float rim = pow(edge * up, max(uOverlay[1].z, 1e-4));
-    float time = uSurfaceScene.x;
-    if (uOverlay[2].x > 0.0 && overlayImagesBound()) {
-      vec2 at = overlayScreen() * uOverlay[3].z + uOverlay[3].xy * time;
-      rim *= overlayImage(uOverlay[2], at).r;
-    }
-    rim = min(rim, 1.0);
-    rim *= mix(uOverlay[4].x, uOverlay[4].y, 0.5 + 0.5 * sin(uOverlay[3].w * time));
-    if (uOverlay[5].x > 0.0 && overlayImagesBound()) {
-      rim *= 1.0 - uOverlay[1].w * overlayImage(uOverlay[5], uv).r;
-    }
-    glow += uOverlay[0].rgb * strength * rim;
+  if (strength > 0.0 && uOverlay[4].z < 0.5) {
+    glow += uOverlay[0].rgb * strength * overlayRimWeight(uv, n);
   }
   return glow;
 }

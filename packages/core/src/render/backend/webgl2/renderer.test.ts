@@ -6,6 +6,7 @@ import { Renderer } from './renderer.ts';
 import { recordingGl } from '../../rendererHarness.ts';
 import { BloomPass } from '../../bloomPass.ts';
 import { createEnvironment } from './renderer.ts';
+import { computeLightMatrix } from '../../lightMatrix.ts';
 import { Camera } from '../../camera.ts';
 import { MeshBuilder } from '../../../geometry/meshBuilder.ts';
 import { LIGHT_RECORD, LIGHT_TEXELS } from '../../clusteredLights.ts';
@@ -22,7 +23,7 @@ import {
   SURFACE_TEXTURE_UNIT,
 } from '../../lightBudget.ts';
 import { createMeshInstances } from '../../instances.ts';
-import { eyeModel, skinModel } from '../../surfaceModel.ts';
+import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
 
 /**
  * Whether order-independent transparency is on, asked the only way a caller can ask it.
@@ -1361,13 +1362,18 @@ test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears 
   renderer.setSurfaceTextureRelief(1.5);
   renderer.setEmissiveGain(3);
   renderer.setDitherFade(0.4);
+  renderer.setDitherOpacity(true);
   renderer.setAmbientSH(new Array(27).fill(0.1));
 
   const programsBy = new Map<string, Set<unknown>>();
   let current: unknown = null;
   for (const call of calls) {
     if (call.name === 'useProgram') current = call.args[0];
-    if (!['uniform1f', 'uniform2f', 'uniform2fv', 'uniform3fv', 'uniform4fv'].includes(call.name)) {
+    if (
+      !['uniform1f', 'uniform2f', 'uniform3f', 'uniform2fv', 'uniform3fv', 'uniform4fv'].includes(
+        call.name,
+      )
+    ) {
       continue;
     }
     const name = (call.args[0] as { name?: string } | null)?.name ?? '';
@@ -1378,6 +1384,265 @@ test('A MATERIAL SETTER REACHES EVERY FLAT PROGRAM, so an instanced batch wears 
   for (const name of names) {
     expect(programsBy.get(name)?.size ?? 0, `${name} is written into both flat programs`).toBe(2);
   }
+});
+
+/**
+ * **A model's program can compile without holding the frame.** Where draws skip a compile and the
+ * context offers `KHR_parallel_shader_compile`, a skin draw starts its program and is left out
+ * while the driver says it is compiling; once it says done, the next draw adopts it and draws; and
+ * `ready()` finishes what is started, as a loading screen awaits it. Where draws wait, the first
+ * draw compiles and draws. Counted in `drawElements`.
+ */
+test('LEAVES OUT A DRAW WHOSE MODEL PROGRAM IS COMPILING WHERE DRAWS SKIP, AND DRAWS IT ONCE IT IS DONE', async () => {
+  for (const pipelineCompile of ['wait', 'skip'] as const) {
+    const compiling = { done: false };
+    const { gl, canvas, calls } = recordingGl({
+      extensions: ['KHR_parallel_shader_compile'],
+      compiling,
+    });
+    const renderer = new Renderer(canvas, resolveRenderQuality({ pipelineCompile }));
+    const mesh = new Mesh(gl, GEOMETRY);
+    const camera = new Camera();
+    camera.updateMatrices(16 / 9);
+    const draw = (): number => {
+      calls.length = 0;
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, createEnvironment());
+      renderer.setMaterial({ model: skinModel() });
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.setMaterial(null);
+      return calls.filter((call) => call.name === 'drawElements').length;
+    };
+    const drawn = [draw(), draw()];
+    compiling.done = true;
+    drawn.push(draw());
+    expect(drawn, pipelineCompile).toEqual(pipelineCompile === 'wait' ? [1, 1, 1] : [0, 0, 1]);
+  }
+  /*
+   * And `ready()` waits for a started program without holding the thread: pending while the driver
+   * says it is compiling, adopted once it says done.
+   */
+  const driver = { done: false };
+  const { gl, canvas, calls } = recordingGl({
+    extensions: ['KHR_parallel_shader_compile'],
+    compiling: driver,
+  });
+  const renderer = new Renderer(canvas, resolveRenderQuality({ pipelineCompile: 'skip' }));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, createEnvironment());
+  renderer.setMaterial({ model: skinModel() });
+  renderer.drawMesh(mesh, mat4.create());
+  let settled = false;
+  const ready = renderer.ready().then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(settled, 'still compiling').toBe(false);
+  driver.done = true;
+  await ready;
+  calls.length = 0;
+  renderer.drawMesh(mesh, mat4.create());
+  expect(calls.filter((call) => call.name === 'drawElements').length).toBe(1);
+});
+
+/**
+ * **The sun's moving layer is read through the matrix its pass was drawn with**, on the next frame,
+ * which is when a switch asked for is compiled in. With the environment's own matrix nothing changes
+ * and the layer is read through it; with a tight one of its own, that one and its span.
+ */
+test('READS THE MOVING LAYER THROUGH THE MATRIX ITS PASS WAS DRAWN WITH, AND ITS SPAN', () => {
+  const wide = mat4.create();
+  const tight = mat4.create();
+  computeLightMatrix([0.4, 0.8, 0.45], 0, 0, 0, 40, 2048, wide);
+  computeLightMatrix([0.4, 0.8, 0.45], 0, 0, 0, 3, 2048, tight);
+  for (const own of [false, true]) {
+    const { canvas, calls } = recordingGl({
+      uniforms: ['uMovingLightViewProj', 'uMovingShadowDepthSpan'],
+    });
+    const renderer = new Renderer(canvas, resolveRenderQuality({}));
+    const camera = new Camera();
+    const env = createEnvironment();
+    env.lightViewProj = wide;
+    const frame = (): void => {
+      renderer.beginShadowPass(own ? tight : wide, 'dynamic');
+      renderer.endShadowPass();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+    };
+    frame();
+    calls.length = 0;
+    frame();
+    const last = (name: string, verb: string): unknown[] =>
+      calls
+        .filter((c) => c.name === verb && (c.args[0] as { name?: string } | null)?.name === name)
+        .at(-1)?.args ?? [];
+    expect(
+      Array.from(last('uMovingLightViewProj', 'uniformMatrix4fv')[2] as Float32Array),
+      `${own}`,
+    ).toEqual(Array.from(own ? tight : wide));
+    expect(last('uMovingShadowDepthSpan', 'uniform1f')[1] as number, `${own}`).toBeCloseTo(
+      own ? 18 : 240,
+      3,
+    );
+  }
+});
+
+/**
+ * **A material's projection reaches every flat program, and a pass starts without one.** What
+ * WebGPU's twin asserts from its blocks, asserted here from the uploads: `uWorldUv` carries the
+ * material's kind, repeats a metre and sharpness, and `bindMeshPass` puts zeros back.
+ */
+test("WRITES A MATERIAL'S PROJECTION FOR ITS DRAWS, AND A PASS FORGETS IT", () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uWorldUv'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  /** The last upload of `uWorldUv`. */
+  const lanes = (): number[] => {
+    const call = calls
+      .filter(
+        (c) =>
+          c.name === 'uniform4fv' && (c.args[0] as { name?: string } | null)?.name === 'uWorldUv',
+      )
+      .at(-1);
+    return Array.from((call?.args[1] as Float32Array | undefined) ?? []);
+  };
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ projection: { kind: 'planar', scale: 2 } });
+  expect(lanes()).toEqual([1, 2, 4, 0]);
+  renderer.setMaterial({ projection: { kind: 'triplanar', scale: 0.5, sharpness: 8 } });
+  expect(lanes()).toEqual([2, 0.5, 8, 0]);
+  renderer.bindMeshPass(camera, env);
+  expect(lanes()).toEqual([0, 0, 0, 0]);
+});
+
+/**
+ * **A thin surface's light from behind is its material's, and a pass starts without one**: the
+ * glass tint's spare lane, held to 0..1, as WebGPU's twin asserts from its blocks.
+ */
+test("CARRIES A MATERIAL'S LIGHT FROM BEHIND IN THE GLASS TINT'S SPARE LANE, AND A PASS FORGETS IT", () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uGlassTint'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const lane = (): number =>
+    (calls
+      .filter(
+        (c) =>
+          c.name === 'uniform4f' && (c.args[0] as { name?: string } | null)?.name === 'uGlassTint',
+      )
+      .at(-1)?.args[4] ?? -1) as number;
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ diffuseTransmission: 0.6 });
+  expect(lane()).toBe(0.6);
+  renderer.setMaterial({ diffuseTransmission: 3 });
+  expect(lane()).toBe(1);
+  renderer.bindMeshPass(camera, env);
+  expect(lane()).toBe(0);
+});
+
+/**
+ * **A material's layers are its own, their mask where a model's map goes, and a pass forgets
+ * them**, as WebGPU's twin asserts from its blocks: the repeats, count and glow uploaded, the model
+ * told it has no map of its own, and zeros at the next pass.
+ */
+test("WRITES A MATERIAL'S LAYERS, KEEPS THE MODEL OFF ITS MASK, AND A PASS FORGETS THEM", () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uLayers', 'uModelParams'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const mask = renderer.createSurfaceTexture({ width: 4, height: 4 } as unknown as TexImageSource);
+  const last = (name: string): number[] =>
+    Array.from(
+      (calls
+        .filter(
+          (c) => c.name === 'uniform4fv' && (c.args[0] as { name?: string } | null)?.name === name,
+        )
+        .at(-1)?.args[1] as Float32Array | undefined) ?? [],
+    );
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ model: hairModel(), layers: { mask, repeats: [4, 2], emissiveLayer: 1 } });
+  expect(last('uLayers')).toEqual([4, 2, 1, 1, 1, 2, 1, 0]);
+  expect(last('uModelParams')[7], 'the mask is not the model’s map').toBe(0);
+  renderer.bindMeshPass(camera, env);
+  expect(last('uLayers')).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+/**
+ * **A draw may spend its own opacity on the screen door**: the third lane of `uWriteMode`, beside
+ * the fade and independent of it, and taken back by `bindMeshPass` as the fade is. What WebGPU's
+ * twin asserts from its blocks, asserted here from the uploads.
+ */
+test('AN OPACITY DITHER IS PER-DRAW STATE BESIDE THE FADE, AND A PASS TAKES IT BACK', () => {
+  const { canvas, calls } = recordingGl({ uniforms: ['uWriteMode'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  /** The three lanes the last upload of `uWriteMode` carried. */
+  const lanes = (): number[] => {
+    const call = calls
+      .filter(
+        (c) =>
+          c.name === 'uniform3f' && (c.args[0] as { name?: string } | null)?.name === 'uWriteMode',
+      )
+      .at(-1);
+    return (call?.args.slice(1) ?? []) as number[];
+  };
+
+  renderer.bindMeshPass(camera, env);
+  renderer.setDitherOpacity(true);
+  expect(lanes()).toEqual([0, 0, 1]);
+  renderer.setDitherFade(0.5);
+  expect(lanes()).toEqual([0, 0.5, 1]);
+  renderer.setDitherOpacity(false);
+  expect(lanes()).toEqual([0, 0.5, 0]);
+  renderer.setDitherOpacity(true);
+  renderer.bindMeshPass(camera, env);
+  expect(lanes()).toEqual([0, 0, 0]);
+});
+
+/**
+ * **A program built in the middle of a pass takes the fade and the opacity dither the caller set.**
+ * A surface model's program is compiled the first time a draw asks for one, and its pass state
+ * used to zero both, in that program and in the renderer, so the draw that asked drew whole and
+ * so did every draw after it until the next setter. Read per draw, off the program each draw used.
+ */
+test('A PROGRAM BUILT MID-PASS DRAWS WITH THE FADE AND THE OPACITY DITHER ALREADY SET', () => {
+  const { gl, canvas, calls } = recordingGl({ uniforms: ['uWriteMode'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = new Mesh(gl, GEOMETRY);
+  const camera = new Camera();
+  camera.updateMatrices(16 / 9);
+  renderer.beginFrame([0, 0, 0]);
+  renderer.bindMeshPass(camera, createEnvironment());
+  renderer.setDitherFade(0.4);
+  renderer.setDitherOpacity(true);
+  renderer.setMaterial({ model: skinModel() });
+  renderer.drawMesh(mesh, mat4.create());
+  renderer.setMaterial(null);
+  renderer.drawMesh(mesh, mat4.create());
+
+  /* Each program's last `uWriteMode`, and what the program current at each draw held. */
+  const held = new Map<unknown, number[]>();
+  const drawn: number[][] = [];
+  let program: unknown = null;
+  for (const call of calls) {
+    if (call.name === 'useProgram') program = call.args[0];
+    if (
+      call.name === 'uniform3f' &&
+      (call.args[0] as { name?: string } | null)?.name === 'uWriteMode'
+    ) {
+      held.set(program, call.args.slice(1) as number[]);
+    }
+    if (call.name === 'drawElements') drawn.push(held.get(program) ?? []);
+  }
+  expect(drawn).toEqual([
+    [0, 0.4, 1],
+    [0, 0.4, 1],
+  ]);
 });
 
 /**

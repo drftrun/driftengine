@@ -29,12 +29,24 @@ export interface OverlayRegion {
  * raised to a contrast, times a noise laid in screen space, a slow pulse and a mask, in a colour.
  * Added to what the surface emits, and not gated on the night as emission is: it is a glow the
  * surface wears, not light it gives off.
+ *
+ * **Or, with `mode: 'blend'`, a colour the surface is pulled toward**, lit like the rest of it: the
+ * base colour mixed toward the rim's by the edge times `alpha`, before any light reads it, so the
+ * rim is bright where light falls and dark where none does. The colour is `colour` times
+ * `intensity`, each channel held at 1 as a base colour is, so a colour of 8 red is a red of 1 and
+ * not a glow; `alpha` is the weight, which may pass 1 to saturate the edge sooner.
  */
 export interface SurfaceRim {
   readonly colour: Vec3;
-  /** How bright, 0 for none. Multiplied with `alpha`. */
+  /**
+   * How bright, 0 for none, multiplied with `alpha`. Where the rim blends it scales `colour`
+   * instead, so 0 there is a rim of black, and `alpha` alone says how much: 0 for none.
+   */
   readonly intensity: number;
+  /** The rim's weight, 1 unless given. */
   readonly alpha?: number;
+  /** `'add'`, the default, lays the rim on as glow; `'blend'` pulls the base colour toward it, lit. */
+  readonly mode?: 'add' | 'blend';
   /** The edge's exponent: larger keeps the rim nearer the silhouette. 1.5 unless given. */
   readonly falloff?: number;
   /**
@@ -122,10 +134,11 @@ function region(out: Float32Array, at: number, r: OverlayRegion | undefined | nu
  * no overlay. A region with a zero scale is an image not given, and its term reads as none — a
  * noise of 1, a mask of 0, no wrinkle — and every region is one without `maps`. Fifteen vectors:
  *
- * - 0: rim colour, rim strength (intensity times alpha; 0 is no rim)
+ * - 0: rim colour, rim strength (intensity times alpha; 0 is no rim). A blending rim: the colour
+ *   times intensity, each channel held at 1, and the alpha alone
  * - 1: falloff, upward lean, contrast, mask weight
  * - 2: the rim's noise region; 3: its scroll along x and y, its tiling, the pulse's rate
- * - 4: the pulse's low and high (1 and 1 where none)
+ * - 4: the pulse's low and high (1 and 1 where none), and the mode: 0 adds, 1 blends
  * - 5: the rim's mask region
  * - 6: the dissolve's noise region (a zero scale is no dissolve); 7: its tiling, threshold, edge
  * - 8: the edge's light and its strength; 9: the laid-over colour and its amount
@@ -138,10 +151,14 @@ export function packSurfaceOverlay(overlay: SurfaceOverlay | null, out: Float32A
   const images = overlay.maps !== undefined;
   const rim = overlay.rim;
   if (rim !== undefined) {
-    out[0] = finite(rim.colour[0], 0);
-    out[1] = finite(rim.colour[1], 0);
-    out[2] = finite(rim.colour[2], 0);
-    out[3] = Math.max(0, finite(rim.intensity, 0) * finite(rim.alpha, 1));
+    const blend = rim.mode === 'blend';
+    const scale = blend ? finite(rim.intensity, 0) : 1;
+    for (let c = 0; c < 3; c++) {
+      const channel = finite(rim.colour[c], 0) * scale;
+      out[c] = blend ? Math.min(Math.max(channel, 0), 1) : channel;
+    }
+    out[3] = Math.max(0, (blend ? 1 : finite(rim.intensity, 0)) * finite(rim.alpha, 1));
+    out[18] = blend ? 1 : 0;
     out[4] = Math.max(0, finite(rim.falloff, 1.5));
     out[5] = Math.max(0, finite(rim.upward, 0.4));
     out[6] = Math.max(0, finite(rim.contrast, 1));

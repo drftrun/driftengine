@@ -50,6 +50,30 @@ describe('A SURFACE OVERLAY PACKS INTO THE LANES THE SHADER READS', () => {
     expect(out[40]).toBe(0);
   });
 
+  /*
+   * **A rim may blend the base colour instead of adding light.** Then vector 0 is the colour the
+   * surface is pulled toward, its intensity folded in and each channel held at 1 as a base colour
+   * is, and the weight the edge is taken times — the alpha alone — and the mode sits in vector 4's
+   * third lane, which an added rim leaves at 0. A colour of 8 red at alpha 1.5 is the case: it pulls
+   * toward a red of 1, by up to one and a half times the edge.
+   */
+  it('PACKS A BLENDING RIM AS THE COLOUR IT PULLS TOWARD, HELD AT ONE, THE ALPHA AND ITS MODE', () => {
+    const out = new Float32Array(OVERLAY_FLOATS);
+    packSurfaceOverlay(
+      { rim: { colour: [8, 0.2, 0.1], intensity: 1, alpha: 1.5, mode: 'blend', contrast: 2 } },
+      out,
+    );
+    expect(Array.from(out.slice(0, 4))).toEqual([1, 0.2, 0.1, 1.5].map(Math.fround));
+    expect(out[6], 'the contrast, as for an added rim').toBe(2);
+    expect(out[18], 'blend').toBe(1);
+    const added = new Float32Array(OVERLAY_FLOATS);
+    packSurfaceOverlay({ rim: { colour: [8, 0.2, 0.1], intensity: 1, alpha: 1.5 } }, added);
+    expect(Array.from(added.slice(0, 4)), 'an added rim keeps its light').toEqual(
+      [8, 0.2, 0.1, 1.5].map(Math.fround),
+    );
+    expect(added[18], 'add').toBe(0);
+  });
+
   it('HOLDS A RIM WITHOUT A PULSE AT ONE, AND A RIM WITHOUT A MASK UNMASKED', () => {
     const out = new Float32Array(OVERLAY_FLOATS);
     packSurfaceOverlay({ rim: { colour: [1, 1, 1], intensity: 1 } }, out);

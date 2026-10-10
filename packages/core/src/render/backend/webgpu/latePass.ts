@@ -126,6 +126,7 @@ export class LatePass {
     command.offsetCount = 0;
     command.vertexCount = 0;
     command.indexBuffer = null;
+    command.indexFormat = 'uint32';
     command.indexed = false;
     command.instances = 1;
     command.indirect = null;

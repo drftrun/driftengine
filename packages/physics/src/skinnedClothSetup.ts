@@ -83,6 +83,13 @@ export interface ClothCollider {
 export interface SkinnedClothParameters {
   /** The fixed step, in seconds. The solver runs whole steps whatever the frame. Default 1/60. */
   readonly step?: number;
+  /**
+   * The most whole steps one `advance` runs; the time past them is dropped, not owed to the next
+   * frame. Default none, so `advance(1)` is a second of cloth. A caller handing it each frame's time
+   * wants two to four: unbounded, a slow frame's steps make the next frame slower, which hands it
+   * more time again. What it gives up: past the cap the cloth runs slower than the clock.
+   */
+  readonly maxSteps?: number;
   /** Substeps a step. Default 1. */
   readonly substeps?: number;
   /** Constraint passes a substep. Default 4. */
@@ -148,6 +155,7 @@ export interface SkinnedClothSetup {
 /** The parameters with every default filled in. */
 export interface ResolvedClothParameters {
   readonly step: number;
+  readonly maxSteps: number;
   readonly substeps: number;
   readonly iterations: number;
   readonly gravity: readonly [number, number, number];
@@ -169,6 +177,7 @@ export function resolveClothParameters(
 ): ResolvedClothParameters {
   return {
     step: parameters.step ?? 1 / 60,
+    maxSteps: Math.max(1, Math.floor(parameters.maxSteps ?? Infinity)),
     substeps: Math.max(1, Math.floor(parameters.substeps ?? 1)),
     iterations: Math.max(1, Math.floor(parameters.iterations ?? 4)),
     gravity: parameters.gravity ?? [0, -9.81, 0],

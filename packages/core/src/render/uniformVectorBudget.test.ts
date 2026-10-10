@@ -16,13 +16,26 @@ import {
  * overlay**, which declares its vectors only where a draw has set one and the device has the room
  * (`setSurfaceOverlay`), so it is not part of what a budget is planned against.
  */
-const lit = (budget: LightBudget, surfaceOverlay = false): string =>
+/*
+ * Without the four switches content turns on — the overlay, a projection, the moving sun's own
+ * matrix and layers — as a renderer starts.
+ */
+const lit = (
+  budget: LightBudget,
+  surfaceOverlay = false,
+  worldUvs = false,
+  movingSun = false,
+  layered = false,
+): string =>
   flatFrag({
     pointShadows: true,
     directionalShadows: true,
     environmentProbe: false,
     nightEmissive: false,
     surfaceOverlay,
+    worldUvs,
+    movingSun,
+    layered,
     maxLights: budget.maxLights,
     maxAreaLights: budget.maxAreaLights,
   });
@@ -71,12 +84,30 @@ describe('countUniformVectors', () => {
      * became one \`ivec4\`, three rows for one, and the rung is 254 with the models in it.
      */
     expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(442);
+    /* A material's projection, when one asks, is its one vector and no more: worldUv.ts. */
+    expect(
+      countUniformVectors(lit(FULL_LIGHT_BUDGET, false, true)) -
+        countUniformVectors(lit(FULL_LIGHT_BUDGET)),
+    ).toBe(1);
+    /* The moving sun's matrix and span, five: movingSun.ts. */
+    expect(
+      countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, true)) -
+        countUniformVectors(lit(FULL_LIGHT_BUDGET)),
+    ).toBe(5);
+    /* A material's layers, two: layered.ts. */
+    expect(
+      countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true)) -
+        countUniformVectors(lit(FULL_LIGHT_BUDGET)),
+    ).toBe(2);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,
       environmentProbe: false,
       nightEmissive: false,
       surfaceOverlay: false,
+      worldUvs: false,
+      movingSun: false,
+      layered: false,
     });
     expect(countUniformVectors(withoutPointShadows)).toBe(250);
   });

@@ -20,6 +20,8 @@ export interface MediumLight {
   readonly sunShadow: number;
   /** World → light clip, **uncorrected**: the shader does its own `* 0.5 + 0.5`. */
   readonly lightViewProj: ReadonlyMat4;
+  /** The same for the sun's moving layer, whose shadow pass may be drawn with its own. */
+  readonly movingLightViewProj: ReadonlyMat4;
   /** The sun's static, moving and peeled maps, as one array. See `shadowMap.ts`. */
   readonly sunShadows: WebGLTexture;
   readonly peeledEnabled: boolean;
@@ -240,6 +242,11 @@ export class GlobalMediumPass {
     gl.uniform1i(u['uSteps'] ?? null, steps);
     gl.uniform1f(u['uSunShadow'] ?? null, light.sunShadow);
     gl.uniformMatrix4fv(u['uLightViewProj'] ?? null, false, light.lightViewProj as Float32Array);
+    gl.uniformMatrix4fv(
+      u['uMovingLightViewProj'] ?? null,
+      false,
+      light.movingLightViewProj as Float32Array,
+    );
     gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, light.peeledEnabled ? 1 : 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);

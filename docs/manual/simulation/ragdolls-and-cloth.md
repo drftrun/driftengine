@@ -244,6 +244,43 @@ frame. It advances in whole fixed steps and draws on the remainder, as the rest 
 does. A jump past the set-up's teleport distance or angle resets the cloth by itself; a cut in a
 cinematic is `reset()`. The wind is the scene's one wind, sampled once and handed over.
 
+Every whole step `dt` holds is run, so a slow frame hands the next one more steps to take and can
+make it slower in turn. A caller handing the cloth each frame's time sets `maxSteps` in the set-up's
+parameters, two to four, and the time past them is dropped rather than owed: the cloth then runs
+slower than the clock for as long as the frames do. Unset, `advance(1)` is a whole second of cloth.
+
+Several garments step as one with `createSkinnedClothSet(renderer, setups)`: one compute pass and
+one submit a frame for all of them, and a step costs one garment's dispatches however many the set
+holds. Each garment is named by its index; pose each, then step the set once:
+
+```ts sample=snippets/cloth.ts#set
+/** Every garment of a character in one set, each held to two steps a frame. */
+export function wardrobe(renderer: RendererApi, garments: readonly SkinnedClothSetup[]) {
+  return createSkinnedClothSet(
+    renderer,
+    garments.map((setup) => ({ ...setup, parameters: { ...setup.parameters, maxSteps: 2 } })),
+  );
+}
+
+/** Once a frame, before the draws: each garment's rig, then one step for all of them. */
+export function stepWardrobe(
+  set: SkinnedClothSet,
+  globals: Float32Array,
+  model: Float32Array,
+  dt: number,
+): void {
+  for (let g = 0; g < set.particles.length; g += 1) set.setPose(g, globals, model);
+  set.step(dt);
+}
+```
+
+The garments of a set step together, so they share `step`, `substeps`, `iterations` and `maxSteps`,
+and a set whose garments disagree on one is refused by name. Everything else is each garment's own,
+its settle and blend steps included: a garment reset alone settles while the rest wait for it. A
+colour of constraints is dispatched over the most any garment has, so a set gains most where its
+garments are alike. Measured on a desktop GPU, fifteen capes took 0.79 ms a frame as a set and
+8.9 ms as fifteen solvers; `particles[g]` is what `setCloth` draws garment `g` by.
+
 The draw places the mesh's vertices by the cloth in its vertex stage:
 
 ```ts sample=garment/main.ts#draw

@@ -71,3 +71,25 @@ it('TELLS ITS DEVICE EACH POSE, RESET, STEP AND BLEND, IN ORDER', () => {
   control.setPose(IDENTITY, moved(20));
   expect(calls.splice(0)).toEqual(['posed', 'settled', 'rest', 'step 1 0', 'step 1 0']);
 });
+
+/*
+ * **A frame runs at most `maxSteps`, and the time past them is dropped rather than owed.** At a step
+ * of ¼ s and a cap of two, 1.1 s holds four whole steps: two run, at ½ and 1 of the way to the pose,
+ * and the two past the cap are gone, so 0.1 s is left and `alpha` is 0.4. The next 0.2 s makes 0.3,
+ * one step and not three. Unbounded, the same 1.1 s runs all four.
+ */
+it('RUNS AT MOST maxSteps A FRAME AND DROPS THE TIME PAST THEM', () => {
+  const { device, calls } = recorder();
+  const control = new ClothControl(setup({ step: 0.25, maxSteps: 2 }), device, false);
+  control.setPose(IDENTITY, IDENTITY);
+  calls.splice(0);
+  control.setPose(IDENTITY, moved(1));
+  expect(control.advance(1.1)).toBe(2);
+  expect(calls.splice(0)).toEqual(['posed', 'step 0.5 0', 'step 1 0', 'consumed']);
+  expect(control.alpha).toBeCloseTo(0.4, 6);
+  expect(control.advance(0.2)).toBe(1);
+
+  const unbounded = new ClothControl(setup({ step: 0.25 }), recorder().device, false);
+  unbounded.setPose(IDENTITY, IDENTITY);
+  expect(unbounded.advance(1.1)).toBe(4);
+});

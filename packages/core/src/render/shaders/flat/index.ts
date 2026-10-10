@@ -21,6 +21,10 @@ import { DRIFT_LIGHT_GLSL } from './driftLight.ts';
 import { SURFACE_EFFECTS_GLSL } from './surfaceEffects.ts';
 import { overlayGlsl } from './overlay.ts';
 import { reflectionSurfaceGlsl } from './reflectionSurface.ts';
+import { worldUvGlsl } from './worldUv.ts';
+import { movingSunGlsl } from './movingSun.ts';
+import { layeredGlsl } from './layered.ts';
+import { MAP_READS_GLSL } from './mapReads.ts';
 import { CHANNEL_BEND, LIT_CHANNEL_ATTRIBUTE } from '../vertexChannel.ts';
 import { BONE_ANIMATION_GLSL } from '../boneAnimation.ts';
 import { FULL_LIGHT_BUDGET, type LightBudget } from '../../uniformVectorBudget.ts';
@@ -509,6 +513,21 @@ export interface FlatShaderOptions {
    */
   readonly reflectionMaps?: boolean;
   /**
+   * Whether it places a material's maps by the world, `uWorldUv` and all (`SurfaceMaterial
+   * .projection`). True when absent. See `worldUvGlsl`.
+   */
+  readonly worldUvs?: boolean;
+  /**
+   * Whether it reads the sun's moving layer through a matrix of its own, \`uMovingLightViewProj\`
+   * and all. True when absent. See \`movingSunGlsl\`.
+   */
+  readonly movingSun?: boolean;
+  /**
+   * Whether it blends a material's layers by a mask, \`uLayers\` and all (\`SurfaceMaterial.layers\`).
+   * True when absent. See \`layeredGlsl\`.
+   */
+  readonly layered?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -619,6 +638,8 @@ export function flatFrag(options: FlatShaderOptions): string {
         surfaceEffects: options.surfaceEffects ?? true,
         driftLight: options.driftLight ?? true,
       }),
+      /* Depth zero and ahead of the sun's lookup, which calls it; its switch takes the next id. */
+      movingSunGlsl(options.movingSun ?? true),
       LOBES_GLSL,
       POINTSHADOW_GLSL,
       DIRECTIONALSHADOW_GLSL,
@@ -644,8 +665,6 @@ export function flatFrag(options: FlatShaderOptions): string {
        * and `main` is unconditional by construction.
        */
       TANGENT_FRAME_GLSL,
-      /* After the frame it calls, unconditional for the same reason. See normalMap.ts. */
-      NORMAL_MAP_GLSL,
       /* Unconditional for the same reason, and called only where a cutoff was asked for. */
       CUTOUT_COVERAGE_GLSL,
       CUTOUT_DITHER_GLSL,
@@ -657,6 +676,15 @@ export function flatFrag(options: FlatShaderOptions): string {
       overlayGlsl(options.surfaceOverlay ?? true),
       /* After the overlay, so its switch takes the next id. See reflectionSurface.ts. */
       reflectionSurfaceGlsl(options.reflectionMaps ?? true),
+      /* After the reflection maps, so its switch takes the next id; main calls it. worldUv.ts. */
+      worldUvGlsl(options.worldUvs ?? true),
+      /* After the projection, so its switch takes the next id; the normal map below calls it. */
+      layeredGlsl(options.layered ?? true),
+      /* Where each map is read, after both of the ways it can be read otherwise. See mapReads.ts. */
+      MAP_READS_GLSL,
+      /* After the frame and the projection it calls, unconditional for the same reason as the
+         frame. See normalMap.ts. */
+      NORMAL_MAP_GLSL,
       /* After the models, whose answer to a rectangle it asks for. See areaLight.ts. */
       AREA_LIGHT_GLSL,
       MAIN_GLSL,

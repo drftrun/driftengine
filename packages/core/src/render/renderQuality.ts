@@ -50,6 +50,9 @@ export type ShadowFilterTaps = 4 | 8 | 12;
 export type DirectionalShadowDepthLayers = 1 | 2;
 export type WaterReflectionFilterTaps = 1 | 5 | 9;
 
+/** What a draw does when its pipeline has not compiled yet: see `RenderQuality.pipelineCompile`. */
+export type PipelineCompile = 'wait' | 'skip';
+
 /** How light through glass is coloured: see `RenderQuality.glassShadows`. */
 export type GlassShadows = 'full' | 'half' | 'off';
 
@@ -220,6 +223,34 @@ export interface RenderQuality {
    * lot of glass; that is what `'half'` is for. See `glassShadow.ts`.
    */
   readonly glassShadows: GlassShadows;
+  /**
+   * What a lit draw does when the pipeline it needs has not compiled: one first needed inside a
+   * frame, by a material's own state — two-sided, cut out, a surface model — or a draw state a
+   * mesh's creation did not warm.
+   *
+   * **`'wait'`, the default**: the pipeline is built where the draw asks for it, and on WebGPU the
+   * browser compiles it on its GPU process's main thread, holding the frame — 130 to 400 ms a
+   * pipeline was reported on a phone, for a material first drawn mid-scene. **`'skip'`** starts the
+   * compile off that thread and leaves the draw out until it lands, a few frames to a few dozen,
+   * and the draw then appears; nothing waits. Static draws always wait, since a recorded list keeps
+   * what it recorded, and a compile that fails is built where it is next asked for, so the device
+   * says why rather than the draw vanishing for good.
+   *
+   * **The way to have neither** is to draw what a scene will use once, behind a loading screen, and
+   * await `ready()`, which waits for every compile started — whichever this says. What would make
+   * `'skip'` wrong is a frame that must hold everything it was given, such as a capture of the first
+   * frame of a scene not awaited.
+   *
+   * **Measured on a desktop GPU** (`demo/dev/pipelineCompile.html`, eight new variants at once): on
+   * WebGPU the frame that met them took 700 to 3,700 ms waiting and 17 ms skipping, the draws
+   * landing 21 to 26 frames later. WebGL2 compiles its lit programs when it is made, all but a
+   * surface model's, which it compiles at the first draw that wants one: there `'skip'` asks the
+   * driver through `KHR_parallel_shader_compile` and waits where a context does not offer it — which
+   * ANGLE on Vulkan does not. Where it is offered, ANGLE on OpenGL, the longest frame went from 820 to
+   * 1,120 ms to 630 to 700 ms: the driver still finishes its own compile at the program's first
+   * draw, which nothing above it can move.
+   */
+  readonly pipelineCompile: PipelineCompile;
   /**
    * How light that scatters beneath skin is drawn, for a material whose model is `skinModel`.
    *
@@ -973,6 +1004,7 @@ export const DEFAULT_RENDER_QUALITY: Readonly<RenderQuality> = Object.freeze({
   lightVolumeSamples: 32,
   directionalShadowDepthLayers: 2,
   glassShadows: 'full',
+  pipelineCompile: 'wait',
   skinScattering: 'pre-integrated',
   directionalShadowMaxDistance: 6,
   directionalShadowMaxSlope: 3,
@@ -1140,6 +1172,7 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
     directionalShadowDepthLayers:
       options.directionalShadowDepthLayers ?? DEFAULT_RENDER_QUALITY.directionalShadowDepthLayers,
     glassShadows: options.glassShadows ?? DEFAULT_RENDER_QUALITY.glassShadows,
+    pipelineCompile: options.pipelineCompile ?? DEFAULT_RENDER_QUALITY.pipelineCompile,
     skinScattering: options.skinScattering ?? DEFAULT_RENDER_QUALITY.skinScattering,
     directionalShadowMaxDistance:
       options.directionalShadowMaxDistance ?? DEFAULT_RENDER_QUALITY.directionalShadowMaxDistance,
@@ -1296,6 +1329,11 @@ export function resolveRenderQuality(options: RenderQualityOptions = {}): Readon
   ) {
     throw new Error(
       `RenderQuality.glassShadows must be 'full', 'half' or 'off', got ${String(quality.glassShadows)}`,
+    );
+  }
+  if (quality.pipelineCompile !== 'wait' && quality.pipelineCompile !== 'skip') {
+    throw new Error(
+      `RenderQuality.pipelineCompile must be 'wait' or 'skip', got ${String(quality.pipelineCompile)}`,
     );
   }
   if (quality.skinScattering !== 'pre-integrated' && quality.skinScattering !== 'screen-space') {

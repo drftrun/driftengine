@@ -161,19 +161,21 @@ test('a mesh uploaded a step at a time has sent nothing before its first step', 
 test('a mesh uploaded a step at a time takes one step per attribute', () => {
   const { gl } = recordingGl();
 
-  /* Four supplied attributes and the indices, none big enough to be split further. */
+  /* Positions, normals and the indices, none big enough to be split further. Its colour and its
+     emissive are each one value for every vertex, so constants with nothing to upload. */
   const { mesh, upload } = createMeshIncremental(gl, base);
 
-  expect(drive(upload)).toBe(5);
+  expect(drive(upload)).toBe(3);
   expect(mesh.complete).toBe(true);
 });
 
 test('a mesh uploaded a step at a time splits an attribute too big for one step', () => {
   const { gl } = recordingGl();
-  /* 40,000 vertices is 480 kB of positions: two steps of that attribute alone. */
+  /* 40,000 vertices is 480 kB of positions: two steps of that attribute alone, so more steps than
+     the three arrays that go up — positions, normals and indices. */
   const { upload } = createMeshIncremental(gl, slab(40_002));
 
-  expect(drive(upload)).toBeGreaterThan(5);
+  expect(drive(upload)).toBeGreaterThan(3);
 });
 
 /*
@@ -188,10 +190,10 @@ test('a mesh uploaded a step at a time writes every array exactly once, end to e
   const { upload } = createMeshIncremental(gl, data);
   drive(upload);
 
-  const ranges = new Map<object, [number, number][]>();
+  const ranges = new Map<ArrayBufferView & { length: number }, [number, number][]>();
   for (const call of calls) {
     if (call.name !== 'bufferSubData') continue;
-    const source = call.args[2] as object;
+    const source = call.args[2] as ArrayBufferView & { length: number };
     const from = call.args[3] as number;
     const length = call.args[4] as number;
     const found = ranges.get(source) ?? [];
@@ -199,8 +201,20 @@ test('a mesh uploaded a step at a time writes every array exactly once, end to e
     ranges.set(source, found);
   }
 
-  const arrays = [data.positions, data.normals, data.colors, data.emissive, data.indices];
-  for (const array of arrays) {
+  /*
+   * Three arrays go up: the positions as given, the normals in sixteen-bit fixed point and the
+   * indices narrowed to sixteen bits, both copies made at creation; the slab's colour and emissive
+   * are one value each and constants. See `vertexPacking.ts` and `indexWidth.ts`.
+   */
+  const sources = [...ranges.keys()];
+  expect(sources).toHaveLength(3);
+  expect(sources).toContain(data.positions);
+  expect(sources.map((source) => source.constructor.name).sort()).toEqual([
+    'Float32Array',
+    'Int16Array',
+    'Uint16Array',
+  ]);
+  for (const array of sources) {
     const found = ranges.get(array);
     expect(found).toBeDefined();
     let at = 0;
@@ -320,4 +334,97 @@ test('A BATCH DRAWS THROUGH A VERTEX ARRAY OF ITS OWN, so a plain draw sees no i
   mesh.drawInstancesThrough(gl, b, 3);
   expect(calls.find((c) => c.name === 'bindVertexArray')?.args[0]).toBe(b);
   expect(calls.find((c) => c.name === 'drawElementsInstanced')?.args[4]).toBe(3);
+});
+
+/*
+ * **Sixteen-bit indices where every vertex fits, and every draw names the width they are stored
+ * at**, eagerly and spread. A draw naming thirty-two bits over a sixteen-bit buffer reads two
+ * indices as one, which no driver reports. 65,537 vertices is the first count sixteen bits cannot
+ * name, and the narrow copy is padded to whole words as the other backend's has to be.
+ */
+test('NARROWS A MESH’S INDICES TO SIXTEEN BITS WHERE ITS VERTICES FIT, AND EVERY DRAW SAYS SO', () => {
+  const { gl, calls } = recordingGl();
+  const vertices = 65537;
+  const wideData = {
+    positions: new Float32Array(vertices * 3),
+    normals: new Float32Array(vertices * 3),
+    colors: new Float32Array(vertices * 3),
+    emissive: new Float32Array(vertices),
+    indices: new Uint32Array([0, 1, vertices - 1]),
+  };
+  const narrow = new Mesh(gl, base);
+  const wide = new Mesh(gl, wideData);
+  const spread = createMeshIncremental(gl, base);
+  while (spread.upload.next().done !== true);
+  const filled = calls
+    .filter((c) => c.args[0] === gl.ELEMENT_ARRAY_BUFFER)
+    .filter((c) => c.name === 'bufferData' || c.name === 'bufferSubData')
+    .map((c) => c.args[c.name === 'bufferSubData' ? 2 : 1])
+    .filter((data) => typeof data !== 'number');
+  expect(filled).toEqual([
+    new Uint16Array([0, 1, 2, 0]),
+    new Uint32Array([0, 1, vertices - 1]),
+    new Uint16Array([0, 1, 2, 0]),
+  ]);
+
+  calls.length = 0;
+  for (const mesh of [narrow, spread.mesh, wide]) {
+    mesh.draw(gl);
+    mesh.drawInstancesThrough(gl, {} as WebGLVertexArrayObject, 2);
+  }
+  const types = calls
+    .filter((c) => c.name === 'drawElements' || c.name === 'drawElementsInstanced')
+    .map((c) => c.args[2]);
+  const short = gl.UNSIGNED_SHORT;
+  const int = gl.UNSIGNED_INT;
+  expect(types).toEqual([short, short, short, short, int, int]);
+});
+
+/*
+ * **Each attribute bound as it travels** (`vertexPacking.ts`): sixteen-bit fixed point read through
+ * a normalised `SHORT` or `UNSIGNED_SHORT`, three lanes where three is what the shader reads, and a
+ * value every vertex shares as a disabled attribute with that value behind it at every draw. A
+ * batch's vertex array is built from the same record, so it reads the same types.
+ */
+test('BINDS EACH ATTRIBUTE AS IT TRAVELS: FIXED POINT READ NORMALISED, A SHARED VALUE AS A CONSTANT', () => {
+  const { gl, calls } = recordingGl();
+  const mesh = new Mesh(gl, {
+    ...base,
+    colors: new Float32Array([1, 0.5, 0.25, 0, 0, 0, 1, 1, 1]),
+    emissive: new Float32Array([0.75, 0.75, 0.75]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+    tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 0, 0, 1, -1]),
+  });
+  const pointers = (from: number) =>
+    new Map(
+      calls
+        .slice(from)
+        .filter((c) => c.name === 'vertexAttribPointer')
+        .map((c) => [c.args[0], c.args.slice(1, 4)]),
+    );
+  const expected = new Map([
+    [0, [3, gl.FLOAT, false]],
+    [1, [3, gl.SHORT, true]],
+    [2, [3, gl.UNSIGNED_SHORT, true]],
+    /* Coordinates stay floats even inside [0, 1]: see `vertexPacking.ts`. */
+    [5, [2, gl.FLOAT, false]],
+    [10, [4, gl.SHORT, true]],
+  ]);
+  const bound = pointers(0);
+  for (const [location, read] of expected) expect(bound.get(location), `${location}`).toEqual(read);
+  expect(bound.has(3), 'the shared emissive has no buffer').toBe(false);
+  const filled = calls
+    .filter((c) => c.name === 'bufferData')
+    .map((c) => c.args[1])
+    .find((data) => data instanceof Int16Array);
+  expect(Array.from(filled as Int16Array)).toEqual([0, 0, 32767, 0, 0, 32767, 0, 0, 32767]);
+  expect(calls.some((c) => c.name === 'disableVertexAttribArray' && c.args[0] === 3)).toBe(true);
+
+  calls.length = 0;
+  mesh.draw(gl);
+  expect(calls.find((c) => c.name === 'vertexAttrib1f' && c.args[0] === 3)?.args[1]).toBe(0.75);
+  const at = calls.length;
+  mesh.createInstanceArray(gl, {} as WebGLBuffer, 80);
+  const batch = pointers(at);
+  for (const [location, read] of expected) expect(batch.get(location), `${location}`).toEqual(read);
 });

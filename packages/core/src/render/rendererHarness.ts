@@ -58,8 +58,14 @@ export function recordingGl(
      * recording.
      */
     readonly uniforms?: readonly string[];
+    /**
+     * Whether a program started under `KHR_parallel_shader_compile` has finished, which the test
+     * flips: `COMPLETION_STATUS_KHR` answers `done`. Finished by default, as every program here is.
+     */
+    readonly compiling?: { done: boolean };
   } = {},
 ) {
+  const compiling = options.compiling ?? { done: true };
   const extensions = new Set(options.extensions ?? []);
   const uniforms = options.uniforms ?? [];
   /* What `clearDepth` last set, so a module that borrows the value can be seen to put it back. */
@@ -136,6 +142,13 @@ export function recordingGl(
     HALF_FLOAT: 0x140b,
     DEPTH_COMPONENT: 0x1902,
     UNSIGNED_INT: 0x1405,
+    /* Named so a mesh's index width and each attribute's type can be read back: the buffer its
+       indices fill, the type every draw of it names, and how each attribute is read. See
+       `mesh.test.ts`. */
+    UNSIGNED_SHORT: 0x1403,
+    SHORT: 0x1402,
+    FLOAT: 0x1406,
+    ELEMENT_ARRAY_BUFFER: 0x8893,
     LINEAR: 0x2601,
     COLOR_BUFFER_BIT: 0x00004000,
     /* Named so a test can tell a mesh that declared itself deforming from one that did not. */
@@ -173,6 +186,7 @@ export function recordingGl(
       if (name === 'EXT_clip_control') {
         return { LOWER_LEFT_EXT: 0x8ca1, ZERO_TO_ONE_EXT: 0x935f, clipControlEXT: () => undefined };
       }
+      if (name === 'KHR_parallel_shader_compile') return { COMPLETION_STATUS_KHR: 0x91b1 };
       return {};
     },
     getShaderParameter: () => true,
@@ -200,6 +214,7 @@ export function recordingGl(
     /* Linked yes; zero active uniforms and attributes, which ends every reflection loop at once
        and is why this harness does not have to know a single uniform name. */
     getProgramParameter: (program: unknown, pname: unknown) => {
+      if (pname === 0x91b1) return compiling.done;
       if (pname === constants.ACTIVE_UNIFORMS) return uniforms.length;
       if (pname === constants.ACTIVE_ATTRIBUTES) return 0;
       if (pname !== constants.LINK_STATUS) return true;

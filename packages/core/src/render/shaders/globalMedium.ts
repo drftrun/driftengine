@@ -80,6 +80,9 @@ uniform int uSteps;
 /** How much of the medium the sun's own shadow map removes, 0 to 1. At 0 nothing is sampled. */
 uniform float uSunShadow;
 uniform mat4 uLightViewProj;
+/* The sun's moving layer's own matrix: the static one's unless a caller fitted it apart. See
+   flat/movingSun.ts. */
+uniform mat4 uMovingLightViewProj;
 /* The sun's static, moving and peeled maps, as layers of one array: see shadowMap.ts. */
 uniform highp sampler2DArray uSunShadows;
 uniform int uPeeledShadowEnabled;
@@ -154,7 +157,12 @@ float sunReach(vec3 worldPos) {
   if (uPeeledShadowEnabled != 0) {
     blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_PEELED_LAYER}.0), 0.0).r, compare));
   }
-  blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r, compare));
+  /* The moving layer at its own place, which is this one's where the two share a matrix. */
+  vec4 movingPos = uMovingLightViewProj * vec4(worldPos, 1.0);
+  vec3 pm = movingPos.xyz / movingPos.w * 0.5 + 0.5;
+  if (movingPos.w > 0.0 && pm.z <= 1.0 && pm.x >= 0.0 && pm.x <= 1.0 && pm.y >= 0.0 && pm.y <= 1.0) {
+    blocked = max(blocked, occlusion(textureLod(uSunShadows, vec3(pm.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r, pm.z - SHADOW_BIAS));
+  }
   return mix(1.0, 1.0 - blocked, uSunShadow * edgeFade);
 }
 

@@ -74,7 +74,7 @@ test('a surface texture reaches every lighting term, not just the ambient one', 
    * extend this list.
    */
   expect(source, 'the texture is sampled once into a single local').toContain(
-    'vec4 texel = texture(uAlbedo, surfaceAt);',
+    'vec4 texel = albedoTexel(surfaceAt);',
   );
   expect(source, 'and multiplied in, not substituted').toContain('albedo *= texel.rgb;');
   /*
@@ -510,9 +510,24 @@ test('every uniform the flat shader declares is uploaded somewhere', async () =>
     (rendererSource ?? '').indexOf('\n  }\n', driftStart),
   );
 
-  const renderer = [meshPass, binder, clusterBinder, iesBinder, driftBinder, ...delegates].join(
-    '\n',
+  /* And the write mode's three lanes, on the same reading: the pass writes them as they stand. */
+  expect(meshPass, 'the mesh pass writes the write mode itself').toContain('this.writeMode(');
+  const modeStart = (rendererSource ?? '').indexOf('private writeMode(');
+  expect(modeStart, 'writeMode must be findable').toBeGreaterThan(-1);
+  const modeWriter = (rendererSource ?? '').slice(
+    modeStart,
+    (rendererSource ?? '').indexOf('\n  }\n', modeStart),
   );
+
+  const renderer = [
+    meshPass,
+    binder,
+    clusterBinder,
+    iesBinder,
+    driftBinder,
+    modeWriter,
+    ...delegates,
+  ].join('\n');
 
   /** Written per draw or per material rather than when the pass is bound. */
   const writtenElsewhere = new Set([
@@ -787,7 +802,9 @@ test('the tangent frame and its validity both reach the fragment stage', () => {
  */
 test('a normal map perturbs the shading normal before either relief does', () => {
   /* The call site in main, not the function's body, which is concatenated before main. */
-  const applied = source.indexOf('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);');
+  const applied = source.indexOf(
+    'if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);',
+  );
   const relief = source.indexOf('float reliefAmount = uRelief.x * max(vRelief, 0.0);');
   expect(applied, 'the map is applied to the shading normal').toBeGreaterThan(-1);
   expect(relief, 'and the procedural relief is still there').toBeGreaterThan(-1);
@@ -807,14 +824,18 @@ test('a normal map perturbs the shading normal before either relief does', () =>
  * branches.
  */
 test('the frame is only built under a uniform gate', () => {
-  const body = source.indexOf('vec3 normalMapped(vec3 n, vec3 at) {');
+  const body = source.indexOf(
+    'vec3 normalMapped(vec3 n, vec3 at, vec2 frameAt, int hasTangents) {',
+  );
   expect(body, 'the map is read in one function').toBeGreaterThan(-1);
   expect(source.indexOf('tangentFrame(n,', body), 'which builds the frame').toBeGreaterThan(body);
   /* And every call of it is on a branch on uniforms: the lit block's, and an unlit refraction's. */
   expect(source.split('normalMapped(').length - 1, 'the body and its two callers').toBe(3);
-  expect(source).toContain('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);');
   expect(source).toContain(
-    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);',
+    'if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);',
+  );
+  expect(source).toContain(
+    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt, frameAt, frameTangents);',
   );
 });
 
@@ -835,7 +856,9 @@ test('the varying selects between two frames rather than branching on one', () =
  */
 test('the normal map reads the UVs the vertex stage already scaled', () => {
   expect(source).toContain('texture(uNormalMap, at)');
-  expect(source, 'at the coordinate every map is read at').toContain('normalMapped(n, surfaceAt)');
+  expect(source, 'at the coordinate every map is read at').toContain(
+    'normalMapped(n, surfaceAt, frameAt, frameTangents)',
+  );
   expect(source, 'read where every map is read').toContain(
     'vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));',
   );
@@ -850,11 +873,13 @@ test('the normal map reads the UVs the vertex stage already scaled', () => {
  */
 test('the ORM map is sampled under a uniform branch, before lighting is decided', () => {
   expect(source).toContain('if (uMaterialFlags.y != 0) {');
-  expect(source).toContain('texture(uOrmMap, surfaceAt)');
+  /* Read through ormTexel, which a layered or triplanar material reads otherwise: mapReads.ts. */
+  expect(source).toContain('vec3 t = ormTexel(surfaceAt);');
+  expect(source).toContain('return texture(uOrmMap, at).rgb;');
   expect(source, 'not scaled twice — FLAT_VERT already scales aUv.xy by uUvScale').not.toContain(
     'vUv.xy * uUvScale',
   );
-  const sampledAt = source.indexOf('texture(uOrmMap, surfaceAt)');
+  const sampledAt = source.indexOf('vec3 t = ormTexel(surfaceAt);');
   const lightingAt = source.indexOf('if (uLightingEnabled != 0) {');
   expect(sampledAt).toBeGreaterThan(0);
   expect(sampledAt, 'sampled before the lighting branch opens').toBeLessThan(lightingAt);
@@ -1347,7 +1372,10 @@ test('the sky lane is applied where the specular lobe also reads it', () => {
   );
 });
 
-/* One local, so the order-independent branch inherits the lane rather than repeating it. */
+/*
+ * One local, so the order-independent branch inherits the lane rather than repeating it — and none
+ * of it where the draw spent it on the screen door instead (`uWriteMode.z`, `setDitherOpacity`).
+ */
 test('the alpha lane folds into the draw opacity once', () => {
   const source = flatFrag({
     pointShadows: false,
@@ -1355,7 +1383,9 @@ test('the alpha lane folds into the draw opacity once', () => {
     environmentProbe: false,
     nightEmissive: false,
   });
-  expect(source).toContain('float alpha = uOpacity * coverage * vAlpha;');
+  expect(source).toContain(
+    'float alpha = uOpacity * coverage * (uWriteMode.z != 0.0 ? 1.0 : vAlpha);',
+  );
 });
 
 const REFRACT_BASE = {
@@ -1396,7 +1426,8 @@ test('refraction is a uniform and a branch rather than a permutation', () => {
      the uniform budget at the WebGL2 floor. */
   expect(source).toContain('uniform vec4 uSeeThrough;');
   expect(source).toContain('uniform vec4 uRefractTint;');
-  expect(source).toContain('uniform vec3 uGlassTint;');
+  /* A pane's colour, and in w an opaque thin surface's light from behind: the row it already spent. */
+  expect(source).toContain('uniform vec4 uGlassTint;');
   expect(source).not.toContain('#if REFRACTION');
 });
 
@@ -1633,11 +1664,13 @@ test("LAMPLIGHT THROUGH GLASS TAKES THE GLASS'S COLOUR, a lamp's and a rectangle
 test('A REFRACTING DRAW BENDS BY ITS SHADING NORMAL, a normal map and all, lit or not', () => {
   const kept = source.indexOf('shadingNormal = n; if (backFace) n = -n;');
   expect(kept, 'the lit block hands over its normal before turning a back face').toBeGreaterThan(
-    source.indexOf('if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);'),
+    source.indexOf(
+      'if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);',
+    ),
   );
   expect(source).toContain('vec3 refractN = shadingNormal;');
   expect(source).toContain(
-    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);',
+    'if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt, frameAt, frameTangents);',
   );
   expect(source).not.toContain('vec3 refractN = normalize(vNormal);');
 });

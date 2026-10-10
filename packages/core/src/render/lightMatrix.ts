@@ -67,3 +67,18 @@ export function computeLightMatrix(
   // to express its residual depth tolerance in stable world-space metres.
   return radius * 6;
 }
+
+/**
+ * The depth an orthographic light matrix spans, in metres: what `computeLightMatrix` returns, read
+ * back off any such matrix. Its depth row is the light's axis scaled by two over the span, so the
+ * span is two over that row's length — whatever focus, radius or bearing built it.
+ *
+ * **For a matrix the renderer is handed rather than one it built**: the sun's moving layer is read
+ * through the matrix its shadow pass was drawn with, and its depth tolerance and distance fade are
+ * in metres of that matrix. What would make this wrong is a perspective light, whose depth is not
+ * linear; the sun's never is.
+ */
+export function orthographicDepthSpan(m: ArrayLike<number>): number {
+  const length = Math.hypot(m[2] as number, m[6] as number, m[10] as number);
+  return length > 0 ? 2 / length : 1;
+}

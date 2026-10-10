@@ -5,6 +5,11 @@
  *     /skinnedCloth.html?cloth=0          the control: the same cape skinned alone, rigid on its joint
  *     /skinnedCloth.html?solver=cpu       solved by @driftengine/physics on the CPU and uploaded
  *     /skinnedCloth.html?parity=1         both solvers on one pose sequence, compared every ten frames
+ *     /skinnedCloth.html?parity=1&garments=3   and three more capes stepped as one set beside it,
+ *                                          each at its own phase and place, each settling its own
+ *                                          number of steps, the last reset at frame 50: every one
+ *                                          against a CPU solver of its own
+ *     /skinnedCloth.html?bench=1&garments=15   and the set timed against as many solvers of one
  *     /skinnedCloth.html?bench=1          then the solver alone, steps back to back, timed
  *     /skinnedCloth.html?sim=60x75&mesh=200x200   a garment of 4,500 particles and 40,000 vertices
  *     /skinnedCloth.html?recon=1          with DriftTR, whose motion reads last frame's particles
@@ -35,11 +40,13 @@ import {
   createMover,
   createRenderer,
   createSkinnedCloth,
+  createSkinnedClothSet,
 } from '../../packages/core/src/index';
 import type {
   ClothBindingData,
   MeshData,
   RendererApi,
+  SkinnedClothSolver,
   ShadowCasters,
   Vec3,
 } from '../../packages/core/src/index';
@@ -309,7 +316,7 @@ function palette(globals: Float32Array, inverseBind: Float32Array, out: Float32A
   }
 }
 
-/** A device solver's particles read back, for the parity check: see `gpuSkinnedCloth.ts`. */
+/** A device solver's particles read back, for the parity check: see `gpuClothSet.ts`. */
 interface Readable {
   read(): Promise<Float32Array>;
 }
@@ -375,6 +382,21 @@ async function main(): Promise<void> {
    */
   const nudged = parity ? new SkinnedCloth(setup) : null;
   const solved = onCpu ? null : createSkinnedCloth(renderer, setup);
+  /*
+   * A set beside it: copies of the cape that settle 0, 3, 6 … steps on a reset, so a set's rounds
+   * have garments sitting out from the first frame. Nothing of it is drawn; it is read and compared.
+   */
+  const setCount = (parity || bench) && !onCpu ? Number(ASKED.get('garments') ?? 0) : 0;
+  const setSetups = Array.from({ length: setCount }, (_, g) => ({
+    ...setup,
+    parameters: { ...setup.parameters, settleSteps: g * 3 },
+  }));
+  const garmentSet = setCount > 0 ? createSkinnedClothSet(renderer, setSetups) : null;
+  const setReferences = setSetups.map((each) => new SkinnedCloth(each));
+  const setGlobals = new Float32Array(32);
+  const setModels = setSetups.map((_, g) =>
+    mat4.fromTranslation(new Float32Array(16), [g * 1.5, 0, 0]),
+  );
   const cape = renderer.createMesh(capeMesh());
   const binding = renderer.createClothBinding(cape, capeBinding(setup.positions));
   const particles = solved?.particles ?? renderer.createClothParticles(count);
@@ -419,6 +441,23 @@ async function main(): Promise<void> {
       reference.setPose(globals, IDENTITY);
       reference.advance(1 / 60);
     }
+    if (garmentSet !== null) {
+      for (let g = 0; g < setCount; g++) {
+        const model = setModels[g] as Float32Array;
+        const reference = setReferences[g] as SkinnedCloth;
+        pose(t + g * 0.37, setGlobals);
+        garmentSet.setWind(g, windX, 0, windZ);
+        garmentSet.setPose(g, setGlobals, model);
+        reference.setWind(windX, 0, windZ);
+        reference.setPose(setGlobals, model);
+        if (frame === 50 && g === setCount - 1) {
+          garmentSet.reset(g);
+          reference.reset();
+        }
+      }
+      garmentSet.step(1 / 60);
+      for (const reference of setReferences) reference.advance(1 / 60);
+    }
     if (nudged !== null) {
       nudged.setWind(windX, 0, windZ);
       nudged.setPose(globals, IDENTITY);
@@ -440,6 +479,16 @@ async function main(): Promise<void> {
         reference.positions,
       );
       const control = deviation((nudged as SkinnedCloth).positions, reference.positions);
+      for (let g = 0; g < setCount; g++) {
+        const read = (garmentSet as unknown as { read(g: number): Promise<Float32Array> }).read;
+        const apart = deviation(
+          await read.call(garmentSet, g),
+          (setReferences[g] as SkinnedCloth).positions,
+        );
+        parityLines.push(
+          `${frame + 1}: set garment ${g} max ${(apart.max * 1000).toFixed(3)} mm, rms ${(apart.rms * 1000).toFixed(3)} mm`,
+        );
+      }
       parityLines.push(
         `${frame + 1}: device max ${(max * 1000).toFixed(3)} mm, rms ${(rms * 1000).toFixed(3)} mm` +
           ` · CPU nudged 0.1 µm a frame max ${(control.max * 1000).toFixed(3)} mm, rms ${(control.rms * 1000).toFixed(3)} mm`,
@@ -495,6 +544,35 @@ async function main(): Promise<void> {
       await (solved as unknown as Readable).read();
       const total = (performance.now() - begun) / steps;
       timing = ` · bench: ${total.toFixed(3)} ms a frame pipelined, ${(recording / steps).toFixed(3)} ms of it recording`;
+    }
+    if (bench && garmentSet !== null) {
+      /* The set against as many solvers of one, the same garments and frames, timed the same way. */
+      const singles = setSetups.map((each) => createSkinnedCloth(renderer, each));
+      const readSet = (garmentSet as unknown as { read(g: number): Promise<Float32Array> }).read;
+      const timed = async (frameOf: (k: number) => void): Promise<number> => {
+        await readSet.call(garmentSet, 0);
+        await (singles[0] as unknown as Readable).read();
+        const begun = performance.now();
+        for (let k = 0; k < 300; k++) frameOf(k);
+        await readSet.call(garmentSet, 0);
+        await (singles[setCount - 1] as unknown as Readable).read();
+        return (performance.now() - begun) / 300;
+      };
+      const asSet = await timed((k) => {
+        for (let g = 0; g < setCount; g++) {
+          pose((frame + k) / 60 + g * 0.37, setGlobals);
+          garmentSet.setPose(g, setGlobals, setModels[g] as Float32Array);
+        }
+        garmentSet.step(1 / 60);
+      });
+      const apart = await timed((k) => {
+        for (let g = 0; g < setCount; g++) {
+          pose((frame + k) / 60 + g * 0.37, setGlobals);
+          (singles[g] as SkinnedClothSolver).step(setGlobals, setModels[g] as Float32Array, 1 / 60);
+        }
+      });
+      for (const single of singles) single.dispose();
+      timing += ` · ${setCount} garments: ${asSet.toFixed(3)} ms a frame as a set, ${apart.toFixed(3)} ms as ${setCount} solvers`;
     }
     stats.textContent =
       `${renderer.backend} · ${count} particles, ${RX * RY} bound vertices · ` +

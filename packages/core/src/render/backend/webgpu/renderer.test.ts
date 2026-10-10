@@ -18,6 +18,7 @@ import {
   flatVertexBindings,
 } from './flatPass.ts';
 import { eyeModel, hairModel, skinModel } from '../../surfaceModel.ts';
+import { computeLightMatrix } from '../../lightMatrix.ts';
 import { lightVolumeFragmentBindings } from './lightVolumePass.ts';
 import { BLOOM_PREFILTER_FIELDS, BLOOM_UPSAMPLE_FIELDS, RUSH_FRAG_FIELDS } from './postPass.ts';
 import { SCATTER_DEPTH_FIELDS } from './scatterPass.ts';
@@ -41,6 +42,7 @@ import { recordingGl } from '../../rendererHarness.ts';
 import { createLineSegments } from '../../linePoints.ts';
 import { createWindField } from '../../windField.ts';
 import { parseSdfFont } from '../../sdfFont.ts';
+import { createMover } from '../../recon/mover.ts';
 import { createMeshInstances } from '../../instances.ts';
 import { createInstanceData } from '../../instancedMesh.ts';
 import { DEFAULT_SDF_TEXT_STYLE } from '../../sdfTextLayout.ts';
@@ -328,6 +330,8 @@ function stubScene() {
       ambientGround: new Float32Array([0.1, 0.1, 0.1]),
       shadowDepthSpan: 132,
       shadowStrength: 0.9,
+      /* The sun's matrix, which the moving layer is read through until its own pass says otherwise. */
+      lightViewProj: mat4.create(),
       /* `Atmosphere` requires these; `bindMeshPass` resolves the medium from them. */
       fogColor: new Float32Array([0.5, 0.6, 0.7]),
       fogDensity: 0.02,
@@ -1466,6 +1470,179 @@ describe('the webgpu renderer', () => {
     renderer.endFrame();
     const nothing = stub.pass.drawIndexed.mock.calls.filter(([count]) => count === 0);
     expect(nothing.length, 'no pass is handed a draw of nothing').toBe(0);
+  });
+
+  /*
+   * **Sixteen-bit indices where every vertex fits, and every pass that binds them says so.** A
+   * pass that binds a narrow buffer as thirty-two bits reads two indices as one and draws garbage,
+   * which no device reports, so every pass a mesh can be drawn through is driven here, from the
+   * frame graph and from the direct path: the sun's casters, plain, batched, skinned and glass; a
+   * lit draw, a mover's motion, a skin's halves, a reflecting surface's, a blended draw, a film, a
+   * light volume and a static list. 65,537 vertices is the first count sixteen bits cannot name.
+   */
+  it('BINDS A MESH’S INDICES AT THE WIDTH THEY ARE STORED IN, sixteen bits where its vertices fit', () => {
+    const asks = [
+      { screenEffects: true, reconstruction: 1.5 },
+      {
+        frameGraph: false,
+        screenEffects: true,
+        hdrScene: true,
+        screenSpaceReflections: true,
+        skinScattering: 'screen-space' as const,
+      },
+    ];
+    for (const asked of asks) {
+      const stub = stubSurface();
+      const renderer = freshRenderer(stub, resolveRenderQuality(asked));
+      const { camera, env } = stubScene();
+      const narrow = stubMesh(renderer);
+      const skinned = skinnedStubMesh(renderer);
+      const vertices = 65537;
+      const wide = renderer.createMesh({
+        positions: new Float32Array(vertices * 3),
+        normals: new Float32Array(vertices * 3),
+        colors: new Float32Array(vertices * 3),
+        emissive: new Float32Array(vertices),
+        indices: new Uint32Array([0, 1, vertices - 1]),
+      } as never);
+      const list = renderer.createStaticDraws((sink) => {
+        sink.mesh(narrow, mat4.create(), null);
+        sink.mesh(wide, mat4.create(), null);
+      });
+      const batch = renderer.createInstanced(narrow, 1);
+      const one = createMeshInstances(1);
+      one.count = 1;
+      one.models.set(mat4.create());
+      renderer.uploadInstanced(batch, one);
+      const previous = mat4.fromTranslation(mat4.create(), [1, 0, 0]);
+      const pane = { glass: { transmission: 0.9, frost: 0.5 } };
+      renderer.beginShadowPass(mat4.create(), 'static');
+      renderer.drawShadowCasters((sink) => {
+        sink.mesh(narrow, mat4.create());
+        sink.mesh(wide, mat4.create());
+        sink.instanced?.(batch, one);
+        sink.skinnedMesh?.(skinned, mat4.create(), onePalette(0));
+        sink.mesh(narrow, mat4.create(), pane);
+        sink.instanced?.(batch, one, pane);
+        sink.skinnedMesh?.(skinned, mat4.create(), onePalette(0), pane);
+      });
+      renderer.endShadowPass();
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      for (const mesh of [narrow, wide]) {
+        renderer.drawMesh(mesh, mat4.create(), 0, null, previous);
+        renderer.setMaterial({ model: skinModel() });
+        renderer.drawMesh(mesh, mat4.create());
+        renderer.setMaterial(null);
+      }
+      renderer.drawInstanced(batch, one);
+      renderer.drawStaticDraws(list);
+      renderer.drawLightVolume(narrow, mat4.create(), camera, 1, 10, 0.5);
+      renderer.drawFilm(narrow, camera, 0, env, 0.5);
+      for (const mesh of [narrow, wide]) renderer.drawTranslucentMesh(mesh, mat4.create(), 0.5);
+      renderer.endFrame();
+
+      const binds = [stub.pass, ...stub.bundleEncoders].flatMap(
+        (encoder) => encoder.setIndexBuffer.mock.calls,
+      );
+      const formats = (mesh: typeof narrow): unknown[] =>
+        binds.filter(([buffer]) => buffer === mesh.indexBuffer).map(([, format]) => format);
+      expect(new Set(formats(narrow)), JSON.stringify(asked)).toEqual(new Set(['uint16']));
+      expect(new Set(formats(skinned)), JSON.stringify(asked)).toEqual(new Set(['uint16']));
+      expect(new Set(formats(wide)), JSON.stringify(asked)).toEqual(new Set(['uint32']));
+
+      const written = stub.device.queue.writeBuffer.mock.calls.filter(
+        ([buffer]) => buffer === narrow.indexBuffer,
+      );
+      expect(written.map((call) => call[2])).toEqual([new Uint16Array([0, 1, 2, 0])]);
+    }
+  });
+
+  /*
+   * **The motion pass skins through a layout of its own, so it reads the weights at the format the
+   * mesh stored them in.** Weights inside [0, 1] travel as sixteen-bit fixed point
+   * (`vertexPacking.ts`); read as floats, every one of them would be garbage and every skinned
+   * mover's motion with them, which only a picture shows. Two frames, because a mover's first has
+   * nothing to reproject from.
+   */
+  it('A SKINNED MOVER’S MOTION READS ITS WEIGHTS AT THE FORMAT THE MESH STORED THEM IN', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = skinnedStubMesh(renderer);
+    const mover = createMover();
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setSkinPalette(onePalette(frame));
+      renderer.drawMesh(mesh, mat4.create(), 0, null, mover);
+      renderer.endFrame();
+    }
+    const skinned = stub.device.createRenderPipeline.mock.calls
+      .map(([descriptor]) => descriptor)
+      .filter((descriptor) => String(descriptor.label ?? '').startsWith('recon.motion.skinned'));
+    expect(skinned.length, 'the skinned motion pipeline was built').toBeGreaterThan(0);
+    const weights = [...(skinned[0]?.vertex.buffers?.[0]?.attributes ?? [])].find(
+      (attribute) => attribute.shaderLocation === 12,
+    );
+    expect(mesh.skinOffsets?.weightsFormat).toBe('unorm16x4');
+    expect(weights?.format).toBe('unorm16x4');
+    expect(weights?.offset).toBe(mesh.skinOffsets?.weights);
+  });
+
+  /*
+   * **Every pipeline a mesh is drawn with reads it as it was packed** (`vertexPacking.ts`): the
+   * frame's, and each pass that finds the mesh's layout again from its key, the sun's casters among
+   * them. Two meshes with the same attributes packed differently must not share a pipeline, or one
+   * of them is read sixteen bits at a time where it holds thirty-two.
+   */
+  it('DRAWS A PACKED MESH WITH A PIPELINE THAT READS IT AS PACKED, in every pass', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({ frameGraph: false }));
+    const { camera, env } = stubScene();
+    const packed = stubMesh(renderer);
+    const floats = renderer.createMesh({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 2, 0, 0, 2, 0, 0, 2, 0]),
+      colors: new Float32Array([2, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 1, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    } as never);
+    expect((packed as { key?: string }).key).not.toBe((floats as { key?: string }).key);
+    renderer.beginShadowPass(mat4.create(), 'static');
+    renderer.drawShadowCasters((sink) => {
+      sink.mesh(packed, mat4.create());
+      sink.mesh(floats, mat4.create());
+    });
+    renderer.endShadowPass();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(packed, mat4.create());
+    renderer.drawMesh(floats, mat4.create());
+    renderer.endFrame();
+
+    /* The pipeline set last before each bind of a mesh's indices, and how it reads location 1. */
+    const pipelines = stub.pass.setPipeline.mock;
+    const normalsRead = (mesh: typeof packed): unknown[] =>
+      stub.pass.setIndexBuffer.mock.calls.flatMap(([buffer], call) => {
+        if (buffer !== mesh.indexBuffer) return [];
+        const at = stub.pass.setIndexBuffer.mock.invocationCallOrder[call] as number;
+        let last = -1;
+        pipelines.invocationCallOrder.forEach((order, index) => {
+          if (order < at) last = index;
+        });
+        const pipeline = pipelines.calls[last]?.[0] as {
+          descriptor: GPURenderPipelineDescriptor;
+        };
+        const attributes = [...(pipeline.descriptor.vertex.buffers?.[0]?.attributes ?? [])];
+        return [attributes.find((attribute) => attribute.shaderLocation === 1)?.format];
+      });
+    expect(normalsRead(packed).length, 'a shadow caster and a lit draw').toBe(2);
+    expect(new Set(normalsRead(packed))).toEqual(new Set(['snorm16x4']));
+    expect(new Set(normalsRead(floats))).toEqual(new Set(['float32x3']));
   });
 
   it('runs the motion pass even when nothing moved, because its clear is what it is for', () => {
@@ -2772,6 +2949,42 @@ describe('the webgpu renderer', () => {
   });
 
   /*
+   * **The sun's moving layer is read through the matrix its pass was drawn with.** A dynamic pass
+   * drawn with the environment's own matrix changes nothing: the switch stays off and the layer is
+   * read through that matrix, as it always was. Drawn with a tight one of its own, the switch turns
+   * on and the lit stage is handed that matrix and its depth span, six of its radii.
+   */
+  it('READS THE MOVING LAYER THROUGH THE MATRIX ITS PASS WAS DRAWN WITH, AND ITS SPAN', () => {
+    const wide = mat4.create();
+    const tight = mat4.create();
+    computeLightMatrix([0.4, 0.8, 0.45], 0, 0, 0, 40, 2048, wide);
+    computeLightMatrix([0.4, 0.8, 0.45], 0, 0, 0, 3, 2048, tight);
+    for (const own of [false, true]) {
+      const { surface, device } = stubSurface();
+      const quality = resolveRenderQuality({});
+      const renderer = new WebGPURenderer(surface, quality);
+      const { camera, env } = stubScene();
+      const scene = { ...(env as object), lightViewProj: wide } as unknown as typeof env;
+      renderer.beginShadowPass(own ? tight : wide, 'dynamic');
+      renderer.endShadowPass();
+      renderer.bindMeshPass(camera, scene);
+
+      const floats = new Float32Array(materialBlock(renderer, device));
+      const fields = flatFragmentScratch(variantFor(quality)).fields;
+      const at = (fields['uMovingLightViewProj']?.offset ?? -4) / 4;
+      const switches = (
+        renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } }
+      ).pipelines.litSwitches;
+      expect(switches.MOVING_SUN, `${own}`).toBe(own);
+      expect(Array.from(floats.subarray(at, at + 16)), `${own}`).toEqual(
+        Array.from(own ? tight : wide),
+      );
+      const span = floats[(fields['uMovingShadowDepthSpan']?.offset ?? -4) / 4] as number;
+      expect(span, `${own}`).toBeCloseTo(own ? 18 : 240, 3);
+    }
+  });
+
+  /*
    * The nine value-typed members that were absent, and absent quietly — see `shadowMapSize`
    * for what one of them cost. Asserted as a group because the hazard is the group: each is
    * a number or a flag a scene reads and does arithmetic on, and `undefined` in arithmetic
@@ -3329,6 +3542,172 @@ describe('the webgpu renderer', () => {
     const grain = drawnMaterial(stub, variantFor(resolveRenderQuality({})), 'uGrain');
     expect(grain[0]).toBeCloseTo(0.25);
     expect(grain[1]).toBeCloseTo(0.75);
+  });
+
+  /*
+   * **A draw whose pipeline is still compiling can be left out rather than hold the frame.** A
+   * two-sided material asks for a variant `createMesh` did not warm. Where draws wait, it is built
+   * there and drawn in the same frame; where they skip, the first frame leaves the draw out and
+   * starts the compile, and once `ready()` says it landed the next frame draws it.
+   */
+  it('LEAVES OUT A DRAW WHOSE PIPELINE IS COMPILING WHERE DRAWS SKIP, AND DRAWS IT ONCE IT LANDS', async () => {
+    for (const pipelineCompile of ['wait', 'skip'] as const) {
+      const stub = stubSurface();
+      const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({ pipelineCompile }));
+      const { camera, env } = stubScene();
+      const mesh = stubMesh(renderer);
+      await renderer.ready();
+      const frame = (): number => {
+        stub.pass.drawIndexed.mockClear();
+        renderer.beginFrame([0, 0, 0]);
+        renderer.bindMeshPass(camera, env);
+        renderer.setMaterial({ doubleSided: true });
+        renderer.drawMesh(mesh, mat4.create());
+        renderer.endFrame();
+        return stub.pass.drawIndexed.mock.calls.length;
+      };
+      const first = frame();
+      await renderer.ready();
+      expect([first, frame()], pipelineCompile).toEqual(
+        pipelineCompile === 'wait' ? [1, 1] : [0, 1],
+      );
+    }
+  });
+
+  /*
+   * **A material's projection is the material's, and a pass starts without one.** A planar material
+   * writes its kind, repeats a metre and sharpness into `uWorldUv` and turns the lit switch on; a
+   * material after it with none writes zeros; and a draw in a new pass that sets no material wears
+   * none, rather than the last material's.
+   */
+  it("WRITES A MATERIAL'S PROJECTION FOR ITS DRAWS, TURNS ITS SWITCH ON, AND A PASS FORGETS IT", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ projection: { kind: 'planar', scale: 2 } });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ projection: { kind: 'triplanar', scale: 0.5, sharpness: 8 } });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ projection: { kind: 'planar', scale: 2 } });
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+
+    const variant = variantFor(quality);
+    const lane = (k: number): number[] => drawnMaterial(stub, variant, 'uWorldUv', 'float', k);
+    expect([lane(0), lane(1), lane(2)]).toEqual([
+      [1, 2, 0],
+      [2, 0.5, 0],
+      [4, 8, 0],
+    ]);
+    const cache = (renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } })
+      .pipelines;
+    expect(cache.litSwitches.WORLD_UVS).toBe(true);
+  });
+
+  /*
+   * **A thin surface's light from behind is its material's**, in the glass tint's spare lane, held
+   * to 0..1; a material after it with none carries none, and a new pass none until one asks.
+   */
+  it("CARRIES A MATERIAL'S LIGHT FROM BEHIND IN THE GLASS TINT'S SPARE LANE, AND A PASS FORGETS IT", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ diffuseTransmission: 0.6 });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ diffuseTransmission: 3 });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({});
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ diffuseTransmission: 0.6 });
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    expect(drawnMaterial(stub, variantFor(quality), 'uGlassTint', 'float', 3)).toEqual(
+      [0.6, 1, 0, 0].map(Math.fround),
+    );
+  });
+
+  /*
+   * **A material's layers are its own, their mask where a model's map goes, and a pass forgets
+   * them.** Two layers write their repeats, their count and no glow, and turn the switch on; the
+   * model is told it has no map of its own, so no model reads the mask as one; a material with a
+   * model map as well keeps one layer; and a new pass starts with none.
+   */
+  it("WRITES A MATERIAL'S LAYERS, KEEPS THE MODEL OFF ITS MASK, AND A PASS FORGETS THEM", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const image = { width: 4, height: 4 } as unknown as TexImageSource;
+    const mask = renderer.createSurfaceTexture(image, { colorSpace: 'linear' });
+    const map = renderer.createSurfaceTexture(image, { colorSpace: 'linear' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    const model = hairModel();
+    renderer.setMaterial({ model, layers: { mask, repeats: [4, 2] } });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ model, modelMap: map, layers: { mask, repeats: [4, 2] } });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ model, layers: { mask, repeats: [4, 2] } });
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    warn.mockRestore();
+    const variant = variantFor(quality);
+    const lane = (k: number): number[] => drawnMaterial(stub, variant, 'uLayers', 'float', k);
+    expect([lane(0), lane(1), lane(5), lane(6)]).toEqual([
+      [4, 0, 0],
+      [2, 0, 0],
+      [2, 0, 0],
+      [-1, 0, 0],
+    ]);
+    /* The model's map flag, uModelParams[1].w: off for the mask, on for a real model map. */
+    expect(drawnMaterial(stub, variant, 'uModelParams', 'float', 7)).toEqual([0, 1, 0]);
+    const switches = (
+      renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } }
+    ).pipelines.litSwitches;
+    expect(switches.LAYERED).toBe(true);
+  });
+
+  /*
+   * **A draw may spend its own opacity on the screen door**: `setDitherOpacity` is the third lane
+   * of the row the fade shares, per draw like any material state, independent of the fade beside
+   * it, and taken back by `bindMeshPass` as the fade is.
+   */
+  it('AN OPACITY DITHER IS PER-DRAW STATE BESIDE THE FADE, AND A PASS TAKES IT BACK', () => {
+    const stub = stubSurface();
+    const renderer = new WebGPURenderer(stub.surface, resolveRenderQuality({}));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setDitherOpacity(true);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setDitherFade(0.5);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setDitherOpacity(false);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setDitherOpacity(true);
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+
+    const variant = variantFor(resolveRenderQuality({}));
+    expect(drawnMaterial(stub, variant, 'uWriteMode', 'float', 2)).toEqual([1, 1, 0, 0]);
+    expect(drawnMaterial(stub, variant, 'uWriteMode', 'float', 1)).toEqual([0, 0.5, 0.5, 0]);
   });
 
   /*
@@ -6543,7 +6922,7 @@ describe('a shading model', () => {
     renderer.drawMesh(mesh, mat4.create());
     renderer.endFrame();
     const hair = (p: unknown) =>
-      (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor?.fragment?.constants?.['6'];
+      (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor?.fragment?.constants?.['7'];
     const lit = stub.pass.setPipeline.mock.calls
       .map(([p]) => hair(p))
       .filter((c) => c !== undefined);
@@ -6607,13 +6986,13 @@ describe('a shading model', () => {
       renderer.endFrame();
       const passes = stub.encoder.beginRenderPass.mock.calls.map((c) => String(c[0]?.label ?? ''));
       const skinPasses = passes.filter((label) => label.startsWith('skin.'));
-      /* Each lit draw's model and halves, by their switches' ids: skin 7, scene 9, diffuse 10,
-         colour 11. */
+      /* Each lit draw's model and halves, by their switches' ids: skin 8, scene 10, diffuse 11,
+         colour 12. */
       const halves = stub.pass.setPipeline.mock.calls
         .map(([p]) => (p as { descriptor?: GPURenderPipelineDescriptor }).descriptor)
         .map((d) => d?.fragment?.constants)
-        .filter((c) => c !== undefined && c['7'] !== undefined)
-        .map((c) => `${c?.['7']}${c?.['9']}${c?.['10']}${c?.['11']}`);
+        .filter((c) => c !== undefined && c['8'] !== undefined)
+        .map((c) => `${c?.['8']}${c?.['10']}${c?.['11']}${c?.['12']}`);
       if (skinScattering === 'screen-space') {
         expect(skinPasses).toEqual([
           'skin.diffuse',
@@ -7134,6 +7513,36 @@ describe("a pass's view block", () => {
     expect(bound).toHaveLength(2);
     expect(new Set(bound).size, 'a material change takes no view of its own').toBe(1);
     expect(viewProjAt(stub, bound[0] as number)).toEqual(Array.from(inside(renderer).viewProj));
+  });
+
+  /*
+   * **A receiver projects through the environment's light matrix, not the last shadow pass's.** The
+   * static layer drawn through a wide square and the moving one through a tight square: a draw's
+   * view holds the wide one the environment names, as WebGL2's pass state does. It held the tight
+   * one, and the static layer was read through it.
+   */
+  it("A DRAW'S VIEW HOLDS THE ENVIRONMENT'S LIGHT MATRIX, NOT THE LAST SHADOW PASS'S", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub, resolveRenderQuality({}));
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const wide = mat4.fromScaling(mat4.create(), [0.1, 0.1, 0.1]);
+    const tight = mat4.fromScaling(mat4.create(), [0.5, 0.5, 0.5]);
+    renderer.beginShadowPass(wide, 'static');
+    renderer.endShadowPass();
+    renderer.beginShadowPass(tight, 'dynamic');
+    renderer.endShadowPass();
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, {
+      ...(env as object),
+      lightViewProj: wide,
+    } as unknown as typeof env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const at = views(stub)[0] as number;
+    const upload = new Float32Array(ringUpload(stub.device, 'flat.viewRing'));
+    const light = (at + FLAT_VIEW_FIELDS.uLightViewProj.offset) / 4;
+    expect(Array.from(upload.subarray(light, light + 16))).toEqual(Array.from(wide));
   });
 
   it('THE WIND REOPENS THE VIEW, AND THE NEXT DRAW READS THE NEW ONE', () => {

@@ -8,6 +8,8 @@
  * array samples exactly as a 2D texture does. A mesh names its layer per vertex (`MeshData.layers`),
  * so a merged block wearing forty facades is one draw.
  */
+import type { SurfaceLayers } from './surfaceLayers.ts';
+import type { SurfaceProjection } from './surfaceProjection.ts';
 import type { SurfaceModel } from './surfaceModel.ts';
 import { layerSize, refuseArrayUpdate, sourceSize } from './textureSource.ts';
 import {
@@ -213,6 +215,34 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * and an 8-bit frame clips the brighter peak without `hdrScene`.
    */
   physicalSpecular?: boolean;
+  /**
+   * Texture coordinates from where a point is in the world rather than from the mesh: `'planar'`
+   * across the horizontal axes for ground, `'triplanar'` on three planes for walls and rock, at so
+   * many repeats a metre. Absent, the mesh's, as every material's were. **A lit switch**, compiled in
+   * the first time a material asks, so a scene that never asks pays nothing. See
+   * `surfaceProjection.ts` for what it gives up.
+   */
+  projection?: SurfaceProjection | null;
+  /**
+   * How much light from behind a thin surface lets through, 0 to 1: a banner lit from behind, a
+   * leaf against the sun, a lampshade. The light falling on the far side — the sun, lamps, area
+   * lights, DriftLight — reaches the eye through the surface, coloured by its own colour; a metal
+   * lets none through. 0, the default, is every material as it was. Two-sided or not: a one-sided
+   * surface seen from its front shows the light behind it as well.
+   *
+   * **What it gives up**: a thin surface, not a volume, so a thick one lets through as much as a
+   * sheet; the light behind is not blurred by the surface; and none of it on glass, which lets
+   * light through by its own rule (`TranslucentMeshOptions.glass`).
+   */
+  diffuseTransmission?: number;
+  /**
+   * Up to five layers blended by a mask, each at its own repeat: `albedo`, `normal` and `orm` arrays
+   * whose layers are the material's, and a mask laying each over the ones before it. Absent, the
+   * material is one layer, as every material was. **A lit switch**, compiled in the first time a
+   * material asks. The mask is read where `modelMap` goes, so a material carries one or the other.
+   * See `surfaceLayers.ts` for what it gives up.
+   */
+  layers?: SurfaceLayers<Texture> | null;
 }
 
 export interface SurfaceTextureOptions {

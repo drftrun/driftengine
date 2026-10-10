@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { MeshData } from '../../mesh.ts';
 import { UPLOAD_BYTES_PER_STEP } from '../../uploadStep.ts';
+import { vertexPackingOf } from '../../vertexPacking.ts';
 import {
   VERTEX_LAYOUT,
   createGpuMesh,
   createGpuMeshIncremental,
   vertexBufferLayouts,
 } from './buffers.ts';
+import { markPacking } from './vertexFormats.ts';
 
 /**
  * A device that remembers what was written to it.
@@ -125,8 +127,9 @@ describe('a gpu mesh', () => {
 
     createGpuMesh(device, triangle());
 
-    /* position(3) + normal(3) + colour(3) + emissive(1) = 10 floats a vertex, three vertices. */
-    expect(created.find((b) => b.label === 'mesh.vertices')?.size).toBe(10 * 4 * 3);
+    /* Three floats of position and a normal in four sixteen-bit lanes, twenty bytes a vertex; its
+       colour and emissive are one value for every vertex, so constants. See `vertexPacking.ts`. */
+    expect(created.find((b) => b.label === 'mesh.vertices')?.size).toBe(20 * 3);
   });
 
   /*
@@ -155,8 +158,8 @@ describe('a gpu mesh', () => {
 
     createGpuMesh(device, { ...triangle(), uvs: new Float32Array([0, 0, 1, 0, 0, 1]) });
 
-    /* Two more floats a vertex for the uv. */
-    expect(created.find((b) => b.label === 'mesh.vertices')?.size).toBe(12 * 4 * 3);
+    /* Two more floats a vertex for the uv, which stays a float even inside [0, 1]. */
+    expect(created.find((b) => b.label === 'mesh.vertices')?.size).toBe(28 * 3);
   });
 
   it('lays out one interleaved buffer and one constants buffer', () => {
@@ -175,23 +178,84 @@ describe('a gpu mesh', () => {
    * The interleave, byte for byte, against a vertex written out by hand. Every other test here
    * compares one path of the upload against the other, and both walk the same loop, so a mistake in
    * the loop is a mistake they agree on.
+   *
+   * **Each field at the width it travels at** (`vertexPacking.ts`): a normal and a tangent in
+   * sixteen-bit signed lanes, 1 as 32767; coordinates past [0, 1] as floats; an emissive that
+   * differs between vertices as a float; and a colour every vertex shares not in the rows at all
+   * but in the constants, at its own slot.
    */
   it('A VERTEX IS ITS ATTRIBUTES IN LAYOUT ORDER, each at the width the shader reads', () => {
     const { device, memory } = fakeDevice();
     const data: MeshData = {
       ...triangle(),
       positions: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]),
+      colors: new Float32Array([1, 0.5, 0.25, 1, 0.5, 0.25, 1, 0.5, 0.25]),
       emissive: new Float32Array([0.5, 0.25, 0.125]),
       uvs: new Float32Array([10, 11, 12, 13, 14, 15]),
       tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 0, 0, 1, -1]),
     };
     const mesh = createGpuMesh(device, data);
     const bytes = memory.get(mesh.vertexBuffers[0] as object) as Uint8Array;
-    const floats = [...new Float32Array(bytes.buffer, 0, bytes.byteLength / 4)];
+    /* position 12, normal 8, emissive 4, uv 8, tangent 8: forty bytes a vertex. */
+    expect(bytes.byteLength).toBe(40 * 3);
+    const vertex = (at: number) => {
+      const view = new DataView(bytes.buffer, at * 40, 40);
+      const f = (byte: number) => view.getFloat32(byte, true);
+      const h = (byte: number) => view.getInt16(byte, true);
+      return [
+        [f(0), f(4), f(8)],
+        [h(12), h(14), h(16), h(18)],
+        f(20),
+        [f(24), f(28)],
+        [h(32), h(34), h(36), h(38)],
+      ];
+    };
+    expect(vertex(1)).toEqual([[4, 5, 6], [0, 0, 32767, 0], 0.25, [12, 13], [0, 32767, 0, 32767]]);
+    expect(vertex(2)).toEqual([
+      [7, 8, 9],
+      [0, 0, 32767, 0],
+      0.125,
+      [14, 15],
+      [0, 0, 32767, -32767],
+    ]);
+    /* The colour, in its slot of the constants: the third of sixteen bytes each. */
+    const constants = memory.get(mesh.vertexBuffers[1] as object) as Uint8Array;
+    expect([...new Float32Array(constants.buffer, 2 * 16, 3)]).toEqual([1, 0.5, 0.25]);
+  });
 
-    /* position, normal, colour, emissive, uv, tangent: sixteen floats a vertex. */
-    expect(floats.slice(16, 32)).toEqual([4, 5, 6, 0, 0, 1, 1, 1, 1, 0.25, 12, 13, 0, 1, 0, 1]);
-    expect(floats.slice(32, 48)).toEqual([7, 8, 9, 0, 0, 1, 1, 1, 1, 0.125, 14, 15, 0, 0, 1, -1]);
+  /*
+   * **The layout reads every field where the rows put it, at the format they were written in.** A
+   * pipeline describes a mesh from `present` alone, so the packing travels there too: one field
+   * read as sixteen bits where it was written as thirty-two moves every field after it.
+   */
+  it('DESCRIBES A PACKED MESH AS IT WAS WRITTEN, each field at its format and offset', () => {
+    const data: MeshData = {
+      ...triangle(),
+      colors: new Float32Array([1, 0.5, 0.25, 0, 0, 0, 1, 1, 1]),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 0, 0, 1, -1]),
+    };
+    const present: Record<string, boolean> = { uvs: true, tangents: true };
+    markPacking(present, vertexPackingOf(data, false));
+    const layouts = vertexBufferLayouts(present);
+    const fields = [...(layouts[0]?.attributes ?? [])].map((a) => [
+      a.shaderLocation,
+      a.offset,
+      a.format,
+    ]);
+    /* Emissive is one value for every vertex here, so it reads from the constants. */
+    expect(fields).toEqual([
+      [0, 0, 'float32x3'],
+      [1, 12, 'snorm16x4'],
+      [2, 20, 'unorm16x4'],
+      [5, 28, 'float32x2'],
+      [10, 36, 'snorm16x4'],
+    ]);
+    expect(layouts[0]?.arrayStride).toBe(44);
+    expect(layouts[1]?.attributes.map((a) => a.shaderLocation)).toContain(3);
+    const { device, created } = fakeDevice();
+    createGpuMesh(device, data);
+    expect(created.find((b) => b.label === 'mesh.vertices')?.size).toBe(44 * 3);
   });
 
   /*
@@ -211,9 +275,12 @@ describe('a gpu mesh', () => {
     };
     const mesh = createGpuMesh(device, data);
     const bytes = memory.get(mesh.vertexBuffers[0] as object) as Uint8Array;
-    const floats = [...new Float32Array(bytes.buffer, 0, bytes.byteLength / 4)];
-    /* position, normal, colour, emissive, (u, v, layer), tangent: seventeen floats a vertex. */
-    expect(floats.slice(17, 34)).toEqual([4, 5, 6, 0, 0, 1, 1, 1, 1, 0.25, 12, 13, 6, 0, 1, 0, 1]);
+    /* Position 12, normal 8, emissive 4, (u, v, layer) as three floats 12, tangent 8: 44 bytes. The
+       colour is one for every vertex and a constant; see `vertexPacking.ts`. */
+    const second = new DataView(bytes.buffer, 44, 44);
+    expect([20, 24, 28, 32].map((at) => second.getFloat32(at, true))).toEqual([0.25, 12, 13, 6]);
+    /* The second vertex's tangent is (0, 1, 0, 1): its y, two bytes into the field at 36. */
+    expect(second.getInt16(38, true), 'and the tangent after it, moved along').toBe(32767);
 
     const layered = vertexBufferLayouts({ uvs: true, tangents: true, layers: true });
     const plain = vertexBufferLayouts({ uvs: true, tangents: true });
@@ -254,9 +321,10 @@ describe('a gpu mesh', () => {
 
   /*
    * The motion pass skins through a shader of its own, so it has to find the joints and weights in
-   * the interleaved vertex without the generated pipelines' `present` map. Positions, normals and
-   * colours are three floats each and emissive is one — ten floats, forty bytes — and the joint
-   * indices follow at forty, four floats wide, with the weights after them at fifty-six.
+   * the interleaved vertex without the generated pipelines' `present` map. Positions are twelve
+   * bytes and the normal eight, sixteen-bit lanes; this triangle's colour and emissive are one
+   * value each and sit in the constants. So the joint indices follow at twenty, four floats wide,
+   * and the weights at thirty-six, in four sixteen-bit lanes, which the motion pass has to read.
    */
   it('SAYS WHERE A SKINNED MESH KEEPS ITS JOINTS AND WEIGHTS, and a rigid one says nothing', () => {
     const { device } = fakeDevice();
@@ -266,7 +334,14 @@ describe('a gpu mesh', () => {
       weights: new Float32Array(12),
     });
     /* No second set on this rig, so its offsets say so with -1. */
-    expect(rigged.skinOffsets).toEqual({ joints: 40, weights: 56, joints2: -1, weights2: -1 });
+    expect(rigged.skinOffsets).toEqual({
+      joints: 20,
+      weights: 36,
+      joints2: -1,
+      weights2: -1,
+      weightsFormat: 'unorm16x4',
+      weights2Format: 'float32x4',
+    });
     expect(createGpuMesh(device, triangle()).skinOffsets).toBeNull();
   });
 
@@ -397,7 +472,7 @@ it('refuses a mesh whose vertices exceed the device buffer limit, naming both si
   /* The device's ceiling rather than the mesh is what is made small here: the branch is the
      same one a 298 MB model met on a 256 MiB default, and reproducing it at those sizes would
      allocate two thirds of a gigabyte to assert one comparison. */
-  const { device } = fakeDevice(64);
+  const { device } = fakeDevice(32);
   expect(() => createGpuMesh(device, triangle())).toThrow(/vertex buffer and this GPU allows/);
 });
 
@@ -569,8 +644,8 @@ describe('a gpu mesh uploaded a step at a time', () => {
 
     const { mesh, upload } = createGpuMeshIncremental(device, data);
 
-    /* position+normal+colour = 9 floats a vertex, emissive 1: 10, and four bytes each. */
-    const vertexBytes = 21_000 * 10 * 4;
+    /* Position 12, a normal and a colour in sixteen-bit lanes 8 each, emissive 4: 32 bytes. */
+    const vertexBytes = 21_000 * 32;
     const expected =
       Math.ceil(vertexBytes / UPLOAD_BYTES_PER_STEP) +
       Math.ceil(data.indices.byteLength / UPLOAD_BYTES_PER_STEP);

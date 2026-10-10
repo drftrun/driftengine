@@ -6,6 +6,16 @@ import type { MeshData } from '../../mesh.ts';
 import { ABSENT_ATTRIBUTE } from '../../vertexDefaults.ts';
 import { UPLOAD_BYTES_PER_STEP } from '../../uploadStep.ts';
 import { INSTANCE_STRIDE } from '../../instances.ts';
+import { compactIndices } from '../../indexWidth.ts';
+import {
+  SNORM16_ONE,
+  UNORM16_ONE,
+  packingFor,
+  sharedValue,
+  vertexPackingOf,
+  type AttributePacking,
+} from '../../vertexPacking.ts';
+import { formatBytes, interleaveFixed, packedFormat, packingIn } from './vertexFormats.ts';
 
 /**
  * Mesh geometry as WebGPU buffers.
@@ -172,8 +182,13 @@ export interface GpuMesh {
     /** The second four influences' offsets, or -1 for a mesh with four. */
     readonly joints2: number;
     readonly weights2: number;
+    /** How the weights are read: floats, or sixteen-bit fixed point (`vertexPacking.ts`). */
+    readonly weightsFormat: GPUVertexFormat;
+    readonly weights2Format: GPUVertexFormat;
   } | null;
   readonly indexBuffer: GPUBuffer;
+  /** Sixteen or thirty-two bits an index: every pass that binds `indexBuffer` says which. */
+  readonly indexFormat: GPUIndexFormat;
   /**
    * How many indices the mesh draws. **Zero is a mesh with nothing to draw, and no pass draws it**:
    * a level can hold none of some kind of geometry, and a draw of zero indices does nothing but
@@ -357,17 +372,31 @@ export function createGpuMeshIncremental(
   const bounds = boundsOfPositions(data.positions, createBounds());
   const vertexCount = data.positions.length / 3;
   const layered = data.layers !== undefined;
-  const supplied = VERTEX_LAYOUT.filter(
-    (attribute) =>
-      (!attribute.optional || data[attribute.name as keyof MeshData] !== undefined) &&
-      !(dynamic && isStreamed(attribute)),
-  ).map((attribute) => laidOut(attribute, layered));
+  /* How each attribute travels, which the pipeline key says too: `vertexPacking.ts`. */
+  const packing = vertexPackingOf(data, dynamic);
 
   /* Interleaved: one stride holding every attribute the mesh actually supplied — less a dynamic
-     mesh's positions and normals, which are buffers of their own. */
-  const stride = supplied.reduce((sum, attribute) => sum + attribute.components * 4, 0);
-  const step = stride / 4;
-  const interleaved = new Float32Array(step * vertexCount);
+     mesh's positions and normals, which are buffers of their own, and any attribute every vertex
+     shares, which is a constant. */
+  const fields: Field[] = [];
+  let stride = 0;
+  for (const declared of VERTEX_LAYOUT) {
+    if (declared.optional && data[declared.name as keyof MeshData] === undefined) continue;
+    if (dynamic && isStreamed(declared)) continue;
+    const attribute = laidOut(declared, layered);
+    const how = packingFor(packing, attribute.name);
+    if (how === 'constant') continue;
+    const format = packedFormat(attribute.format, how);
+    fields.push({ attribute, packing: how, format, offset: stride });
+    stride += formatBytes(format);
+  }
+  const buffer = new ArrayBuffer(stride * vertexCount);
+  const rows: Rows = {
+    floats: new Float32Array(buffer),
+    signed: new Int16Array(buffer),
+    unsigned: new Uint16Array(buffer),
+    bytes: new Uint8Array(buffer),
+  };
 
   /*
    * **Refused here, in one sentence, rather than by the driver a hundred times.**
@@ -383,7 +412,7 @@ export function createGpuMeshIncremental(
    * whose adapter caps at the default, and it deserves a sentence naming the model's size and
    * the device's rather than a wall of validation.
    */
-  const byteLength = align4(interleaved.byteLength);
+  const byteLength = align4(buffer.byteLength);
   const ceiling = device.limits.maxBufferSize;
   if (typeof ceiling === 'number' && byteLength > ceiling) {
     throw new Error(
@@ -420,11 +449,20 @@ export function createGpuMeshIncremental(
     if (value === undefined) continue;
     absent.set(value, slot * (CONSTANT_SLOT / 4));
   }
+  /* And what every vertex shares, where a mesh's attribute is one value: `vertexPacking.ts`. */
+  for (let slot = 0; slot < VERTEX_LAYOUT.length; slot++) {
+    const attribute = VERTEX_LAYOUT[slot] as VertexAttribute;
+    if (packingFor(packing, attribute.name) !== 'constant') continue;
+    const values = data[attribute.name as keyof MeshData] as Float32Array;
+    absent.set(sharedValue(values, attribute.components), slot * (CONSTANT_SLOT / 4));
+  }
   device.queue.writeBuffer(constants, 0, absent);
 
+  /* Sixteen bits where every vertex fits, which every draw of this mesh says: indexWidth.ts. */
+  const indices = compactIndices(data.indices, vertexCount);
   const indexBuffer = device.createBuffer({
     label: 'mesh.indices',
-    size: align4(data.indices.byteLength),
+    size: align4(indices.byteLength),
     usage: USAGE.INDEX | USAGE.COPY_DST,
   });
 
@@ -453,11 +491,12 @@ export function createGpuMeshIncremental(
     1,
     Math.floor(UPLOAD_BYTES_PER_STEP / (stride + (dynamic ? 24 : 0))),
   );
-  const indexWidth = data.indices.BYTES_PER_ELEMENT;
-  const indicesPerStep = Math.max(1, Math.floor(UPLOAD_BYTES_PER_STEP / indexWidth));
+  /* Whole four-byte words a step, which is all a queue writes: two sixteen-bit indices to one. */
+  const indexWidth = indices.BYTES_PER_ELEMENT;
+  const indicesPerStep = Math.max(1, Math.floor(UPLOAD_BYTES_PER_STEP / 4)) * (4 / indexWidth);
   const totalSteps =
     Math.max(1, Math.ceil(vertexCount / verticesPerStep)) +
-    Math.max(1, Math.ceil(data.indices.length / indicesPerStep));
+    Math.max(1, Math.ceil(indices.length / indicesPerStep));
 
   /*
    * **The mesh is assembled out here, by functions of its own, and that is the fix for a copy
@@ -474,6 +513,7 @@ export function createGpuMeshIncremental(
     constants,
     streams,
     indexBuffer,
+    indexFormat: indices instanceof Uint16Array ? 'uint16' : 'uint32',
     stride: streams === null ? stride : 12,
     indexCount: data.indices.length,
     bounds,
@@ -483,7 +523,7 @@ export function createGpuMeshIncremental(
     isSkinnedEight: data.joints !== undefined && data.joints2 !== undefined,
     vertexCount,
     hasUvs: data.uvs !== undefined,
-    skinOffsets: streams === null ? skinOffsetsOf(supplied) : null,
+    skinOffsets: streams === null ? skinOffsetsOf(fields) : null,
     hasChannel: data.channel !== undefined,
     morph:
       data.morphTargets === undefined || data.morphTargetCount === undefined
@@ -502,14 +542,14 @@ export function createGpuMeshIncremental(
 
   const job: UploadJob = {
     data,
-    interleaved,
+    indices,
+    rows,
     device,
-    supplied,
+    fields,
     streams,
     vertices,
     indexBuffer,
     vertexCount,
-    step,
     stride,
     verticesPerStep,
     indicesPerStep,
@@ -519,20 +559,38 @@ export function createGpuMeshIncremental(
   return { mesh, upload: uploadSteps(job) };
 }
 
+/** One attribute as a mesh interleaves it: how it travels, the format it is read with, where. */
+interface Field {
+  readonly attribute: VertexAttribute;
+  readonly packing: AttributePacking;
+  readonly format: GPUVertexFormat;
+  /** Bytes into the vertex. */
+  readonly offset: number;
+}
+
+/** The interleaved rows, viewed as each field's type writes them. */
+interface Rows {
+  readonly floats: Float32Array;
+  readonly signed: Int16Array;
+  readonly unsigned: Uint16Array;
+  readonly bytes: Uint8Array;
+}
+
 /**
  * What an upload reads, held by the upload alone and let go when it finishes — so a caller that
  * keeps its iterator, as a streamer keeps the handle it was given, keeps nothing through it.
  */
 interface UploadJob {
   data: MeshData | null;
-  interleaved: Float32Array | null;
+  /** The mesh's indices at the width its buffer holds them: `compactIndices`. */
+  indices: Uint16Array | Uint32Array | null;
+  rows: Rows | null;
   readonly device: GPUDevice;
-  readonly supplied: readonly VertexAttribute[];
+  readonly fields: readonly Field[];
   readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
   readonly vertices: GPUBuffer;
   readonly indexBuffer: GPUBuffer;
   readonly vertexCount: number;
-  readonly step: number;
   readonly stride: number;
   readonly verticesPerStep: number;
   readonly indicesPerStep: number;
@@ -541,33 +599,64 @@ interface UploadJob {
 }
 
 function* uploadSteps(job: UploadJob): Generator<void, void, void> {
-  const { device, supplied, vertices, indexBuffer, vertexCount, step, stride } = job;
+  const { device, fields, vertices, indexBuffer, vertexCount, stride } = job;
+  /* Floats and halves a vertex: every field is whole words, so both divide. */
+  const step = stride / 4;
+  const halves = stride / 2;
   let taken = 0;
   for (let from = 0; from < vertexCount; from += job.verticesPerStep) {
     const data = job.data as MeshData;
-    const interleaved = job.interleaved as Float32Array;
+    const rows = job.rows as Rows;
     const to = Math.min(from + job.verticesPerStep, vertexCount);
-    let fieldOffset = 0;
-    for (const attribute of supplied) {
+    for (const field of fields) {
+      const attribute = field.attribute;
       const source = data[attribute.name as keyof MeshData] as Float32Array;
-      if (attribute === LAYERED_UVS) {
+      if (field.packing === 'snorm16') {
+        interleaveFixed(
+          rows.signed,
+          source,
+          attribute.components,
+          halves,
+          field.offset / 2,
+          from,
+          to,
+          SNORM16_ONE,
+        );
+      } else if (field.packing === 'unorm16') {
+        interleaveFixed(
+          rows.unsigned,
+          source,
+          attribute.components,
+          halves,
+          field.offset / 2,
+          from,
+          to,
+          UNORM16_ONE,
+        );
+      } else if (attribute === LAYERED_UVS) {
         /* (u, v) from the coordinates and the layer after them, one field of three. */
-        interleaveField(interleaved, source, 2, step, fieldOffset, from, to);
+        const at = field.offset / 4;
+        interleaveField(rows.floats, source, 2, step, at, from, to);
+        interleaveField(rows.floats, data.layers as Float32Array, 1, step, at + 2, from, to);
+      } else {
         interleaveField(
-          interleaved,
-          data.layers as Float32Array,
-          1,
+          rows.floats,
+          source,
+          attribute.components,
           step,
-          fieldOffset + 2,
+          field.offset / 4,
           from,
           to,
         );
-      } else {
-        interleaveField(interleaved, source, attribute.components, step, fieldOffset, from, to);
       }
-      fieldOffset += attribute.components;
     }
-    device.queue.writeBuffer(vertices, from * stride, interleaved, from * step, (to - from) * step);
+    device.queue.writeBuffer(
+      vertices,
+      from * stride,
+      rows.bytes,
+      from * stride,
+      (to - from) * stride,
+    );
     if (job.streams !== null) {
       const count = (to - from) * 3;
       device.queue.writeBuffer(job.streams.positions, from * 12, data.positions, from * 3, count);
@@ -577,7 +666,7 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
     if (taken < job.totalSteps) yield;
   }
 
-  const indices = (job.data as MeshData).indices;
+  const indices = job.indices as Uint16Array | Uint32Array;
   const indexWidth = indices.BYTES_PER_ELEMENT;
   for (let from = 0; from < indices.length; from += job.indicesPerStep) {
     const to = Math.min(from + job.indicesPerStep, indices.length);
@@ -587,7 +676,8 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
   }
 
   job.data = null;
-  job.interleaved = null;
+  job.indices = null;
+  job.rows = null;
   job.progress.uploaded = true;
 }
 
@@ -638,23 +728,30 @@ function interleaveField(
  * Where the joints and weights sit in a vertex of `supplied`, the attributes a mesh interleaves in
  * layout order; null unless it supplied both.
  */
-function skinOffsetsOf(supplied: readonly VertexAttribute[]): GpuMesh['skinOffsets'] {
-  let floats = 0;
+function skinOffsetsOf(fields: readonly Field[]): GpuMesh['skinOffsets'] {
   let joints = -1;
   let weights = -1;
   let joints2 = -1;
   let weights2 = -1;
-  for (const attribute of supplied) {
-    if (attribute.name === 'joints') joints = floats * 4;
-    if (attribute.name === 'weights') weights = floats * 4;
-    if (attribute.name === 'joints2') joints2 = floats * 4;
-    if (attribute.name === 'weights2') weights2 = floats * 4;
-    floats += attribute.components;
+  let weightsFormat: GPUVertexFormat = 'float32x4';
+  let weights2Format: GPUVertexFormat = 'float32x4';
+  for (const field of fields) {
+    const name = field.attribute.name;
+    if (name === 'joints') joints = field.offset;
+    if (name === 'joints2') joints2 = field.offset;
+    if (name === 'weights') {
+      weights = field.offset;
+      weightsFormat = field.format;
+    }
+    if (name === 'weights2') {
+      weights2 = field.offset;
+      weights2Format = field.format;
+    }
   }
   if (joints < 0 || weights < 0) return null;
   return joints2 >= 0 && weights2 >= 0
-    ? { joints, weights, joints2, weights2 }
-    : { joints, weights, joints2: -1, weights2: -1 };
+    ? { joints, weights, joints2, weights2, weightsFormat, weights2Format }
+    : { joints, weights, joints2: -1, weights2: -1, weightsFormat, weights2Format };
 }
 
 /** The handle, made where it can see only what it hands out. */
@@ -663,6 +760,7 @@ function gpuMeshOf(parts: {
   readonly constants: GPUBuffer;
   readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
   readonly indexBuffer: GPUBuffer;
+  readonly indexFormat: GPUIndexFormat;
   readonly stride: number;
   readonly indexCount: number;
   readonly bounds: Bounds;
@@ -690,6 +788,7 @@ function gpuMeshOf(parts: {
     vertexStride: parts.stride,
     skinOffsets: parts.skinOffsets,
     indexBuffer,
+    indexFormat: parts.indexFormat,
     indexCount: parts.indexCount,
     bounds: parts.bounds,
     get complete(): boolean {
@@ -844,7 +943,10 @@ export function vertexBufferLayouts(
      * in the interleaved one. A *skinned* mesh interleaves them, so removing them would shift
      * the stride under every other attribute — which is why `createInstanced` refuses one.
      */
-    const supplied = !attribute.optional || present[String(attribute.name)] === true;
+    /* One value every vertex shares sits with the absent ones: `vertexPacking.ts`. */
+    const packing = packingIn(present, String(attribute.name));
+    const supplied =
+      (!attribute.optional || present[String(attribute.name)] === true) && packing !== 'constant';
     if (instanced && INSTANCE_LOCATIONS.has(attribute.shaderLocation)) {
       /*
        * **Free to drop only because the mesh does not supply it.** An absent optional attribute
@@ -866,12 +968,9 @@ export function vertexBufferLayouts(
       return;
     }
     if (supplied) {
-      interleaved.push({
-        shaderLocation: attribute.shaderLocation,
-        offset,
-        format: attribute.format,
-      });
-      offset += attribute.components * 4;
+      const format = packedFormat(attribute.format, packing);
+      interleaved.push({ shaderLocation: attribute.shaderLocation, offset, format });
+      offset += formatBytes(format);
       return;
     }
     constants.push({

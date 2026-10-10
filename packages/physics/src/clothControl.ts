@@ -86,13 +86,17 @@ export class ClothControl {
 
   /**
    * Advance by `dt` seconds of the caller's time, in whole fixed steps; how many ran. The remainder
-   * is kept for the next call, and `alpha` says how far into the next step it reaches.
+   * is kept for the next call, and `alpha` says how far into the next step it reaches. At most
+   * `maxSteps` run, reaching the latest pose all the same; the whole steps past them are dropped.
    */
   advance(dt: number): number {
     this.accumulator += dt;
     const step = this.parameters.step;
     /* A millionth of a step of slack, so 1/30 is two steps of 1/60 and not one and a remainder. */
-    const steps = Math.floor((this.accumulator + step * 1e-6) / step);
+    const whole = Math.floor((this.accumulator + step * 1e-6) / step);
+    const steps = Math.min(whole, this.parameters.maxSteps);
+    /* Dropped in one subtraction; the steps that run take theirs one at a time, as they always did. */
+    if (whole > steps) this.accumulator -= (whole - steps) * step;
     for (let k = 0; k < steps; k++) {
       this.accumulator -= step;
       this.stepAt((k + 1) / steps);

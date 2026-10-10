@@ -36,11 +36,54 @@ export const DIRECTIONALSHADOW_GLSL = `vec2 receiverPlaneDepthGradient(vec3 p) {
   );
 }
 
-float directionalVisibility(float receiverDepth, float compareDepth, float storedDepth) {
+/* One stored depth against a receiver, in a map spanning \`span\` metres of depth. */
+float directionalVisibilityAt(float receiverDepth, float compareDepth, float storedDepth, float span) {
   if (compareDepth <= storedDepth) return 1.0;
-  float rayDistance = max(receiverDepth - storedDepth, 0.0) * uShadowDepthSpan;
+  float rayDistance = max(receiverDepth - storedDepth, 0.0) * span;
   float groundDistance = rayDistance * length(uDirectionalDir.xz);
   return 1.0 - shadowReach(groundDistance, uShadowMaxDistance);
+}
+
+float directionalVisibility(float receiverDepth, float compareDepth, float storedDepth) {
+  return directionalVisibilityAt(receiverDepth, compareDepth, storedDepth, uShadowDepthSpan);
+}
+
+/* How far inside its square a receiver stands in a layer's map: 1 well inside, 0 at its border. */
+float sunMapFade(vec3 p) {
+  if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 0.0;
+  vec2 fromCentre = abs(p.xy - 0.5) * 2.0;
+  return (1.0 - smoothstep(0.72, 0.98, max(fromCentre.x, fromCentre.y))) *
+    (1.0 - smoothstep(0.90, 1.0, p.z));
+}
+
+/*
+ * The moving layer at its own place, where it has a matrix of its own (movingSun.ts): the coarse
+ * test of shadowFactor, and its filter, each against the moving map's own depth span, and lit by
+ * how far inside the moving map's square the receiver stands rather than cut at its border.
+ */
+float movingSunCoarse(vec3 pm, float span) {
+  float inside = sunMapFade(pm);
+  if (inside <= 0.0) return 1.0;
+  float stored = textureLod(uSunShadows, vec3(pm.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r;
+  return mix(1.0, directionalVisibilityAt(pm.z, pm.z - 1.0 / span, stored, span), inside);
+}
+
+float movingSunFiltered(vec3 pm, vec2 gradient, float span) {
+  float inside = sunMapFade(pm);
+  if (inside <= 0.0) return 1.0;
+  float texel = 1.35 / uShadowMapSize;
+  float slopeLimit = 9.1 / uShadowMapSize;
+  float lit = 0.0;
+  for (int i = 0; i < ${MAX_SHADOW_FILTER_TAPS}; i++) {
+    if (i >= uShadowFilterTaps) break;
+    vec2 sampleUv = pm.xy + DIRECTIONAL_PCF_OFFSETS[i] * texel;
+    vec2 texelCentre = (floor(sampleUv * uShadowMapSize) + 0.5) / uShadowMapSize;
+    float slopeOffset = clamp(dot(gradient, texelCentre - pm.xy), -slopeLimit, slopeLimit);
+    float tapReceiverDepth = pm.z + slopeOffset;
+    float stored = textureLod(uSunShadows, vec3(sampleUv, ${SUN_DYNAMIC_LAYER}.0), 0.0).r;
+    lit += directionalVisibilityAt(tapReceiverDepth, tapReceiverDepth - 0.14 / span, stored, span);
+  }
+  return mix(1.0, lit / float(max(uShadowFilterTaps, 1)), inside);
 }
 
 float shadowFactor(float directionalNdl) {
@@ -72,6 +115,14 @@ float shadowFactor(float directionalNdl) {
   vec3 p = vLightPos.xyz / vLightPos.w;
   p = p * 0.5 + 0.5;
   vec2 depthGradient = receiverPlaneDepthGradient(p);
+  /* The moving layer's own place and plane where it has a matrix of its own (movingSun.ts), taken
+     here beside the static layer's for the same reason: above every varying-dependent return. */
+  vec3 pm = p;
+  vec2 movingGradient = depthGradient;
+  if (MOVING_SUN) {
+    pm = movingSunAt();
+    movingGradient = receiverPlaneDepthGradient(pm);
+  }
 
   // Near a surface's own light terminator its direct-light term is already
   // approaching zero, while the orthographic projection of that surface
@@ -136,7 +187,8 @@ float shadowFactor(float directionalNdl) {
   float coarseCompare = p.z - 1.0 / uShadowDepthSpan;
   float coarse =
     directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_STATIC_LAYER}.0), 0.0).r) *
-    directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r);
+    (MOVING_SUN ? movingSunCoarse(pm, movingSunSpan()) :
+      directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_DYNAMIC_LAYER}.0), 0.0).r));
   if (uPeeledShadowEnabled != 0) {
     coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, ${SUN_PEELED_LAYER}.0), 0.0).r);
   }
@@ -200,7 +252,6 @@ float shadowFactor(float directionalNdl) {
      * there is no mip to select and level zero is the only thing \`texture\` could have read.
      */
     float staticDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_STATIC_LAYER}.0), 0.0).r;
-    float dynamicDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_DYNAMIC_LAYER}.0), 0.0).r;
     staticLit += directionalVisibility(tapReceiverDepth, compare, staticDepth);
     if (uPeeledShadowEnabled != 0) {
       float peeledDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_PEELED_LAYER}.0), 0.0).r;
@@ -208,12 +259,18 @@ float shadowFactor(float directionalNdl) {
     } else {
       peeledLit += 1.0;
     }
-    dynamicLit += directionalVisibility(tapReceiverDepth, compare, dynamicDepth);
+    /* The moving layer here where it shares the static one's place; at its own below otherwise.
+       Branched on the switch itself, never its negation: see overridableConstants in transform.mjs. */
+    if (MOVING_SUN) {
+    } else {
+      float dynamicDepth = textureLod(uSunShadows, vec3(sampleUv, ${SUN_DYNAMIC_LAYER}.0), 0.0).r;
+      dynamicLit += directionalVisibility(tapReceiverDepth, compare, dynamicDepth);
+    }
   }
   float tapCount = float(max(uShadowFilterTaps, 1));
   staticLit /= tapCount;
   peeledLit /= tapCount;
-  dynamicLit /= tapCount;
+  dynamicLit = MOVING_SUN ? movingSunFiltered(pm, movingGradient, movingSunSpan()) : dynamicLit / tapCount;
 
   // Independent layers preserve every recorded fact at an overlap: each
   // caster keeps its own distance fade, and their transmissions compose
@@ -234,11 +291,11 @@ float shadowFactor(float directionalNdl) {
  * behind the receiver lending it colour within the spread, which only a receiver between two panes
  * meets. One function for both layers, because two copies were most of the lit shaders' growth.
  */
-vec3 sunGlassLayer(vec3 p, float paneLayer, float tintLayer, float bias, float texel, float uvPerMetre) {
+vec3 sunGlassLayer(vec3 p, float paneLayer, float tintLayer, float bias, float texel, float uvPerMetre, float span) {
   float tintSize = float(textureSize(uSunGlassTints, 0).x);
   float clarity = textureLod(uSunGlassTints, vec3(p.xy, tintLayer), 0.0).a;
   float behind =
-    max(p.z - textureLod(uSunShadows, vec3(p.xy, paneLayer), 0.0).r, 0.0) * uShadowDepthSpan;
+    max(p.z - textureLod(uSunShadows, vec3(p.xy, paneLayer), 0.0).r, 0.0) * span;
   float radius = clamp(
     (1.0 - clarity) * ${FROST_SPREAD.toFixed(6)} * behind * uvPerMetre,
     texel,
@@ -278,6 +335,13 @@ vec3 sunGlassLookup(float directionalNdl) {
   /* Map units per metre along the receiver, from derivatives taken first in uniform control flow,
      so a frost spread stated in metres lands the same whatever size of light matrix a consumer built. */
   float uvPerMetre = length(dFdx(p.xy)) / max(length(dFdx(vWorldPos)), 1e-6);
+  /* The moving glass at its own place where its layer has a matrix of its own: movingSun.ts. */
+  vec3 pm = p;
+  float movingPerMetre = uvPerMetre;
+  if (MOVING_SUN) {
+    pm = movingSunAt();
+    movingPerMetre = length(dFdx(pm.xy)) / max(length(dFdx(vWorldPos)), 1e-6);
+  }
   if (uShadowStrength <= 0.0 || textureSize(uSunGlassTints, 0).x <= 1) return vec3(1.0);
   if (directionalNdl <= 0.0) return vec3(1.0);
   if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return vec3(1.0);
@@ -295,8 +359,18 @@ vec3 sunGlassLookup(float directionalNdl) {
 
   float bias = 0.14 / uShadowDepthSpan;
   float texel = 1.35 / uShadowMapSize;
-  vec3 staticTint = sunGlassLayer(p, ${SUN_GLASS_STATIC_LAYER}.0, 0.0, bias, texel, uvPerMetre);
-  vec3 movingTint = sunGlassLayer(p, ${SUN_GLASS_MOVING_LAYER}.0, 1.0, bias, texel, uvPerMetre);
+  vec3 staticTint = sunGlassLayer(p, ${SUN_GLASS_STATIC_LAYER}.0, 0.0, bias, texel, uvPerMetre, uShadowDepthSpan);
+  vec3 movingTint = MOVING_SUN && sunMapFade(pm) <= 0.0
+    ? vec3(1.0)
+    : sunGlassLayer(
+      pm,
+      ${SUN_GLASS_MOVING_LAYER}.0,
+      1.0,
+      MOVING_SUN ? 0.14 / movingSunSpan() : bias,
+      texel,
+      movingPerMetre,
+      MOVING_SUN ? movingSunSpan() : uShadowDepthSpan
+    );
   return mix(vec3(1.0), staticTint * movingTint, strength);
 }
 

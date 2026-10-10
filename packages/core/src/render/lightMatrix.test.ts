@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { mat4, vec4 } from 'gl-matrix';
-import { computeLightMatrix } from './lightMatrix.ts';
+import { computeLightMatrix, orthographicDepthSpan } from './lightMatrix.ts';
 import type { Vec3 } from '../math/color.ts';
 
 const RADIUS = 45;
@@ -87,4 +87,22 @@ test('the matrix is stable — same inputs, same matrix', () => {
   computeLightMatrix([0.4, 0.8, 0.45], 5, 2, 9, RADIUS, MAP_SIZE, a);
   computeLightMatrix([0.4, 0.8, 0.45], 5, 2, 9, RADIUS, MAP_SIZE, b);
   expect(Array.from(b)).toEqual(Array.from(a));
+});
+
+/*
+ * **The span read off a matrix is the one it was built with**, whatever its bearing, focus and size:
+ * six radii, the depth range computeLightMatrix gives every square. A tight square of 6 m and the
+ * wide one of 45 m, under a high sun and a low one.
+ */
+test('READS THE DEPTH SPAN A LIGHT MATRIX WAS BUILT WITH OFF THE MATRIX ITSELF', () => {
+  const m = mat4.create();
+  for (const [dir, radius] of [
+    [[0.4, 0.8, 0.45], 6],
+    [[0.4, 0.8, 0.45], 45],
+    [[0.9, 0.2, -0.3], 6],
+  ] as const) {
+    const built = computeLightMatrix(dir as unknown as Vec3, 5, 2, 9, radius, MAP_SIZE, m);
+    expect(built, 'six radii').toBeCloseTo(radius * 6, 9);
+    expect(orthographicDepthSpan(m), `radius ${radius}`).toBeCloseTo(radius * 6, 4);
+  }
 });

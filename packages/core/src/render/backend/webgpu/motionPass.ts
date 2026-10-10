@@ -254,6 +254,8 @@ export class MotionPass {
       readonly weights: number;
       readonly joints2: number;
       readonly weights2: number;
+      readonly weightsFormat: GPUVertexFormat;
+      readonly weights2Format: GPUVertexFormat;
     },
     cloth = false,
   ): GPURenderPipeline | null {
@@ -261,13 +263,18 @@ export class MotionPass {
     const eight = offsets.joints2 >= 0 && offsets.weights2 >= 0;
     /*
      * Five byte counts, each under 256 because a vertex is at most 172 bytes, as five base-256
-     * digits: exact below 2^40, so two layouts can never share a key.
+     * digits, and two bits for the weights' formats: exact below 2^42, so two layouts can never
+     * share a key.
      */
     const key =
-      (((stride * 256 + offsets.joints) * 256 + offsets.weights) * 256 + offsets.joints2 + 1) *
+      ((((stride * 256 + offsets.joints) * 256 + offsets.weights) * 256 + offsets.joints2 + 1) *
         256 +
-      offsets.weights2 +
-      1;
+        offsets.weights2 +
+        1) *
+        4 +
+      /* And whether each four weights are floats or fixed point, two bits: `vertexPacking.ts`. */
+      (offsets.weightsFormat === 'float32x4' ? 0 : 2) +
+      (offsets.weights2Format === 'float32x4' ? 0 : 1);
     const pipelines = cloth ? this.clothPipelines : this.skinnedPipelines;
     const held = pipelines.get(key);
     if (held !== undefined) return held;
@@ -287,11 +294,15 @@ export class MotionPass {
             attributes: [
               { shaderLocation: 0, offset: 0, format: 'float32x3' },
               { shaderLocation: 11, offset: offsets.joints, format: 'float32x4' },
-              { shaderLocation: 12, offset: offsets.weights, format: 'float32x4' },
+              { shaderLocation: 12, offset: offsets.weights, format: offsets.weightsFormat },
               ...(eight
                 ? ([
                     { shaderLocation: 14, offset: offsets.joints2, format: 'float32x4' },
-                    { shaderLocation: 15, offset: offsets.weights2, format: 'float32x4' },
+                    {
+                      shaderLocation: 15,
+                      offset: offsets.weights2,
+                      format: offsets.weights2Format,
+                    },
                   ] as const)
                 : []),
             ],
@@ -635,7 +646,7 @@ export class MotionPass {
         }
         pass.setBindGroup(0, this.group, [i * MOTION_DRAW_STRIDE]);
         pass.setVertexBuffer(0, mesh.vertexBuffers[0] as GPUBuffer);
-        pass.setIndexBuffer(mesh.indexBuffer, 'uint32');
+        pass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
         pass.drawIndexed(mesh.indexCount, instances);
       }
     }

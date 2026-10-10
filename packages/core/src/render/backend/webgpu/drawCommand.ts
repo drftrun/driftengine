@@ -34,6 +34,8 @@ export interface DrawCommand {
   readonly vertexBuffers: (GPUBuffer | null)[];
   vertexCount: number;
   indexBuffer: GPUBuffer | null;
+  /** How wide an index of `indexBuffer` is: a mesh's own, thirty-two bits for everything else. */
+  indexFormat: GPUIndexFormat;
   indexed: boolean;
   count: number;
   instances: number;
@@ -69,6 +71,7 @@ function emptyCommand(): DrawCommand {
     vertexBuffers: new Array<GPUBuffer | null>(VERTEX_BUFFER_SLOTS).fill(null),
     vertexCount: 0,
     indexBuffer: null,
+    indexFormat: 'uint32',
     indexed: false,
     count: 0,
     instances: 1,

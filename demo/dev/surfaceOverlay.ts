@@ -9,6 +9,8 @@
  *     /surfaceOverlay.html?dissolve=0.6    more of the middle panel cut away, its band following
  *     /surfaceOverlay.html?wrinkle=0       the right panel's weights at zero: no wrinkle
  *     /surfaceOverlay.html?t=2             another moment of the rim's pulse and its scrolling noise
+ *     /surfaceOverlay.html?rim=blend       the rim pulling the base colour toward a red held at one,
+ *                                          then lit: red where the light reaches, dark where it does not
  *
  * The atlas's four quarters: the noise (top left), the rim's mask (top right, white on its left
  * half), the wrinkle normal (bottom left, ridges along u) and the wrinkle masks (bottom right: red
@@ -118,11 +120,14 @@ async function main(): Promise<void> {
   const on = ASKED.get('overlay') !== '0';
   const maps = ASKED.get('maps') === '0' ? undefined : atlas;
   const noise = { scale: [0.5, 0.5], offset: [0, 0] } as const;
+  const blend = ASKED.get('rim') === 'blend';
   const rim: SurfaceOverlay = {
     maps,
     rim: {
-      colour: [1, 0.45, 0.1],
-      intensity: 3,
+      colour: blend ? [8, 0.2, 0.1] : [1, 0.45, 0.1],
+      intensity: blend ? 1 : 3,
+      alpha: blend ? 1.5 : 1,
+      mode: blend ? 'blend' : 'add',
       falloff: 1.5,
       upward: 0.4,
       contrast: 1,

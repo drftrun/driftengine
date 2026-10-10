@@ -5,6 +5,10 @@
  *     /hlodFade.html?t=0.3&backend=webgl2  the other one
  *     /hlodFade.html?t=0.3&instanced=1     the same through instanced batches
  *     /hlodFade.html?t=0                   the control: dither off, one red box
+ *     /hlodFade.html?t=0&opacity=0.4       one instance at opacity 0.4 under `setDitherOpacity`:
+ *                                          red on 0.4 of the box, the clear colour on the rest
+ *     /hlodFade.html?t=0.3&opacity=0.6     both: red on 0.3, blue on 0.3, clear on 0.4, so the
+ *                                          crossfade covers the instance's share once
  *
  * One box drawn twice at the same place: red at `setDitherFade(t)`, blue at `setDitherFade(-t)`.
  * Unlit by construction — ambient white, no sun — so a pixel is red, blue or the clear colour and
@@ -34,7 +38,9 @@ async function main(): Promise<void> {
   const stats = document.getElementById('stats') as HTMLElement;
   const query = new URLSearchParams(location.search);
   const t = Number(query.get('t') ?? '0.3');
-  const instanced = query.get('instanced') === '1';
+  /* An instance's own opacity, spent on the screen door; implies instanced batches. */
+  const opacity = query.get('opacity') === null ? null : Number(query.get('opacity'));
+  const instanced = query.get('instanced') === '1' || opacity !== null;
   const created = await createRenderer(canvas, askedQuality(), DEV_RENDERER);
   await created.renderer.ready();
   const renderer: RendererApi = created.renderer;
@@ -46,6 +52,7 @@ async function main(): Promise<void> {
   const one = createMeshInstances(1);
   one.models.set(IDENTITY);
   one.tints.fill(1);
+  if (opacity !== null) one.alphas?.fill(opacity);
   one.count = 1;
   const redBatch = renderer.createInstanced(red, 1);
   const blueBatch = renderer.createInstanced(blue, 1);
@@ -69,6 +76,7 @@ async function main(): Promise<void> {
     renderer.beginFrame(CLEAR);
     renderer.bindMeshPass(camera, env);
     renderer.setSurfaceGrain(0);
+    renderer.setDitherOpacity(opacity !== null);
     renderer.setDitherFade(t);
     if (instanced) renderer.drawInstanced(redBatch, one);
     else renderer.drawMesh(red, IDENTITY);
@@ -78,9 +86,12 @@ async function main(): Promise<void> {
       else renderer.drawMesh(blue, IDENTITY);
     }
     renderer.setDitherFade(0);
+    renderer.setDitherOpacity(false);
     renderer.endFrame();
     frame += 1;
-    stats.textContent = `${created.backend} · t ${t} · ${instanced ? 'instanced' : 'meshes'}`;
+    stats.textContent =
+      `${created.backend} · t ${t} · ${instanced ? 'instanced' : 'meshes'}` +
+      (opacity === null ? '' : ` · opacity ${opacity}`);
     if (frame < FRAMES) requestAnimationFrame(draw);
     else (globalThis as unknown as { __drawn?: boolean }).__drawn = true;
   };

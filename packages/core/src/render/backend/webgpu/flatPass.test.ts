@@ -174,13 +174,15 @@ test('every variant that can bend declares the wind, and the instanced one decla
  * the lit stage branches on five overrides — glass, then `litSwitchesGlsl`'s four — which a pipeline
  * sets from its cache, and on the four shading models', skin's three halves and the lightmap's
  * (`models.ts`), which it sets from its own key, and last on the physical highlight's, from the
- * cache again, after it on a surface overlay's, from the cache too, and last on the reflection
- * pass's surface half, from the key, and whether the frame's draws write its maps, from the cache.
- * Every variant declares all seventeen, because a pipeline naming an override its
+ * cache again, after it on a surface overlay's, from the cache too, and on the reflection
+ * pass's surface half, from the key, and whether the frame's draws write its maps, from the cache,
+ * and on whether a material's maps are placed by the world, and last whether its layers are
+ * blended, both from the cache. The moving sun's switch sits after the four, ahead of the shadow
+ * lookup that reads it. Every variant declares all twenty, because a pipeline naming an override its
  * module lacks fails validation and drops the frame, the permutations without shadows included,
  * which read the glass switch nowhere. The models and halves are generated off, the lit features on.
  */
-test('EVERY LIT VARIANT DECLARES THE SEVENTEEN SWITCHES ITS PIPELINES SET', () => {
+test('EVERY LIT VARIANT DECLARES THE TWENTY SWITCHES ITS PIPELINES SET', () => {
   const variants = Object.entries(FLAT_FRAG_WGSL);
   expect(variants.length).toBe(16);
   const switches = [
@@ -189,6 +191,7 @@ test('EVERY LIT VARIANT DECLARES THE SEVENTEEN SWITCHES ITS PIPELINES SET', () =
     'LIGHT_FIXTURES',
     'SURFACE_EFFECTS',
     'DRIFT_LIGHT',
+    'MOVING_SUN',
   ] as const;
   const models = [
     'MODEL_ANISOTROPIC',
@@ -208,21 +211,23 @@ test('EVERY LIT VARIANT DECLARES THE SEVENTEEN SWITCHES ITS PIPELINES SET', () =
     });
     models.forEach((name, k) => {
       expect(wgsl, `${variant}: ${name}`).toMatch(
-        new RegExp(`@id\\(${5 + k}\\) override ${name}: bool = false;`),
+        new RegExp(`@id\\(${6 + k}\\) override ${name}: bool = false;`),
       );
     });
     expect(wgsl, `${variant}: PHYSICAL_SPECULAR`).toMatch(
-      /@id\(13\) override PHYSICAL_SPECULAR: bool = true;/,
+      /@id\(14\) override PHYSICAL_SPECULAR: bool = true;/,
     );
     expect(wgsl, `${variant}: SURFACE_OVERLAY`).toMatch(
-      /@id\(14\) override SURFACE_OVERLAY: bool = true;/,
+      /@id\(15\) override SURFACE_OVERLAY: bool = true;/,
     );
     expect(wgsl, `${variant}: REFLECTION_SURFACE`).toMatch(
-      /@id\(15\) override REFLECTION_SURFACE: bool = false;/,
+      /@id\(16\) override REFLECTION_SURFACE: bool = false;/,
     );
     expect(wgsl, `${variant}: REFLECTION_MAPS`).toMatch(
-      /@id\(16\) override REFLECTION_MAPS: bool = true;/,
+      /@id\(17\) override REFLECTION_MAPS: bool = true;/,
     );
+    expect(wgsl, `${variant}: WORLD_UVS`).toMatch(/@id\(18\) override WORLD_UVS: bool = true;/);
+    expect(wgsl, `${variant}: LAYERED`).toMatch(/@id\(19\) override LAYERED: bool = true;/);
     const bindings = (FLAT_BINDINGS.flatFrag as Record<string, { overrides?: unknown }>)[variant];
     expect(bindings?.overrides, variant).toEqual({
       GLASS_SHADOWS: 0,
@@ -230,18 +235,21 @@ test('EVERY LIT VARIANT DECLARES THE SEVENTEEN SWITCHES ITS PIPELINES SET', () =
       LIGHT_FIXTURES: 2,
       SURFACE_EFFECTS: 3,
       DRIFT_LIGHT: 4,
-      MODEL_ANISOTROPIC: 5,
-      MODEL_HAIR: 6,
-      MODEL_SKIN: 7,
-      MODEL_EYE: 8,
-      SKIN_SCREEN: 9,
-      SKIN_DIFFUSE: 10,
-      SKIN_ALBEDO: 11,
-      MODEL_LIGHTMAP: 12,
-      PHYSICAL_SPECULAR: 13,
-      SURFACE_OVERLAY: 14,
-      REFLECTION_SURFACE: 15,
-      REFLECTION_MAPS: 16,
+      MOVING_SUN: 5,
+      MODEL_ANISOTROPIC: 6,
+      MODEL_HAIR: 7,
+      MODEL_SKIN: 8,
+      MODEL_EYE: 9,
+      SKIN_SCREEN: 10,
+      SKIN_DIFFUSE: 11,
+      SKIN_ALBEDO: 12,
+      MODEL_LIGHTMAP: 13,
+      PHYSICAL_SPECULAR: 14,
+      SURFACE_OVERLAY: 15,
+      REFLECTION_SURFACE: 16,
+      REFLECTION_MAPS: 17,
+      WORLD_UVS: 18,
+      LAYERED: 19,
     });
   }
 });
@@ -302,6 +310,9 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
     '14': 0,
     '15': 0,
     '16': 0,
+    '17': 0,
+    '18': 0,
+    '19': 0,
   };
   expect(descriptors[0]?.fragment?.constants).toEqual({
     '0': 0,
@@ -321,6 +332,14 @@ test('A LIT PIPELINE SETS ALL ITS SWITCHES, clustering from the profile and the 
     '4': 1,
     ...off,
   });
+  /* And a material's projection, last, by its id 18; and the moving sun's matrix, by its id 5. */
+  await cache.enable('WORLD_UVS');
+  expect(descriptors[2]?.fragment?.constants?.['18']).toBe(1);
+  await cache.enable('MOVING_SUN');
+  expect(descriptors[3]?.fragment?.constants?.['5']).toBe(1);
+  /* And a material's layers, by its id 19. */
+  await cache.enable('LAYERED');
+  expect(descriptors[4]?.fragment?.constants?.['19']).toBe(1);
 });
 
 /*
@@ -355,7 +374,7 @@ test('A MODELLED PIPELINE TURNS ON ITS OWN MODEL AND NO OTHER, and keeps it thro
   flatPipeline(cache, device, layout, 'none', 'flat:s0:u0', {});
   const models = (k: number) => {
     const c = descriptors[k]?.fragment?.constants ?? {};
-    return [c['5'], c['6'], c['7'], c['8']];
+    return [c['6'], c['7'], c['8'], c['9']];
   };
   expect(models(0)).toEqual([0, 1, 0, 0]);
   expect(models(1)).toEqual([0, 0, 0, 0]);
@@ -400,7 +419,7 @@ test('A SKIN DRAWS ITS TWO HALVES THROUGH PIPELINES THAT SAY WHICH, the diffuse 
   }
   const halves = (k: number) => {
     const c = descriptors[k]?.fragment?.constants ?? {};
-    return [c['7'], c['9'], c['10']];
+    return [c['8'], c['10'], c['11']];
   };
   expect(halves(0)).toEqual([1, 0, 0]);
   expect(halves(1)).toEqual([1, 1, 0]);
@@ -491,8 +510,8 @@ test('THE REFLECTION SURFACE HALF WRITES ITS TWO MAPS AGAINST THE DEPTH THE FRAM
     true,
   );
   const [frame, surface] = descriptors;
-  expect(frame?.fragment?.constants?.['15'], 'the frame’s own: off').toBe(0);
-  expect(surface?.fragment?.constants?.['15'], 'the surface half: on').toBe(1);
+  expect(frame?.fragment?.constants?.['16'], 'the frame’s own: off').toBe(0);
+  expect(surface?.fragment?.constants?.['16'], 'the surface half: on').toBe(1);
   expect(surface?.fragment?.targets).toEqual([
     null,
     { format: 'rgba16float' },

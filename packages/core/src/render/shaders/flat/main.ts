@@ -7,6 +7,17 @@ export const MAIN_GLSL = `void main() {
    * turns a float into an array index. A plain texture is an array of one, so layer 0.
    */
   vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));
+  /*
+   * The coordinates a map's frame and its cutout's level are measured along: the mesh's, or the
+   * world's where the material projects its maps (worldUv.ts) — in which case the mesh's tangents
+   * no longer run along them either. Triplanar reads its own three planes below; every other
+   * reader of surfaceAt takes the horizontal plane.
+   */
+  vec2 frameAt = vUv.xy;
+  int frameTangents = vHasTangents;
+  projectSurface(surfaceAt, frameAt, frameTangents);
+  /* A layered material's mask, read once for every layer's share below: layered.ts. */
+  if (LAYERED && layered()) layeredBegin();
   if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
   /*
    * The layer's surface effects, zeros where the albedo array carries no table — see
@@ -26,6 +37,8 @@ export const MAIN_GLSL = `void main() {
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
+  /* An opacity spent on the screen door instead of the blend: preamble.ts. 0 keeps nothing. */
+  if (uWriteMode.z != 0.0 && ditherThreshold() >= vAlpha) discard;
   /* A draw's dissolve cuts the surface away before anything is shaded: overlay.ts. */
   if (SURFACE_OVERLAY) {
     if (overlayCuts(surfaceAt.xy)) discard;
@@ -63,14 +76,14 @@ export const MAIN_GLSL = `void main() {
    */
   float coverage = 1.0;
   if (uMaterialFlags.x != 0) {
-    vec4 texel = texture(uAlbedo, surfaceAt);
+    vec4 texel = albedoTexel(surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
     float kept = texel.a;
     if (uCutout.x > 0.0) {
-      float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
+      float tested = cutoutAlpha(texel.a, frameAt * vec2(textureSize(uAlbedo, 0).xy));
       if (uCutout.y == 0.0) {
         if (tested < uCutout.x) discard;
       } else {
@@ -115,7 +128,7 @@ export const MAIN_GLSL = `void main() {
   float ormRoughness = vRoughness;
   float metal = 0.0;
   if (uMaterialFlags.y != 0) {
-    vec3 t = texture(uOrmMap, surfaceAt).rgb;
+    vec3 t = ormTexel(surfaceAt);
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
     metal = clamp(t.b * uOrmScale.b, 0.0, 1.0);
@@ -156,6 +169,14 @@ export const MAIN_GLSL = `void main() {
   vec3 glassGlow = vec3(0.0);
   float glassTransmission = uSeeThrough.z;
   float glassFrost = uSeeThrough.w;
+  /*
+   * **A thin surface lets light from behind through, coloured by itself**: a banner, a leaf, a
+   * lampshade, an opaque material's \`diffuseTransmission\`, in the glass tint's spare lane. It
+   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour.
+   * None on glass, which has its own way through.
+   */
+  float thin = glassTransmission > 0.0 ? 0.0 : uGlassTint.w;
+  bool seesBehind = glassTransmission > 0.0 || thin > 0.0;
 
   /*
    * The normal a refracting draw bends by: the shading normal, a normal map's tilt and every relief
@@ -197,7 +218,7 @@ export const MAIN_GLSL = `void main() {
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
     vec3 unmapped = n;
-    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
+    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);
     /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
     if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
 
@@ -368,6 +389,8 @@ export const MAIN_GLSL = `void main() {
      */
     shadingNormal = n;
     if (backFace) n = -n;
+    /* A blending rim, on the base colour every light below reads: overlay.ts. */
+    if (SURFACE_OVERLAY) albedo = overlayRimBase(albedo, surfaceAt.xy, n);
     /*
      * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
      * there is one, asked once: every site below is a branch on these two, which a pipeline with no
@@ -450,7 +473,7 @@ export const MAIN_GLSL = `void main() {
     float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);
     float direct = ndl * sunShade * sunFacing;
     /* Glass: the sun on the far side of a pane lights it through the glass. See glassGlow. */
-    if (glassTransmission > 0.0) glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;
+    if (seesBehind) glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;
 
     /*
      * Hemispheric: sky above, ground below, mixed by which way the surface looks. An
@@ -1302,8 +1325,7 @@ export const MAIN_GLSL = `void main() {
        * the glass, shaped and shadowed like any lamp, and is added to glassGlow once its shape is
        * known below. For everything else a lamp behind the surface is skipped here, as always.
        */
-      float backNdl =
-        glassTransmission > 0.0 ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
+      float backNdl = seesBehind ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
       /* A model that sees light from behind keeps the lamps behind the surface. See models.ts. */
       if (ndl <= 0.0 && backNdl <= 0.0 && !modelledBehind) continue;
 
@@ -1323,7 +1345,9 @@ export const MAIN_GLSL = `void main() {
 #if POINT_SHADOWS
       float grazing = 1.0 - ndl;
       float normalOffset = (0.06 + dist * 0.05) * grazing * grazing + 0.02;
-      vec3 receiverPoint = vWorldPos + n * normalOffset;
+      /* Toward a lamp behind a thin surface, which is in the map itself: away from it, the surface
+         would stand in its own shadow. A pane is in no map, so glass keeps the usual side. */
+      vec3 receiverPoint = vWorldPos + (thin > 0.0 && ndl <= 0.0 ? -n : n) * normalOffset;
 
       /*
        * uPointShadowWeight is how present the cubemap is, and it is the difference
@@ -1699,7 +1723,7 @@ export const MAIN_GLSL = `void main() {
       float signedForm = areaSignedForm(n, seenCentre, right, up, seenHalf);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
-      float backForm = glassTransmission > 0.0
+      float backForm = seesBehind
         ? mix(max(0.0, -signedForm), abs(signedForm), uAreaLightTwoSided[a])
         : 0.0;
       if (form <= 0.0 && backForm <= 0.0) continue;
@@ -1873,7 +1897,7 @@ export const MAIN_GLSL = `void main() {
      * \`driftLight.ts\`.
      */
     if (driftShare > 0.0) {
-      if (glassTransmission > 0.0) {
+      if (seesBehind) {
         glassGlow += driftLightIrradiance(vWorldPos, -n) * (driftShare * uDriftLight.w);
       }
       /* The standard expression in its own order — albedo times the field, then the share — so a
@@ -1933,6 +1957,8 @@ export const MAIN_GLSL = `void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
+    /* What a thin surface lets through from behind, through its own colour; a metal lets none. */
+    if (thin > 0.0) lit += albedo * glassGlow * (thin * (1.0 - metal));
     diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*
@@ -1953,7 +1979,7 @@ export const MAIN_GLSL = `void main() {
      */
     vec3 emissiveMapped = vec3(1.0);
     if (uMaterialFlags.z != 0) {
-      emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
+      emissiveMapped = emissiveTexel(surfaceAt) * uEmissiveScale;
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
     float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
@@ -2097,7 +2123,7 @@ export const MAIN_GLSL = `void main() {
      * map here, on a branch on uniforms alone, which keeps its derivatives legal.
      */
     vec3 refractN = shadingNormal;
-    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);
+    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt, frameAt, frameTangents);
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
@@ -2134,8 +2160,8 @@ export const MAIN_GLSL = `void main() {
        * The glow of the lights behind it is added last, by how frosted it is.
        */
       float fresnel = 0.04 + 0.96 * pow(1.0 - cosView, 5.0);
-      shaded = mix(shaded, seen * uGlassTint, glassTransmission * (1.0 - fresnel)) +
-        applyOutputTransform(glassGlow * uGlassTint * (glassFrost * glassTransmission) * (1.0 - fog));
+      shaded = mix(shaded, seen * uGlassTint.rgb, glassTransmission * (1.0 - fresnel)) +
+        applyOutputTransform(glassGlow * uGlassTint.rgb * (glassFrost * glassTransmission) * (1.0 - fog));
     } else {
       shaded = seen;
     }
@@ -2147,9 +2173,10 @@ export const MAIN_GLSL = `void main() {
    * **It did not need MeshData.colors widened to four floats**, which is how the consumer who
    * asked for it had costed the change -- widening colors moves every mesh producer, the
    * container layout and every baked asset. Alpha is a factor on the draw's opacity, not a
-   * component of its albedo, so it rides a lane instead and nothing existing moves.
+   * component of its albedo, so it rides a lane instead and nothing existing moves. Where the draw
+   * spends it on the screen door instead (\`uWriteMode.z\`), it was spent at the top and is 1 here.
    */
-  float alpha = uOpacity * coverage * vAlpha;
+  float alpha = uOpacity * coverage * (uWriteMode.z != 0.0 ? 1.0 : vAlpha);
 
   /*
    * **Order-independent transparency, when this draw is accumulating into it.**

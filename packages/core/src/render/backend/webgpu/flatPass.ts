@@ -811,34 +811,32 @@ export function flatPipeline(
   reflectionSurface = false,
   /** An instanced pipeline that plays a bone animation. The key must carry it: `|anim`. */
   animated = false,
-): GPURenderPipeline {
-  return cache.get(
-    key,
-    () =>
-      flatDescriptor(
-        cache,
-        device,
-        layout,
-        variant,
-        key,
-        present,
-        translucent,
-        skinned,
-        morphed,
-        depthWrite,
-        depthLayer,
-        instanced,
-        oit,
-        doubleSided,
-        alphaToCoverage,
-        skinEight,
-        cloth,
-        model,
-        skinPass,
-        reflectionSurface,
-        animated,
-      ),
-    true,
+): GPURenderPipeline | null {
+  /* None where draws skip a compile and this one has not landed: see `PipelineCache.lit`. */
+  return cache.lit(key, () =>
+    flatDescriptor(
+      cache,
+      device,
+      layout,
+      variant,
+      key,
+      present,
+      translucent,
+      skinned,
+      morphed,
+      depthWrite,
+      depthLayer,
+      instanced,
+      oit,
+      doubleSided,
+      alphaToCoverage,
+      skinEight,
+      cloth,
+      model,
+      skinPass,
+      reflectionSurface,
+      animated,
+    ),
   );
 }
 

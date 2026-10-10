@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "2fe7a838:258069",
-  "directionalShadows+environmentProbe": "310b3bce:284080",
-  "directionalShadows+environmentProbe+nightEmissive": "e34f8d60:286566",
-  "directionalShadows+nightEmissive": "a9f54754:260555",
-  "environmentProbe": "05569bb1:264117",
-  "environmentProbe+nightEmissive": "516eb83b:266603",
-  "nightEmissive": "a54378ad:240592",
-  "none": "3e80618d:238106",
-  "pointShadows": "2f4b9e99:277314",
-  "pointShadows+directionalShadows": "684526b4:297277",
-  "pointShadows+directionalShadows+environmentProbe": "3de532ba:323288",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "acf972f4:325774",
-  "pointShadows+directionalShadows+nightEmissive": "af59f2d0:299763",
-  "pointShadows+environmentProbe": "8a820575:303325",
-  "pointShadows+environmentProbe+nightEmissive": "5ad1fc17:305811",
-  "pointShadows+nightEmissive": "f6d09c49:279800",
+  "directionalShadows": "963decea:273550",
+  "directionalShadows+environmentProbe": "dd7d23c6:299561",
+  "directionalShadows+environmentProbe+nightEmissive": "59da3b9e:302047",
+  "directionalShadows+nightEmissive": "5059aa74:276036",
+  "environmentProbe": "5775e51a:276321",
+  "environmentProbe+nightEmissive": "cca4dd7c:278807",
+  "nightEmissive": "2b8063b2:252796",
+  "none": "314e027e:250310",
+  "pointShadows": "15a5a560:289747",
+  "pointShadows+directionalShadows": "1f908a68:312987",
+  "pointShadows+directionalShadows+environmentProbe": "5a10536c:338998",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "a8f55cde:341484",
+  "pointShadows+directionalShadows+nightEmissive": "2b584394:315473",
+  "pointShadows+environmentProbe": "7187295c:315758",
+  "pointShadows+environmentProbe+nightEmissive": "c93d4958:318244",
+  "pointShadows+nightEmissive": "b33e166e:292233",
 }
 `;
 
@@ -113,7 +113,12 @@ uniform vec4 uSeeThrough; // wgsl:material
  * the rows a screen coordinate counts. A vec4 where a vec3 already spent the row.
  */
 uniform vec4 uRefractTint; // wgsl:material
-uniform vec3 uGlassTint; // wgsl:material
+/*
+ * A pane's colour (rgb), and in w how much light from behind an opaque thin surface lets through:
+ * \`SurfaceMaterial.diffuseTransmission\`, read where the draw is not glass. A vec4 where a vec3
+ * already spent the row.
+ */
+uniform vec4 uGlassTint; // wgsl:material
 flat in int vHasTangents;
 
 /**
@@ -489,17 +494,30 @@ uniform float uOpacity; // wgsl:material
  * the grain is mirrored between backends and nothing else about it differs. What it gives up: a
  * crossfade reads as grain for as long as it lasts, which is why it should be short; and a blended
  * draw that asks for it is dithered too, since the test is a discard.
+ *
+ * **\`.z\` — whether this draw spends its own opacity on the same screen door**: 1 keeps the cells
+ * under \`vAlpha\` (an instance's \`MeshInstances.alphas\`, a vertex's channel alpha) and blends none
+ * of it, so an opaque or cut-out draw can fade one instance at a time. 0 is off. **The same pattern
+ * as the fade, and that is the point**: a pixel is kept where its one threshold sits under both, so
+ * a crossfade at \`t\` and \`-t\` of an instance at opacity \`a\` still covers each pixel of the
+ * instance's share \`a\` once. Two independent patterns would leave holes where they disagree.
  */
-uniform vec2 uWriteMode; // wgsl:material
+uniform vec3 uWriteMode; // wgsl:material
 
-/** Whether this fragment is one \`uWriteMode.y\` keeps. Integer arithmetic, per the device rule. */
-bool ditherKeeps(float amount) {
+/** Where this fragment's cell of the 8×8 Bayer pattern falls, in (0, 1). Integer arithmetic,
+    per the device rule. */
+float ditherThreshold() {
   uvec2 p = uvec2(gl_FragCoord.xy) & 7u;
   uint a = p.x ^ p.y;
   uint b = p.y;
   uint cell = ((a & 1u) << 5) | ((b & 1u) << 4) | ((a & 2u) << 2) | ((b & 2u) << 1) |
     ((a & 4u) >> 1) | ((b & 4u) >> 2);
-  float threshold = (float(cell) + 0.5) / 64.0;
+  return (float(cell) + 0.5) / 64.0;
+}
+
+/** Whether this fragment is one \`uWriteMode.y\` keeps. */
+bool ditherKeeps(float amount) {
+  float threshold = ditherThreshold();
   return amount > 0.0 ? threshold < amount : threshold >= -amount;
 }
 
@@ -1209,6 +1227,23 @@ const bool CLUSTERED_LIGHTS = true;  // wgsl:override
 const bool LIGHT_FIXTURES = true;  // wgsl:override
 const bool SURFACE_EFFECTS = true;  // wgsl:override
 const bool DRIFT_LIGHT = true;  // wgsl:override
+
+
+/* Whether the moving layer has a matrix of its own. Off until a frame draws it with one: movingSun.ts. */
+const bool MOVING_SUN = true;  // wgsl:override
+/* The dynamic shadow pass's world-to-light matrix, and the depth it spans in metres. */
+uniform mat4 uMovingLightViewProj;
+uniform float uMovingShadowDepthSpan;
+
+/* The receiver in the moving layer's map: x and y across it, z its depth, all 0 to 1. */
+vec3 movingSunAt() {
+  vec4 l = uMovingLightViewProj * vec4(vWorldPos, 1.0);
+  return l.xyz / l.w * 0.5 + 0.5;
+}
+
+float movingSunSpan() {
+  return uMovingShadowDepthSpan;
+}
 
 float shadowReach(float distance, float maxDistance) {
   return 1.0 - smoothstep(
@@ -2224,11 +2259,54 @@ vec2 receiverPlaneDepthGradient(vec3 p) {
   );
 }
 
-float directionalVisibility(float receiverDepth, float compareDepth, float storedDepth) {
+/* One stored depth against a receiver, in a map spanning \`span\` metres of depth. */
+float directionalVisibilityAt(float receiverDepth, float compareDepth, float storedDepth, float span) {
   if (compareDepth <= storedDepth) return 1.0;
-  float rayDistance = max(receiverDepth - storedDepth, 0.0) * uShadowDepthSpan;
+  float rayDistance = max(receiverDepth - storedDepth, 0.0) * span;
   float groundDistance = rayDistance * length(uDirectionalDir.xz);
   return 1.0 - shadowReach(groundDistance, uShadowMaxDistance);
+}
+
+float directionalVisibility(float receiverDepth, float compareDepth, float storedDepth) {
+  return directionalVisibilityAt(receiverDepth, compareDepth, storedDepth, uShadowDepthSpan);
+}
+
+/* How far inside its square a receiver stands in a layer's map: 1 well inside, 0 at its border. */
+float sunMapFade(vec3 p) {
+  if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 0.0;
+  vec2 fromCentre = abs(p.xy - 0.5) * 2.0;
+  return (1.0 - smoothstep(0.72, 0.98, max(fromCentre.x, fromCentre.y))) *
+    (1.0 - smoothstep(0.90, 1.0, p.z));
+}
+
+/*
+ * The moving layer at its own place, where it has a matrix of its own (movingSun.ts): the coarse
+ * test of shadowFactor, and its filter, each against the moving map's own depth span, and lit by
+ * how far inside the moving map's square the receiver stands rather than cut at its border.
+ */
+float movingSunCoarse(vec3 pm, float span) {
+  float inside = sunMapFade(pm);
+  if (inside <= 0.0) return 1.0;
+  float stored = textureLod(uSunShadows, vec3(pm.xy, 1.0), 0.0).r;
+  return mix(1.0, directionalVisibilityAt(pm.z, pm.z - 1.0 / span, stored, span), inside);
+}
+
+float movingSunFiltered(vec3 pm, vec2 gradient, float span) {
+  float inside = sunMapFade(pm);
+  if (inside <= 0.0) return 1.0;
+  float texel = 1.35 / uShadowMapSize;
+  float slopeLimit = 9.1 / uShadowMapSize;
+  float lit = 0.0;
+  for (int i = 0; i < 12; i++) {
+    if (i >= uShadowFilterTaps) break;
+    vec2 sampleUv = pm.xy + DIRECTIONAL_PCF_OFFSETS[i] * texel;
+    vec2 texelCentre = (floor(sampleUv * uShadowMapSize) + 0.5) / uShadowMapSize;
+    float slopeOffset = clamp(dot(gradient, texelCentre - pm.xy), -slopeLimit, slopeLimit);
+    float tapReceiverDepth = pm.z + slopeOffset;
+    float stored = textureLod(uSunShadows, vec3(sampleUv, 1.0), 0.0).r;
+    lit += directionalVisibilityAt(tapReceiverDepth, tapReceiverDepth - 0.14 / span, stored, span);
+  }
+  return mix(1.0, lit / float(max(uShadowFilterTaps, 1)), inside);
 }
 
 float shadowFactor(float directionalNdl) {
@@ -2260,6 +2338,14 @@ float shadowFactor(float directionalNdl) {
   vec3 p = vLightPos.xyz / vLightPos.w;
   p = p * 0.5 + 0.5;
   vec2 depthGradient = receiverPlaneDepthGradient(p);
+  /* The moving layer's own place and plane where it has a matrix of its own (movingSun.ts), taken
+     here beside the static layer's for the same reason: above every varying-dependent return. */
+  vec3 pm = p;
+  vec2 movingGradient = depthGradient;
+  if (MOVING_SUN) {
+    pm = movingSunAt();
+    movingGradient = receiverPlaneDepthGradient(pm);
+  }
 
   // Near a surface's own light terminator its direct-light term is already
   // approaching zero, while the orthographic projection of that surface
@@ -2324,7 +2410,8 @@ float shadowFactor(float directionalNdl) {
   float coarseCompare = p.z - 1.0 / uShadowDepthSpan;
   float coarse =
     directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, 0.0), 0.0).r) *
-    directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, 1.0), 0.0).r);
+    (MOVING_SUN ? movingSunCoarse(pm, movingSunSpan()) :
+      directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, 1.0), 0.0).r));
   if (uPeeledShadowEnabled != 0) {
     coarse *= directionalVisibility(p.z, coarseCompare, textureLod(uSunShadows, vec3(p.xy, 2.0), 0.0).r);
   }
@@ -2388,7 +2475,6 @@ float shadowFactor(float directionalNdl) {
      * there is no mip to select and level zero is the only thing \`texture\` could have read.
      */
     float staticDepth = textureLod(uSunShadows, vec3(sampleUv, 0.0), 0.0).r;
-    float dynamicDepth = textureLod(uSunShadows, vec3(sampleUv, 1.0), 0.0).r;
     staticLit += directionalVisibility(tapReceiverDepth, compare, staticDepth);
     if (uPeeledShadowEnabled != 0) {
       float peeledDepth = textureLod(uSunShadows, vec3(sampleUv, 2.0), 0.0).r;
@@ -2396,12 +2482,18 @@ float shadowFactor(float directionalNdl) {
     } else {
       peeledLit += 1.0;
     }
-    dynamicLit += directionalVisibility(tapReceiverDepth, compare, dynamicDepth);
+    /* The moving layer here where it shares the static one's place; at its own below otherwise.
+       Branched on the switch itself, never its negation: see overridableConstants in transform.mjs. */
+    if (MOVING_SUN) {
+    } else {
+      float dynamicDepth = textureLod(uSunShadows, vec3(sampleUv, 1.0), 0.0).r;
+      dynamicLit += directionalVisibility(tapReceiverDepth, compare, dynamicDepth);
+    }
   }
   float tapCount = float(max(uShadowFilterTaps, 1));
   staticLit /= tapCount;
   peeledLit /= tapCount;
-  dynamicLit /= tapCount;
+  dynamicLit = MOVING_SUN ? movingSunFiltered(pm, movingGradient, movingSunSpan()) : dynamicLit / tapCount;
 
   // Independent layers preserve every recorded fact at an overlap: each
   // caster keeps its own distance fade, and their transmissions compose
@@ -2422,11 +2514,11 @@ float shadowFactor(float directionalNdl) {
  * behind the receiver lending it colour within the spread, which only a receiver between two panes
  * meets. One function for both layers, because two copies were most of the lit shaders' growth.
  */
-vec3 sunGlassLayer(vec3 p, float paneLayer, float tintLayer, float bias, float texel, float uvPerMetre) {
+vec3 sunGlassLayer(vec3 p, float paneLayer, float tintLayer, float bias, float texel, float uvPerMetre, float span) {
   float tintSize = float(textureSize(uSunGlassTints, 0).x);
   float clarity = textureLod(uSunGlassTints, vec3(p.xy, tintLayer), 0.0).a;
   float behind =
-    max(p.z - textureLod(uSunShadows, vec3(p.xy, paneLayer), 0.0).r, 0.0) * uShadowDepthSpan;
+    max(p.z - textureLod(uSunShadows, vec3(p.xy, paneLayer), 0.0).r, 0.0) * span;
   float radius = clamp(
     (1.0 - clarity) * 0.577350 * behind * uvPerMetre,
     texel,
@@ -2466,6 +2558,13 @@ vec3 sunGlassLookup(float directionalNdl) {
   /* Map units per metre along the receiver, from derivatives taken first in uniform control flow,
      so a frost spread stated in metres lands the same whatever size of light matrix a consumer built. */
   float uvPerMetre = length(dFdx(p.xy)) / max(length(dFdx(vWorldPos)), 1e-6);
+  /* The moving glass at its own place where its layer has a matrix of its own: movingSun.ts. */
+  vec3 pm = p;
+  float movingPerMetre = uvPerMetre;
+  if (MOVING_SUN) {
+    pm = movingSunAt();
+    movingPerMetre = length(dFdx(pm.xy)) / max(length(dFdx(vWorldPos)), 1e-6);
+  }
   if (uShadowStrength <= 0.0 || textureSize(uSunGlassTints, 0).x <= 1) return vec3(1.0);
   if (directionalNdl <= 0.0) return vec3(1.0);
   if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return vec3(1.0);
@@ -2483,8 +2582,18 @@ vec3 sunGlassLookup(float directionalNdl) {
 
   float bias = 0.14 / uShadowDepthSpan;
   float texel = 1.35 / uShadowMapSize;
-  vec3 staticTint = sunGlassLayer(p, 3.0, 0.0, bias, texel, uvPerMetre);
-  vec3 movingTint = sunGlassLayer(p, 4.0, 1.0, bias, texel, uvPerMetre);
+  vec3 staticTint = sunGlassLayer(p, 3.0, 0.0, bias, texel, uvPerMetre, uShadowDepthSpan);
+  vec3 movingTint = MOVING_SUN && sunMapFade(pm) <= 0.0
+    ? vec3(1.0)
+    : sunGlassLayer(
+      pm,
+      4.0,
+      1.0,
+      MOVING_SUN ? 0.14 / movingSunSpan() : bias,
+      texel,
+      movingPerMetre,
+      MOVING_SUN ? movingSunSpan() : uShadowDepthSpan
+    );
   return mix(vec3(1.0), staticTint * movingTint, strength);
 }
 
@@ -2804,11 +2913,24 @@ mat3 tangentFrame(vec3 n, vec3 worldPos, vec2 uv, vec4 tangent, int hasTangents)
    * side and nothing else.
    *
    * The UV determinant flips with them, so folding its sign back in restores the invariance the
-   * solve always had. Measured before and after on demo/dev/normal.html: the derived panel stood
+   * solve always had — through the orientation below, which flips with them too. Measured before and after on demo/dev/normal.html: the derived panel stood
    * 86 of 255 rms from the attribute panel on WebGPU and 8.8 on WebGL2; with this they agree.
    */
-  float det = duv1.x * duv2.y - duv2.x * duv1.y;
-  float handed = det < 0.0 ? -1.0 : 1.0;
+  /*
+   * **And the mapping's own handedness, which the determinant alone does not carry.** The closed
+   * form is the determinant times \`Pv × n\` and \`−Pu × n\`, which are \`Pu\` and \`Pv\` where the
+   * coordinates are right-handed about the normal and their negations where they are mirrored: a
+   * mirrored mapping came out turned half a circle, its normal map lit from the far side. The sign
+   * that puts both back is the determinant's times the mapping's handedness, and that product is
+   * the surface's orientation on screen, \`dp1 × dp2 = det · (Pu × Pv)\`, against the normal. It
+   * flips with \`dFdy\` as the determinant does, so the two backends stay agreed, and it equals the
+   * determinant's sign wherever a mapping is not mirrored. Found by a projection laying \`u\` along
+   * x and \`v\` along z on ground facing up, which is mirrored: on demo/dev/worldUv.html a normal
+   * map leaning along +u read 74.8 derived against 110.8 from the tangent attribute, the light
+   * from the side it leans toward, and 110.8 both after. Every published scene and the four panels
+   * of demo/dev/normal.html, none of them mirrored and derived, are unchanged to the pixel.
+   */
+  float handed = dot(cross(dp1, dp2), n) < 0.0 ? -1.0 : 1.0;
   /* One scale for both axes, so a stretched UV layout does not shear the frame it produces. */
   float invmax = inversesqrt(max(max(dot(dt, dt), dot(db, db)), 1e-12)) * handed;
   vec3 derivedT = dt * invmax;
@@ -2844,22 +2966,6 @@ mat3 tangentFrame(vec3 n, vec3 worldPos, vec2 uv, vec4 tangent, int hasTangents)
   vec3 b = framed ? attrB : derivedB;
   return mat3(t, b, n);
 }
-
-vec3 normalMapped(vec3 n, vec3 at) {
-  vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;
-  /*
-   * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
-   * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
-   * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
-   * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
-   * that has to say what format it holds, and continuous at the boundary, since a unit texel
-   * lying flat has its z near zero either way. A texel with z above zero is left as it was.
-   */
-  mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
-  mat3 tbn = tangentFrame(n, vWorldPos, vUv.xy, vTangent, vHasTangents);
-  return normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
-}
-
 
 float cutoutAlpha(float alpha, vec2 texels) {
   vec2 dx = dFdx(texels);
@@ -3792,8 +3898,42 @@ vec2 overlayScreen() {
   return vec2(eye.x / depth + uClusterFrustum.w, eye.y / depth + 1.0) * 0.5;
 }
 
+/*
+ * The rim's weight here, 0 to 1 before the pulse and the mask: the edge leaning toward normals that
+ * face up, raised to the contrast, times the noise laid in screen space. Its strength is the
+ * caller's: an added rim takes it times its light, a blending one times its colour.
+ */
+float overlayRimWeight(vec2 uv, vec3 n) {
+  vec3 toEye = normalize(uCameraPos - vWorldPos);
+  float edge = pow(1.0 - clamp(dot(n, toEye), 0.0, 1.0), max(uOverlay[1].x, 1e-4));
+  float up = pow(clamp(n.y * 0.5 + 0.5, 0.0, 1.0), max(uOverlay[1].y, 1e-4));
+  float rim = pow(edge * up, max(uOverlay[1].z, 1e-4));
+  float time = uSurfaceScene.x;
+  if (uOverlay[2].x > 0.0 && overlayImagesBound()) {
+    vec2 at = overlayScreen() * uOverlay[3].z + uOverlay[3].xy * time;
+    rim *= overlayImage(uOverlay[2], at).r;
+  }
+  rim = min(rim, 1.0);
+  rim *= mix(uOverlay[4].x, uOverlay[4].y, 0.5 + 0.5 * sin(uOverlay[3].w * time));
+  if (uOverlay[5].x > 0.0 && overlayImagesBound()) {
+    rim *= 1.0 - uOverlay[1].w * overlayImage(uOverlay[5], uv).r;
+  }
+  return rim;
+}
+
+/*
+ * A blending rim: the base colour pulled toward the rim's by the weight times the alpha, held at
+ * one, before any light reads it, so the edge is lit as the surface is. The colour arrives already
+ * held at one a channel. Nothing where the rim adds instead, or where there is none.
+ */
+vec3 overlayRimBase(vec3 base, vec2 uv, vec3 n) {
+  if (uOverlay[0].w <= 0.0 || uOverlay[4].z < 0.5) return base;
+  float weight = clamp(uOverlay[0].w * overlayRimWeight(uv, n), 0.0, 1.0);
+  return mix(base, uOverlay[0].rgb, weight);
+}
+
 /* What the overlay adds to the light the surface gives off: the dissolve's band, the colour laid
-   over through its noise, and the rim. Zero where the draw sets none of them. */
+   over through its noise, and an adding rim. Zero where the draw sets none of them. */
 vec3 overlayGlow(vec2 uv, vec3 n) {
   vec3 glow = vec3(0.0);
   float noise = overlayDissolveNoise(uv);
@@ -3802,22 +3942,8 @@ vec3 overlayGlow(vec2 uv, vec3 n) {
     glow += uOverlay[8].rgb * uOverlay[8].w * band + uOverlay[9].rgb * uOverlay[9].w * noise;
   }
   float strength = uOverlay[0].w;
-  if (strength > 0.0) {
-    vec3 toEye = normalize(uCameraPos - vWorldPos);
-    float edge = pow(1.0 - clamp(dot(n, toEye), 0.0, 1.0), max(uOverlay[1].x, 1e-4));
-    float up = pow(clamp(n.y * 0.5 + 0.5, 0.0, 1.0), max(uOverlay[1].y, 1e-4));
-    float rim = pow(edge * up, max(uOverlay[1].z, 1e-4));
-    float time = uSurfaceScene.x;
-    if (uOverlay[2].x > 0.0 && overlayImagesBound()) {
-      vec2 at = overlayScreen() * uOverlay[3].z + uOverlay[3].xy * time;
-      rim *= overlayImage(uOverlay[2], at).r;
-    }
-    rim = min(rim, 1.0);
-    rim *= mix(uOverlay[4].x, uOverlay[4].y, 0.5 + 0.5 * sin(uOverlay[3].w * time));
-    if (uOverlay[5].x > 0.0 && overlayImagesBound()) {
-      rim *= 1.0 - uOverlay[1].w * overlayImage(uOverlay[5], uv).r;
-    }
-    glow += uOverlay[0].rgb * strength * rim;
+  if (strength > 0.0 && uOverlay[4].z < 0.5) {
+    glow += uOverlay[0].rgb * strength * overlayRimWeight(uv, n);
   }
   return glow;
 }
@@ -3859,6 +3985,219 @@ void reflectionSurfaceOut(vec3 probe, vec3 tint, float roughness, float occlusio
   }
   outReflectedProbe = vec4(probe * keep, roughness);
   outReflectedTint = vec4(tint * keep, 1.0);
+}
+
+
+/* Whether this program places maps by the world. Off but where a material has asked: worldUv.ts. */
+const bool WORLD_UVS = true;  // wgsl:override
+/* x: 0 the mesh's coordinates, 1 planar, 2 triplanar; y: repeats a metre; z: the blend's sharpness. */
+uniform vec4 uWorldUv; // wgsl:material
+
+bool projected() {
+  return uWorldUv.x > 0.5;
+}
+
+bool triplanar() {
+  return uWorldUv.x > 1.5;
+}
+
+/* The horizontal axes, scaled: u along +x, v along +z. */
+vec2 planarAt() {
+  return vWorldPos.xz * uWorldUv.y;
+}
+
+/* How much each plane counts: the geometric normal's components, sharpened, summing to one. */
+vec3 triplanarWeights() {
+  vec3 w = pow(abs(normalize(vNormal)), vec3(uWorldUv.z));
+  return w / max(w.x + w.y + w.z, 1e-5);
+}
+
+/*
+ * Each map read on the three planes and blended: a function a map rather than one taking the
+ * sampler, whose precision differs between them. Under a branch on a uniform, as every map read
+ * is, so the implicit level each read takes is legal: AGENTS.md 2026-08-07.
+ */
+vec4 triplanarAlbedo(float layer) {
+  vec3 w = triplanarWeights();
+  vec3 p = vWorldPos * uWorldUv.y;
+  return texture(uAlbedo, vec3(p.zy, layer)) * w.x + texture(uAlbedo, vec3(p.xz, layer)) * w.y +
+    texture(uAlbedo, vec3(p.xy, layer)) * w.z;
+}
+
+vec3 triplanarOrm(float layer) {
+  vec3 w = triplanarWeights();
+  vec3 p = vWorldPos * uWorldUv.y;
+  return texture(uOrmMap, vec3(p.zy, layer)).rgb * w.x +
+    texture(uOrmMap, vec3(p.xz, layer)).rgb * w.y + texture(uOrmMap, vec3(p.xy, layer)).rgb * w.z;
+}
+
+vec3 triplanarEmissive(float layer) {
+  vec3 w = triplanarWeights();
+  vec3 p = vWorldPos * uWorldUv.y;
+  return texture(uEmissiveMap, vec3(p.zy, layer)).rgb * w.x +
+    texture(uEmissiveMap, vec3(p.xz, layer)).rgb * w.y +
+    texture(uEmissiveMap, vec3(p.xy, layer)).rgb * w.z;
+}
+
+/* A tangent-space normal off the map, its z rebuilt where a two-channel map stored none. */
+vec3 triplanarTexel(vec2 at, float layer) {
+  vec3 t = texture(uNormalMap, vec3(at, layer)).xyz * 2.0 - 1.0;
+  t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
+  return t;
+}
+
+/*
+ * The normal map on three planes, by the whiteout blend: each plane's texel added to the surface
+ * normal swizzled into that plane, its z scaled by the normal's own, and swizzled back. Each plane's
+ * coordinates run along the same world axes from both sides, so a texel's axes are the world's and
+ * nothing is flipped; what that gives up is a texture mirrored on a plane's negative side.
+ */
+vec3 triplanarNormal(vec3 n, float layer) {
+  vec3 w = triplanarWeights();
+  vec3 p = vWorldPos * uWorldUv.y;
+  vec3 tx = triplanarTexel(p.zy, layer);
+  vec3 ty = triplanarTexel(p.xz, layer);
+  vec3 tz = triplanarTexel(p.xy, layer);
+  tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
+  ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
+  tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
+  vec3 blended = normalize(tx.zyx * w.x + ty.xzy * w.y + tz.xyz * w.z);
+  return normalize(mix(n, blended, uNormalStrength));
+}
+
+
+/* Whether this program blends a material's layers. Off but where one has asked: layered.ts. */
+const bool LAYERED = true;  // wgsl:override
+/* The five repeats, base first (x y z w, then x), the count (y) and the glowing layer, or -1 (z). */
+uniform vec4 uLayers[2]; // wgsl:material
+
+/* The mask's channels that lay a layer, zero past the count: read once, in layeredBegin. */
+vec4 lMask;
+
+bool layered() {
+  return uLayers[1].y > 0.5;
+}
+
+/* The mask, at the mesh's coordinates, where a model's map is. Under a branch on uniforms. */
+void layeredBegin() {
+  vec4 m = texture(uModelMap, vec3(vUv.xy, 0.0));
+  float n = uLayers[1].y;
+  lMask = vec4(n > 1.5 ? m.r : 0.0, n > 2.5 ? m.g : 0.0, n > 3.5 ? m.b : 0.0, n > 4.5 ? m.a : 0.0);
+}
+
+/* Layer i's share of this point: its channel, less every later layer's. */
+float layerShare(int i) {
+  float keep = 1.0;
+  for (int j = 3; j >= 0; j--) {
+    if (j + 1 == i) return lMask[j] * keep;
+    keep *= 1.0 - lMask[j];
+  }
+  return keep;
+}
+
+float layerRepeat(int i) {
+  return i < 4 ? uLayers[0][i] : uLayers[1].x;
+}
+
+vec3 layerAt(int i) {
+  return vec3(vUv.xy * layerRepeat(i), float(i));
+}
+
+/* Colour by the shares, and the base layer's coverage, which a cutout reads. */
+vec4 layeredAlbedo() {
+  vec4 sum = vec4(0.0);
+  for (int i = 0; i < 5; i++) {
+    if (float(i) >= uLayers[1].y) break;
+    vec4 t = texture(uAlbedo, layerAt(i));
+    sum.rgb += t.rgb * layerShare(i);
+    if (i == 0) sum.a = t.a;
+  }
+  return sum;
+}
+
+vec3 layeredOrm() {
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 5; i++) {
+    if (float(i) >= uLayers[1].y) break;
+    sum += texture(uOrmMap, layerAt(i)).rgb * layerShare(i);
+  }
+  return sum;
+}
+
+/* The tangent-space texels blended, each with its z rebuilt where a two-channel map stored none. */
+vec3 layeredTexel() {
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 5; i++) {
+    if (float(i) >= uLayers[1].y) break;
+    vec3 t = texture(uNormalMap, layerAt(i)).xyz * 2.0 - 1.0;
+    t.z = t.z > 0.0 ? t.z : sqrt(max(0.0, 1.0 - dot(t.xy, t.xy)));
+    sum += t * layerShare(i);
+  }
+  float len = length(sum);
+  return len > 1e-5 ? sum / len : vec3(0.0, 0.0, 1.0);
+}
+
+/* Whether the emissive map belongs to one layer rather than to the whole surface. */
+bool layeredGlows() {
+  return uLayers[1].z > -0.5;
+}
+
+/* The emissive map at its layer's place, glowing by that layer's share. */
+vec3 layeredEmissive() {
+  int glow = int(uLayers[1].z + 0.5);
+  return texture(uEmissiveMap, layerAt(glow)).rgb * layerShare(glow);
+}
+
+
+/* The surface's coordinates moved onto the world's horizontal plane where a material projects them,
+   with the frame's coordinates and the mesh's tangents, which no longer run along them, set aside. */
+void projectSurface(inout vec3 at, inout vec2 frameAt, inout int frameTangents) {
+  if (WORLD_UVS && projected()) {
+    at.xy = planarAt();
+    frameAt = at.xy;
+    frameTangents = 0;
+  }
+}
+
+vec4 albedoTexel(vec3 at) {
+  if (LAYERED && layered()) return layeredAlbedo();
+  if (WORLD_UVS && triplanar()) return triplanarAlbedo(at.z);
+  return texture(uAlbedo, at);
+}
+
+vec3 ormTexel(vec3 at) {
+  if (LAYERED && layered()) return layeredOrm();
+  if (WORLD_UVS && triplanar()) return triplanarOrm(at.z);
+  return texture(uOrmMap, at).rgb;
+}
+
+vec3 emissiveTexel(vec3 at) {
+  if (LAYERED && layered() && layeredGlows()) return layeredEmissive();
+  if (WORLD_UVS && triplanar()) return triplanarEmissive(at.z);
+  return texture(uEmissiveMap, at).rgb;
+}
+
+
+vec3 normalMapped(vec3 n, vec3 at, vec2 frameAt, int hasTangents) {
+  /* On three planes where the material projects them so: worldUv.ts. */
+  if (WORLD_UVS && triplanar()) return triplanarNormal(n, at.z);
+  /* A layered material's texels, blended by its mask before the frame turns them: layered.ts. */
+  if (LAYERED && layered()) {
+    mat3 layeredFrame = tangentFrame(n, vWorldPos, frameAt, vTangent, hasTangents);
+    return normalize(mix(n, normalize(layeredFrame * layeredTexel()), uNormalStrength));
+  }
+  vec3 mapped = texture(uNormalMap, at).xyz * 2.0 - 1.0;
+  /*
+   * z rebuilt where none is stored. A tangent-space normal points out of its surface, so a
+   * stored z at or below zero is never a real one: it is a two-channel map, BC5, whose blue a
+   * device samples as zero and which arrives here as -1. Every map baked from BC5 to PNG before
+   * 4.8.4 carried the same zero. A select rather than a flag: no uniform to bind, no material
+   * that has to say what format it holds, and continuous at the boundary, since a unit texel
+   * lying flat has its z near zero either way. A texel with z above zero is left as it was.
+   */
+  mapped.z = mapped.z > 0.0 ? mapped.z : sqrt(max(0.0, 1.0 - dot(mapped.xy, mapped.xy)));
+  mat3 tbn = tangentFrame(n, vWorldPos, frameAt, vTangent, hasTangents);
+  return normalize(mix(n, normalize(tbn * mapped), uNormalStrength));
 }
 
 
@@ -4001,6 +4340,17 @@ void main() {
    * turns a float into an array index. A plain texture is an array of one, so layer 0.
    */
   vec3 surfaceAt = vec3(vUv.xy, floor(vUv.z + 0.5));
+  /*
+   * The coordinates a map's frame and its cutout's level are measured along: the mesh's, or the
+   * world's where the material projects its maps (worldUv.ts) — in which case the mesh's tangents
+   * no longer run along them either. Triplanar reads its own three planes below; every other
+   * reader of surfaceAt takes the horizontal plane.
+   */
+  vec2 frameAt = vUv.xy;
+  int frameTangents = vHasTangents;
+  projectSurface(surfaceAt, frameAt, frameTangents);
+  /* A layered material's mask, read once for every layer's share below: layered.ts. */
+  if (LAYERED && layered()) layeredBegin();
   if (dot(vec4(vWorldPos, 1.0), uClipPlane) < 0.0) discard;
   /*
    * The layer's surface effects, zeros where the albedo array carries no table — see
@@ -4020,6 +4370,8 @@ void main() {
   vec2 fxDx = dFdx(surfaceAt.xy);
   vec2 fxDy = dFdy(surfaceAt.xy);
   if (uWriteMode.y != 0.0 && !ditherKeeps(uWriteMode.y)) discard;
+  /* An opacity spent on the screen door instead of the blend: preamble.ts. 0 keeps nothing. */
+  if (uWriteMode.z != 0.0 && ditherThreshold() >= vAlpha) discard;
   /* A draw's dissolve cuts the surface away before anything is shaded: overlay.ts. */
   if (SURFACE_OVERLAY) {
     if (overlayCuts(surfaceAt.xy)) discard;
@@ -4057,14 +4409,14 @@ void main() {
    */
   float coverage = 1.0;
   if (uMaterialFlags.x != 0) {
-    vec4 texel = texture(uAlbedo, surfaceAt);
+    vec4 texel = albedoTexel(surfaceAt);
     // Discarded before anything else is computed: a thrown-away fragment should not pay
     // for the lighting it will never contribute to. The test credits alpha for the mip level
     // it samples, so a needle averaged thin down the chain is not lost; see cutoutCoverage.ts.
     // Behind a branch on a uniform, so a material with no cutoff pays nothing for it.
     float kept = texel.a;
     if (uCutout.x > 0.0) {
-      float tested = cutoutAlpha(texel.a, vUv.xy * vec2(textureSize(uAlbedo, 0).xy));
+      float tested = cutoutAlpha(texel.a, frameAt * vec2(textureSize(uAlbedo, 0).xy));
       if (uCutout.y == 0.0) {
         if (tested < uCutout.x) discard;
       } else {
@@ -4109,7 +4461,7 @@ void main() {
   float ormRoughness = vRoughness;
   float metal = 0.0;
   if (uMaterialFlags.y != 0) {
-    vec3 t = texture(uOrmMap, surfaceAt).rgb;
+    vec3 t = ormTexel(surfaceAt);
     ormOcclusion = mix(1.0, t.r, uOrmScale.r);
     ormRoughness = clamp(t.g * uOrmScale.g, 0.0, 1.0);
     metal = clamp(t.b * uOrmScale.b, 0.0, 1.0);
@@ -4150,6 +4502,14 @@ void main() {
   vec3 glassGlow = vec3(0.0);
   float glassTransmission = uSeeThrough.z;
   float glassFrost = uSeeThrough.w;
+  /*
+   * **A thin surface lets light from behind through, coloured by itself**: a banner, a leaf, a
+   * lampshade, an opaque material's \`diffuseTransmission\`, in the glass tint's spare lane. It
+   * gathers the light behind it in glassGlow, as a pane does, and adds it through its own colour.
+   * None on glass, which has its own way through.
+   */
+  float thin = glassTransmission > 0.0 ? 0.0 : uGlassTint.w;
+  bool seesBehind = glassTransmission > 0.0 || thin > 0.0;
 
   /*
    * The normal a refracting draw bends by: the shading normal, a normal map's tilt and every relief
@@ -4191,7 +4551,7 @@ void main() {
      * below. The rule is about non-uniform branches, and this branch is on a uniform.
      */
     vec3 unmapped = n;
-    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt);
+    if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);
     /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
     if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
 
@@ -4362,6 +4722,8 @@ void main() {
      */
     shadingNormal = n;
     if (backFace) n = -n;
+    /* A blending rim, on the base colour every light below reads: overlay.ts. */
+    if (SURFACE_OVERLAY) albedo = overlayRimBase(albedo, surfaceAt.xy, n);
     /*
      * A model's surface, gathered once, on a branch on the switches alone (models.ts) — and whether
      * there is one, asked once: every site below is a branch on these two, which a pipeline with no
@@ -4439,7 +4801,7 @@ void main() {
     float sunFacing = smoothstep(0.0, 0.02, surfaceNdl);
     float direct = ndl * sunShade * sunFacing;
     /* Glass: the sun on the far side of a pane lights it through the glass. See glassGlow. */
-    if (glassTransmission > 0.0) glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;
+    if (seesBehind) glassGlow += sunColor * max(-surfaceNdl, 0.0) * sunShade;
 
     /*
      * Hemispheric: sky above, ground below, mixed by which way the surface looks. An
@@ -5283,8 +5645,7 @@ void main() {
        * the glass, shaped and shadowed like any lamp, and is added to glassGlow once its shape is
        * known below. For everything else a lamp behind the surface is skipped here, as always.
        */
-      float backNdl =
-        glassTransmission > 0.0 ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
+      float backNdl = seesBehind ? max(-dot(n, toLight / max(dist, 1e-4)), 0.0) : 0.0;
       /* A model that sees light from behind keeps the lamps behind the surface. See models.ts. */
       if (ndl <= 0.0 && backNdl <= 0.0 && !modelledBehind) continue;
 
@@ -5303,7 +5664,9 @@ void main() {
       float shadowWeight = clamp(falloff * 2.0, 0.0, 1.0);
       float grazing = 1.0 - ndl;
       float normalOffset = (0.06 + dist * 0.05) * grazing * grazing + 0.02;
-      vec3 receiverPoint = vWorldPos + n * normalOffset;
+      /* Toward a lamp behind a thin surface, which is in the map itself: away from it, the surface
+         would stand in its own shadow. A pane is in no map, so glass keeps the usual side. */
+      vec3 receiverPoint = vWorldPos + (thin > 0.0 && ndl <= 0.0 ? -n : n) * normalOffset;
 
       /*
        * uPointShadowWeight is how present the cubemap is, and it is the difference
@@ -5675,7 +6038,7 @@ void main() {
       float signedForm = areaSignedForm(n, seenCentre, right, up, seenHalf);
       float form = mix(max(0.0, signedForm), abs(signedForm), uAreaLightTwoSided[a]);
       /* The form factor is linear in the normal, so the one seen from behind is its negation. */
-      float backForm = glassTransmission > 0.0
+      float backForm = seesBehind
         ? mix(max(0.0, -signedForm), abs(signedForm), uAreaLightTwoSided[a])
         : 0.0;
       if (form <= 0.0 && backForm <= 0.0) continue;
@@ -5845,7 +6208,7 @@ void main() {
      * \`driftLight.ts\`.
      */
     if (driftShare > 0.0) {
-      if (glassTransmission > 0.0) {
+      if (seesBehind) {
         glassGlow += driftLightIrradiance(vWorldPos, -n) * (driftShare * uDriftLight.w);
       }
       /* The standard expression in its own order — albedo times the field, then the share — so a
@@ -5905,6 +6268,8 @@ void main() {
      * underneath: a ceiling emitting a dull warm haze over a pale panel cannot be expressed
      * by scaling the panel, and scaling it gets the brightness right and the hue wrong.
      */
+    /* What a thin surface lets through from behind, through its own colour; a metal lets none. */
+    if (thin > 0.0) lit += albedo * glassGlow * (thin * (1.0 - metal));
     diffuseAlone = lit;
     vec3 emissiveTint = vEmissiveColor.r < 0.0 ? albedo : vEmissiveColor;
     /*
@@ -5925,7 +6290,7 @@ void main() {
      */
     vec3 emissiveMapped = vec3(1.0);
     if (uMaterialFlags.z != 0) {
-      emissiveMapped = texture(uEmissiveMap, surfaceAt).rgb * uEmissiveScale;
+      emissiveMapped = emissiveTexel(surfaceAt) * uEmissiveScale;
     }
     /* Pulse, flicker and fade from the layer's effects; exactly 1 where it names none. */
     float fxGlow = fx4.z + fx5.x + fx5.w > 0.0 ? fxEmission(surfaceAt.z) : 1.0;
@@ -6067,7 +6432,7 @@ void main() {
      * map here, on a branch on uniforms alone, which keeps its derivatives legal.
      */
     vec3 refractN = shadingNormal;
-    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt);
+    if (uLightingEnabled == 0 && uNormalStrength > 0.0) refractN = normalMapped(refractN, surfaceAt, frameAt, frameTangents);
     vec3 refractV = normalize(uCameraPos - vWorldPos);
     ivec2 snapSize = textureSize(uRefractScene, 0);
     vec2 screenUv = gl_FragCoord.xy / vec2(snapSize);
@@ -6104,8 +6469,8 @@ void main() {
        * The glow of the lights behind it is added last, by how frosted it is.
        */
       float fresnel = 0.04 + 0.96 * pow(1.0 - cosView, 5.0);
-      shaded = mix(shaded, seen * uGlassTint, glassTransmission * (1.0 - fresnel)) +
-        applyOutputTransform(glassGlow * uGlassTint * (glassFrost * glassTransmission) * (1.0 - fog));
+      shaded = mix(shaded, seen * uGlassTint.rgb, glassTransmission * (1.0 - fresnel)) +
+        applyOutputTransform(glassGlow * uGlassTint.rgb * (glassFrost * glassTransmission) * (1.0 - fog));
     } else {
       shaded = seen;
     }
@@ -6117,9 +6482,10 @@ void main() {
    * **It did not need MeshData.colors widened to four floats**, which is how the consumer who
    * asked for it had costed the change -- widening colors moves every mesh producer, the
    * container layout and every baked asset. Alpha is a factor on the draw's opacity, not a
-   * component of its albedo, so it rides a lane instead and nothing existing moves.
+   * component of its albedo, so it rides a lane instead and nothing existing moves. Where the draw
+   * spends it on the screen door instead (\`uWriteMode.z\`), it was spent at the top and is 1 here.
    */
-  float alpha = uOpacity * coverage * vAlpha;
+  float alpha = uOpacity * coverage * (uWriteMode.z != 0.0 ? 1.0 : vAlpha);
 
   /*
    * **Order-independent transparency, when this draw is accumulating into it.**

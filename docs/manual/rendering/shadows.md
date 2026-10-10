@@ -144,6 +144,48 @@ every frame, which is simpler and right for a small level.
 
 `directionalShadowDepthLayers: 1` drops the peel and its memory; the default is 2.
 
+### The moving layer on a square of its own
+
+The still world wants a wide square, so distant roofs keep their shadows; a character wants a tight
+one, so its own shadow is sharp. Each layer can have its own. The moving layer is read through the
+matrix its pass was drawn with, so draw it through a small square around what moves, and leave the
+environment's `lightViewProj` the static layer's:
+
+```ts sample=snippets/shadows.ts#moving
+/**
+ * Whatever moves on a square of its own, six metres around the character, so its shadow is as
+ * sharp as the map allows while the still world keeps a square wide enough for distant roofs.
+ */
+export function tightMovers(
+  renderer: RendererApi,
+  env: Environment,
+  moving: ShadowCasters,
+  around: readonly [number, number, number],
+): void {
+  computeLightMatrix(
+    env.directionalDir,
+    around[0],
+    around[1],
+    around[2],
+    3,
+    renderer.shadowMapSize,
+    movingMatrix,
+  );
+  renderer.beginShadowPass(movingMatrix, 'dynamic');
+  renderer.drawShadowCasters(moving);
+  renderer.endShadowPass();
+}
+
+const movingMatrix = new Float32Array(16);
+```
+
+Nothing else changes: a scene that draws both layers with one matrix draws exactly as it did, and the
+moving layer's own matrix is compiled into the lit stage only the first time a frame draws that layer
+with a different one. The tight square belongs inside the wide one, since a receiver outside the wide
+square takes no sun shadow at all. On WebGL2 the moving matrix takes five fragment uniform vectors;
+where a part has no room for them it is refused, said once, and the layer is read through the
+environment's matrix, so draw both layers with that matrix there.
+
 ## Every kind of caster
 
 ```ts sample=snippets/shadows.ts#sink

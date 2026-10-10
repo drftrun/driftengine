@@ -40,11 +40,24 @@ export const TANGENT_FRAME_GLSL = `mat3 tangentFrame(vec3 n, vec3 worldPos, vec2
    * side and nothing else.
    *
    * The UV determinant flips with them, so folding its sign back in restores the invariance the
-   * solve always had. Measured before and after on demo/dev/normal.html: the derived panel stood
+   * solve always had — through the orientation below, which flips with them too. Measured before and after on demo/dev/normal.html: the derived panel stood
    * 86 of 255 rms from the attribute panel on WebGPU and 8.8 on WebGL2; with this they agree.
    */
-  float det = duv1.x * duv2.y - duv2.x * duv1.y;
-  float handed = det < 0.0 ? -1.0 : 1.0;
+  /*
+   * **And the mapping's own handedness, which the determinant alone does not carry.** The closed
+   * form is the determinant times \`Pv × n\` and \`−Pu × n\`, which are \`Pu\` and \`Pv\` where the
+   * coordinates are right-handed about the normal and their negations where they are mirrored: a
+   * mirrored mapping came out turned half a circle, its normal map lit from the far side. The sign
+   * that puts both back is the determinant's times the mapping's handedness, and that product is
+   * the surface's orientation on screen, \`dp1 × dp2 = det · (Pu × Pv)\`, against the normal. It
+   * flips with \`dFdy\` as the determinant does, so the two backends stay agreed, and it equals the
+   * determinant's sign wherever a mapping is not mirrored. Found by a projection laying \`u\` along
+   * x and \`v\` along z on ground facing up, which is mirrored: on demo/dev/worldUv.html a normal
+   * map leaning along +u read 74.8 derived against 110.8 from the tangent attribute, the light
+   * from the side it leans toward, and 110.8 both after. Every published scene and the four panels
+   * of demo/dev/normal.html, none of them mirrored and derived, are unchanged to the pixel.
+   */
+  float handed = dot(cross(dp1, dp2), n) < 0.0 ? -1.0 : 1.0;
   /* One scale for both axes, so a stretched UV layout does not shear the frame it produces. */
   float invmax = inversesqrt(max(max(dot(dt, dt), dot(db, db)), 1e-12)) * handed;
   vec3 derivedT = dt * invmax;

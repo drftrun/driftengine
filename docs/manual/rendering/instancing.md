@@ -186,7 +186,43 @@ export function fadingPanes(
 
 `MeshInstances.alphas` holds one opacity an instance, 1 by default, which a translucent draw
 multiplies into the batch's own. So particles fading at different rates, or panes at different
-clarity, are one draw rather than a batch for each opacity. An opaque draw ignores it.
+clarity, are one draw rather than a batch for each opacity. An opaque draw ignores it, unless it
+spends it on a screen door.
+
+### An opaque instance faded by a screen door
+
+```ts sample=snippets/instancing.ts#dither
+/**
+ * Walls stepping out of the camera's way one at a time: each wall's opacity spent on a screen door,
+ * so the batch stays opaque, needs no sorting and is lit as it was.
+ */
+export function clearTheView(
+  renderer: RendererApi,
+  batch: InstancedHandle,
+  walls: MeshInstances,
+  opacity: Float32Array,
+): void {
+  const alphas = walls.alphas;
+  if (alphas !== undefined) {
+    for (let i = 0; i < walls.count; i += 1) alphas[i] = opacity[i] ?? 1;
+  }
+  renderer.uploadInstanced(batch, walls);
+  renderer.setDitherOpacity(true);
+  renderer.drawInstanced(batch, walls);
+  renderer.setDitherOpacity(false);
+}
+```
+
+`setDitherOpacity(true)` makes the draws that follow keep each instance's opacity as a share of
+its pixels, chosen by an 8 by 8 pattern, and draw the rest not at all. Nothing is blended or sorted,
+an instance at 1 is drawn whole and one at 0 is not drawn, and a wall half gone is lit and shadowed
+as a whole one is. It is per draw like the material dials and `bindMeshPass` turns it off. The
+pattern is the one `setDitherFade` uses, so a level of detail crossfading while its instance fades
+still covers that instance's share of the pixels once.
+
+What it gives up: a fade reads as grain while it lasts, which a temporal resolve smooths and a plain
+frame does not, so keep it to a few frames. Shadows are cast whole. A lightmapped batch carries its
+page regions where the opacities would be, so it has none to fade.
 
 ### Each instance its own texture cell
 

@@ -539,8 +539,8 @@ export type { LightmapPage, LightmapRegion } from './render/lightmap.ts';
  * A skinned cloth solved where the renderer can: compute on WebGPU, the CPU under WebGL2. A function
  * rather than a renderer method so only a game that imports it carries the solver.
  */
-export { createSkinnedCloth } from './render/skinnedClothRun.ts';
-export type { SkinnedClothSolver } from './render/skinnedClothRun.ts';
+export { createSkinnedCloth, createSkinnedClothSet } from './render/skinnedClothRun.ts';
+export type { SkinnedClothSet, SkinnedClothSolver } from './render/skinnedClothRun.ts';
 
 /**
  * What a frame asked of a backend, against the ceilings that backend imposes.
@@ -652,6 +652,7 @@ export type {
   DirectionalShadowDepthLayers,
   GlassShadows,
   OutputTransform,
+  PipelineCompile,
   RenderQuality,
   RenderQualityOptions,
   ShadowFilterTaps,
@@ -663,6 +664,7 @@ export { MAX_POINT_LIGHTS, SURFACE_TEXTURE_UNIT } from './render/lightBudget.ts'
 export { MAX_CLUSTERED_LIGHTS } from './render/clusteredLights.ts';
 export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
+export type { SurfaceProjection } from './render/surfaceProjection.ts';
 /*
  * Compressed textures — BC, ETC2 and EAC, ASTC: the source `createSurfaceTexture` takes as blocks,
  * the one question to ask before handing one over — whether this device takes its format

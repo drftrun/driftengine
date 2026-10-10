@@ -116,6 +116,19 @@ pipeline is a renderer option. All three are off by default and explained in
 - `capabilityClamp` lets the renderer clamp a known-weak GPU; pass `false` when a player chose their
   settings.
 
+## Shaders first needed mid-game
+
+A draw can need a shader the renderer has not compiled yet: a material that is two-sided, cut out or
+shades by a surface model asks for a variant that creating the mesh did not prepare. With
+`pipelineCompile: 'wait'`, the default, it is compiled where the draw asks, and the frame waits for
+it, from a few hundred milliseconds to several seconds on a phone. With `'skip'` the compile starts
+off the frame and the draw is left out until it lands, a few frames later, so nothing waits.
+
+Either way, a loading screen can prepare a scene: draw what the scene will use once, then
+`await renderer.ready()`, which waits for every compile started. On WebGL2 only a surface model's
+program compiles at a draw, and `'skip'` helps there only where the browser offers parallel shader
+compiling, which ANGLE on OpenGL does and ANGLE on Vulkan does not.
+
 ## Three defaults that surprise people
 
 - **A lamp that won't glow.** Emissive light is switched by the environment's `nightFactor`; at 0,

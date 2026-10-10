@@ -74,3 +74,31 @@ export function townCasters(
   };
 }
 // #endregion
+
+// #region moving
+/**
+ * Whatever moves on a square of its own, six metres around the character, so its shadow is as
+ * sharp as the map allows while the still world keeps a square wide enough for distant roofs.
+ */
+export function tightMovers(
+  renderer: RendererApi,
+  env: Environment,
+  moving: ShadowCasters,
+  around: readonly [number, number, number],
+): void {
+  computeLightMatrix(
+    env.directionalDir,
+    around[0],
+    around[1],
+    around[2],
+    3,
+    renderer.shadowMapSize,
+    movingMatrix,
+  );
+  renderer.beginShadowPass(movingMatrix, 'dynamic');
+  renderer.drawShadowCasters(moving);
+  renderer.endShadowPass();
+}
+
+const movingMatrix = new Float32Array(16);
+// #endregion

@@ -6,7 +6,7 @@
   <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="npm" src="https://img.shields.io/npm/v/@driftengine/core?logo=npm&label=%40driftengine%2Fcore"></a>
   <a href="https://www.npmjs.com/package/@driftengine/core"><img alt="Downloads" src="https://img.shields.io/npm/dm/@driftengine/core?label=downloads"></a>
   <a href="https://www.npmjs.com/org/driftengine"><img alt="Packages" src="https://img.shields.io/badge/packages-23-blue"></a>
-  <a href="packages/core/README.md"><img alt="Core size" src="https://img.shields.io/badge/core%20gzipped-873.3%20KB-blue"></a>
+  <a href="packages/core/README.md"><img alt="Core size" src="https://img.shields.io/badge/core%20gzipped-898.2%20KB-blue"></a>
   <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/npm/l/@driftengine/core?label=licence"></a>
   <a href="https://github.com/drftrun/driftengine/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/drftrun/driftengine/actions/workflows/test.yml/badge.svg"></a>
   <a href="https://driftengine.dev"><img alt="Docs" src="https://img.shields.io/badge/docs-driftengine.dev-blue"></a>
@@ -119,21 +119,21 @@ These three are procedural and ship with the repository: `npm run demo` opens th
 
 | Package                                                      | What it is                                                                                                     | Gzipped               |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | --------------------- |
-| [`@driftengine/core`](packages/core/README.md)               | The runtime: loop, both renderers, cameras, input, scene graph, geometry and text. Re-exports physics          | **873.3 KB**          |
+| [`@driftengine/core`](packages/core/README.md)               | The runtime: loop, both renderers, cameras, input, scene graph, geometry and text. Re-exports physics          | **898.2 KB**          |
 | [`@driftengine/physics`](packages/physics/README.md)         | Rigid bodies, joints, queries, a character controller, a vehicle, ragdolls and cloth. Imports nothing else     | **47.0 KB**           |
-| [`@driftengine/animation`](packages/animation/README.md)     | Skeletons, clips sampled at a time you supply, blend trees, IK, morph targets and spring secondary motion      | **6.2 KB over core**  |
-| [`@driftengine/audio`](packages/audio/README.md)             | Buses and stems, placed sounds, rooms, synthesis and rhythm analysis                                           | **6.2 KB over core**  |
-| [`@driftengine/assets`](packages/assets/README.md)           | Model readers, the streaming loader, KTX2, and ETC2 encoding for phones                                        | **27.6 KB over core** |
+| [`@driftengine/animation`](packages/animation/README.md)     | Skeletons, clips sampled at a time you supply, blend trees, IK, morph targets and spring secondary motion      | **6.1 KB over core**  |
+| [`@driftengine/audio`](packages/audio/README.md)             | Buses and stems, placed sounds, rooms, synthesis and rhythm analysis                                           | **6.3 KB over core**  |
+| [`@driftengine/assets`](packages/assets/README.md)           | Model readers, the streaming loader, KTX2, and ETC2 encoding for phones                                        | **27.2 KB over core** |
 | [`@driftengine/drft`](packages/drft/README.md)               | The `.drft` container. Declares no runtime dependency                                                          | **14.3 KB**           |
 | [`@driftengine/splats`](packages/splats/README.md)           | Gaussian splat captures: readers, view-dependent colour, an off-frame sort and a pass among meshes             | **16.8 KB over core** |
 | [`@driftengine/texture`](packages/texture/README.md)         | DriftTexture: a material as a latent and a decode program sampled on the device, in content-addressed tiles    | **2.3 KB**            |
 | [`@driftengine/capture`](packages/capture/README.md)         | DriftCapture: a video to a surface, colliders, a navigation mesh and proposed entities, on the player's device | **71.3 KB**           |
-| [`@driftengine/terrain`](packages/terrain/README.md)         | Heightfields whose patches meet at different detail without cracks, and a query that answers the drawn surface | **1.4 KB over core**  |
+| [`@driftengine/terrain`](packages/terrain/README.md)         | Heightfields whose patches meet at different detail without cracks, and a query that answers the drawn surface | **1.3 KB over core**  |
 | [`@driftengine/nav`](packages/nav/README.md)                 | Navigation meshes baked from geometry, and paths funnelled across them                                         | **8.8 KB**            |
-| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.2 KB over core** |
+| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.0 KB over core** |
 | [`@driftengine/entities`](packages/entities/README.md)       | Entities with generational identity, components, queries, systems, prefabs and scenes                          | **0.9 KB**            |
 | [`@driftengine/network`](packages/network/README.md)         | One rewind core for lockstep and prediction, a transport seam, and desyncs named by tick. No renderer          | **2.4 KB**            |
-| [`@driftengine/script`](packages/script/README.md)           | The `drift/*` bindings that describe the engine to DriftScript                                                 | **40.4 KB over core** |
+| [`@driftengine/script`](packages/script/README.md)           | The `drift/*` bindings that describe the engine to DriftScript                                                 | **40.3 KB over core** |
 | [`@driftengine/chemistry`](packages/chemistry/README.md)     | Thermochemistry of bulk matter: heat, phase changes, burning, an atmosphere and smoke                          | **18.1 KB**           |
 | [`@driftengine/ai`](packages/ai/README.md)                   | Provider-neutral agent sessions, typed tools and budgets, with a loop that never waits on a provider           | **1.7 KB**            |
 | [`@driftengine/xr`](packages/xr/README.md)                   | WebXR sessions, eye views and projections, controllers and hand joints                                         | **10.6 KB**           |

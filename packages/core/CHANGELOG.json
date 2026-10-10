@@ -1,5 +1,76 @@
 [
   {
+    "version": "4.11.0",
+    "date": "2026-10-10",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "`SurfaceRim.mode: 'blend'` pulls a surface's colour toward the rim colour at its edges before it is lit, where a rim used to add glow over it.",
+        "text": "A surface overlay's rim takes `mode: 'blend'`: the base colour is mixed toward the rim colour by the edge's weight, raised to its contrast and scaled by its alpha, before lighting, so the edge is lit, shadowed and fogged as the rest of the surface is rather than glowing over it, and a colour channel weighted above 1 is held at 1. `'add'`, the default, is the rim as it was. On `demo/dev/surfaceOverlay.html?rim=blend` an edge out of the light moved by −1.9 in luminance where adding moved it by +41, and the two backends draw the same picture."
+      },
+      {
+        "kind": "added",
+        "short": "`setDitherOpacity(true)` spends each opaque draw's own opacity, an instance's alpha included, on a screen door, so an instance fades without blending or a pop.",
+        "text": "With `setDitherOpacity(true)` the draws that follow keep a pixel only where the opacity it carries (a mesh's own, or `MeshInstances.alphas` for an instance of a batch) lies above an 8x8 ordered threshold, the pattern `setDitherFade` uses, so an opaque instance fades in or out over a few frames instead of popping, still writes depth and needs no sorting; two instances crossfading cover each pixel once. On `demo/dev/hlodFade.html?opacity=` the share of pixels kept matches the opacity to 1/64 on both backends. What it gives up: a screen door shows as a pattern up close, which the temporal resolve smooths where it runs."
+      },
+      {
+        "kind": "added",
+        "short": "`createSkinnedClothSet` solves every garment together, one dispatch per batch of constraints across all of them, and `maxSteps` caps the steps one frame runs.",
+        "text": "`createSkinnedClothSet(renderer, setups)` solves several garments together: on WebGPU one pass a step, each constraint batch of every garment merged by colour into one dispatch, where each garment had its own encoder, pass and submit. Garments are named by their index, in `setPose(g, …)`, `setWind(g, …)`, `reset(g)` and `particles[g]` for `setCloth`, and `step(dt)` runs them all; `createSkinnedCloth` is a set of one, and a backend without compute runs the set on the CPU. Garments in a set share `substeps`, `iterations` and `maxSteps`, and are refused by the first they disagree on. `SkinnedClothParameters.maxSteps` caps the whole steps one `advance` runs and drops the time past it, so a slow frame no longer hands the next one more steps; unset, it is unbounded as before. On `demo/dev/skinnedCloth.html?bench=1&garments=15`, fifteen garments step in 0.793 ms as one set against 8.903 ms as fifteen solvers, and a set agrees with separate solvers within the spread of a nudged control."
+      },
+      {
+        "kind": "added",
+        "short": "`RenderQuality.pipelineCompile: 'skip'` leaves a draw out while its new pipeline compiles off the main thread, rather than holding the frame for the compile.",
+        "text": "A lit pipeline first needed inside a frame, for a material's surface model or a lit switch met mid-scene, was compiled where it was asked for, which holds the GPU process for the compile, reported at 130 to 400 ms on a phone. With `pipelineCompile: 'skip'` the compile starts off the main thread and the draw is left out until it lands; `'wait'`, the default, is as before. `ready()` waits for every compile started either way. On WebGL2 a model program compiles through `KHR_parallel_shader_compile` where the context offers it and waits where it does not. On `demo/dev/pipelineCompile.html`, eight new variants at once held a WebGPU frame 700 to 3,700 ms waiting and 17 ms skipping, the draws landing 21 to 26 frames later; through ANGLE on OpenGL the longest WebGL2 frame went from 820–1,120 ms to 630–700 ms, the driver finishing its own compile at the program's first draw. What it gives up is the draw, for the frames its compile takes."
+      },
+      {
+        "kind": "added",
+        "short": "`SurfaceMaterial.projection` places a material's maps by the world, planar across the ground or triplanar on three planes, at so many repeats a metre.",
+        "text": "`projection: { kind: 'planar' | 'triplanar', scale, sharpness? }` reads a material's maps at a point's place in the world rather than at the mesh's texture coordinates: `'planar'` across the two horizontal axes, `'triplanar'` on three planes blended by how squarely the surface faces each, with the normal map turned into the world by the whiteout blend, so no tangent frame is needed. A lit switch, compiled in the first time a material asks. On `demo/dev/worldUv.html` a triplanar cube matches the same map read through each face's own coordinates and tangents, on both backends. What it gives up: a projection belongs to the world, so a mesh that moves slides under it; triplanar reads each map three times; a texture is mirrored on a plane's far side; and a cutout material's shadow is still cut by the mesh's coordinates."
+      },
+      {
+        "kind": "added",
+        "short": "The sun's moving shadow layer is read through the matrix its own pass was drawn with, so what moves can have a tight, sharp square inside the static layer's wide one.",
+        "text": "A frame's `beginShadowPass(matrix, 'dynamic')` drawn with a matrix other than the environment's `lightViewProj` is now read through that matrix: the static layer keeps one square over the whole of what stands still, and the moving layer a tight one around what moves, at its own texel size, filter and depth span. The lit stage, the global medium and light volumes all read it, behind a lit switch that turns on the first frame a dynamic pass's matrix differs. On `demo/dev/sunLayers.html?moving=tight` a moving caster's shadow core went from 144 to 202 pixels and its penumbra from 886 to 739, and everything outside the tight square was unchanged to the pixel, on both backends. What it gives up: a receiver outside the static layer's square takes no sun shadow at all, so the tight square belongs inside the wide one."
+      },
+      {
+        "kind": "added",
+        "short": "`SurfaceMaterial.diffuseTransmission` lets light from behind a thin surface through, coloured by it: a banner, a leaf or a lampshade lit from behind.",
+        "text": "`diffuseTransmission`, 0 to 1, brings the light falling on a surface's far side (the sun, lamps, area lights and DriftLight) to the eye through it, coloured by the surface's own colour; a metal lets none through, and 0, the default, is every material as it was. A lamp's shadow is read from the side the lamp is on, so a thin surface does not stand in its own shadow. On `demo/dev/thinLight.html` a sheet lit only from behind went from 16 to 163 in luminance under the sun and to 104 under a lamp, with no light behind it unchanged, on both backends. What it gives up: a thin surface rather than a volume, so a thick one lets as much through as a sheet; the light behind is not blurred; and glass lets light through by its own rule."
+      },
+      {
+        "kind": "added",
+        "short": "`SurfaceMaterial.layers` blends up to five layers by a mask, each at its own repeat, colour, normal and roughness alike, out of one texture array per map.",
+        "text": "`layers: { mask, repeats, emissiveLayer? }` lays up to four layers over a base by an RGBA mask read at the mesh's coordinates, red laying layer 1 through alpha laying layer 4, each over every one before it. Layer `i` is layer `i` of the material's albedo, normal and ORM arrays, read at the coordinates times its own repeat, and the tangent-space normals are blended before the frame turns them into the world; `emissiveLayer` makes the emissive map glow only where that layer shows. A lit switch, compiled in the first time a material asks, and the mask is read where `modelMap` goes, so it takes no texture binding of its own. On `demo/dev/layers.html` three layers at three repeats draw the same on both backends, and a material without layers draws as before. What it gives up: every layer is read at every pixel whatever its share; a material carries a mask or a surface model's map, not both."
+      },
+      {
+        "kind": "changed",
+        "short": "A mesh's indices are sixteen bits where its vertices fit, and its normals, tangents, colours and weights sixteen-bit fixed point: 29% less mesh memory in the published scenes.",
+        "text": "Every attribute of a mesh travelled as 32-bit floats and every index as 32 bits. Indices are 16 bits now wherever a mesh has 65,536 vertices or fewer; normals and tangents travel as 16-bit signed fixed point, colours and skin weights inside [0, 1] as unsigned; and a colour or an emissive every vertex shares is a constant rather than a stream. Both backends decide it the same way, from the data, when a mesh is made, and positions and texture coordinates stay floats. Measured on WebGPU across the eight published scenes, mesh vertex and index buffers went from 210 to 150 MB: the voxel sandbox's vertices from 38.4 to 28.5 MB and its indices from 4.8 to 2.4, the showroom's from 113.8 to 78.2 and from 34.9 to 25.2. Eight of the nine scenes are the same to the pixel on WebGPU, and one moves 12 pixels by 2 of 255 on average, which is normals at 1/32767. What it gives up: texture coordinates stay floats because sixteen bits move a pixel on an atlas tile's edge onto the next tile, measured as 29 pixels in the voxel sandbox; a dynamic mesh's normals stay floats; and an attribute outside its range stays a float rather than being clamped."
+      },
+      {
+        "kind": "fixed",
+        "short": "A normal map on a mesh with no tangents and a mirrored mapping is no longer turned half a circle by the frame derived for it, which lit it from the far side.",
+        "text": "Where a mesh carries no tangents, the frame its normal map is read in is derived from screen-space derivatives, and its handedness was taken from the texture coordinates' determinant alone, which cannot see a mapping mirrored about the normal: such a surface had its bumps lit from the side opposite the light. The handedness is the surface's orientation on screen against its normal now, which is the determinant's sign wherever a mapping is not mirrored. On `demo/dev/worldUv.html` a mirrored ground read 74.8 derived against 110.8 through its tangents, and 110.8 both ways after; every published scene is unchanged to the pixel."
+      },
+      {
+        "kind": "fixed",
+        "short": "On WebGPU a lit surface reads the sun's static layer through the environment's light matrix, not through whichever matrix the last shadow pass used.",
+        "text": "The WebGPU lit vertex stage projected a receiver into the sun's map through the matrix of the frame's last shadow pass. Where every pass shared one matrix nothing showed; where a dynamic pass was drawn with a tighter one, the static layer was read through it and its shadows landed in the wrong place. It projects through `env.lightViewProj` now, as WebGL2 always did."
+      },
+      {
+        "kind": "fixed",
+        "short": "`ready()` no longer waits for ever on a pipeline whose compile off the main thread failed, and it waits for a lit switch's rebuild as well.",
+        "text": "A pipeline whose `createRenderPipelineAsync` rejected stayed among the compiles `ready()` waits on, so a boot awaiting it never resolved; it is taken out, and built where it is next asked for so the device says why. And `ready()` now waits for a lit switch's rebuild, so the first frame after it has every pipeline with the feature that turned the switch on, where a capture taken then photographed the frames before."
+      },
+      {
+        "kind": "fixed",
+        "short": "On WebGL2 a surface model's program first made in the middle of a mesh pass keeps the pass's dither fade, where its draws used to ignore it.",
+        "text": "A program for a surface model first made between `bindMeshPass` and the draws after it was handed the pass's state with the dither fade cleared, so the draws through it ignored `setDitherFade` until the next pass. WebGL2 only: WebGPU carries the fade in each draw's block."
+      }
+    ]
+  },
+  {
     "version": "4.10.0",
     "date": "2026-10-07",
     "entries": [

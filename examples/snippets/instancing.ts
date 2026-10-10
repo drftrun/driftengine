@@ -1,6 +1,6 @@
 /**
- * Instances that each fade on their own, and each wear their own cell of a flipbook, in one
- * translucent draw; a crowd played from a bone animation; and a stage's still draws, recorded once.
+ * Instances that each fade on their own, blended or through a screen door, and each wear their own
+ * cell of a flipbook, in one draw; a crowd played from a bone animation; and a stage's still draws, recorded once.
  *
  * A snippet, typechecked with the examples and quoted by the manual's instancing chapter.
  */
@@ -29,6 +29,28 @@ export function fadingPanes(
   }
   renderer.uploadInstanced(batch, panes);
   renderer.drawTranslucentInstanced(batch, panes, 1);
+}
+// #endregion
+
+// #region dither
+/**
+ * Walls stepping out of the camera's way one at a time: each wall's opacity spent on a screen door,
+ * so the batch stays opaque, needs no sorting and is lit as it was.
+ */
+export function clearTheView(
+  renderer: RendererApi,
+  batch: InstancedHandle,
+  walls: MeshInstances,
+  opacity: Float32Array,
+): void {
+  const alphas = walls.alphas;
+  if (alphas !== undefined) {
+    for (let i = 0; i < walls.count; i += 1) alphas[i] = opacity[i] ?? 1;
+  }
+  renderer.uploadInstanced(batch, walls);
+  renderer.setDitherOpacity(true);
+  renderer.drawInstanced(batch, walls);
+  renderer.setDitherOpacity(false);
 }
 // #endregion
 

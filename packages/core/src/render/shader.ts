@@ -27,6 +27,65 @@ export function compileProgram(
 }
 
 /**
+ * A program compiled and linked without asking whether that worked, since asking waits for the
+ * driver to finish: for a context offering `KHR_parallel_shader_compile`, whose
+ * `COMPLETION_STATUS_KHR` says when asking no longer waits. `finishProgram` asks then, and fails
+ * as loudly as `compileProgram` does; the stages are kept until it does, for their logs.
+ */
+export interface StartedProgram {
+  readonly program: WebGLProgram;
+  readonly vertex: WebGLShader;
+  readonly fragment: WebGLShader;
+  readonly label: string;
+}
+
+export function startProgram(
+  gl: WebGL2RenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+  label: string,
+): StartedProgram {
+  const stage = (type: number, source: string, name: string): WebGLShader => {
+    const shader = gl.createShader(type);
+    if (shader === null) throw new Error(`[${label}.${name}] createShader failed`);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    return shader;
+  };
+  const vertex = stage(gl.VERTEX_SHADER, vertexSource, 'vert');
+  const fragment = stage(gl.FRAGMENT_SHADER, fragmentSource, 'frag');
+  const program = gl.createProgram();
+  if (program === null) throw new Error(`[${label}] createProgram failed`);
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  return { program, vertex, fragment, label };
+}
+
+/** A started program, checked as `compileProgram` checks one: its stages, then its link. */
+export function finishProgram(gl: WebGL2RenderingContext, started: StartedProgram): WebGLProgram {
+  const { program, vertex, fragment, label } = started;
+  const fail = (what: string, log: string | null): never => {
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    gl.deleteProgram(program);
+    throw new Error(`[${label}${what}] ${log ?? 'no log'}`);
+  };
+  if (!gl.getShaderParameter(vertex, gl.COMPILE_STATUS)) {
+    fail('.vert compile failed:', gl.getShaderInfoLog(vertex));
+  }
+  if (!gl.getShaderParameter(fragment, gl.COMPILE_STATUS)) {
+    fail('.frag compile failed:', gl.getShaderInfoLog(fragment));
+  }
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    fail(' link failed:', gl.getProgramInfoLog(program));
+  }
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+  return program;
+}
+
+/**
  * Whether a uniform lookup that cannot reach the GPU is reported.
  *
  * Two ways it cannot: the program has no such uniform, or the program is not the one

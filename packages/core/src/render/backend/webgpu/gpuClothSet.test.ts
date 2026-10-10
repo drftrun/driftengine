@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 
-import { GpuSkinnedCloth } from './gpuSkinnedCloth.ts';
+import { GpuClothSet } from './gpuClothSet.ts';
 import type { SkinnedClothSetup } from '@driftengine/physics';
 
 /**
@@ -42,7 +42,14 @@ function recordingDevice() {
         buffer: { label: string },
         offset: number,
         data: ArrayBufferView | ArrayBuffer,
-      ) => log.push({ op: 'write', label: buffer.label, offset, data }),
+      ) =>
+        /* A copy, as the queue takes one: a staging array is rewritten for the next write. */
+        log.push({
+          op: 'write',
+          label: buffer.label,
+          offset,
+          data: ArrayBuffer.isView(data) ? (data as Uint8Array).slice() : data.slice(0),
+        }),
       writeTexture: () => {},
       submit: () => log.push({ op: 'submit' }),
     },
@@ -66,6 +73,24 @@ function chain(parameters: SkinnedClothSetup['parameters']): SkinnedClothSetup {
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+/** One frame of every garment of `set`: each posed at rest, then `dt` stepped, as `frame`. */
+function advance(set: GpuClothSet, dt: number, frame: number): void {
+  for (let g = 0; g < set.size; g++) set.setPose(g, new Float32Array(16), IDENTITY);
+  set.step(dt, frame);
+}
+
+/** Each round's records as written, by garment: word `word` of each garment's. */
+function rounds(log: ReturnType<typeof recordingDevice>['log'], word: number): number[][] {
+  return log
+    .filter((entry) => entry.op === 'write' && entry.label === 'cloth.paces')
+    .map((entry) => {
+      const words = new Uint32Array(entry.data as ArrayBuffer);
+      const out: number[] = [];
+      for (let at = word; at < words.length; at += 44) out.push(words[at] as number);
+      return out;
+    });
+}
+
 /*
  * **A frame is the CPU solver's steps, in the CPU solver's order.** The first pose resets: the pose
  * skinned, every particle to rest, then a step of two substeps, each predicted, its two batches
@@ -73,9 +98,9 @@ const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
  */
 it("DISPATCHES A FRAME IN THE CPU SOLVER'S ORDER, IN ONE SUBMIT", () => {
   const { device, log } = recordingDevice();
-  const cloth = new GpuSkinnedCloth(device, chain({ substeps: 2, iterations: 2 }));
+  const cloth = new GpuClothSet(device, [chain({ substeps: 2, iterations: 2 })]);
   log.length = 0;
-  cloth.advance(new Float32Array(16), IDENTITY, 1 / 60, 1);
+  advance(cloth, 1 / 60, 1);
   const order = log
     .filter((entry) => entry.op === 'pipeline' || entry.op === 'submit')
     .map((entry) =>
@@ -88,13 +113,14 @@ it("DISPATCHES A FRAME IN THE CPU SOLVER'S ORDER, IN ONE SUBMIT", () => {
 /*
  * **No slot is written twice inside one submit**, which is the whole of the queue-order trap: a
  * write lands ahead of the submit, so a slot rewritten before it would hand every dispatch the last
- * values. Sixty settle steps outrun the ring; the solver must send what it has and start again.
+ * values. A hundred settle steps, a round each, outrun the ring; the set must send what it has and
+ * start again.
  */
-it("NEVER REWRITES A STEP'S SLOT INSIDE THE SUBMIT THAT READS IT, even past the ring", () => {
+it("NEVER REWRITES A ROUND'S SLOT INSIDE THE SUBMIT THAT READS IT, even past the ring", () => {
   const { device, log } = recordingDevice();
-  const cloth = new GpuSkinnedCloth(device, chain({ settleSteps: 100 }));
+  const cloth = new GpuClothSet(device, [chain({ settleSteps: 100 })]);
   log.length = 0;
-  cloth.advance(new Float32Array(16), IDENTITY, 1 / 60, 1);
+  advance(cloth, 1 / 60, 1);
   let written = new Set<number>();
   let submits = 0;
   for (const entry of log) {
@@ -102,7 +128,7 @@ it("NEVER REWRITES A STEP'S SLOT INSIDE THE SUBMIT THAT READS IT, even past the 
       submits++;
       written = new Set();
     }
-    if (entry.op !== 'write' || entry.label !== 'cloth.steps') continue;
+    if (entry.op !== 'write' || entry.label !== 'cloth.paces') continue;
     expect(written.has(entry.offset ?? -1), `slot ${entry.offset} rewritten in one submit`).toBe(
       false,
     );
@@ -112,18 +138,18 @@ it("NEVER REWRITES A STEP'S SLOT INSIDE THE SUBMIT THAT READS IT, even past the 
 });
 
 /*
- * **Each step reads a slot of its own, and a substep's first pass is the one that resets the
+ * **Each step reads a round of its own, and a substep's first pass is the one that resets the
  * multipliers** — the CPU's `lambda.fill(0)`. Two steps a frame, two iterations: every distance
  * dispatch's batch slot says `first` on the first pass of its substep and not on the second.
  */
 it("gives each step its own slot and resets the multipliers on a substep's first pass only", () => {
   const { device, log } = recordingDevice();
-  const cloth = new GpuSkinnedCloth(device, chain({ iterations: 2 }));
+  const cloth = new GpuClothSet(device, [chain({ iterations: 2 })]);
   const batches = log.find((entry) => entry.label === 'cloth.batches');
   if (batches === undefined) throw new Error('the batches were never written');
   const words = new Uint32Array((batches.data as Uint32Array).buffer);
   log.length = 0;
-  cloth.advance(new Float32Array(16), IDENTITY, 2 / 60, 1);
+  advance(cloth, 2 / 60, 1);
   const begins: number[] = [];
   const firsts: number[] = [];
   for (let k = 0; k < log.length; k++) {
@@ -147,11 +173,11 @@ it("gives each step its own slot and resets the multipliers on a substep's first
  */
 it('NEVER REWRITES A POSE UNDER A DISPATCH THAT READS IT, across a reset', () => {
   const { device, log } = recordingDevice();
-  const cloth = new GpuSkinnedCloth(device, chain({ settleSteps: 3 }));
-  cloth.advance(new Float32Array(16), IDENTITY, 1 / 60, 1);
+  const cloth = new GpuClothSet(device, [chain({ settleSteps: 3 })]);
+  advance(cloth, 1 / 60, 1);
   log.length = 0;
-  cloth.reset();
-  cloth.advance(new Float32Array(16), IDENTITY, 1 / 60, 2);
+  cloth.reset(0);
+  advance(cloth, 1 / 60, 2);
   let dispatched = false;
   for (const entry of log) {
     if (entry.op === 'submit') dispatched = false;
@@ -163,20 +189,77 @@ it('NEVER REWRITES A POSE UNDER A DISPATCH THAT READS IT, across a reset', () =>
 });
 
 /*
- * **The wind is the frame's, carried in each step's slot** rather than written once with the
+ * **The wind is the frame's, carried in each round's record** rather than written once with the
  * set-up: a garment follows the scene's one wind, which changes every frame. Set before a frame,
- * it is what every slot that frame writes carries.
+ * it is what every round that frame writes carries.
  */
 it("CARRIES THE FRAME'S WIND IN EVERY STEP IT WRITES", () => {
   const { device, log } = recordingDevice();
-  const cloth = new GpuSkinnedCloth(device, chain({ wind: [1, 2, 3] }));
-  cloth.advance(new Float32Array(16), IDENTITY, 1 / 60, 1);
-  cloth.setWind(4, 0, -2);
+  const cloth = new GpuClothSet(device, [chain({ wind: [1, 2, 3] })]);
+  advance(cloth, 1 / 60, 1);
+  cloth.setWind(0, 4, 0, -2);
   log.length = 0;
-  cloth.advance(new Float32Array(16), IDENTITY, 2 / 60, 2);
+  advance(cloth, 2 / 60, 2);
   const winds = log
-    .filter((entry) => entry.op === 'write' && entry.label === 'cloth.steps')
+    .filter((entry) => entry.op === 'write' && entry.label === 'cloth.paces')
     .map((entry) => Array.from(new Float32Array(entry.data as ArrayBuffer).subarray(28, 31)));
   expect(winds.length).toBeGreaterThan(2);
   for (const wind of winds) expect(wind).toEqual([4, 0, -2]);
+});
+
+/*
+ * **A set steps every garment in one pass, at one garment's dispatches.** Two chains, each of two
+ * colours, at one substep and two iterations: the frame is the single chain's — pose, rest, a step's
+ * begin, predict, two colours twice, limit and finish — with a publish a garment, in one submit.
+ */
+it("STEPS EVERY GARMENT OF A SET IN ONE PASS, AT ONE GARMENT'S DISPATCHES", () => {
+  const { device, log } = recordingDevice();
+  const set = new GpuClothSet(device, [chain({ iterations: 2 }), chain({ iterations: 2 })]);
+  log.length = 0;
+  advance(set, 1 / 60, 1);
+  const order = log
+    .filter((entry) => entry.op === 'pipeline' || entry.op === 'submit')
+    .map((entry) =>
+      entry.op === 'submit' ? 'submit' : (entry.label ?? '').replace('cloth.cloth', ''),
+    );
+  const step = [
+    'Begin',
+    'Predict',
+    'Distance',
+    'Distance',
+    'Distance',
+    'Distance',
+    'Limit',
+    'Finish',
+  ];
+  expect(order).toEqual(['Pose', 'Rest', ...step, 'Publish', 'Publish', 'submit']);
+});
+
+/*
+ * **A garment with nothing of a round's kind sits it out.** The first frame resets both chains; the
+ * second settles two steps more, so its queue is a pose, a rest, two settle steps and the frame's
+ * step, where the first's is a pose, a rest and the step. The rounds are the poses and the rests of
+ * both, a step of both — the first's own, the second's first settle — and then two the second takes
+ * alone, the first marked inactive in them. Read off each round's `live`, word 6 of a record.
+ */
+it('RUNS A ROUND FOR EVERY GARMENT WITH THAT WORK NEXT, AND THE REST SIT IT OUT', () => {
+  const { device, log } = recordingDevice();
+  const set = new GpuClothSet(device, [chain({}), chain({ settleSteps: 2 })]);
+  log.length = 0;
+  advance(set, 1 / 60, 1);
+  expect(rounds(log, 6).slice(0, 5)).toEqual([
+    [1, 1],
+    [1, 1],
+    [1, 1],
+    [0, 1],
+    [0, 1],
+  ]);
+});
+
+/* **Garments that cannot step together are refused by name**, since a round is a step of all. */
+it('REFUSES GARMENTS THAT DISAGREE ON THE STEP THEY TAKE TOGETHER, BY THE NUMBER', () => {
+  const { device } = recordingDevice();
+  expect(() => new GpuClothSet(device, [chain({}), chain({ substeps: 2 })])).toThrow(
+    /garment 1 has substeps 2 where garment 0 has 1/,
+  );
 });

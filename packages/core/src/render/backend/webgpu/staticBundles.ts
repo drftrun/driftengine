@@ -287,6 +287,7 @@ export function takeRecorded(pool: CommandPool): DrawCommand {
   command.offsetCount = 0;
   command.vertexCount = 0;
   command.indexBuffer = null;
+  command.indexFormat = 'uint32';
   command.indexed = false;
   command.instances = 1;
   command.indirect = null;
@@ -341,7 +342,7 @@ export function encodeBundle(
       if (buffer != null) encoder.setVertexBuffer(slot, buffer);
     }
     if (command.indexed && command.indexBuffer !== null) {
-      encoder.setIndexBuffer(command.indexBuffer, 'uint32');
+      encoder.setIndexBuffer(command.indexBuffer, command.indexFormat);
       if (command.indirect !== null) encoder.drawIndexedIndirect(command.indirect, 0);
       else encoder.drawIndexed(command.count, command.instances);
     } else {
