@@ -25,7 +25,7 @@ export { DEFAULT_SPRITE_CAPACITY, DEFAULT_SPRITE_SLOTS, createSpritePass } from 
 export type { SpritePass, SpritePassOptions } from './spritePass.ts';
 
 export { DEFAULT_SPRITE_TEXTURE_OPTIONS } from './spriteTexture.ts';
-export type { SpriteImage, SpriteTextureOptions } from './spriteTexture.ts';
+export type { SpriteImage, SpriteRegion, SpriteTextureOptions } from './spriteTexture.ts';
 
 export {
   createSpriteFrame,

@@ -37,6 +37,9 @@ const TEXTURE_USAGE = 4 | 2 | 16; // TEXTURE_BINDING | COPY_DST | RENDER_ATTACHM
 export interface GpuSpriteSlot {
   readonly texture: GPUTexture;
   readonly bindGroup: GPUBindGroup;
+  /** Kept so a partial update can rebuild the chain it overwrote part of. */
+  readonly format: GPUTextureFormat;
+  readonly levels: number;
 }
 
 /** Pipelines by colour format, then depth format, then sample count: a lookup that allocates nothing. */
@@ -331,8 +334,61 @@ export function setGpuSpriteTexture(
       { binding: FRAG.textures.uSpriteTexture.sampler, resource: sampler },
     ],
   });
-  sprites.slots[slot] = { texture, bindGroup };
+  sprites.slots[slot] = { texture, bindGroup, format, levels };
 }
+
+/**
+ * Copy one rectangle of `source` into the slot's texture at the same place, keeping the texture and
+ * its bind group: the WebGPU half of `SpritePass.updateTexture`, which checks that the slot holds a
+ * texture of `source`'s size before it calls this, and has clipped the rectangle to it.
+ *
+ * **Why this exists.** `setGpuSpriteTexture` destroys the slot's texture, makes it again at full size
+ * and copies the whole image in, so an atlas painted one picture at a time sent every texel of the
+ * atlas for each picture: measured by a consumer at about 100 ms for a 5120-texel side. This sends
+ * the rectangle. A chain, where the slot has one, is rendered again from level zero, because a lower
+ * level mixes the texels just replaced with their neighbours; that is GPU work rather than an upload.
+ *
+ * **Ordered like `setTexture`, on the queue**: a copy issued after a draw that reads the slot was
+ * recorded, and before that frame is submitted, is what the draw sees. Paint before `drawPass`.
+ */
+export function updateGpuSpriteTexture(
+  device: GPUDevice,
+  sprites: GpuSprites,
+  slot: number,
+  source: SpriteImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): void {
+  const held = sprites.slots[slot];
+  if (held === null || held === undefined) return;
+  /* Refilled rather than built: a timer's digits are an update every frame. */
+  COPY_SOURCE.source = source as GPUCopyExternalImageSource;
+  COPY_ORIGIN.x = x;
+  COPY_ORIGIN.y = y;
+  COPY_TARGET.texture = held.texture;
+  COPY_SIZE.width = width;
+  COPY_SIZE.height = height;
+  device.queue.copyExternalImageToTexture(COPY_SOURCE, COPY_TARGET, COPY_SIZE);
+  /* Let go of the caller's canvas until the next copy, rather than holding it alive here. */
+  COPY_SOURCE.source = EMPTY_SOURCE;
+  generateMipChain(device, sprites.mipPipelines, held.texture, held.format, held.levels);
+}
+
+/* The one origin both ends of the copy share: a rectangle lands where it was in the image. */
+const COPY_ORIGIN = { x: 0, y: 0 };
+const EMPTY_SOURCE = null as unknown as GPUCopyExternalImageSource;
+const COPY_SOURCE: {
+  source: GPUCopyExternalImageSource;
+  origin: typeof COPY_ORIGIN;
+  flipY: boolean;
+} = { source: EMPTY_SOURCE, origin: COPY_ORIGIN, flipY: false };
+const COPY_TARGET: { texture: GPUTexture; origin: typeof COPY_ORIGIN } = {
+  texture: null as unknown as GPUTexture,
+  origin: COPY_ORIGIN,
+};
+const COPY_SIZE = { width: 0, height: 0 };
 
 /** The same one white texel, written straight into a texture. See the WebGL2 half for why. */
 export function setGpuWhiteTexture(device: GPUDevice, sprites: GpuSprites, slot: number): void {
@@ -359,7 +415,7 @@ export function setGpuWhiteTexture(device: GPUDevice, sprites: GpuSprites, slot:
       { binding: FRAG.textures.uSpriteTexture.sampler, resource: sprites.samplers.nearest },
     ],
   });
-  sprites.slots[slot] = { texture, bindGroup };
+  sprites.slots[slot] = { texture, bindGroup, format: 'rgba8unorm', levels: 1 };
 }
 
 export function uploadGpuInstances(

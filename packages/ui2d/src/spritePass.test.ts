@@ -56,6 +56,9 @@ function recordingGl(): { gl: WebGL2RenderingContext; calls: Call[] } {
     DEPTH_TEST: 21,
     DEPTH_WRITEMASK: 22,
     CULL_FACE: 25,
+    UNPACK_ROW_LENGTH: 30,
+    UNPACK_SKIP_PIXELS: 31,
+    UNPACK_SKIP_ROWS: 32,
     ONE: 23,
     ONE_MINUS_SRC_ALPHA: 24,
     createShader: () => ({}),
@@ -103,6 +106,8 @@ function recordingGl(): { gl: WebGL2RenderingContext; calls: Call[] } {
     activeTexture: record('activeTexture'),
     bindTexture: record('bindTexture'),
     texImage2D: record('texImage2D'),
+    texSubImage2D: record('texSubImage2D'),
+    pixelStorei: record('pixelStorei'),
     texParameteri: record('texParameteri'),
     drawArraysInstanced: record('drawArraysInstanced'),
     deleteProgram: record('deleteProgram'),
@@ -436,6 +441,101 @@ describe('texture slots', () => {
     calls.length = 0;
     pass.setTexture(0, IMAGE);
     expect(named(calls, 'deleteTexture')).toHaveLength(1);
+  });
+});
+
+/**
+ * A partial upload: an atlas painted one picture at a time sends the rectangle painted, not itself.
+ * Reported by a consumer whose 2D layer is painted into atlases a 5120-texel side across, where a
+ * whole upload is about 100 ms and the pictures new on a frame cover a fraction of it.
+ */
+describe('updating a rectangle of a slot on WebGL2', () => {
+  const unpacked = (calls: readonly Call[], which: number): unknown[] =>
+    named(calls, 'pixelStorei')
+      .filter((call) => call.args[0] === which)
+      .map((call) => call.args[1]);
+
+  it('COPIES THE RECTANGLE INTO THE TEXTURE THE SLOT HOLDS, AND MAKES NOTHING AGAIN', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE);
+    calls.length = 0;
+    pass.updateTexture(0, IMAGE, { x: 1, y: 2, width: 2, height: 1 });
+    /* TEXTURE_2D, level 0, at (1, 2), 2 by 1, RGBA, UNSIGNED_BYTE, from the image itself. */
+    expect(named(calls, 'texSubImage2D').map((call) => call.args)).toEqual([
+      [9, 0, 1, 2, 2, 1, 10, 12, IMAGE],
+    ]);
+    expect(named(calls, 'texImage2D'), 'no whole upload').toHaveLength(0);
+    expect(named(calls, 'deleteTexture'), 'the texture is kept').toHaveLength(0);
+  });
+
+  it('reads the rectangle out of the image by the unpack state, and puts that state back', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE);
+    calls.length = 0;
+    pass.updateTexture(0, IMAGE, { x: 1, y: 2, width: 2, height: 1 });
+    /* Set to the image's width and the corner for the copy, then zero, which every other upload on
+       the context assumes. */
+    expect(unpacked(calls, 30)).toEqual([4, 0]);
+    expect(unpacked(calls, 31)).toEqual([1, 0]);
+    expect(unpacked(calls, 32)).toEqual([2, 0]);
+  });
+
+  it('clips the rectangle to the image, and copies nothing for an empty one', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE);
+    calls.length = 0;
+    /* From (-2, 3), 10 by 10, over a 4 by 4 image: columns 0 to 3 of row 3. */
+    pass.updateTexture(0, IMAGE, { x: -2, y: 3, width: 10, height: 10 });
+    expect(named(calls, 'texSubImage2D')[0]?.args.slice(2, 6)).toEqual([0, 3, 4, 1]);
+    calls.length = 0;
+    pass.updateTexture(0, IMAGE, { x: 4, y: 0, width: 3, height: 3 });
+    expect(named(calls, 'texSubImage2D')).toHaveLength(0);
+  });
+
+  it('uploads the whole image to an empty slot, or one made from an image of another size', () => {
+    const { pass, calls } = registered();
+    pass.updateTexture(1, IMAGE, { x: 0, y: 0, width: 1, height: 1 });
+    expect(named(calls, 'texImage2D').at(-1)?.args).toContain(IMAGE);
+    expect(named(calls, 'texSubImage2D')).toHaveLength(0);
+    /* Wider and as tall, so the fallback is decided by the width alone. */
+    const wider = { width: 8, height: 4 } as unknown as SpriteImage;
+    pass.setTexture(2, wider, { filter: 'linear', mipmap: true });
+    calls.length = 0;
+    pass.updateTexture(2, IMAGE, { x: 0, y: 0, width: 1, height: 1 });
+    expect(named(calls, 'texImage2D').at(-1)?.args).toContain(IMAGE);
+    expect(named(calls, 'generateMipmap'), 'with the options the slot was made with').toHaveLength(
+      1,
+    );
+  });
+
+  it('rebuilds the chain of a mipmapped slot after the copy', () => {
+    const { pass, calls } = registered();
+    pass.setTexture(0, IMAGE, { filter: 'linear', mipmap: true });
+    calls.length = 0;
+    pass.updateTexture(0, IMAGE, { x: 0, y: 0, width: 2, height: 2 });
+    const copy = calls.findIndex((call) => call.name === 'texSubImage2D');
+    const chain = calls.findIndex((call) => call.name === 'generateMipmap');
+    expect(copy).toBeGreaterThanOrEqual(0);
+    expect(chain).toBeGreaterThan(copy);
+  });
+
+  it('holds an update made before the pass has a device as a whole upload at init', () => {
+    const pass = createSpritePass({ capacity: 4, slots: 2 });
+    pass.setTexture(0, IMAGE);
+    pass.updateTexture(0, IMAGE, { x: 0, y: 0, width: 1, height: 1 });
+    const { gl, calls } = recordingGl();
+    pass.init?.({ backend: 'webgl2', gl, clipCorrection: IDENTITY, depthCorrection: IDENTITY });
+    expect(named(calls, 'texSubImage2D')).toHaveLength(0);
+    expect(
+      named(calls, 'texImage2D').filter((call) => call.args.includes(IMAGE)).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('refuses a slot it does not have, as setTexture does', () => {
+    const { pass } = registered();
+    expect(() => pass.updateTexture(4, IMAGE, { x: 0, y: 0, width: 1, height: 1 })).toThrow(
+      /slot 4/,
+    );
   });
 });
 

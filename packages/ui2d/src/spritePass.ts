@@ -13,6 +13,7 @@ import {
   disposeWebgl2Sprites,
   drawWebgl2Sprites,
   setWebgl2SpriteTexture,
+  updateWebgl2SpriteTexture,
   setWebgl2WhiteTexture,
   uploadWebgl2Instances,
 } from './spriteGl.ts';
@@ -23,12 +24,13 @@ import {
   drawGpuSprites,
   spritePipelineFor,
   setGpuSpriteTexture,
+  updateGpuSpriteTexture,
   setGpuWhiteTexture,
   uploadGpuInstances,
 } from './spriteGpu.ts';
 import type { GpuSprites } from './spriteGpu.ts';
 import { DEFAULT_SPRITE_TEXTURE_OPTIONS } from './spriteTexture.ts';
-import type { SpriteImage, SpriteTextureOptions } from './spriteTexture.ts';
+import type { SpriteImage, SpriteRegion, SpriteTextureOptions } from './spriteTexture.ts';
 
 const VERT = SPRITE_BINDINGS.SPRITE_VERT;
 const FRAG = SPRITE_BINDINGS.SPRITE_FRAG;
@@ -86,6 +88,34 @@ export interface SpritePass extends PassDefinition {
   setTransform(affine: Affine2D): void;
   /** Fill a texture slot. Safe before the pass is registered; applied when it gets a device. */
   setTexture(slot: number, source: SpriteImage, options?: SpriteTextureOptions): void;
+  /**
+   * Copy `region` of `source` into the slot's texture at the same place, keeping the rest: what an
+   * atlas painted one picture at a time sends, instead of all of itself.
+   *
+   * The slot must hold a texture made from an image of `source`'s size, through `setTexture`; it
+   * keeps the options it was made with. Otherwise, or before the pass has a device, this does what
+   * `setTexture` does with the slot's options (the default ones for an empty slot), so a caller
+   * never has to ask which. The region is clipped to the image, and an empty one copies nothing. A
+   * slot with a mip chain has the chain rebuilt.
+   *
+   * **The saving, measured by a consumer painting a 2D layer into atlases**: `setTexture` sends the
+   * whole image and, on WebGPU, makes the texture again, about 100 ms for a 5120-texel side, while
+   * the pictures new on that frame covered about 6 of its 26 million texels and a typical later
+   * frame changes a timer's digits. Call it before `drawPass` in a frame, as `setTexture` is.
+   *
+   * **Paint such an atlas into a 2D context made with `willReadFrequently: true`.** On WebGPU a
+   * canvas drawn on the GPU is transferred whole before any part of it is copied, measured at 66 ms
+   * for one 256 by 64 rectangle of a 5120-texel atlas against 0.4 ms from a canvas kept in memory;
+   * WebGL2 copies a rectangle quickly from either. What the option gives up is painting on the GPU,
+   * which matters for a canvas redrawn whole every frame and not for an atlas painted in pieces.
+   */
+  updateTexture(slot: number, source: SpriteImage, region: SpriteRegion): void;
+}
+
+interface HeldTexture {
+  width: number;
+  height: number;
+  options: SpriteTextureOptions;
 }
 
 interface PendingTexture {
@@ -112,6 +142,26 @@ export function createSpritePass(options: SpritePassOptions = {}): SpritePass {
   let device: GPUDevice | null = null;
   let clipCorrection: Float32Array = IDENTITY_CLIP;
   const pending: PendingTexture[] = [];
+  /* What each slot was made from, so an update knows whether a partial copy fits it. */
+  const held: (HeldTexture | null)[] = Array.from({ length: slots }, () => null);
+
+  function setTexture(
+    slot: number,
+    source: SpriteImage,
+    textureOptions?: SpriteTextureOptions,
+  ): void {
+    if (slot < 0 || slot >= slots) {
+      throw new RangeError(`${label}: slot ${slot} is outside the ${slots} this pass has`);
+    }
+    const options = textureOptions ?? DEFAULT_SPRITE_TEXTURE_OPTIONS;
+    held[slot] = { width: source.width, height: source.height, options };
+    const entry: PendingTexture = { slot, source, options };
+    if (gl === null && gpu === null) {
+      pending.push(entry);
+      return;
+    }
+    applyTexture(entry);
+  }
 
   const applyTexture = (entry: PendingTexture): void => {
     if (gl !== null && context !== null) {
@@ -136,20 +186,34 @@ export function createSpritePass(options: SpritePassOptions = {}): SpritePass {
       toNdc.set(affine);
     },
 
-    setTexture(slot: number, source: SpriteImage, textureOptions?: SpriteTextureOptions): void {
-      if (slot < 0 || slot >= slots) {
-        throw new RangeError(`${label}: slot ${slot} is outside the ${slots} this pass has`);
-      }
-      const entry: PendingTexture = {
-        slot,
-        source,
-        options: textureOptions ?? DEFAULT_SPRITE_TEXTURE_OPTIONS,
-      };
-      if (gl === null && gpu === null) {
-        pending.push(entry);
+    setTexture,
+
+    updateTexture(slot: number, source: SpriteImage, region: SpriteRegion): void {
+      const was = slot >= 0 && slot < slots ? held[slot] : null;
+      if (
+        was === null ||
+        was === undefined ||
+        was.width !== source.width ||
+        was.height !== source.height ||
+        (gl === null && gpu === null)
+      ) {
+        setTexture(slot, source, was?.options);
         return;
       }
-      applyTexture(entry);
+      /* Whole texels inside the image: a rectangle reaching past an edge copies what is inside it. */
+      const x0 = Math.max(0, Math.floor(region.x));
+      const y0 = Math.max(0, Math.floor(region.y));
+      const x1 = Math.min(source.width, Math.ceil(region.x + region.width));
+      const y1 = Math.min(source.height, Math.ceil(region.y + region.height));
+      if (x1 <= x0 || y1 <= y0) return;
+      if (gl !== null && context !== null) {
+        const mipmap = was.options.mipmap === true;
+        updateWebgl2SpriteTexture(context, gl, slot, source, x0, y0, x1 - x0, y1 - y0, mipmap);
+        return;
+      }
+      if (gpu !== null && device !== null) {
+        updateGpuSpriteTexture(device, gpu, slot, source, x0, y0, x1 - x0, y1 - y0);
+      }
     },
 
     init(passDevice: PassDevice): void {

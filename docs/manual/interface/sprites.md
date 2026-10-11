@@ -9,7 +9,7 @@ areas: ['ui2d']
 
 `@driftengine/ui2d` is the engine's 2D layer: quads with a texture on them, batched, drawn in the
 order you submitted them. It draws a whole 2D game, a heads-up display over a 3D one, or the
-interface tree in the [next chapter](interface.md), and it is 10.1 KB gzipped on top of core.
+interface tree in the [next chapter](interface.md), and it is 10.6 KB gzipped on top of core.
 
 The example is a garden, all of it one sprite pass over one sheet painted when the page loads: a
 tilemap, a gardener walking it, and flowers to pick. `garden.drs` walks the gardener, keeps it out of
@@ -45,6 +45,17 @@ which is what lets it be a package a game that never draws a sprite does not car
 heads-up display, or alone for a 2D game. `setTexture(slot, source, options)` uploads a picture to a
 slot, from an `ImageBitmap`, a canvas or an `OffscreenCanvas`, and `white` is a slot of its own
 holding one white texel, so a solid rectangle needs no sheet.
+
+An atlas painted a picture at a time does not have to go up whole each time.
+`updateTexture(slot, source, region)` copies one rectangle of the image into the slot's texture at
+the same place and keeps the rest, so an upload grows with what was painted rather than with the
+atlas; the slot keeps the options it was given, and a slot that is empty or was made from an image
+of another size gets the whole image instead. **Paint such an atlas into a 2D context made with
+`willReadFrequently: true`.** That keeps the canvas in memory, and on WebGPU a canvas drawn on the
+GPU is transferred whole before any part of it is copied: one 256 by 64 rectangle of a 5120-texel
+atlas measured 66 ms that way and 0.4 ms from memory, against 120 ms for the whole atlas. WebGL2
+copies a rectangle quickly from either. What the option gives up is painting on the GPU, which
+matters for a canvas redrawn whole every frame and not for an atlas painted a picture at a time.
 
 Each frame: `reset()`, `setTransform(affine)`, then draw into `batch`. There is no depth, so **the
 order sprites were submitted in is the order they are layered**. Consecutive sprites on one slot

@@ -136,7 +136,7 @@ These three are procedural and ship with the repository: `npm run demo` opens th
 | [`@driftengine/capture`](packages/capture/README.md)         | DriftCapture: a video to a surface, colliders, a navigation mesh and proposed entities, on the player's device | **71.4 KB**           |
 | [`@driftengine/terrain`](packages/terrain/README.md)         | Heightfields whose patches meet at different detail without cracks, and a query that answers the drawn surface | **1.4 KB over core**  |
 | [`@driftengine/nav`](packages/nav/README.md)                 | Navigation meshes baked from geometry, and paths funnelled across them                                         | **8.8 KB**            |
-| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.1 KB over core** |
+| [`@driftengine/ui2d`](packages/ui2d/README.md)               | Batched sprites, sheets, tilemaps, and an interface tree with layout, focus and input routing                  | **10.6 KB over core** |
 | [`@driftengine/entities`](packages/entities/README.md)       | Entities with generational identity, components, queries, systems, prefabs and scenes                          | **0.9 KB**            |
 | [`@driftengine/network`](packages/network/README.md)         | One rewind core for lockstep and prediction, a transport seam, and desyncs named by tick. No renderer          | **2.4 KB**            |
 | [`@driftengine/script`](packages/script/README.md)           | The `drift/*` bindings that describe the engine to DriftScript                                                 | **40.3 KB over core** |

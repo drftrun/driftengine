@@ -14,6 +14,17 @@
  */
 export type SpriteImage = ImageBitmap | HTMLCanvasElement | OffscreenCanvas;
 
+/**
+ * A rectangle of a sprite image, in its texels from the top left: what `updateTexture` copies, from
+ * the image into the slot's texture at the same place.
+ */
+export interface SpriteRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export interface SpriteTextureOptions {
   /**
    * `srgb` is right for anything painted to be looked at, which is every sprite sheet — the

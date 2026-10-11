@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createGpuSprites, setGpuSpriteTexture, spritePipelineFor } from './spriteGpu.ts';
+import {
+  createGpuSprites,
+  setGpuSpriteTexture,
+  spritePipelineFor,
+  updateGpuSpriteTexture,
+} from './spriteGpu.ts';
 import type { SpriteImage } from './spriteTexture.ts';
 
 /**
@@ -133,6 +138,68 @@ describe('a mipmapped sprite sheet on WebGPU', () => {
  * sample, were refused by that pass. Reported from a game whose HUD is drawn over the finished
  * frame and which registered the pass for the canvas by hand to get round it.
  */
+describe('updating a rectangle of a slot on WebGPU', () => {
+  /* The copy's arguments as they were at the call: the descriptors are refilled, not rebuilt. */
+  const copies = (device: GPUDevice) => {
+    const seen: unknown[][] = [];
+    const queue = device.queue as unknown as {
+      copyExternalImageToTexture: ReturnType<typeof vi.fn>;
+    };
+    queue.copyExternalImageToTexture.mockImplementation(
+      (
+        source: GPUCopyExternalImageSourceInfo,
+        target: GPUCopyExternalImageDestInfo,
+        size: GPUExtent3DDict,
+      ) => {
+        seen.push([
+          source.source,
+          { ...(source.origin as object) },
+          source.flipY,
+          target.texture,
+          { ...(target.origin as object) },
+          { ...size },
+        ]);
+      },
+    );
+    return seen;
+  };
+
+  it('COPIES INTO THE TEXTURE THE SLOT HOLDS AT THE SAME PLACE, AND MAKES NOTHING AGAIN', () => {
+    const { device } = fakeDevice();
+    const gpu = sprites(device);
+    setGpuSpriteTexture(device, gpu, 0, IMAGE, {});
+    const held = gpu.slots[0];
+    const seen = copies(device);
+    const textures = vi.mocked(device.createTexture).mock.calls.length;
+    const groups = vi.mocked(device.createBindGroup).mock.calls.length;
+    updateGpuSpriteTexture(device, gpu, 0, IMAGE, 8, 16, 24, 4);
+    expect(seen).toEqual([
+      [IMAGE, { x: 8, y: 16 }, false, held?.texture, { x: 8, y: 16 }, { width: 24, height: 4 }],
+    ]);
+    expect(vi.mocked(device.createTexture).mock.calls.length, 'no texture made').toBe(textures);
+    expect(vi.mocked(device.createBindGroup).mock.calls.length, 'no bind group made').toBe(groups);
+    expect(gpu.slots[0], 'the slot is the one it was').toBe(held);
+  });
+
+  it('renders the chain of a mipmapped slot again after the copy', () => {
+    const { device, passes } = fakeDevice();
+    const gpu = sprites(device);
+    setGpuSpriteTexture(device, gpu, 0, IMAGE, { filter: 'linear', mipmap: true });
+    passes.length = 0;
+    updateGpuSpriteTexture(device, gpu, 0, IMAGE, 0, 0, 8, 8);
+    expect(passes.filter((label) => label.startsWith('mip.level'))).toHaveLength(6);
+  });
+
+  it('renders no chain for a slot without one', () => {
+    const { device, passes } = fakeDevice();
+    const gpu = sprites(device);
+    setGpuSpriteTexture(device, gpu, 0, IMAGE, {});
+    passes.length = 0;
+    updateGpuSpriteTexture(device, gpu, 0, IMAGE, 0, 0, 8, 8);
+    expect(passes).toHaveLength(0);
+  });
+});
+
 describe('a pipeline per target', () => {
   it('builds one for each format and sample count it is drawn into, and reuses it', () => {
     const { device } = fakeDevice();

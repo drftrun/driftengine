@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.13.1",
+    "date": "2026-10-11",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "A sprite slot can take one painted rectangle instead of its whole image, so an atlas painted a picture at a time stops sending all of itself: `SpritePass.updateTexture`.",
+        "text": "`SpritePass.updateTexture(slot, source, region)` copies one rectangle of an image into the slot's texture at the same place and keeps the rest of it. `setTexture` sends the whole image and, on WebGPU, makes the texture and its bind group again, so a 2D layer painted into atlases sent every texel of an atlas for each picture painted into it: a consumer measured about 100 ms for a 5120-texel side, on a frame whose new pictures covered about 6 of the atlas's 26 million texels, and a typical later frame changes a timer's digits. Now an upload grows with what was painted rather than with the atlas. The slot keeps the options it was made with; a slot that is empty, or was made from an image of another size, takes the whole image as `setTexture` would; the rectangle is clipped to the image; and a slot with a mip chain has the chain rebuilt. On WebGL2 it is `texSubImage2D` with the unpack state put back after, since every other upload on the context reads it. **Paint such an atlas into a 2D context made with `willReadFrequently: true`**: on WebGPU a canvas drawn on the GPU is transferred whole before any part of it is copied, measured at 66 ms for one 256 by 64 rectangle of a 5120-texel atlas against 0.4 ms from a canvas kept in memory. WebGL2 copies a rectangle quickly from either. `SpriteRegion` is the rectangle's type."
+      }
+    ]
+  },
+  {
     "version": "4.13.0",
     "date": "2026-10-10",
     "entries": [

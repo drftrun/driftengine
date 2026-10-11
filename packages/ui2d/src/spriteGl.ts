@@ -170,6 +170,45 @@ export function setWebgl2SpriteTexture(
 }
 
 /**
+ * Copy one rectangle of `source` into the slot's texture at the same place: the WebGL2 half of
+ * `SpritePass.updateTexture`, which checks that the slot holds a texture of `source`'s size and has
+ * clipped the rectangle to it. See `updateGpuSpriteTexture` for why it exists.
+ *
+ * **The rectangle is chosen by the unpack state, and the state is put back to zero.** WebGL2 reads a
+ * sub-rectangle of a canvas or a bitmap through `UNPACK_SKIP_PIXELS`, `UNPACK_SKIP_ROWS` and
+ * `UNPACK_ROW_LENGTH`, set to the image's own width so a row is read as a row of the image. That is
+ * context state every other upload on this context reads too, core's included, so leaving it set
+ * would have the next texture anywhere in the engine start at this rectangle's corner. A chain,
+ * where the slot has one, is generated again, since its lower levels mixed the texels just replaced.
+ */
+export function updateWebgl2SpriteTexture(
+  gl: WebGL2RenderingContext,
+  sprites: Webgl2Sprites,
+  slot: number,
+  source: TexImageSource & { readonly width: number },
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  mipmap: boolean,
+): void {
+  const texture = sprites.textures[slot];
+  if (texture === null || texture === undefined) return;
+  gl.activeTexture(gl.TEXTURE0 + SPRITE_UNIT);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, source.width);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, source);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+  if (mipmap) gl.generateMipmap(gl.TEXTURE_2D);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+/**
  * Fill a slot with one opaque white texel, from an array rather than an image.
  *
  * **White is the identity of the multiply this shader does**, so a quad on this slot draws exactly

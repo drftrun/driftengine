@@ -1361,7 +1361,11 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-ui2d': 953335,
+  /*
+   * Raised 2026-10-11 by +496 for 4.13.1: `SpritePass.updateTexture`, a rectangle copied into a
+   * slot's texture on each backend, with the record of what each slot was made from.
+   */
+  'core-and-ui2d': 953831,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
