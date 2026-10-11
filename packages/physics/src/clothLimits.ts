@@ -10,6 +10,27 @@
  * Allocation-free, and each function a kernel the GPU solver mirrors.
  */
 
+/**
+ * Every free particle drawn toward its skinned position, keeping `keep` of its offset: the share a
+ * substep keeps under the garment's `pull`, `1 / (1 + pull · h²)`. A kinematic particle is already
+ * there.
+ */
+export function applyPull(
+  position: Float32Array,
+  inverseMass: Float32Array,
+  target: Float32Array,
+  keep: number,
+): void {
+  for (let i = 0; i < inverseMass.length; i++) {
+    if ((inverseMass[i] as number) === 0) continue;
+    const at = i * 3;
+    for (let k = at; k < at + 3; k++) {
+      const t = target[k] as number;
+      position[k] = t + ((position[k] as number) - t) * keep;
+    }
+  }
+}
+
 /** A particle further than `maxDistance[i] · scale` from its skinned position is put back on that sphere. */
 export function applyMaxDistance(
   position: Float32Array,

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ANDROID_ORIENTATIONS,
+  checkOrientation,
   checkPermission,
   fullPermissionName,
   NO_ANDROID_OPTIONS,
@@ -63,6 +65,7 @@ describe('withAndroidManifest', () => {
 
   it('writes the permission the report asked for', () => {
     const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
       permissions: ['android.permission.INTERNET'],
       cleartextTraffic: false,
     });
@@ -71,6 +74,7 @@ describe('withAndroidManifest', () => {
 
   it('puts them before <application>, where the schema wants them', () => {
     const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
       permissions: ['android.permission.INTERNET'],
       cleartextTraffic: false,
     });
@@ -79,6 +83,7 @@ describe('withAndroidManifest', () => {
 
   it('keeps the order asked for, so a diff of two builds reads the way the manifest does', () => {
     const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
       permissions: ['android.permission.INTERNET', 'android.permission.ACCESS_NETWORK_STATE'],
       cleartextTraffic: false,
     });
@@ -90,7 +95,7 @@ describe('withAndroidManifest', () => {
      * Two `android:usesCleartextTraffic` attributes on one element is a build failure, and
      * appending is the obvious way to write this and the way that produces it.
      */
-    const out = withAndroidManifest(template, { permissions: [], cleartextTraffic: true });
+    const out = withAndroidManifest(template, { ...NO_ANDROID_OPTIONS, cleartextTraffic: true });
     expect(out.match(/android:usesCleartextTraffic/g)).toHaveLength(1);
     expect(out).toContain('android:usesCleartextTraffic="true"');
     expect(out).not.toContain('android:usesCleartextTraffic="false"');
@@ -98,6 +103,7 @@ describe('withAndroidManifest', () => {
 
   it('leaves the default posture in place when cleartext is not asked for', () => {
     const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
       permissions: ['android.permission.INTERNET'],
       cleartextTraffic: false,
     });
@@ -107,7 +113,7 @@ describe('withAndroidManifest', () => {
   it('refuses to silently do nothing if the template stops declaring the attribute', () => {
     const stripped = template.replace(/\s*android:usesCleartextTraffic="(?:true|false)"/, '');
     expect(() =>
-      withAndroidManifest(stripped, { permissions: [], cleartextTraffic: true }),
+      withAndroidManifest(stripped, { ...NO_ANDROID_OPTIONS, cleartextTraffic: true }),
     ).toThrow(/no longer declares/);
   });
 
@@ -115,6 +121,7 @@ describe('withAndroidManifest', () => {
     const stripped = template.replace('<application', '<applicationX');
     expect(() =>
       withAndroidManifest(stripped, {
+        ...NO_ANDROID_OPTIONS,
         permissions: ['android.permission.INTERNET'],
         cleartextTraffic: false,
       }),
@@ -128,6 +135,7 @@ describe('withAndroidManifest', () => {
      * not by this file.
      */
     const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
       permissions: ['android.permission.INTERNET'],
       cleartextTraffic: true,
     });
@@ -135,5 +143,47 @@ describe('withAndroidManifest', () => {
     expect(out.match(/<\/manifest>/g)).toHaveLength(1);
     expect(out.match(/<application[\s>]/g)).toHaveLength(1);
     expect(out.match(/<activity[\s>]/g)).toHaveLength(1);
+  });
+});
+
+describe('the orientation an activity is held in', () => {
+  it('HOLDS THE ACTIVITY THE WAY THE GAME ASKED, BY REWRITING THE ONE ATTRIBUTE THE TEMPLATE HAS', () => {
+    /*
+     * The template declares `unspecified`. A second `android:screenOrientation` on the activity is
+     * a build failure, which is what appending would produce.
+     */
+    const out = withAndroidManifest(template, {
+      ...NO_ANDROID_OPTIONS,
+      orientation: 'sensorLandscape',
+    });
+    expect(out.match(/android:screenOrientation=/g)).toHaveLength(1);
+    expect(out).toContain('android:screenOrientation="sensorLandscape"');
+    const activity = out.slice(
+      out.indexOf('<activity'),
+      out.indexOf('>', out.indexOf('<activity')),
+    );
+    expect(activity).toContain('android:screenOrientation="sensorLandscape"');
+  });
+
+  it('leaves the template exactly as it is when nothing is asked for', () => {
+    expect(template).toContain('android:screenOrientation="unspecified"');
+    expect(
+      withAndroidManifest(template, { ...NO_ANDROID_OPTIONS, orientation: 'unspecified' }),
+    ).toBe(template);
+  });
+
+  it('refuses to silently do nothing if the template stops declaring the attribute', () => {
+    const stripped = template.replace(/\s*android:screenOrientation="[A-Za-z]+"/, '');
+    expect(() =>
+      withAndroidManifest(stripped, { ...NO_ANDROID_OPTIONS, orientation: 'landscape' }),
+    ).toThrow(/screenOrientation/);
+  });
+
+  it('takes every value Android documents, and refuses one it does not', () => {
+    for (const name of ANDROID_ORIENTATIONS) expect(checkOrientation(name)).toBe(name);
+    /* Android ignores a value it does not know, so a typo would build a phone's own choice. */
+    expect(() => checkOrientation('landscap')).toThrow(/android\.orientation/);
+    expect(() => checkOrientation('Landscape')).toThrow(/expected one of/);
+    expect(() => checkOrientation(1)).toThrow(/expected one of/);
   });
 });

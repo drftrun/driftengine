@@ -483,6 +483,7 @@ export type {
   BoltHandle,
   CausticsHandle,
   ClothBindingHandle,
+  PointSkinHandle,
   ClothParticlesHandle,
   FlockHandle,
   IncrementalMeshHandle,
@@ -503,6 +504,7 @@ export type {
   WindStreakHandle,
 } from './render/backend/api.ts';
 export type { ClothBindingData } from './render/clothBindingData.ts';
+export type { PointSkinData } from './render/pointSkin.ts';
 /*
  * A material's shading model, for what the standard one is not: brushed metal, hair, skin, an eye.
  * A frozen descriptor made by a factory and set as `SurfaceMaterial.model`; each is a pipeline of

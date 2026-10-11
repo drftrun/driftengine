@@ -249,6 +249,15 @@ make it slower in turn. A caller handing the cloth each frame's time sets `maxSt
 parameters, two to four, and the time past them is dropped rather than owed: the cloth then runs
 slower than the clock for as long as the frames do. Unset, `advance(1)` is a whole second of cloth.
 
+A garment made to hold a shape gravity would undo, such as styled hair pinned at its roots, sets
+`pull` in its parameters: a stiffness drawing every free particle back toward where its skinning
+puts it, in metres a second squared for each metre away. The limits cannot do this, because a max
+distance is a sphere a particle may fall anywhere inside, so hair falls to its edge and hangs. With
+a pull it keeps its shape at rest, sitting `9.81 / pull` metres below it under gravity whatever the
+step, swings out of it as the body moves and settles back, as fast as `damping` lets it. A value
+authored as a share `k` of the offset kept a step, at a step `s`, is `(1 / k - 1) / s²`, and keeps
+exactly that share at that step.
+
 Several garments step as one with `createSkinnedClothSet(renderer, setups)`: one compute pass and
 one submit a frame for all of them, and a step costs one garment's dispatches however many the set
 holds. Each garment is named by its index; pose each, then step the set once:

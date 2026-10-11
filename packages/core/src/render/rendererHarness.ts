@@ -125,6 +125,12 @@ export function recordingGl(
     ONE: 1,
     ONE_MINUS_SRC_ALPHA: 0x0303,
     TRIANGLES: 0x0004,
+    /* Transform feedback's, so a point skin's pose can be seen to discard, capture and undo both. */
+    POINTS: 0x0000,
+    RASTERIZER_DISCARD: 0x8c89,
+    TRANSFORM_FEEDBACK: 0x8e22,
+    TRANSFORM_FEEDBACK_BUFFER: 0x8c8e,
+    SEPARATE_ATTRIBS: 0x8c8d,
     /* The winding a pass names, so a test can tell which one it chose. */
     CW: 0x0900,
     CCW: 0x0901,

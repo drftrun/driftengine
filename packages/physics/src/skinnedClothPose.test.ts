@@ -104,6 +104,38 @@ describe('a skinned cloth posed by a skeleton', () => {
   });
 
   /*
+   * **A pull holds a garment's shape against gravity, at one sag whatever the step.** A free
+   * particle at rest at the origin, gravity −10, a pull of 1000 a second squared and some damping
+   * to let it settle: it hangs 10 / 1000 = 0.01 below its skinned place at a step of 1/60, 1/120
+   * and 1/240 alike. A share kept a step, scaled as `damping` is, would have hung it twice as far at
+   * twice the step. The control: with no pull it falls through a metre in the same two seconds.
+   */
+  it('A PULL HOLDS A FREE PARTICLE AT ONE SAG BELOW ITS SKINNED PLACE, WHATEVER THE STEP', () => {
+    for (const step of [1 / 60, 1 / 120, 1 / 240]) {
+      const cloth = new SkinnedCloth(
+        particles([0, 0, 0], [1], {
+          parameters: { gravity: [0, -10, 0], pull: 1000, damping: Math.log(0.25), step },
+        }),
+      );
+      cloth.setPose(joints(8), translation(0, 0, 0));
+      cloth.advance(20);
+      near(at(cloth, 0), [0, -0.01, 0], 5);
+    }
+    const loose = new SkinnedCloth(
+      particles([0, 0, 0], [1], { parameters: { gravity: [0, -10, 0] } }),
+    );
+    loose.setPose(joints(8), translation(0, 0, 0));
+    loose.advance(2);
+    expect(at(loose, 0)[1]).toBeLessThan(-1);
+  });
+
+  it('refuses a pull below zero, which would push a particle out of shape', () => {
+    expect(() => new SkinnedCloth(particles([0, 0, 0], [1], { parameters: { pull: -1 } }))).toThrow(
+      /a pull of -1/,
+    );
+  });
+
+  /*
    * **A backstop is a sphere behind the skinned position the particle may not enter.** Normal +z,
    * backstop distance 0.1 and radius 1: its centre is 1.1 behind, at z = −1.1, so the particle can
    * come no closer to the body than z = −0.1. Dropped in at z = −0.5 it is put out at −0.1. A

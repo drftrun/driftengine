@@ -151,6 +151,19 @@ describe('the android block', () => {
     );
   });
 
+  it("holds the activity in the orientation asked for, and the phone's own choice otherwise", () => {
+    expect(parseManifest(valid).android.orientation).toBe('unspecified');
+    expect(
+      parseManifest({ ...valid, android: { orientation: 'sensorLandscape' } }).android.orientation,
+    ).toBe('sensorLandscape');
+  });
+
+  it('refuses an orientation Android would ignore, naming the field', () => {
+    expect(() => parseManifest({ ...valid, android: { orientation: 'sideways' } })).toThrow(
+      /"android\.orientation" is "sideways"/,
+    );
+  });
+
   it('takes cleartext only when it is asked for exactly', () => {
     expect(
       parseManifest({ ...valid, android: { cleartextTraffic: true } }).android.cleartextTraffic,

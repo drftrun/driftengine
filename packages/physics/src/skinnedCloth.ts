@@ -18,7 +18,7 @@
 import { batchesOf } from './clothBatches.ts';
 import { ClothControl } from './clothControl.ts';
 import type { ClothDevice } from './clothControl.ts';
-import { applyColliders, applyMaxDistance, applyStops } from './clothLimits.ts';
+import { applyColliders, applyMaxDistance, applyPull, applyStops } from './clothLimits.ts';
 import { carryParticles } from './clothPose.ts';
 import type { ClothTargets } from './clothTargets.ts';
 import { exactExp } from './exact.ts';
@@ -218,6 +218,8 @@ export class SkinnedCloth {
     const invH2 = invH * invH;
     const keep = exactExp(damping * h);
     const dragKeep = exactExp(drag * h);
+    /* A compliant constraint's step toward the skinned place: see `SkinnedClothParameters.pull`. */
+    const pullKeep = 1 / (1 + this.parameters.pull * h * h);
     for (let s = 0; s < substeps; s++) {
       predictParticles(
         this.positions,
@@ -240,16 +242,20 @@ export class SkinnedCloth {
           solveTethers(this.positions, tethers.particles, tethers.anchors, tethers.lengths);
         }
       }
-      this.limit();
+      this.limit(pullKeep);
       finishParticles(this.positions, this.substepStart, this.velocities, this.inverseMass, invH);
     }
     if (blend > 0) this.blend(blend);
   }
 
-  /** The limits and the colliders, after the constraints, so a garment pulling into the body loses. */
-  private limit(): void {
+  /**
+   * The pull, the limits and the colliders, after the constraints, so a garment pulling into the body
+   * loses. The pull first, so the hard limits have the last word.
+   */
+  private limit(pullKeep: number): void {
     const { positions, inverseMass, targets, limits } = this;
     const { maxDistanceScale, margin } = this.parameters;
+    if (pullKeep < 1) applyPull(positions, inverseMass, targets.position, pullKeep);
     if (limits.maxDistance !== undefined) {
       applyMaxDistance(
         positions,

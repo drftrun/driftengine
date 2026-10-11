@@ -16,7 +16,7 @@ reaches the screen by one path.
 
 The example is a turntable with three models made for it, a lantern as glTF, a vase as OBJ with its
 material file, and a gear as STL, and it takes any model you drop on the page, with the files it
-names dropped beside it. It is 29.2 KB gzipped on top of core.
+names dropped beside it. It is 29.6 KB gzipped on top of core.
 
 <!-- run: models -->
 

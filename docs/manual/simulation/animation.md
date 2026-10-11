@@ -8,7 +8,7 @@ areas: ['animation']
 
 # Animation
 
-`@driftengine/animation` is skeletons, clips, poses and the graphs over them, for 5.8 KB gzipped on
+`@driftengine/animation` is skeletons, clips, poses and the graphs over them, for 6.3 KB gzipped on
 top of core. Everything in it is a function of a time you hand it, and nothing in it reads a clock,
 so an animated character replays exactly and a playhead can scrub it backwards. It never touches
 the GPU either: it produces a palette, sixteen floats a joint, and core's renderer skins a mesh by
@@ -122,6 +122,36 @@ shadow is cast by the same palette, through the caster sink's
 `skinnedMesh(mesh, model, palette)`: a skinned mesh handed to `mesh` casts its bind pose, so a
 running figure would throw the shadow of a statue. Both backends skin in the vertex shader, and a
 mesh with no joints carries none of it.
+
+### Points in their joints' spaces
+
+Some formats store a vertex differently: as up to four points, each in the space of the joint it
+follows, with a weight each, and a normal in the space of the first. Posed, the vertex is the
+weighted sum of each point moved by its joint, which ordinary skinning cannot express, since it
+moves one bind-pose position by a blend of joints. Such a mesh is created `{ dynamic: true }` and
+given a point skin, which poses it on the device every frame:
+
+```ts sample=snippets/animation.ts#pointSkin
+/** A mesh stored as points in its joints' spaces, posed on the device once a frame. */
+export function posedOnDevice(renderer: RendererApi, data: MeshData, points: PointSkinData) {
+  const mesh = renderer.createMesh(data, { dynamic: true });
+  const skin = renderer.createPointSkin(mesh, points);
+  /* Each joint's transform into the mesh's model space: no inverse bind, as the points have none. */
+  return (joints: Float32Array, model: Float32Array) => {
+    renderer.posePointSkin(skin, joints);
+    renderer.drawMesh(mesh, model);
+  };
+}
+```
+
+`PointSkinData` holds four joint indices and four weights a vertex, four points of three floats a
+vertex, and one normal a vertex in its first joint's space; an influence of weight 0 is skipped.
+The joints handed to `posePointSkin` are each joint's transform into the mesh's model space, sixteen floats a joint, with no
+inverse bind, since the points are already in each joint's space. WebGPU poses in a compute pass and
+WebGL2 by transform feedback, into the mesh's own positions and normals, so every pass draws it as
+any dynamic mesh, its shadow and its motion included, and the main thread hands over only the
+joints. The mesh's bounds become a box around each joint's reach, so it is culled as it moves
+without the posed vertices coming back to the CPU. `disposePointSkin` frees it.
 
 ## Clips
 

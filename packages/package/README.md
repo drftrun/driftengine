@@ -59,7 +59,7 @@ Beside your `package.json`, in the project that produces the web build:
   "splash": { "show": true, "minMs": 1400 },
   "targets": ["linux-x64", "win-x64", "mac-arm64"],
   "steam": { "appId": null },
-  "android": { "permissions": [], "cleartextTraffic": false }
+  "android": { "permissions": [], "cleartextTraffic": false, "orientation": "unspecified" }
 }
 ```
 
@@ -279,6 +279,23 @@ renderer cannot disagree — which they would if only the manifest moved.
 
 Set it only for the case it exists for: a relay on a LAN, which cannot hold a certificate for an
 address that is not a name. A public relay should be `wss://` and this should stay false.
+
+### Which way the app is held
+
+`orientation` is the activity's `android:screenOrientation`, and it is `unspecified` by default,
+which leaves it to the phone. A game played sideways says so:
+
+```json
+"android": { "orientation": "sensorLandscape" }
+```
+
+Any value Android documents is accepted (`landscape`, `sensorLandscape`, `portrait`,
+`sensorPortrait`, `userLandscape`, `fullSensor` and the rest), and one it does not is refused when
+the manifest is read, since Android ignores an attribute value it does not know and the build would
+quietly be the phone's choice again. `sensorLandscape` lets a player turn the phone over;
+`landscape` does not. It is written into the copied manifest like the permissions, so the activity
+starts the right way round before any of the game's code runs, which a `lockOrientation` taken at
+run time cannot do.
 
 **Signing is not optional here and there is no unsigned option to offer**: Android refuses to
 install an unsigned APK at all. Without a keystore the packager generates one and says so on every

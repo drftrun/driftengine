@@ -15,6 +15,7 @@
  *     /skinnedCloth.html?recon=1          with DriftTR, whose motion reads last frame's particles
  *     /skinnedCloth.html?backend=webgl2   the other backend, which solves on the CPU
  *     /skinnedCloth.html?frames=90        held at another frame
+ *     /skinnedCloth.html?pull=400         the cape drawn back toward its skinned shape, a stiffness
  *
  * A body on joint 0 swaying and turning, and a cape hanging from joint 1 — its shoulders — which
  * nods. The cape is a coarse simulation, 14 by 18 particles by default with its top row kinematic,
@@ -63,6 +64,8 @@ function gridOf(name: string, w: number, h: number): [number, number] {
   return match === null ? [w, h] : [Number(match[1]), Number(match[2])];
 }
 const [SX, SY] = gridOf('sim', 14, 18);
+/** `SkinnedClothParameters.pull`: none unless asked for. */
+const PULL = Number(ASKED.get('pull') ?? 0);
 const [RX, RY] = gridOf('mesh', 40, 52);
 /** The cape: its top edge at the shoulders, behind the body. */
 const TOP = 1.58;
@@ -172,6 +175,7 @@ function capeCloth(): SkinnedClothSetup {
       damping: Math.log(0.4),
       drag: Math.log(0.6),
       wind: [0.6, 0, -0.4],
+      pull: PULL,
     },
     normals,
     joints,

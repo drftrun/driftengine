@@ -125,6 +125,13 @@ async function doctor(cwd: string, options: ResourceOptions = {}): Promise<Packa
           : 'refused — a relay must be wss://'
       }`,
     );
+    console.log(
+      `  android: orientation ${
+        manifest.android.orientation === 'unspecified'
+          ? "unspecified — the phone's own choice"
+          : manifest.android.orientation
+      }`,
+    );
   }
 
   /*

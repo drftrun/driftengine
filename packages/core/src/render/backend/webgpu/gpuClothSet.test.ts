@@ -208,6 +208,24 @@ it("CARRIES THE FRAME'S WIND IN EVERY STEP IT WRITES", () => {
 });
 
 /*
+ * **A garment's pull rides in its own words of the record, as the share a substep keeps**:
+ * `1 / (1 + pull · h²)`, which the limit pass reads, and 1 — no pull — where none is asked for.
+ * A pull of 3600 at a step of 1/60 keeps exactly half.
+ */
+it('CARRIES THE SHARE A SUBSTEP KEEPS OF A PULL, AND ONE WHERE THERE IS NONE', () => {
+  const { device, log } = recordingDevice();
+  const cloth = new GpuClothSet(device, [chain({ pull: 3600 }), chain({})]);
+  advance(cloth, 1 / 60, 1);
+  const paces = log.filter((entry) => entry.op === 'write' && entry.label === 'cloth.paces');
+  expect(paces.length).toBeGreaterThan(0);
+  for (const entry of paces) {
+    const words = new Float32Array(entry.data as ArrayBuffer);
+    expect(words[35]).toBe(0.5);
+    expect(words[44 + 35]).toBe(1);
+  }
+});
+
+/*
  * **A set steps every garment in one pass, at one garment's dispatches.** Two chains, each of two
  * colours, at one substep and two iterations: the frame is the single chain's — pose, rest, a step's
  * begin, predict, two colours twice, limit and finish — with a publish a garment, in one submit.

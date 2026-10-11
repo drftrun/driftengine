@@ -123,7 +123,16 @@ export function waveFlag(renderer: RendererApi) {
 A mesh is immutable unless it was created `dynamic`. A dynamic one takes new positions, and normals
 if you have them, through `updateMesh`, without a new GPU buffer per frame, and only those two are
 uploaded: the colours, texture coordinates and the rest stay where they are. The vertex count is
-fixed for its life. Cloth hanging in the world is drawn this way; cloth on a character is placed in
+fixed for its life.
+
+A surface whose colour changes while it stays where it is, such as ground shaded with its distance
+from a moving camera, is created `{ dynamicColors: true }` and rewritten with
+`renderer.updateMeshColors(mesh, colors)`, three linear floats a vertex. Only the colours are
+uploaded, the bounds stay as they were, and nothing moves for motion blur or reconstruction. The
+option keeps the colours as floats in a buffer of their own, twelve bytes a vertex where sixteen-bit
+colours cost six or eight and one colour every vertex shares costs nothing, so ask for it only on a
+mesh you recolour. The two options
+are independent, and a mesh may have both. Cloth hanging in the world is drawn this way; cloth on a character is placed in
 the vertex stage instead, see [Ragdolls and cloth](../simulation/ragdolls-and-cloth.md).
 
 ## Uploading a large mesh across frames

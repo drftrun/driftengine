@@ -377,6 +377,13 @@ import type { SurfaceTextureHandle } from '../api.ts';
 import { materialHasMaps, noteMapsWithoutUvs } from '../../mapsWithoutUvs.ts';
 import { VIEW_MODEL_DEPTH_SHARE, viewModelDepthRange } from '../../viewModel.ts';
 import { noLitSwitches, type LitSwitch } from '../../shaders/flat/glassTint.ts';
+import {
+  poseBounds,
+  validatePointSkin,
+  validatePose,
+  type PointSkinData,
+} from '../../pointSkin.ts';
+import { GlPointSkin, createPointSkinPose, type PointSkinPose } from './pointSkinFeedback.ts';
 
 /**
  * How many frames `firstFrameSettled` will ask before it stops asking.
@@ -3624,7 +3631,13 @@ export class WebGL2Renderer implements RendererApi {
      */
     const drawn = withLightmapUvs(data);
     this.warmVariants(drawn);
-    return new Mesh(this.gl, drawn, options.dynamic === true);
+    return new Mesh(
+      this.gl,
+      drawn,
+      options.dynamic === true,
+      false,
+      options.dynamicColors === true,
+    );
   }
 
   /**
@@ -3639,7 +3652,12 @@ export class WebGL2Renderer implements RendererApi {
   createMeshIncremental(data: MeshData, options: MeshOptions = {}): IncrementalMesh {
     const drawn = withLightmapUvs(data);
     this.warmVariants(drawn);
-    const { mesh, upload } = createMeshIncremental(this.gl, drawn, options.dynamic === true);
+    const { mesh, upload } = createMeshIncremental(
+      this.gl,
+      drawn,
+      options.dynamic === true,
+      options.dynamicColors === true,
+    );
     return {
       mesh,
       upload: {
@@ -3690,6 +3708,49 @@ export class WebGL2Renderer implements RendererApi {
    */
   updateMesh(mesh: Mesh, positions: Float32Array, normals?: Float32Array): void {
     mesh.update(this.gl, positions, normals);
+  }
+
+  /** The program and feedback object every point skin poses with, made at the first one. */
+  private pointSkinPose: PointSkinPose | null = null;
+
+  /**
+   * A dynamic mesh posed on the device from weighted points in its joints' spaces, by transform
+   * feedback. Refused in words on a mesh that is not dynamic, whose buffers are not hinted for a
+   * rewrite every frame.
+   */
+  createPointSkin(mesh: Mesh, data: PointSkinData): GlPointSkin {
+    if (mesh.streams === null) {
+      throw new Error(
+        'a point skin poses a mesh created with { dynamic: true }, whose positions and normals ' +
+          'are rewritten every frame. Say so at `createMesh`.',
+      );
+    }
+    validatePointSkin(data, mesh.vertexCount);
+    this.pointSkinPose ??= createPointSkinPose(this.gl);
+    return new GlPointSkin(this.gl, mesh, data);
+  }
+
+  /**
+   * Pose a skin now: `matrices` holds each joint's transform into the mesh's model space, sixteen
+   * floats, column-major. A command in the stream, so the draws after it read this pose.
+   */
+  posePointSkin(skin: GlPointSkin, matrices: Float32Array): void {
+    validatePose(matrices, skin.reach);
+    if (this.contextLost || this.pointSkinPose === null) return;
+    poseBounds(matrices, skin.reach, skin.mesh.bounds);
+    skin.pose(this.gl, this.pointSkinPose, matrices);
+  }
+
+  disposePointSkin(skin: GlPointSkin): void {
+    skin.dispose(this.gl);
+  }
+
+  /**
+   * Rewrite a mesh's colours, on a mesh made `dynamicColors`. The VAO is left alone for the reason
+   * `updateMesh` gives: the buffer is the same buffer.
+   */
+  updateMeshColors(mesh: Mesh, colors: Float32Array): void {
+    mesh.updateColors(this.gl, colors);
   }
 
   /**

@@ -1,6 +1,7 @@
 /**
  * The parts of animation the example's figure does not use: a state machine, a clip played on a
- * second rig, root motion, springs, a clip driving scene nodes, and morph targets.
+ * second rig, root motion, springs, a clip driving scene nodes, morph targets, and a mesh posed
+ * on the device from points in its joints' spaces.
  *
  * A snippet, typechecked with the examples and quoted by the manual's animation chapter.
  */
@@ -18,7 +19,13 @@ import {
   stripRootMotion,
 } from '@driftengine/animation';
 import type { AnimationClip, Pose, Skeleton, SpringLink } from '@driftengine/animation';
-import type { MeshData, MeshHandle, RendererApi, SceneNode } from '@driftengine/core';
+import type {
+  MeshData,
+  MeshHandle,
+  PointSkinData,
+  RendererApi,
+  SceneNode,
+} from '@driftengine/core';
 
 // #region machine
 /** Ground and air: a locomotion tree, a jump clip, and the fades between them. */
@@ -184,5 +191,18 @@ export function drawFace(
   renderer.setMorphWeights(weights);
   renderer.drawMesh(mesh, model);
   renderer.setMorphWeights(null);
+}
+// #endregion
+
+// #region pointSkin
+/** A mesh stored as points in its joints' spaces, posed on the device once a frame. */
+export function posedOnDevice(renderer: RendererApi, data: MeshData, points: PointSkinData) {
+  const mesh = renderer.createMesh(data, { dynamic: true });
+  const skin = renderer.createPointSkin(mesh, points);
+  /* Each joint's transform into the mesh's model space: no inverse bind, as the points have none. */
+  return (joints: Float32Array, model: Float32Array) => {
+    renderer.posePointSkin(skin, joints);
+    renderer.drawMesh(mesh, model);
+  };
 }
 // #endregion

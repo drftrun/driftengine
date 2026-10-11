@@ -88,7 +88,8 @@ struct Pace {
   colliderBase: u32,
   colliders: u32,
   width: u32,
-  pad0: u32,
+  /* The share of its offset from its skinned position a particle keeps a substep: the pull's. */
+  pullKeep: f32,
   keep: f32,
   dragKeep: f32,
   maxDistanceScale: f32,
@@ -428,7 +429,7 @@ fn pushOut(p: vec3<f32>, centre: vec3<f32>, radius: f32) -> vec3<f32> {
   return centre + d * (radius / sqrt(d2));
 }
 
-/* applyMaxDistance, applyStops (back, then front) and applyColliders, in that order. */
+/* applyPull, applyMaxDistance, applyStops (back, then front) and applyColliders, in that order. */
 @compute @workgroup_size(64)
 fn clothLimit(@builtin(global_invocation_id) id: vec3<u32>) {
   let i = id.x;
@@ -444,6 +445,10 @@ fn clothLimit(@builtin(global_invocation_id) id: vec3<u32>) {
   let at = stateAt(POSITION, i);
   var p = load(at);
   let t = skinnedAt(i, g);
+  /* Only where there is a pull, as on the CPU: t + (p - t) is not p in floats. */
+  if (paces[g].pullKeep < 1.0) {
+    p = t + (p - t) * paces[g].pullKeep;
+  }
   /* A max distance below zero is none: the CPU's Infinity, which a device may not be handed. */
   let maxDistance = statics[n + i];
   if ((limits & 1u) != 0u && maxDistance >= 0.0) {

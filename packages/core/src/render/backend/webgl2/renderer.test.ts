@@ -2653,3 +2653,55 @@ test('A PROBE FACE IS DRAWN UNGRADED THROUGH bindMeshPass, AND THE FRAME GRADES 
   expect(grades(after).at(-1), 'the frame grades with its sRGB encode').toBe(1);
   expect(grades(start).length).toBeGreaterThan(6);
 });
+
+/**
+ * **A point skin is posed by transform feedback into the mesh's own buffers, and every binding the
+ * pose makes is undone**, because it runs between a frame's draws and a buffer left bound for
+ * feedback while a draw reads it as vertices is an error WebGL2 raises at that draw. The twin of
+ * the WebGPU test of the same subject.
+ */
+test('A POINT SKIN IS POSED INTO THE MESH BY TRANSFORM FEEDBACK, AND LEAVES NOTHING BOUND', () => {
+  const { gl, canvas, calls } = recordingGl();
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const mesh = renderer.createMesh(GEOMETRY, { dynamic: true });
+  const streams = mesh.streams;
+  const skin = renderer.createPointSkin(mesh, {
+    joints: new Float32Array(12),
+    weights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+    points: new Float32Array(36),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+  });
+  const varyings = calls.find((call) => call.name === 'transformFeedbackVaryings');
+  expect(varyings?.args.slice(1)).toEqual([['vPosition', 'vNormal'], gl.SEPARATE_ATTRIBS]);
+
+  calls.length = 0;
+  renderer.posePointSkin(skin, new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 4, 5, 1]));
+  const named = (name: string) => calls.filter((call) => call.name === name);
+  expect(named('beginTransformFeedback').map((call) => call.args)).toEqual([[gl.POINTS]]);
+  expect(named('drawArrays').map((call) => call.args)).toEqual([[gl.POINTS, 0, 3]]);
+  expect(named('enable').map((call) => call.args[0])).toEqual([gl.RASTERIZER_DISCARD]);
+  expect(named('disable').map((call) => call.args[0])).toEqual([gl.RASTERIZER_DISCARD]);
+  const bases = named('bindBufferBase').map((call) => call.args.slice(1));
+  expect(bases).toEqual([
+    [0, streams?.positions],
+    [1, streams?.normals],
+    [0, null],
+    [1, null],
+  ]);
+  const last = (name: string) => named(name).at(-1)?.args;
+  expect(last('bindTransformFeedback')).toEqual([gl.TRANSFORM_FEEDBACK, null]);
+  expect(last('bindVertexArray')).toEqual([null]);
+  expect(last('useProgram')).toEqual([null]);
+  /* Placed by joint 0, moved to (3, 4, 5): every point is there, at no distance from it. */
+  expect(Array.from(mesh.bounds.min)).toEqual([3, 4, 5]);
+  expect(Array.from(mesh.bounds.max)).toEqual([3, 4, 5]);
+
+  expect(() =>
+    renderer.createPointSkin(renderer.createMesh(GEOMETRY), {
+      joints: new Float32Array(12),
+      weights: new Float32Array(12),
+      points: new Float32Array(36),
+      normals: new Float32Array(9),
+    }),
+  ).toThrow(/dynamic: true/);
+});

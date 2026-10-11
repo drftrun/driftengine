@@ -39,6 +39,7 @@ const USAGE = {
   INDEX: 0x0010,
   VERTEX: 0x0020,
   UNIFORM: 0x0040,
+  STORAGE: 0x0080,
 } as const;
 
 /**
@@ -277,6 +278,14 @@ export interface GpuMesh {
       ) => void)
     | null;
   /**
+   * Rewrite this mesh's colours, three floats a vertex.
+   *
+   * Absent unless the mesh was created `dynamicColors`, whose colours are a buffer of their own at
+   * the end of `vertexBuffers` (`vertexPacking.ts`), so this is one `writeBuffer` and nothing else
+   * moves: not the positions, not the bounds, and no motion, since a colour does not move.
+   */
+  readonly updateColors: ((device: GPUDevice, colors: Float32Array) => void) | null;
+  /**
    * A dynamic mesh's motion state, which the renderer owns: a buffer for last frame's positions and
    * one the new positions are staged in, each made the first time a reconstructing renderer
    * rewrites the mesh, and the frame of the last rewrite. Null on a mesh created without
@@ -328,8 +337,13 @@ export interface IncrementalGpuMesh {
  * two paths cannot write different bytes. The one that spreads the work is the one with the
  * interesting decisions in it; read that.
  */
-export function createGpuMesh(device: GPUDevice, data: MeshData, dynamic = false): GpuMesh {
-  const { mesh, upload } = createGpuMeshIncremental(device, data, dynamic);
+export function createGpuMesh(
+  device: GPUDevice,
+  data: MeshData,
+  dynamic = false,
+  dynamicColors = false,
+): GpuMesh {
+  const { mesh, upload } = createGpuMeshIncremental(device, data, dynamic, dynamicColors);
   while (upload.next().done !== true);
   return mesh;
 }
@@ -363,6 +377,7 @@ export function createGpuMeshIncremental(
   device: GPUDevice,
   data: MeshData,
   dynamic = false,
+  dynamicColors = false,
 ): IncrementalGpuMesh {
   /*
    * The other backend's refusal, and the premise of the interleave below: every attribute holds
@@ -373,11 +388,11 @@ export function createGpuMeshIncremental(
   const vertexCount = data.positions.length / 3;
   const layered = data.layers !== undefined;
   /* How each attribute travels, which the pipeline key says too: `vertexPacking.ts`. */
-  const packing = vertexPackingOf(data, dynamic);
+  const packing = vertexPackingOf(data, dynamic, dynamicColors);
 
   /* Interleaved: one stride holding every attribute the mesh actually supplied — less a dynamic
-     mesh's positions and normals, which are buffers of their own, and any attribute every vertex
-     shares, which is a constant. */
+     mesh's positions and normals and a `dynamicColors` mesh's colours, which are buffers of their
+     own, and any attribute every vertex shares, which is a constant. */
   const fields: Field[] = [];
   let stride = 0;
   for (const declared of VERTEX_LAYOUT) {
@@ -385,7 +400,7 @@ export function createGpuMeshIncremental(
     if (dynamic && isStreamed(declared)) continue;
     const attribute = laidOut(declared, layered);
     const how = packingFor(packing, attribute.name);
-    if (how === 'constant') continue;
+    if (how === 'constant' || how === 'stream') continue;
     const format = packedFormat(attribute.format, how);
     fields.push({ attribute, packing: how, format, offset: stride });
     stride += formatBytes(format);
@@ -466,22 +481,32 @@ export function createGpuMeshIncremental(
     usage: USAGE.INDEX | USAGE.COPY_DST,
   });
 
-  /* A dynamic mesh's two moving streams: copied from as well as written, for last frame's positions. */
+  /* A dynamic mesh's two moving streams: copied from as well as written, for last frame's positions,
+     and written by a point skin's pose on the device (`pointSkin.ts`). */
   const streamBytes = align4(vertexCount * 12);
   const streams = dynamic
     ? {
         positions: device.createBuffer({
           label: 'mesh.positions',
           size: streamBytes,
-          usage: USAGE.VERTEX | USAGE.COPY_DST | USAGE.COPY_SRC,
+          usage: USAGE.VERTEX | USAGE.COPY_DST | USAGE.COPY_SRC | USAGE.STORAGE,
         }),
         normals: device.createBuffer({
           label: 'mesh.normals',
           size: streamBytes,
-          usage: USAGE.VERTEX | USAGE.COPY_DST,
+          usage: USAGE.VERTEX | USAGE.COPY_DST | USAGE.STORAGE,
         }),
       }
     : null;
+  /* And a `dynamicColors` mesh's colours, which only the caller's rewrites ever change. */
+  const colorStream =
+    packing.colors === 'stream'
+      ? device.createBuffer({
+          label: 'mesh.colors',
+          size: streamBytes,
+          usage: USAGE.VERTEX | USAGE.COPY_DST,
+        })
+      : null;
 
   /*
    * The chunks, in whole vertices and whole indices: a step never writes half of either, so the
@@ -489,7 +514,9 @@ export function createGpuMeshIncremental(
    */
   const verticesPerStep = Math.max(
     1,
-    Math.floor(UPLOAD_BYTES_PER_STEP / (stride + (dynamic ? 24 : 0))),
+    Math.floor(
+      UPLOAD_BYTES_PER_STEP / (stride + (dynamic ? 24 : 0) + (colorStream === null ? 0 : 12)),
+    ),
   );
   /* Whole four-byte words a step, which is all a queue writes: two sixteen-bit indices to one. */
   const indexWidth = indices.BYTES_PER_ELEMENT;
@@ -505,13 +532,15 @@ export function createGpuMeshIncremental(
    * gives every closure in a scope one context — so a getter returning a boolean held the whole
    * `MeshData` and the interleaved rows for as long as the mesh lived. The voxel sandbox's forward
    * path held 2,058 MB of ArrayBuffers at radius 32 against the second pipeline's 368.
-   * `meshRetention.test.ts` holds it: a mesh keeps its buffers, and a dynamic one its rows.
+   * `meshRetention.test.ts` holds it: a mesh keeps its buffers and none of its source, a dynamic
+   * one included.
    */
   const progress = { uploaded: false };
   const mesh = gpuMeshOf({
     vertices,
     constants,
     streams,
+    colorStream,
     indexBuffer,
     indexFormat: indices instanceof Uint16Array ? 'uint16' : 'uint32',
     stride: streams === null ? stride : 12,
@@ -538,6 +567,7 @@ export function createGpuMeshIncremental(
       streams === null
         ? null
         : streamUpdate(streams.positions, streams.normals, streamBytes, bounds, vertexCount),
+    updateColors: colorStream === null ? null : colorUpdate(colorStream, vertexCount),
   });
 
   const job: UploadJob = {
@@ -547,6 +577,7 @@ export function createGpuMeshIncremental(
     device,
     fields,
     streams,
+    colorStream,
     vertices,
     indexBuffer,
     vertexCount,
@@ -588,6 +619,7 @@ interface UploadJob {
   readonly device: GPUDevice;
   readonly fields: readonly Field[];
   readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
+  readonly colorStream: GPUBuffer | null;
   readonly vertices: GPUBuffer;
   readonly indexBuffer: GPUBuffer;
   readonly vertexCount: number;
@@ -661,6 +693,9 @@ function* uploadSteps(job: UploadJob): Generator<void, void, void> {
       const count = (to - from) * 3;
       device.queue.writeBuffer(job.streams.positions, from * 12, data.positions, from * 3, count);
       device.queue.writeBuffer(job.streams.normals, from * 12, data.normals, from * 3, count);
+    }
+    if (job.colorStream !== null) {
+      device.queue.writeBuffer(job.colorStream, from * 12, data.colors, from * 3, (to - from) * 3);
     }
     taken += 1;
     if (taken < job.totalSteps) yield;
@@ -759,6 +794,7 @@ function gpuMeshOf(parts: {
   readonly vertices: GPUBuffer;
   readonly constants: GPUBuffer;
   readonly streams: { readonly positions: GPUBuffer; readonly normals: GPUBuffer } | null;
+  readonly colorStream: GPUBuffer | null;
   readonly indexBuffer: GPUBuffer;
   readonly indexFormat: GPUIndexFormat;
   readonly stride: number;
@@ -774,17 +810,21 @@ function gpuMeshOf(parts: {
   readonly hasChannel: boolean;
   readonly morph: MorphTexture | null;
   readonly update: GpuMesh['update'];
+  readonly updateColors: GpuMesh['updateColors'];
 }): GpuMesh {
   const motion =
     parts.update === null
       ? null
       : { previous: null as GPUBuffer | null, staging: null as GPUBuffer | null, changed: -1 };
-  const { vertices, constants, streams, indexBuffer, progress } = parts;
+  const { vertices, constants, streams, colorStream, indexBuffer, progress } = parts;
+  const vertexBuffers =
+    streams === null
+      ? [vertices, constants]
+      : [streams.positions, streams.normals, vertices, constants];
+  /* Last, behind the constants, where `vertexBufferLayouts` puts it: no other slot moves. */
+  if (colorStream !== null) vertexBuffers.push(colorStream);
   return {
-    vertexBuffers:
-      streams === null
-        ? [vertices, constants]
-        : [streams.positions, streams.normals, vertices, constants],
+    vertexBuffers,
     vertexStride: parts.stride,
     skinOffsets: parts.skinOffsets,
     indexBuffer,
@@ -802,12 +842,14 @@ function gpuMeshOf(parts: {
     hasChannel: parts.hasChannel,
     morph: parts.morph,
     update: parts.update,
+    updateColors: parts.updateColors,
     motion,
     dispose(): void {
       motion?.previous?.destroy();
       motion?.staging?.destroy();
       streams?.positions.destroy();
       streams?.normals.destroy();
+      colorStream?.destroy();
       vertices.destroy();
       constants.destroy();
       indexBuffer.destroy();
@@ -867,6 +909,26 @@ function streamUpdate(
 }
 
 /**
+ * A `dynamicColors` mesh's `updateColors`: the caller's colours, written as they came into the
+ * buffer they have to themselves.
+ */
+function colorUpdate(
+  colorBuffer: GPUBuffer,
+  vertexCount: number,
+): NonNullable<GpuMesh['updateColors']> {
+  return (target: GPUDevice, colors: Float32Array): void => {
+    if (colors.length !== vertexCount * 3) {
+      throw new Error(
+        `this mesh has ${vertexCount} vertices and the colours have ${colors.length / 3}. ` +
+          "A mesh's vertex count is fixed at creation: the index buffer, the pipeline and " +
+          'every other attribute are sized against it.',
+      );
+    }
+    target.queue.writeBuffer(colorBuffer, 0, colors);
+  };
+}
+
+/**
  * The buffer layouts a pipeline is built with, matching what `createGpuMesh` uploaded.
  *
  * `present` says which optional attributes came from real data. An absent one gets a stride
@@ -919,6 +981,8 @@ export function vertexBufferLayouts(
   /* A dynamic mesh's positions and normals: buffers of their own, ahead of the rest. */
   const dynamic = present['dynamic'] === true;
   const layouts: GPUVertexBufferLayout[] = [];
+  /* Attributes a caller rewrites, each a buffer of its own behind the constants: `vertexPacking.ts`. */
+  const trailing: GPUVertexBufferLayout[] = [];
   VERTEX_LAYOUT.forEach((declared, index) => {
     const attribute = laidOut(declared, layered);
     if (dynamic && isStreamed(attribute)) {
@@ -945,6 +1009,15 @@ export function vertexBufferLayouts(
      */
     /* One value every vertex shares sits with the absent ones: `vertexPacking.ts`. */
     const packing = packingIn(present, String(attribute.name));
+    if (packing === 'stream') {
+      trailing.push({
+        arrayStride: attribute.components * 4,
+        attributes: [
+          { shaderLocation: attribute.shaderLocation, offset: 0, format: attribute.format },
+        ],
+      });
+      return;
+    }
     const supplied =
       (!attribute.optional || present[String(attribute.name)] === true) && packing !== 'constant';
     if (instanced && INSTANCE_LOCATIONS.has(attribute.shaderLocation)) {
@@ -987,6 +1060,7 @@ export function vertexBufferLayouts(
    * need a different layout from one that does not.
    */
   layouts.push({ arrayStride: 0, attributes: constants });
+  for (const layout of trailing) layouts.push(layout);
   /*
    * The four matrix columns and the tint — the five the flat shader's INSTANCED variant declares
    * and exactly the five left once the base mesh has spent eleven of WebGL2's guaranteed sixteen.

@@ -48,7 +48,7 @@ know the build carries your edit.
   "splash": { "show": true, "minMs": 1400 },
   "targets": ["linux-x64", "win-x64", "mac-arm64"],
   "steam": { "appId": null },
-  "android": { "permissions": [], "cleartextTraffic": false }
+  "android": { "permissions": [], "cleartextTraffic": false, "orientation": "unspecified" }
 }
 ```
 
@@ -204,7 +204,9 @@ the device's WebView, which is why the APK is about 20 MB, and why WebGL2 is the
 An APK asks for no permissions until the manifest does. A game that talks to a server needs
 `"permissions": ["INTERNET"]`: without it every connection fails and neither end says why.
 `cleartextTraffic` allows a `ws://` relay on a LAN, which cannot hold a certificate, and should stay
-false for a public one.
+false for a public one. `orientation` is the activity's `android:screenOrientation`: `unspecified`
+leaves it to the phone, and a game played sideways asks for `sensorLandscape` (turnable) or
+`landscape` (not), held from the first frame rather than turned once the game's code runs.
 
 Android refuses an unsigned APK, so without a keystore the packager generates one under
 `~/.cache/driftengine/toolchain/keystores/` and says so on every build. **Back that file up.** It

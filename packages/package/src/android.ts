@@ -101,6 +101,9 @@ export async function buildAndroid(
      */
     console.log('[drift-package] android: cleartext traffic permitted (http:// and ws:// allowed)');
   }
+  if (manifest.android.orientation !== 'unspecified') {
+    console.log(`[drift-package] android: held ${manifest.android.orientation}`);
+  }
 
   if (manifest.icon !== null) {
     /* One PNG at one density: Android scales it for the rest, and a game that wants a full set

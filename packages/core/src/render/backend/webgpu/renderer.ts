@@ -181,6 +181,14 @@ import { GpuSceneCaptureTarget } from './sceneCaptureTarget.ts';
 import { sceneCaptureTexels } from '../../sceneCapture.ts';
 import { gpuCompressedFormats } from './compressedUpload.ts';
 import { GpuClothBinding, GpuClothParticles, clothStandIn } from './clothTextures.ts';
+import { GroupShelf } from './groupShelf.ts';
+import { GpuPointSkin, createPointSkinPipeline } from './pointSkinPass.ts';
+import {
+  poseBounds,
+  validatePointSkin,
+  validatePose,
+  type PointSkinData,
+} from '../../pointSkin.ts';
 import type { ClothViews } from './clothTextures.ts';
 import type { ComputeHost } from './computeHost.ts';
 import {
@@ -1476,15 +1484,6 @@ interface SunTintTarget {
   readonly mips: readonly [SnapshotMips, SnapshotMips];
 }
 
-/** A skinned or morphed flat group, and what it was built with, compared by identity. */
-interface SkinnedTwin {
-  readonly group: GPUBindGroup;
-  readonly palette: GPUTextureView | null;
-  readonly deltas: GPUTextureView | null;
-  readonly cloth: GPUTextureView | null;
-  readonly clothBinding: GPUTextureView | null;
-}
-
 export class WebGPURenderer implements RendererApi {
   /**
    * Real timestamp queries, where the adapter offers them.
@@ -1602,9 +1601,11 @@ export class WebGPURenderer implements RendererApi {
    * thirty-odd sections, each its own material, built one a section a frame — about ninety a frame
    * for two characters, reported by a consumer. A slot's map holds one entry a material its rigs
    * are drawn in, and is emptied wherever the unskinned groups are, whose identities it is keyed
-   * by.
+   * by. **And by what each group was built with, on a shelf a material** (`groupShelf.ts`): a
+   * garment's particles take turns between two textures and several meshes may follow one cloth,
+   * so one group a material was made again draw after draw.
    */
-  private readonly skinnedGroups: (Map<GPUBindGroup, SkinnedTwin> | undefined)[] = [];
+  private readonly skinnedGroups: (Map<GPUBindGroup, GroupShelf> | undefined)[] = [];
   /** The cloth the next skinned draws are placed by, or null. See `setCloth`. */
   private cloth: { binding: GpuClothBinding; particles: GpuClothParticles } | null = null;
   private clothStandCache: { texture: GPUTexture; views: ClothViews } | null = null;
@@ -6157,17 +6158,14 @@ export class WebGPURenderer implements RendererApi {
   /** The same layout plus the joint palette. See `createDepthBindGroupLayout`. */
   private readonly shadowSkinnedLayout: GPUBindGroupLayout;
   /**
-   * The skinned shadow bind groups, one per palette slot, cached against what can invalidate them.
+   * The skinned shadow bind groups, a shelf per palette slot, each found by what it was built with.
    *
    * The same argument `flatBindGroupFor` makes, and per slot for the same reason: the group it was
    * built beside, and the palette view, which now differs between two characters casting into one
-   * bake. Comparing object identity makes a missed invalidation impossible rather than unlikely.
+   * bake, and the cloth's particles and binding, which take turns. Comparing object identity makes
+   * a missed invalidation impossible rather than unlikely. See `groupShelf.ts`.
    */
-  private readonly shadowSkinnedGroups: (GPUBindGroup | null)[] = [];
-  private readonly shadowSkinnedGroupsBeside: (GPUBindGroup | null)[] = [];
-  private readonly shadowSkinnedGroupsPalette: (GPUTextureView | null)[] = [];
-  private readonly shadowSkinnedGroupsCloth: (GPUTextureView | null)[] = [];
-  private readonly shadowSkinnedGroupsClothBinding: (GPUTextureView | null)[] = [];
+  private readonly shadowSkinnedShelves: (GroupShelf | undefined)[] = [];
   /** Held from construction so the skinned group can be rebuilt without them being threaded. */
   private shadowBlankView: GPUTextureView | null = null;
   private shadowBlankSampler: GPUSampler | null = null;
@@ -6343,30 +6341,26 @@ export class WebGPURenderer implements RendererApi {
    */
   private shadowSkinnedGroup(palette: GPUTextureView, at: number, cloth: ClothViews): GPUBindGroup {
     const beside = this.shadowBindGroup;
-    if (
-      (this.shadowSkinnedGroups[at] ?? null) === null ||
-      this.shadowSkinnedGroupsBeside[at] !== beside ||
-      this.shadowSkinnedGroupsPalette[at] !== palette ||
-      this.shadowSkinnedGroupsCloth[at] !== cloth.particles ||
-      this.shadowSkinnedGroupsClothBinding[at] !== cloth.binding
-    ) {
-      this.shadowSkinnedGroups[at] = createDepthBindGroup(
-        this.surface.device,
-        this.shadowSkinnedLayout,
-        this.shadowDraws.buffer,
-        this.shadowPassUniforms as GPUBuffer,
-        this.shadowBlankView as GPUTextureView,
-        this.shadowBlankSampler as GPUSampler,
-        palette,
-        null,
-        cloth,
-      );
-      this.shadowSkinnedGroupsBeside[at] = beside;
-      this.shadowSkinnedGroupsPalette[at] = palette;
-      this.shadowSkinnedGroupsCloth[at] = cloth.particles;
-      this.shadowSkinnedGroupsClothBinding[at] = cloth.binding;
+    let shelf = this.shadowSkinnedShelves[at];
+    if (shelf === undefined) {
+      shelf = new GroupShelf();
+      this.shadowSkinnedShelves[at] = shelf;
     }
-    return this.shadowSkinnedGroups[at] as GPUBindGroup;
+    const kept = shelf.find(beside, palette, cloth.particles, cloth.binding);
+    if (kept !== null) return kept;
+    const group = createDepthBindGroup(
+      this.surface.device,
+      this.shadowSkinnedLayout,
+      this.shadowDraws.buffer,
+      this.shadowPassUniforms as GPUBuffer,
+      this.shadowBlankView as GPUTextureView,
+      this.shadowBlankSampler as GPUSampler,
+      palette,
+      null,
+      cloth,
+    );
+    shelf.keep(group, beside, palette, cloth.particles, cloth.binding);
+    return group;
   }
 
   private scatterDepthGroup(): GPUBindGroup {
@@ -8621,7 +8615,7 @@ export class WebGPURenderer implements RendererApi {
    * neither the pipeline set nor the key depends on whether the geometry lands in one call or
    * over six frames.
    */
-  private warmFlatPipelines(data: MeshData, dynamic: boolean): string {
+  private warmFlatPipelines(data: MeshData, dynamic: boolean, dynamicColors = false): string {
     /*
      * **Every optional attribute, not the two that come to mind.** `present` decides where
      * each attribute sits in the interleaved buffer, and `createGpuMesh` decides the same
@@ -8658,9 +8652,10 @@ export class WebGPURenderer implements RendererApi {
     }
     /*
      * And how each attribute travels (`vertexPacking.ts`): a field read as sixteen bits rather than
-     * thirty-two, or not interleaved at all, moves every field after it, so the key says so.
+     * thirty-two, or not interleaved at all, moves every field after it, so the key says so. A
+     * `dynamicColors` mesh's colours are one of those, as `:colors~stream`.
      */
-    const packing = vertexPackingOf(data, dynamic);
+    const packing = vertexPackingOf(data, dynamic, dynamicColors);
     markPacking(present, packing);
     key += packingKey(packing);
     const fullKey = `${this.variant}|${key}`;
@@ -8777,8 +8772,10 @@ export class WebGPURenderer implements RendererApi {
   createMesh(given: MeshData, options: MeshOptions = {}): GpuMesh {
     /* The streams it is drawn with, before anything records which it has. See `withLightmapUvs`. */
     const data = withLightmapUvs(given);
-    const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
-    return this.keyed(createGpuMesh(this.surface.device, data, options.dynamic === true), fullKey);
+    const dynamic = options.dynamic === true;
+    const dynamicColors = options.dynamicColors === true;
+    const fullKey = this.warmFlatPipelines(data, dynamic, dynamicColors);
+    return this.keyed(createGpuMesh(this.surface.device, data, dynamic, dynamicColors), fullKey);
   }
 
   /**
@@ -8792,11 +8789,14 @@ export class WebGPURenderer implements RendererApi {
    */
   createMeshIncremental(given: MeshData, options: MeshOptions = {}): IncrementalMeshHandle {
     const data = withLightmapUvs(given);
-    const fullKey = this.warmFlatPipelines(data, options.dynamic === true);
+    const dynamic = options.dynamic === true;
+    const dynamicColors = options.dynamicColors === true;
+    const fullKey = this.warmFlatPipelines(data, dynamic, dynamicColors);
     const { mesh, upload } = createGpuMeshIncremental(
       this.surface.device,
       data,
-      options.dynamic === true,
+      dynamic,
+      dynamicColors,
     );
     const surface = this.surface;
     return {
@@ -8895,6 +8895,81 @@ export class WebGPURenderer implements RendererApi {
       staged.previous = previous;
     }
     mesh.update(this.surface.device, positions, normals, staged);
+  }
+
+  /** The pipeline every point skin poses with, made at the first one. See `pointSkinPass.ts`. */
+  private pointSkinPipeline: GPUComputePipeline | null = null;
+
+  /**
+   * A dynamic mesh posed on the device from weighted points in its joints' spaces. Refused in words
+   * on a mesh that is not dynamic, whose positions share one buffer with the rest of each vertex.
+   */
+  createPointSkin(mesh: GpuMesh, data: PointSkinData): GpuPointSkin {
+    if (mesh.update === null) {
+      throw new Error(
+        'a point skin poses a mesh created with { dynamic: true }, whose positions and normals ' +
+          'have buffers of their own for the pose to write. Say so at `createMesh`.',
+      );
+    }
+    validatePointSkin(data, mesh.vertexCount);
+    const device = this.surface.device;
+    this.pointSkinPipeline ??= createPointSkinPipeline(device);
+    return new GpuPointSkin(device, this.pointSkinPipeline, mesh, data);
+  }
+
+  /**
+   * Pose a skin: `matrices` holds each joint's transform into the mesh's model space, sixteen floats,
+   * column-major. Recorded into the encoder the frame's next submit leads with, behind a copy of
+   * last frame's positions where a reconstruction keeps them, as `updateMesh` records its rewrite.
+   */
+  posePointSkin(skin: GpuPointSkin, matrices: Float32Array): void {
+    validatePose(matrices, skin.reach);
+    if (this.surface.lost) return;
+    const mesh = skin.mesh;
+    poseBounds(matrices, skin.reach, mesh.bounds);
+    const encoder = this.rewriteCopies();
+    const motion = mesh.motion;
+    if (motion !== null && this.reconstructionWanted) {
+      const frame = frameOfChange(this.moverFrame, this.inFrame);
+      if (keepsPrevious(motion.changed, frame)) {
+        const size = mesh.vertexBuffers[0]?.size ?? 0;
+        motion.previous ??= this.surface.device.createBuffer({
+          label: 'recon.dynamicPrevious',
+          size,
+          usage: 0x0020 | 0x0008, // VERTEX | COPY_DST
+        });
+        encoder.copyBufferToBuffer(mesh.vertexBuffers[0] as GPUBuffer, 0, motion.previous, 0, size);
+      }
+      motion.changed = frame;
+    }
+    skin.pose(this.surface.device, encoder, matrices);
+  }
+
+  /**
+   * **The pending rewrites go first**, since a pose recorded into them reads the skin's buffers and
+   * a destroyed buffer in a submit loses the whole command buffer. Nothing else reads them, so once
+   * the rewrites are submitted, which only moves them earlier, the buffers can go at once.
+   */
+  disposePointSkin(skin: GpuPointSkin): void {
+    if (this.pendingRewrites !== null && !this.surface.lost) this.submit([]);
+    skin.dispose();
+  }
+
+  /**
+   * Rewrite a mesh's colours. Refused in words on a mesh that did not ask for `dynamicColors`,
+   * whose colours are interleaved with the rest of a vertex or are one value with no buffer at all.
+   * See `GpuMesh.updateColors`.
+   */
+  updateMeshColors(mesh: GpuMesh, colors: Float32Array): void {
+    if (mesh.updateColors === null) {
+      throw new Error(
+        'this mesh was not created with { dynamicColors: true }, so its colours are packed with ' +
+          'the rest of each vertex, or are one value with no buffer at all, and cannot be ' +
+          'rewritten. Say so at `createMesh`: the flag gives the colours a buffer of their own.',
+      );
+    }
+    if (this.surface.lost) return;
+    mesh.updateColors(this.surface.device, colors);
   }
 
   /**
@@ -12391,40 +12466,33 @@ export class WebGPURenderer implements RendererApi {
       byMaterial = new Map();
       this.skinnedGroups[at] = byMaterial;
     }
-    let twin = byMaterial.get(base);
-    if (
-      twin === undefined ||
-      twin.palette !== palette ||
-      twin.deltas !== deltas ||
-      twin.cloth !== (cloth?.particles ?? null) ||
-      twin.clothBinding !== (cloth?.binding ?? null)
-    ) {
-      /* Built from the live material, with the overlay's atlas where `base` is its twin. */
-      this.overlayBinding = base !== this.bindGroup;
-      const group = createFlatBindGroup(
-        this.surface.device,
-        this.flatLayoutFor(skinned, morphed),
-        this.variant,
-        this.perDraw.buffer,
-        this.passRing.buffer,
-        this.materialStore.buffer,
-        this.viewRing.buffer,
-        this.flatTextures,
-        palette,
-        deltas,
-        cloth,
-      );
-      this.overlayBinding = false;
-      twin = {
-        group,
-        palette,
-        deltas,
-        cloth: cloth?.particles ?? null,
-        clothBinding: cloth?.binding ?? null,
-      };
-      byMaterial.set(base, twin);
+    let shelf = byMaterial.get(base);
+    if (shelf === undefined) {
+      shelf = new GroupShelf();
+      byMaterial.set(base, shelf);
     }
-    return twin.group;
+    const particles = cloth?.particles ?? null;
+    const binding = cloth?.binding ?? null;
+    const kept = shelf.find(palette, deltas, particles, binding);
+    if (kept !== null) return kept;
+    /* Built from the live material, with the overlay's atlas where `base` is its twin. */
+    this.overlayBinding = base !== this.bindGroup;
+    const group = createFlatBindGroup(
+      this.surface.device,
+      this.flatLayoutFor(skinned, morphed),
+      this.variant,
+      this.perDraw.buffer,
+      this.passRing.buffer,
+      this.materialStore.buffer,
+      this.viewRing.buffer,
+      this.flatTextures,
+      palette,
+      deltas,
+      cloth,
+    );
+    this.overlayBinding = false;
+    shelf.keep(group, palette, deltas, particles, binding);
+    return group;
   }
 
   /** The layout matching a pair of vertex flags. A pipeline and its bind group must agree. */

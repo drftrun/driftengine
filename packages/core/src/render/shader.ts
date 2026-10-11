@@ -5,6 +5,8 @@ export function compileProgram(
   vertexSource: string,
   fragmentSource: string,
   label: string,
+  /** Vertex outputs captured by transform feedback, one buffer each; named before the link. */
+  feedback?: readonly string[],
 ): WebGLProgram {
   const vs = compileStage(gl, gl.VERTEX_SHADER, vertexSource, `${label}.vert`);
   const fs = compileStage(gl, gl.FRAGMENT_SHADER, fragmentSource, `${label}.frag`);
@@ -14,6 +16,9 @@ export function compileProgram(
 
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
+  if (feedback !== undefined) {
+    gl.transformFeedbackVaryings(program, feedback as string[], gl.SEPARATE_ATTRIBS);
+  }
   gl.linkProgram(program);
   gl.deleteShader(vs);
   gl.deleteShader(fs);

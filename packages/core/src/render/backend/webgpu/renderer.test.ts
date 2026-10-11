@@ -4229,6 +4229,56 @@ describe('a dynamic mesh', () => {
     expect(depth.length, 'the shadow pass built a pipeline for it').toBeGreaterThan(0);
     for (const descriptor of depth) expect([...(descriptor.vertex.buffers ?? [])]).toHaveLength(4);
   });
+
+  /*
+   * **A mesh whose colours are rewritten binds one buffer more, and every pipeline it draws with
+   * has to say so**: a pipeline built without the colour buffer meets a draw that binds it, and a
+   * device answers that with an invalid command buffer rather than a picture.
+   */
+  it('A MESH WHOSE COLOURS ARE REWRITTEN IS KEYED APART, AND EVERY PIPELINE IT DRAWS WITH READS ITS COLOURS LAST', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const data = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+      colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+      emissive: new Float32Array([0, 0, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+    };
+    const built = (): GPURenderPipelineDescriptor[] =>
+      stub.device.createRenderPipeline.mock.calls.map(([descriptor]) => descriptor);
+    const readsColoursLast = (descriptor: GPURenderPipelineDescriptor): void => {
+      const buffers = [...(descriptor.vertex.buffers ?? [])];
+      expect(buffers).toHaveLength(3);
+      expect(buffers[2]?.arrayStride).toBe(12);
+      expect([...(buffers[2]?.attributes ?? [])].map((a) => a.shaderLocation)).toEqual([2]);
+    };
+    const still = renderer.createMesh(data as never) as unknown as { key: string };
+    const before = built().length;
+    const shaded = renderer.createMesh(data as never, { dynamicColors: true });
+    const key = (shaded as unknown as { key: string }).key;
+    expect(key).not.toBe(still.key);
+    expect(key).toContain(':colors~stream');
+    const flat = built()
+      .slice(before)
+      .filter((descriptor) => (descriptor.label ?? '').includes('|flat'));
+    expect(flat.length).toBeGreaterThan(0);
+    for (const descriptor of flat) readsColoursLast(descriptor);
+
+    const cast = built().length;
+    renderer.beginShadowPass(new Float32Array(16), 'static');
+    renderer.drawShadowCasters((sink) => sink.mesh(shaded as never, new Float32Array(16)));
+    renderer.endShadowPass();
+    const depth = built()
+      .slice(cast)
+      .filter((descriptor) => (descriptor.label ?? '').includes('colors~stream'));
+    expect(depth.length, 'the shadow pass built a pipeline for it').toBeGreaterThan(0);
+    for (const descriptor of depth) readsColoursLast(descriptor);
+
+    expect(() => renderer.updateMeshColors(shaded, new Float32Array(9))).not.toThrow();
+    const moving = renderer.createMesh(data as never, { dynamic: true });
+    expect(() => renderer.updateMeshColors(moving, new Float32Array(9))).toThrow(/dynamicColors/);
+  });
 });
 
 describe('drawing after endFrame', () => {
@@ -10248,5 +10298,166 @@ describe('A REGISTERED PASS READS THE FRAME’S COLOUR', () => {
         (to.texture as { label?: string }).label === 'refract.snapshot',
     );
     expect(fromShown, 'from a copy of the reconstructed picture').toHaveLength(1);
+  });
+});
+
+describe('the bind groups of draws that follow cloth', () => {
+  /*
+   * **Reported at twenty-four groups made a frame for two characters, and none with cloth off.** A
+   * garment's particles take turns between two textures, a step each, and several meshes follow
+   * one cloth with a binding each, so a group kept one a palette slot and material was made again
+   * draw after draw. Each draw finds its own once both textures have been seen.
+   */
+  const garment = (renderer: WebGPURenderer) => {
+    const meshes = [0, 1, 2].map(() => skinnedStubMesh(renderer));
+    const bindings = meshes.map((mesh) => renderer.createClothBinding(mesh, stubClothBinding()));
+    const particles = renderer.createClothParticles(3);
+    return { meshes, bindings, particles };
+  };
+
+  it("A GARMENT'S DRAWS MAKE NO BIND GROUP ONCE BOTH OF ITS PARTICLE TEXTURES HAVE BEEN SEEN", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const { camera, env } = stubScene();
+    const { meshes, bindings, particles } = garment(renderer);
+    const rig = onePalette(0);
+    const made: number[] = [];
+    for (let frame = 0; frame < 6; frame++) {
+      renderer.updateClothParticles(particles, new Float32Array(9).fill(frame));
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      renderer.setSkinPalette(rig);
+      stub.device.createBindGroup.mockClear();
+      meshes.forEach((mesh, at) => {
+        renderer.setCloth(bindings[at] ?? null, particles);
+        renderer.drawMesh(mesh, mat4.create());
+      });
+      renderer.setCloth(null);
+      made.push(stub.device.createBindGroup.mock.calls.length);
+      renderer.endFrame();
+    }
+    expect(made[0], 'the first frame makes them').toBeGreaterThan(0);
+    expect(made.slice(2), 'and from the third, every draw finds its own').toEqual([0, 0, 0, 0]);
+  });
+
+  it('and so do the shadows they cast', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const { meshes, bindings, particles } = garment(renderer);
+    const rig = onePalette(0);
+    const made: number[] = [];
+    for (let frame = 0; frame < 6; frame++) {
+      renderer.updateClothParticles(particles, new Float32Array(9).fill(frame));
+      renderer.beginFrame([0, 0, 0]);
+      stub.device.createBindGroup.mockClear();
+      renderer.beginShadowPass(new Float32Array(16), 'dynamic');
+      renderer.drawShadowCasters((sink) =>
+        meshes.forEach((mesh, at) =>
+          sink.skinnedMesh(mesh, mat4.create(), rig, undefined, {
+            binding: bindings[at] as never,
+            particles: particles as never,
+          }),
+        ),
+      );
+      renderer.endShadowPass();
+      made.push(stub.device.createBindGroup.mock.calls.length);
+      renderer.endFrame();
+    }
+    expect(made[0]).toBeGreaterThan(0);
+    expect(made.slice(2)).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe('a point skin', () => {
+  /*
+   * **Posed on the device into the mesh's own buffers, as a rewrite is.** Reported as 38% of the
+   * main thread's drawing time spent posing such a rig on the CPU and uploading it each frame.
+   * A pose is one dispatch, recorded into the encoder the frame's next submit leads with and behind
+   * a copy of last frame's positions where a reconstruction keeps them, so nothing is submitted of
+   * its own and the motion of the frame reads where the vertices were.
+   */
+  const triangle = {
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
+    colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]),
+    emissive: new Float32Array([0, 0, 0]),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const skin = {
+    joints: new Float32Array(12),
+    weights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+    points: new Float32Array(36).map((_, at) => (at % 12 === 0 ? (at / 12) * 0.5 : 0)),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+  };
+  const moved = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 4, 5, 1]);
+
+  it("A POSE IS ONE DISPATCH INTO THE MESH'S OWN BUFFERS, BEHIND LAST FRAME'S POSITIONS, SUBMITTING NOTHING", () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(
+      stub,
+      resolveRenderQuality({ screenEffects: true, reconstruction: 1.5 }),
+    );
+    const { camera, env } = stubScene();
+    const mesh = renderer.createMesh(triangle as never, { dynamic: true });
+    const streams = (mesh as unknown as { vertexBuffers: unknown[] }).vertexBuffers;
+    const posed = renderer.createPointSkin(mesh, skin);
+    const group = stub.device.createBindGroup.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) => descriptor.label === 'pointSkin.pose');
+    const bound = (binding: number): unknown =>
+      (
+        [...(group?.entries ?? [])].find((entry) => entry.binding === binding)?.resource as {
+          buffer: unknown;
+        }
+      )?.buffer;
+    expect(bound(5), 'positions are written where the mesh reads them').toBe(streams[0]);
+    expect(bound(6), 'and normals').toBe(streams[1]);
+
+    const label = (buffer: unknown): string => String((buffer as { label?: string }).label ?? '');
+    for (let frame = 0; frame < 2; frame++) {
+      renderer.beginFrame([0, 0, 0]);
+      renderer.bindMeshPass(camera, env);
+      stub.device.queue.submit.mockClear();
+      stub.encoder.beginComputePass.mockClear();
+      stub.encoder.copyBufferToBuffer.mockClear();
+      stub.computePass.dispatchWorkgroups.mockClear();
+      renderer.posePointSkin(posed, moved);
+      expect(stub.device.queue.submit, 'nothing is submitted by a pose').not.toHaveBeenCalled();
+      const poses = stub.encoder.beginComputePass.mock.calls.filter(
+        ([descriptor]) => descriptor?.label === 'pointSkin.pose',
+      );
+      expect(poses).toHaveLength(1);
+      expect(stub.computePass.dispatchWorkgroups).toHaveBeenCalledWith(1);
+      const aside = stub.encoder.copyBufferToBuffer.mock.calls.findIndex(
+        ([from, , to]) => from === streams[0] && label(to) === 'recon.dynamicPrevious',
+      );
+      expect(aside, `frame ${frame}: last frame's positions copied aside`).toBeGreaterThanOrEqual(
+        0,
+      );
+      const copiedAt = stub.encoder.copyBufferToBuffer.mock.invocationCallOrder[aside] as number;
+      const posedAt = stub.encoder.beginComputePass.mock.invocationCallOrder.at(-1) as number;
+      expect(copiedAt, 'before the pose writes over them').toBeLessThan(posedAt);
+      renderer.drawMesh(mesh, mat4.create());
+      renderer.endFrame();
+    }
+    /* Three points within half a metre of joint 0, moved to (3, 4, 5). */
+    const bounds = (mesh as unknown as { bounds: { min: Float32Array; max: Float32Array } }).bounds;
+    expect(Array.from(bounds.min)).toEqual([2, 3, 4]);
+    expect(Array.from(bounds.max)).toEqual([4, 5, 6]);
+  });
+
+  it('is refused a mesh that is not dynamic, and a pose short of the joints it names', () => {
+    const stub = stubSurface();
+    const renderer = freshRenderer(stub);
+    const still = renderer.createMesh(triangle as never);
+    expect(() => renderer.createPointSkin(still, skin)).toThrow(/dynamic: true/);
+    const posed = renderer.createPointSkin(
+      renderer.createMesh(triangle as never, { dynamic: true }),
+      {
+        ...skin,
+        joints: new Float32Array([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      },
+    );
+    expect(() => renderer.posePointSkin(posed, moved)).toThrow(/a pose of 1 joints/);
   });
 });

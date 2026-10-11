@@ -17,7 +17,7 @@ import {
  */
 
 /** The ways an attribute can travel other than as floats, as the key words name them. */
-const PACKINGS = ['snorm16', 'unorm16', 'constant'] as const;
+const PACKINGS = ['snorm16', 'unorm16', 'constant', 'stream'] as const;
 
 /** The pipeline key's word for one attribute's packing. Not a prefix of any other word. */
 function word(name: string, packing: AttributePacking): string {

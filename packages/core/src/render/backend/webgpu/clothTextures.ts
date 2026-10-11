@@ -105,8 +105,8 @@ export class GpuClothParticles {
   private latest = 0;
   /** The frame each texture was last written for, so a motion knows whether the other is last frame's. */
   private readonly written = [-1, -1];
-  private paired: GpuClothBinding | null = null;
-  private pairedViews: ClothViews[] = [];
+  /** Each binding's views with these particles, one for each texture: see `viewsWith`. */
+  private readonly paired = new WeakMap<GpuClothBinding, readonly [ClothViews, ClothViews]>();
 
   constructor(device: GPUDevice, count: number, storage = false) {
     this.count = count;
@@ -178,17 +178,20 @@ export class GpuClothParticles {
 
   /**
    * The three views a draw of `binding` with these particles binds, kept so a cached bind group
-   * compares equal frame after frame. Two objects, one for each texture that is current.
+   * compares equal frame after frame. Two objects, one for each texture that is current, made the
+   * first time a binding is drawn with these particles and kept **for every binding**: several
+   * meshes follow one cloth, each with a binding of its own, and keeping only the last made two
+   * objects a draw as they took turns.
    */
   viewsWith(binding: GpuClothBinding): ClothViews {
-    if (this.paired !== binding) {
-      this.paired = binding;
-      this.pairedViews = [0, 1].map((k) => ({
-        binding: binding.bindingView,
-        particles: this.views[k] as GPUTextureView,
-        rest: binding.restView,
-      }));
+    let pair = this.paired.get(binding);
+    if (pair === undefined) {
+      pair = [
+        { binding: binding.bindingView, particles: this.views[0], rest: binding.restView },
+        { binding: binding.bindingView, particles: this.views[1], rest: binding.restView },
+      ];
+      this.paired.set(binding, pair);
     }
-    return this.pairedViews[this.latest] as ClothViews;
+    return pair[this.latest === 0 ? 0 : 1];
   }
 }

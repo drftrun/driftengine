@@ -23,10 +23,19 @@ import type { MeshData } from '@driftengine/drft';
  * on the CPU. What would make this wrong is a value outside its range, which the range check sends
  * to floats rather than clamping, or a shader reading an attribute as something other than the
  * value it carries.
+ *
+ * **A mesh whose colours are rewritten keeps them as floats in a buffer of their own** (`stream`),
+ * whatever they are: one value every vertex shares has no buffer to rewrite, sixteen bits would
+ * have to be packed on the CPU every rewrite, and colours interleaved with the rest of a vertex
+ * could only be rewritten by keeping the rows, which a mesh lets go once it is uploaded. It costs
+ * twelve bytes a vertex where the colours might have cost none, which is why a mesh asks for it.
  */
 
-/** Floats; sixteen-bit fixed point, signed or not; or one value for every vertex. */
-export type AttributePacking = 'float' | 'snorm16' | 'unorm16' | 'constant';
+/**
+ * Floats; sixteen-bit fixed point, signed or not; one value for every vertex; or floats in a
+ * buffer of their own, for an attribute a caller rewrites.
+ */
+export type AttributePacking = 'float' | 'snorm16' | 'unorm16' | 'constant' | 'stream';
 
 /** The attributes this decides for. Every other one travels as floats. */
 export const PACKED_ATTRIBUTES = [
@@ -42,12 +51,23 @@ export type PackedAttribute = (typeof PACKED_ATTRIBUTES)[number];
 
 export type VertexPacking = Readonly<Record<PackedAttribute, AttributePacking>>;
 
-/** The choice for this mesh. `dynamic` is a mesh whose positions and normals are rewritten. */
-export function vertexPackingOf(data: MeshData, dynamic: boolean): VertexPacking {
+/**
+ * The choice for this mesh. `dynamic` is a mesh whose positions and normals are rewritten, and
+ * `dynamicColors` one whose colours are.
+ */
+export function vertexPackingOf(
+  data: MeshData,
+  dynamic: boolean,
+  dynamicColors = false,
+): VertexPacking {
   return {
     normals: dynamic ? 'float' : fixedOrFloat(data.normals, -1),
     tangents: fixedOrFloat(data.tangents, -1),
-    colors: shared(data.colors, 3) ? 'constant' : fixedOrFloat(data.colors, 0),
+    colors: dynamicColors
+      ? 'stream'
+      : shared(data.colors, 3)
+        ? 'constant'
+        : fixedOrFloat(data.colors, 0),
     emissive: shared(data.emissive, 1) ? 'constant' : 'float',
     weights: fixedOrFloat(data.weights, 0),
     weights2: fixedOrFloat(data.weights2, 0),

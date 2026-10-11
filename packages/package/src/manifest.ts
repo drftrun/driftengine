@@ -10,7 +10,12 @@
  * immediately. The id, the entry, the targets and the backend policy do not, because each of them
  * is silent when wrong: the wrong id writes saves to a directory nobody looks in.
  */
-import { checkPermission, fullPermissionName } from './mobile/androidManifest.ts';
+import {
+  checkOrientation,
+  checkPermission,
+  fullPermissionName,
+  type AndroidOrientation,
+} from './mobile/androidManifest.ts';
 
 export type WebGpuPolicy = 'prefer' | 'require' | 'off';
 export type Target =
@@ -77,10 +82,16 @@ export interface PackageManifest {
    * sets `android:usesCleartextTraffic` *and* is what `MainActivity` reads at runtime to allow
    * mixed content in the WebView, so the platform and the renderer cannot disagree about it. A
    * relay on a LAN cannot hold a certificate, which is the case it exists for.
+   *
+   * **`orientation` is `unspecified` by default**, which leaves it to the phone, and takes any
+   * value Android documents for an activity (`landscape`, `sensorLandscape`, `portrait`, ...). A
+   * game played sideways says so here, and the activity starts that way before any of its code
+   * runs; one Android does not know is refused rather than written.
    */
   readonly android: {
     readonly permissions: readonly string[];
     readonly cleartextTraffic: boolean;
+    readonly orientation: AndroidOrientation;
   };
   /**
    * Who an installer says this is from.
@@ -202,6 +213,10 @@ export function parseManifest(raw: unknown): PackageManifest {
     android: {
       permissions,
       cleartextTraffic: androidRaw.cleartextTraffic === true,
+      orientation:
+        androidRaw.orientation === undefined
+          ? 'unspecified'
+          : checkOrientation(androidRaw.orientation),
     },
     splash: {
       show: splashRaw.show !== false,

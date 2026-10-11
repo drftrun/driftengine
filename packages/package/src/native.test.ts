@@ -45,7 +45,7 @@ const MANIFEST: PackageManifest = {
   targets: ['native-linux-x64'],
   native: { entry: 'src/native.mjs' },
   steam: { appId: null },
-  android: { permissions: [], cleartextTraffic: false },
+  android: { permissions: [], cleartextTraffic: false, orientation: 'unspecified' },
   splash: { show: true, minMs: 1400 },
   publisher: 'example',
   icon: null,

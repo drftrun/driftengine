@@ -288,6 +288,13 @@ export const BONE_TURNS_TEXTURE_UNIT = BONE_PLACES_TEXTURE_UNIT + 1;
 export const INSTANCE_CLOCKS_TEXTURE_UNIT = BONE_TURNS_TEXTURE_UNIT + 1;
 
 /**
+ * A point skin's joints (`pointSkin.ts`), read by the transform-feedback program that poses it. Past
+ * every unit a draw binds, so a pose taken between two draws leaves nothing a draw expects to find.
+ * Twenty-nine.
+ */
+export const POINT_SKIN_TEXTURE_UNIT = INSTANCE_CLOCKS_TEXTURE_UNIT + 1;
+
+/**
  * A cookie's tile, in texels a side.
  *
  * **128, which is what a gobo is.** A cookie is a soft mask — a window frame, a leaf canopy, a

@@ -46,9 +46,9 @@ test('a mesh reports that it carries one', () => {
 test('a mesh that does not declare itself deforming refuses to be rewritten', () => {
   /*
    * Refused rather than silently allowed, because the flag buys something real on each backend —
-   * a buffer hint here, and the retained interleaved array on WebGPU, which cannot patch one
-   * position without the rest of the vertex in hand. A mesh that accepted an update on one
-   * backend and threw on the other would be worse than one that refuses on both.
+   * a buffer hint here, and on WebGPU buffers of their own for the positions and normals, beside
+   * the rest of the vertex. A mesh that accepted an update on one backend and threw on the other
+   * would be worse than one that refuses on both.
    */
   const { gl } = recordingGl();
   const mesh = new Mesh(gl, base);
@@ -105,6 +105,74 @@ test('normals go up with the positions when the caller has them', () => {
   const mesh = new Mesh(gl, base, true);
   mesh.update(gl, positions, normals);
   expect(calls.filter((c) => c.name === 'bufferSubData')).toHaveLength(2);
+});
+
+/*
+ * A mesh whose colours change while it stays where it is: ground shaded again with its distance
+ * from a moving camera, reported as made again as a new mesh nearly every frame for want of this.
+ */
+
+/** The buffer bound for `location` when its pointer was set, read off the recording. */
+function bufferAt(calls: { name: string; args: unknown[] }[], location: number): unknown {
+  let bound: unknown = null;
+  for (const call of calls) {
+    if (call.name === 'bindBuffer') bound = call.args[1];
+    if (call.name === 'vertexAttribPointer' && call.args[0] === location) return bound;
+  }
+  return undefined;
+}
+
+test('A DYNAMIC-COLOURS MESH REWRITES ITS COLOURS IN THE BUFFER COLOUR IS READ FROM, AND NOTHING ELSE', () => {
+  const { gl, calls } = recordingGl();
+  /* One colour every vertex shares, which would otherwise have no buffer at all to rewrite. */
+  const mesh = new Mesh(gl, base, false, false, true);
+  const colourBuffer = bufferAt(calls, 2);
+  expect(colourBuffer, 'the colours have a buffer').toBeDefined();
+
+  calls.length = 0;
+  const shaded = new Float32Array([0.2, 0.2, 0.2, 0.5, 0.5, 0.5, 1, 1, 1]);
+  mesh.updateColors(gl, shaded);
+  const uploads = calls.filter((c) => c.name === 'bufferSubData');
+  expect(uploads).toHaveLength(1);
+  expect(uploads[0]?.args[2]).toBe(shaded);
+  const bound = calls.filter((c) => c.name === 'bindBuffer').map((c) => c.args[1]);
+  expect(bound).toEqual([colourBuffer]);
+});
+
+test('its colours are floats with a dynamic hint, whatever range they fall in', () => {
+  /* Sixteen bits would have to be packed on the CPU for every rewrite. */
+  const { gl, calls } = recordingGl();
+  new Mesh(
+    gl,
+    { ...base, colors: new Float32Array([0, 0.5, 1, 1, 0.5, 0, 0.25, 0.25, 0.25]) },
+    false,
+    false,
+    true,
+  );
+  const pointer = calls.find((c) => c.name === 'vertexAttribPointer' && c.args[0] === 2);
+  expect(pointer?.args[2]).toBe(gl.FLOAT);
+  const hints = calls.filter((c) => c.name === 'bufferData').map((c) => c.args[2]);
+  expect(
+    hints.filter((h) => h === gl.DYNAMIC_DRAW),
+    'colours only: the positions stay',
+  ).toHaveLength(1);
+});
+
+test('a mesh that did not ask for dynamic colours refuses them, as does a rewrite of the wrong size', () => {
+  const { gl } = recordingGl();
+  expect(() => new Mesh(gl, base, true).updateColors(gl, colors)).toThrow(/dynamicColors/);
+  const mesh = new Mesh(gl, base, false, false, true);
+  expect(() => mesh.updateColors(gl, new Float32Array(6))).toThrow(
+    /3 vertices and the colours have 2/,
+  );
+});
+
+test('a colour rewrite leaves the bounds where the vertices are', () => {
+  const { gl } = recordingGl();
+  const mesh = new Mesh(gl, base, false, false, true);
+  const before = Array.from(mesh.bounds.max);
+  mesh.updateColors(gl, new Float32Array(9).fill(0.5));
+  expect(Array.from(mesh.bounds.max)).toEqual(before);
 });
 
 /*

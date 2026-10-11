@@ -9,7 +9,7 @@ areas: ['ui2d']
 
 `@driftengine/ui2d` is the engine's 2D layer: quads with a texture on them, batched, drawn in the
 order you submitted them. It draws a whole 2D game, a heads-up display over a 3D one, or the
-interface tree in the [next chapter](interface.md), and it is 10.6 KB gzipped on top of core.
+interface tree in the [next chapter](interface.md), and it is 10.5 KB gzipped on top of core.
 
 The example is a garden, all of it one sprite pass over one sheet painted when the page loads: a
 tilemap, a gardener walking it, and flowers to pick. `garden.drs` walks the gardener, keeps it out of

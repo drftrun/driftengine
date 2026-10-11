@@ -12,6 +12,7 @@ import type { CompressedTextureSource, SurfaceSource } from '../compressedSource
 import type { LightmapPage } from '../lightmap.ts';
 import type { DeviceParticles } from '../particlePool.ts';
 import type { ClothBindingData } from '../clothBindingData.ts';
+import type { PointSkinData } from '../pointSkin.ts';
 import type { TextStyle } from '../textLayout.ts';
 import type { SdfFont } from '../sdfFont.ts';
 import type { SdfTextStyle } from '../sdfTextLayout.ts';
@@ -61,6 +62,15 @@ export interface MeshHandle {
  */
 /* eslint-disable-next-line @typescript-eslint/no-empty-object-type -- opaque by design */
 export interface ClothBindingHandle {
+  /* Deliberately empty, for the weak-type reason `MeshHandle` explains. */
+}
+
+/**
+ * A dynamic mesh's point skin on the device, from `createPointSkin`: its vertices as weighted points
+ * in its joints' spaces. Opaque likewise.
+ */
+/* eslint-disable-next-line @typescript-eslint/no-empty-object-type -- opaque by design */
+export interface PointSkinHandle {
   /* Deliberately empty, for the weak-type reason `MeshHandle` explains. */
 }
 
@@ -249,11 +259,20 @@ export interface MeshOptions {
   /**
    * Whether this mesh's positions will be rewritten with `updateMesh`.
    *
-   * Costs a `DYNAMIC_DRAW` hint on WebGL2 and a CPU-side copy of the interleaved vertex data on
-   * WebGPU, which interleaves every attribute into one buffer and so cannot patch a position
-   * without the rest of the vertex in hand. Both are paid only where a consumer asks.
+   * Costs a `DYNAMIC_DRAW` hint on WebGL2, and on WebGPU two buffers of its own for the positions
+   * and the normals beside the rest of the vertex, bound with it on every draw, and floats for the
+   * normals where they might have been sixteen bits. Paid only where a consumer asks.
    */
   readonly dynamic?: boolean;
+  /**
+   * Whether this mesh's colours will be rewritten with `updateMeshColors`.
+   *
+   * Costs the colours as floats in a buffer of their own, twelve bytes a vertex where they might
+   * have been sixteen bits or, for one colour every vertex shares, nothing at all. Independent of
+   * `dynamic`: a surface shaded again as a camera moves rewrites its colours every frame and its
+   * positions never, and should pay for neither the positions' buffers nor their motion.
+   */
+  readonly dynamicColors?: boolean;
 }
 
 export type RendererApi = Omit<
@@ -262,6 +281,7 @@ export type RendererApi = Omit<
   | 'createMesh'
   | 'createMeshIncremental'
   | 'updateMesh'
+  | 'updateMeshColors'
   | 'drawMesh'
   | 'disposeMesh'
   | 'drawTranslucentMesh'
@@ -330,6 +350,9 @@ export type RendererApi = Omit<
   | 'setCloth'
   | 'disposeClothBinding'
   | 'disposeClothParticles'
+  | 'createPointSkin'
+  | 'posePointSkin'
+  | 'disposePointSkin'
 > & {
   /**
    * A mesh's cloth binding: which simulation triangle each of its vertices follows, where on it and
@@ -354,6 +377,29 @@ export type RendererApi = Omit<
   setCloth(binding: ClothBindingHandle | null, particles?: ClothParticlesHandle | null): void;
   disposeClothBinding(binding: ClothBindingHandle): void;
   disposeClothParticles(particles: ClothParticlesHandle): void;
+  /**
+   * A dynamic mesh posed on the device from weighted points in its joints' own spaces
+   * (`PointSkinData`): each vertex the weighted sum of up to four points, each moved by its joint,
+   * and a normal turned by its first joint. Posed into the mesh's own positions and normals, so
+   * every pass draws it as any dynamic mesh, motion vectors included. See `pointSkin.ts`.
+   *
+   * **For a rig whose vertices are stored that way**, which ordinary skinning cannot pose: it moves
+   * one bind-pose position by a blend of joints. Such a rig was posed on the main thread and
+   * uploaded every frame, reported at 38% of the main thread's drawing time.
+   *
+   * The mesh must be `{ dynamic: true }` and have the skin's vertex count; any other is refused in
+   * words, as is a joint past 511.
+   */
+  createPointSkin(mesh: MeshHandle, data: PointSkinData): PointSkinHandle;
+  /**
+   * Pose a skin: `matrices` holds each joint's transform into the mesh's model space, sixteen floats
+   * a joint, column-major, at least as many joints as the skin names. **Once a frame, before the
+   * mesh's draws**: a second pose in a frame reaches every draw of it on WebGPU, as a second
+   * `updateMesh` does. The mesh's bounds become a box around every joint's reach, so it is culled
+   * as it moves without the posed vertices ever coming back to the CPU.
+   */
+  posePointSkin(skin: PointSkinHandle, matrices: Float32Array): void;
+  disposePointSkin(skin: PointSkinHandle): void;
   /**
    * What the following draws lay over their surfaces beyond their materials — a rim of light, a
    * dissolve with a glowing edge, wrinkle normals by region — or null for none, which every pass
@@ -928,16 +974,33 @@ export type RendererApi = Omit<
    * quads with a matrix each, which caps the resolution at the number of draw calls a consumer
    * can afford. A consumer found it by trying to hang a banner.
    *
-   * **Only positions and normals.** Colour, emissive and the rest describe what a surface *is*
-   * and do not change because it bent; rewriting them every frame would be uploading unchanged
-   * bytes. The vertex *count* is fixed: the index buffer, the pipeline and every other attribute
-   * are sized against it, and an update of a different size is refused naming both.
+   * **Only positions and normals.** Emissive and the rest describe what a surface *is* and do not
+   * change because it bent; rewriting them every frame would be uploading unchanged bytes. Colour
+   * is the exception a consumer found, a surface shaded again every frame without moving, and it
+   * has `updateMeshColors` of its own rather than a place here, so a rewrite of either sends only
+   * what changed. The vertex *count* is fixed: the index buffer, the pipeline and every other
+   * attribute are sized against it, and an update of a different size is refused naming both.
    *
    * The mesh must have been created with `{ dynamic: true }`. That is not ceremony — it decides
    * the buffer hint on one backend and what has to be kept on the other, and a mesh that never
    * deforms should pay for neither.
    */
   updateMesh(mesh: MeshHandle, positions: Float32Array, normals?: Float32Array): void;
+
+  /**
+   * Rewrite a mesh's colours, three floats a vertex, linear as `MeshData.colors` is.
+   *
+   * **For a surface whose colour changes while it stays where it is**: ground shaded with its
+   * distance from a moving camera, a heat map, a tile lit by a game's own rules. Without it such a
+   * surface is made again as a new mesh every frame, which is a buffer allocated and let go each
+   * frame on both backends and every pipeline it draws with looked up again.
+   *
+   * The mesh must have been created with `{ dynamicColors: true }`, which gives the colours a buffer
+   * of their own; any other is refused in words. Nothing else moves: not the positions, not the
+   * bounds, and no motion vector, since a colour does not move. A different vertex count is refused
+   * naming both.
+   */
+  updateMeshColors(mesh: MeshHandle, colors: Float32Array): void;
 
   /** Draw a handle this renderer made. Passing one from the other backend is a caller error. */
   drawMesh(

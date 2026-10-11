@@ -6,13 +6,58 @@ export interface AndroidOptions {
   readonly permissions: readonly string[];
   /** Whether the app may open `http://` and `ws://` at all. */
   readonly cleartextTraffic: boolean;
+  /** The activity's `android:screenOrientation`, one of `ANDROID_ORIENTATIONS`. */
+  readonly orientation: AndroidOrientation;
 }
+
+/**
+ * Every value Android documents for an activity's `android:screenOrientation`.
+ *
+ * **The whole list, not the two a landscape game wants**, because which way a game is held is the
+ * game's decision and the engine has no reason to prefer one: a card game is held upright, a
+ * racing game sideways, and `sensorLandscape` against `landscape` is whether a player may turn
+ * the phone over. What the list buys is a refusal at parse time, since the value is written into
+ * an XML attribute and Android answers one it does not know by ignoring it.
+ */
+export const ANDROID_ORIENTATIONS = [
+  'unspecified',
+  'behind',
+  'landscape',
+  'portrait',
+  'reverseLandscape',
+  'reversePortrait',
+  'sensorLandscape',
+  'sensorPortrait',
+  'userLandscape',
+  'userPortrait',
+  'sensor',
+  'fullSensor',
+  'nosensor',
+  'user',
+  'fullUser',
+  'locked',
+] as const;
+
+export type AndroidOrientation = (typeof ANDROID_ORIENTATIONS)[number];
 
 /** Nothing asked for: what every build got before this existed, and still gets. */
 export const NO_ANDROID_OPTIONS: AndroidOptions = Object.freeze({
   permissions: Object.freeze([]) as readonly string[],
   cleartextTraffic: false,
+  orientation: 'unspecified',
 });
+
+/** Refuse an orientation Android does not document, at parse time where a consumer can fix it. */
+export function checkOrientation(value: unknown): AndroidOrientation {
+  const known = ANDROID_ORIENTATIONS.find((name) => name === value);
+  if (known === undefined) {
+    throw new Error(
+      `drift.package.json: "android.orientation" is ${JSON.stringify(value)}, expected one of ` +
+        `${ANDROID_ORIENTATIONS.join(', ')}.`,
+    );
+  }
+  return known;
+}
 
 /**
  * `INTERNET` and `android.permission.INTERNET` are the same thing, written two ways.
@@ -47,7 +92,8 @@ export function checkPermission(name: string): void {
 }
 
 /**
- * The template manifest with a game's permissions in it, and its cleartext policy set.
+ * The template manifest with a game's permissions in it, its cleartext policy set, and its
+ * activity held the way the game asked.
  *
  * **Written into the copy, not into the template**, the way the icon already is: `buildAndroid`
  * stages `packages/package/android/` into `out/android/project` and edits it there, so this
@@ -105,7 +151,27 @@ export function withAndroidManifest(xml: string, options: AndroidOptions): strin
         'for cleartext traffic would do nothing',
     );
   }
-  return replaced;
+
+  /*
+   * **Rewritten on the activity for the same reason**: the template carries `unspecified`, which
+   * leaves the choice to the phone. Held by the manifest rather than by `lockOrientation` at run
+   * time, because the activity is laid out before any of the game's code runs, and a lock taken
+   * then turns a picture the player has already seen.
+   */
+  const oriented = replaced.replace(
+    /android:screenOrientation="[A-Za-z]+"/,
+    `android:screenOrientation="${options.orientation}"`,
+  );
+  if (
+    !/android:screenOrientation="[A-Za-z]+"/.test(replaced) &&
+    options.orientation !== 'unspecified'
+  ) {
+    throw new Error(
+      'the Android manifest template no longer declares android:screenOrientation, so asking for ' +
+        `"${options.orientation}" would do nothing`,
+    );
+  }
+  return oriented;
 }
 
 /** The whitespace at the start of the line `at` falls on, so an inserted element lines up. */

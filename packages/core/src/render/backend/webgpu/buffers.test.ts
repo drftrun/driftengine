@@ -594,6 +594,97 @@ describe('a mesh whose geometry moves', () => {
   });
 });
 
+describe('a mesh whose colours change', () => {
+  /*
+   * **Its colours live in a buffer of their own, last, so a rewrite sends them and nothing else.**
+   * Reported from a surface shaded again every frame as a camera moves, made again as a new mesh in
+   * 295 of 301 frames for want of this, while its positions changed in six.
+   */
+  const presentFor = (data: MeshData, dynamic: boolean): Record<string, boolean> => {
+    const present: Record<string, boolean> = { dynamic };
+    markPacking(present, vertexPackingOf(data, dynamic, true));
+    return present;
+  };
+
+  it('A DYNAMIC-COLOURS MESH HOLDS ITS COLOURS AS FLOATS IN ITS LAST BUFFER, AND THE LAYOUT READS THEM THERE', () => {
+    const { device, memory } = fakeDevice();
+    const data = slab(6);
+    const mesh = createGpuMesh(device, data, false, true);
+    expect(mesh.vertexBuffers).toHaveLength(3);
+    const held = memory.get(mesh.vertexBuffers[2] as object) as Uint8Array;
+    expect(Array.from(new Float32Array(held.buffer, 0, 18))).toEqual(Array.from(data.colors));
+
+    const layouts = vertexBufferLayouts(presentFor(data, false));
+    expect(layouts).toHaveLength(mesh.vertexBuffers.length);
+    expect(layouts[2]).toEqual({
+      arrayStride: 12,
+      attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x3' }],
+    });
+    expect(
+      layouts[0]?.attributes.map((attribute) => attribute.shaderLocation),
+      'not interleaved as well',
+    ).not.toContain(2);
+    expect(layouts[1]?.attributes.map((attribute) => attribute.shaderLocation)).not.toContain(2);
+    /* And the rows the mesh wrote are the rows the layout steps by, or every field after a
+       colour written into them is read from the wrong offset. */
+    expect(mesh.vertexStride).toBe(layouts[0]?.arrayStride);
+  });
+
+  it('keeps every other buffer where it was, with an instanced batch behind it', () => {
+    const { device } = fakeDevice();
+    const data = slab(6);
+    const mesh = createGpuMesh(device, data, true, true);
+    expect(mesh.vertexBuffers).toHaveLength(5);
+    expect(mesh.vertexStride, 'buffer 0 is still the positions, which the motion pass reads').toBe(
+      12,
+    );
+    const layouts = vertexBufferLayouts(presentFor(data, true), true);
+    expect(layouts).toHaveLength(6);
+    expect(layouts[4]?.attributes[0]?.shaderLocation).toBe(2);
+    expect(layouts[5]?.stepMode).toBe('instance');
+  });
+
+  it('a rewrite writes the colours, and only them, and moves nothing', () => {
+    const { device, memory } = fakeDevice();
+    const mesh = createGpuMesh(device, slab(6), false, true);
+    const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const before = writes.mock.calls.length;
+    const bounds = Array.from(mesh.bounds.max);
+    const shaded = new Float32Array(18).map((_, at) => at / 18);
+
+    mesh.updateColors?.(device, shaded);
+
+    expect(writes.mock.calls.length - before).toBe(1);
+    expect(writes.mock.calls[writes.mock.calls.length - 1]?.[0]).toBe(mesh.vertexBuffers[2]);
+    const held = memory.get(mesh.vertexBuffers[2] as object) as Uint8Array;
+    expect(Array.from(new Float32Array(held.buffer, 0, 18))).toEqual(Array.from(shaded));
+    expect(Array.from(mesh.bounds.max)).toEqual(bounds);
+  });
+
+  it('is absent unless asked for, and refuses a rewrite of the wrong size', () => {
+    const { device } = fakeDevice();
+    expect(createGpuMesh(device, slab(6), true).updateColors).toBeNull();
+    const mesh = createGpuMesh(device, slab(6), false, true);
+    expect(() => mesh.updateColors?.(device, new Float32Array(9))).toThrow(
+      /6 vertices and the colours have 3/,
+    );
+  });
+
+  it('lands its colours whole when the upload is spread over several steps', () => {
+    const data = slab(21_000);
+    const fake = fakeDevice();
+    const { mesh, upload } = createGpuMeshIncremental(fake.device, data, false, true);
+    expect(drive(upload)).toBeGreaterThan(2);
+    const held = fake.memory.get(mesh.vertexBuffers[2] as object) as Uint8Array;
+    const colours = new Float32Array(held.buffer, 0, data.colors.length);
+    let differ = -1;
+    for (let at = 0; differ < 0 && at < colours.length; at++) {
+      if (colours[at] !== data.colors[at]) differ = at;
+    }
+    expect(differ).toBe(-1);
+  });
+});
+
 /** A mesh big enough that its upload cannot fit one step. `count` must be a multiple of three. */
 function slab(count: number): MeshData {
   const positions = new Float32Array(count * 3);

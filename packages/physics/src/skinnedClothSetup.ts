@@ -104,6 +104,29 @@ export interface SkinnedClothParameters {
   /** The same, of the velocity relative to the wind: how fast the air takes the cloth with it. */
   readonly drag?: number;
   /**
+   * How hard each particle is drawn back toward where skinning puts it, as a stiffness: metres a
+   * second squared toward its skinned position for every metre it is away from it. Zero, the
+   * default, is none. A particle at rest under gravity alone sits `9.81 / pull` metres below its
+   * skinned place, whatever the step.
+   *
+   * **For a garment made to hold a shape gravity would undo**: styled hair held by a few pinned
+   * particles at its roots keeps the shape it was made in at rest and swings out of it only as the
+   * body moves, then settles back. The hard limits cannot do that: a max distance is a sphere a
+   * particle may fall anywhere inside, so hair falls to its edge and hangs.
+   *
+   * **A stiffness, not a share of the offset kept a second as `damping` is.** Applied first among
+   * the limits, after the constraints, each substep keeping `1 / (1 + pull · h²)` of the offset: a
+   * compliant constraint's step, so the shape it holds against gravity is one length at every step.
+   * A share scaled by the step as `damping` is would hold a sag proportional to the step: hair
+   * authored to keep 0.7 of its offset a 1/60 step sags 6.36, 3.49 and 1.83 mm at 1/60, 1/120 and
+   * 1/240 that way, where this holds 6.36 mm at all three. A share `k` kept a step at a step `s` is `(1 / k − 1) / s²` here, and keeps
+   * exactly `k` at that step. **What it gives up**: one pull for the whole garment, so roots that
+   * should hold harder than tips hold them as hard; it is a pull rather than a limit, so a hard blow
+   * still takes a particle out of shape for a moment; and with no `damping` a stiff one rings, at a
+   * rate a coarse step damps more than a fine one does.
+   */
+  readonly pull?: number;
+  /**
    * Metres a second, world space: the air the cloth starts in. Default still air. A garment in a
    * scene follows the scene's wind a frame at a time, through `setWind`.
    */
@@ -161,6 +184,7 @@ export interface ResolvedClothParameters {
   readonly gravity: readonly [number, number, number];
   readonly damping: number;
   readonly drag: number;
+  readonly pull: number;
   readonly wind: readonly [number, number, number];
   readonly linearInertia: number;
   readonly angularInertia: number;
@@ -183,6 +207,7 @@ export function resolveClothParameters(
     gravity: parameters.gravity ?? [0, -9.81, 0],
     damping: parameters.damping ?? 0,
     drag: parameters.drag ?? 0,
+    pull: parameters.pull ?? 0,
     wind: parameters.wind ?? [0, 0, 0],
     linearInertia: Math.min(1, Math.max(0, parameters.linearInertia ?? 1)),
     angularInertia: Math.min(1, Math.max(0, parameters.angularInertia ?? 1)),
@@ -241,6 +266,9 @@ export function validateClothSetup(setup: SkinnedClothSetup): void {
   }
   const step = parameters.step ?? 1 / 60;
   if (!(step > 0)) fail(`a step of ${step} seconds`);
+  /* A stiffness below zero pushes a particle away from its skinned place rather than toward it. */
+  const pull = parameters.pull ?? 0;
+  if (!(pull >= 0 && pull < Infinity)) fail(`a pull of ${pull}: a stiffness, zero or above`);
   const per = (name: string, values: ArrayLike<number> | undefined, width: number): void => {
     if (values !== undefined && values.length !== count * width) {
       fail(`${name} has ${values.length} entries for ${count} particles of ${width}`);

@@ -1311,6 +1311,7 @@ Both map onto the engine one array for one array; `examples/garment/` builds eac
 | long-range attachments to fixed particles             | `tethers`: particle, anchor, length                                     |
 | how the constraints were split for parallel solving   | `batches` on either kind — checked, and refused by name if they overlap |
 | a sphere a particle may not leave                     | `limits.maxDistance`                                                    |
+| a drive back toward the skinned shape, a share a step | `parameters.pull`: a share `k` kept a step `s` is `(1 / k − 1) / s²`    |
 | a sphere behind or in front it may not enter          | `limits.backstop`, `limits.frontstop`: a distance and a radius each     |
 | spheres and tapered capsules on bones                 | `colliders`: a joint, two radii, a length along the frame's +Z          |
 | step, substeps, iterations, damping, gravity, inertia | `parameters` — every field has a default                                |

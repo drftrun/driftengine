@@ -951,7 +951,15 @@ export const FLOORS = {
    * TypeScript (`passGrade.ts`, `gradeColor.ts`) are a few hundred bytes. `srgbColor`,
    * `srgbToLinear` and `computeLightMatrixForBounds` are shaken out of a game that calls none.
    */
-  'core-only': 943011,
+  /*
+   * **Raised 2026-10-11 by +3,387, 0.36%, for 4.13.2, with every `core-*` entry by about as much**,
+   * attributed by measuring `core-only` at each of the release's commits rather than apportioned:
+   * a mesh's colours rewritten in place +373, a cloth draw's bind groups kept on a shelf +105, the
+   * skinned cloth's pull 0 (a game that makes no skinned cloth shakes the solver out), and a mesh
+   * posed on the device from points in its joints' spaces +2,909, most of it the compute shader and
+   * the transform-feedback program, which a renderer cannot shake out because its methods name them.
+   */
+  'core-only': 946398,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -975,7 +983,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-gizmo': 947493,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-gizmo': 951312,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -992,7 +1001,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-cloth': 960207,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-cloth': 963813,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -1016,7 +1026,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-audio': 949488,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-audio': 952862,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -1049,7 +1060,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-animation': 948944,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-animation': 952813,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -1095,7 +1107,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade, and drift/render's occlusionFade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-script': 984263,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-script': 988017,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1175,7 +1188,8 @@ export const FLOORS = {
    * border changes what it faces are now held in every outline through them and each stretch is
    * simplified in one canonical direction.
    */
-  'nav-only': 9052,
+  /* Lowered 2026-10-11 by one byte, esbuild's output for an unchanged graph. */
+  'nav-only': 9051,
   /*
    * **The whole argument of Wave 5B Task 7, as a number.** The inspector, the console, the
    * profiler and the network panel, plus the command stack that makes their edits undoable — the
@@ -1296,7 +1310,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-splats': 960762,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-splats': 964025,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1324,7 +1339,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-terrain': 944425,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-terrain': 947795,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1365,7 +1381,8 @@ export const FLOORS = {
    * Raised 2026-10-11 by +496 for 4.13.1: `SpritePass.updateTexture`, a rectangle copied into a
    * slot's texture on each backend, with the record of what each slot was made from.
    */
-  'core-and-ui2d': 953831,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-ui2d': 957164,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1381,7 +1398,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`, and by 1,070 of its own for 4.13.0: the loader's `draw`,
      `casters`, `prepare` and `shadowFit`, through `PartDraws` and the bounds fit. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-and-assets': 972894,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-and-assets': 976739,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1403,7 +1421,8 @@ export const FLOORS = {
   /* Raised 2026-10-10 with `core-only`: 4.11.1's layers, a colour through and the occlusion fade. */
   /* Raised 2026-10-10 with `core-only`: 4.13.0's occlusion strengths and summed specular. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
-  'core-audio-spatial': 951646,
+  /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
+  'core-audio-spatial': 954934,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

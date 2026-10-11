@@ -115,6 +115,12 @@ export class Mesh {
    * this — two references, and only where a consumer asked.
    */
   private readonly deformable: { positions: WebGLBuffer; normals: WebGLBuffer } | null = null;
+  /** A dynamic mesh's position and normal buffers, for a pose written on the device; else null. */
+  get streams(): { readonly positions: WebGLBuffer; readonly normals: WebGLBuffer } | null {
+    return this.deformable;
+  }
+  /** The colour buffer, kept so `updateColors` can rewrite it. Null unless `dynamicColors`. */
+  private readonly recolourable: WebGLBuffer | null = null;
   /** How many floats the position buffer holds, so an update of the wrong size is refused. */
   private readonly positionFloats: number;
   /**
@@ -222,8 +228,15 @@ export class Mesh {
    * and the default is the fast path: filling a buffer with `bufferData` in one call skips the
    * zero-fill that `bufferData(size)` then `bufferSubData` pays for, and every mesh in the
    * engine that does not need to be spread should keep skipping it.
+   * @param dynamicColors Colours as floats in a buffer kept for `updateColors`.
    */
-  constructor(gl: WebGL2RenderingContext, data: MeshData, dynamic = false, spread = false) {
+  constructor(
+    gl: WebGL2RenderingContext,
+    data: MeshData,
+    dynamic = false,
+    spread = false,
+    dynamicColors = false,
+  ) {
     validateMeshData(data);
     this.spread = spread;
     this.hasUvs = data.uvs !== undefined;
@@ -243,11 +256,15 @@ export class Mesh {
      */
     const usage = dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW;
     /* How each attribute travels: sixteen-bit fixed point, or one value as a constant. */
-    const packing = vertexPackingOf(data, dynamic);
+    const packing = vertexPackingOf(data, dynamic, dynamicColors);
     const positions = this.attachAttribute(gl, ATTR_POSITION, data.positions, 3, usage);
     const normals = this.attachAttribute(gl, ATTR_NORMAL, data.normals, 3, usage, packing.normals);
     if (dynamic) this.deformable = { positions, normals };
-    this.attachShared(gl, ATTR_COLOR, data.colors, 3, packing.colors);
+    if (packing.colors === 'stream') {
+      this.recolourable = this.attachAttribute(gl, ATTR_COLOR, data.colors, 3, gl.DYNAMIC_DRAW);
+    } else {
+      this.attachShared(gl, ATTR_COLOR, data.colors, 3, packing.colors);
+    }
     this.attachShared(gl, ATTR_EMISSIVE, data.emissive, 1, packing.emissive);
     /*
      * Absent means "not shiny", supplied as a constant rather than as a buffer of
@@ -463,9 +480,9 @@ export class Mesh {
   /**
    * Rewrite this mesh's positions, and its normals where the caller has them.
    *
-   * **Only the two attributes that move.** Colour, emissive and the rest describe what a surface
-   * *is* and do not change because it bent; rewriting them would be uploading unchanged bytes
-   * every frame. A caller with genuinely changing colour wants a second mesh or a tint.
+   * **Only the two attributes that move.** Emissive and the rest describe what a surface *is* and
+   * do not change because it bent; rewriting them would be uploading unchanged bytes every frame.
+   * A caller whose colours change has `updateColors`, on a mesh made `dynamicColors`.
    *
    * **The bounds are recomputed**, because everything that decides whether this is on screen
    * starts from them — a cloth that blew sideways out of its original box would be culled while
@@ -493,6 +510,30 @@ export class Mesh {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.deformable.normals);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, normals);
     }
+  }
+
+  /**
+   * Rewrite this mesh's colours, three floats a vertex, into the buffer they have to themselves.
+   *
+   * Nothing else moves, the bounds included: a colour does not change where a vertex is.
+   */
+  updateColors(gl: WebGL2RenderingContext, colors: Float32Array): void {
+    if (this.recolourable === null) {
+      throw new Error(
+        'this mesh was not created with { dynamicColors: true }, so its colours are packed or are ' +
+          'one value with no buffer at all, and cannot be rewritten. Say so at `createMesh`: the ' +
+          'flag gives the colours a buffer of their own.',
+      );
+    }
+    if (colors.length !== this.positionFloats) {
+      throw new Error(
+        `this mesh has ${this.positionFloats / 3} vertices and the colours have ` +
+          `${colors.length / 3}. A mesh's vertex count is fixed at creation: the index buffer, ` +
+          'the pipeline and every other attribute are sized against it.',
+      );
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.recolourable);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, colors);
   }
 
   /**
@@ -638,8 +679,9 @@ export function createMeshIncremental(
   gl: WebGL2RenderingContext,
   data: MeshData,
   dynamic = false,
+  dynamicColors = false,
 ): IncrementalMesh {
-  const mesh = new Mesh(gl, data, dynamic, true);
+  const mesh = new Mesh(gl, data, dynamic, true, dynamicColors);
   return { mesh, upload: mesh.uploads(gl) };
 }
 

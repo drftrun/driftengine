@@ -12,9 +12,9 @@
  */
 
 /**
- * WebGPU's guaranteed `maxVertexBuffers`, so no verb can outgrow it. The most any binds is five — a
- * dynamic mesh's positions, normals, rows and constants, and an instanced batch's placements — and
- * this said three, then four, while text and bolts already bound four.
+ * WebGPU's guaranteed `maxVertexBuffers`, so no verb can outgrow it. The most any binds is six — a
+ * dynamic mesh's positions, normals, rows, constants and rewritten colours, and an instanced
+ * batch's placements — and this said three, then four, while text and bolts already bound four.
  */
 const VERTEX_BUFFER_SLOTS = 8;
 

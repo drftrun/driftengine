@@ -26,7 +26,7 @@ describe('staging on a filesystem that misreports identity', () => {
     targets: ['linux-x64'],
     native: null,
     steam: { appId: null },
-    android: { permissions: [], cleartextTraffic: false },
+    android: { permissions: [], cleartextTraffic: false, orientation: 'unspecified' },
     splash: { show: true, minMs: 1400 },
     publisher: 'example',
     icon: null,
