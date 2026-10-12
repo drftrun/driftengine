@@ -323,7 +323,10 @@ sets. A few are made of something it cannot describe, and a material names one o
   to tip: a white highlight shifted toward the root, a coloured second one toward the tip, a glow
   when a light is behind (`backlit` scales it), and the light scattered through many strands
   (`scatter`, 0 to 1). `shift` is the tilt of the strand's cuticle in radians, 3° by default. A card
-  authored tip to root swaps its two highlights' ends and takes a negative shift.
+  authored tip to root swaps its two highlights' ends and takes a negative shift. Light from every
+  side (the sky, a probe's irradiance, DriftLight) reaches hair through the same lobes, evaluated
+  for the eye's own side of the strand, so a fibre keeps its colour in the shade. Hair reflects
+  none of the environment, because the reflected lobe already holds that light.
 - `skinModel({ scatterColor, radius, transmission, profile })`, for light that leaves skin a little
   way from where it entered: a softer, redder terminator on curved parts, a red edge to a shadow,
   and light through thin parts from a lamp behind them, as much as `transmission` lets through. Each

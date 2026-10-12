@@ -208,11 +208,12 @@ it("CARRIES THE FRAME'S WIND IN EVERY STEP IT WRITES", () => {
 });
 
 /*
- * **A garment's pull rides in its own words of the record, as the share a substep keeps**:
- * `1 / (1 + pull · h²)`, which the limit pass reads, and 1 — no pull — where none is asked for.
- * A pull of 3600 at a step of 1/60 keeps exactly half.
+ * **A garment's pull rides in its own words of the record, as a substep's stiffness**: `pull · h²`,
+ * which the limit pass weighs by each particle's share and turns into what it keeps,
+ * `1 / (1 + w · pull · h²)`; and 0 — no pull — where none is asked for. A pull of 3600 at a step of
+ * 1/60 is a stiffness of exactly 1, so a particle of weight 1 keeps half.
  */
-it('CARRIES THE SHARE A SUBSTEP KEEPS OF A PULL, AND ONE WHERE THERE IS NONE', () => {
+it("CARRIES A PULL AS A SUBSTEP'S STIFFNESS, AND NONE WHERE THERE IS NONE", () => {
   const { device, log } = recordingDevice();
   const cloth = new GpuClothSet(device, [chain({ pull: 3600 }), chain({})]);
   advance(cloth, 1 / 60, 1);
@@ -220,8 +221,8 @@ it('CARRIES THE SHARE A SUBSTEP KEEPS OF A PULL, AND ONE WHERE THERE IS NONE', (
   expect(paces.length).toBeGreaterThan(0);
   for (const entry of paces) {
     const words = new Float32Array(entry.data as ArrayBuffer);
-    expect(words[35]).toBe(0.5);
-    expect(words[44 + 35]).toBe(1);
+    expect(words[35]).toBe(1);
+    expect(words[44 + 35]).toBe(0);
   }
 });
 

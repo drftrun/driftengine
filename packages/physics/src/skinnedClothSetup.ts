@@ -120,10 +120,10 @@ export interface SkinnedClothParameters {
    * A share scaled by the step as `damping` is would hold a sag proportional to the step: hair
    * authored to keep 0.7 of its offset a 1/60 step sags 6.36, 3.49 and 1.83 mm at 1/60, 1/120 and
    * 1/240 that way, where this holds 6.36 mm at all three. A share `k` kept a step at a step `s` is `(1 / k − 1) / s²` here, and keeps
-   * exactly `k` at that step. **What it gives up**: one pull for the whole garment, so roots that
-   * should hold harder than tips hold them as hard; it is a pull rather than a limit, so a hard blow
-   * still takes a particle out of shape for a moment; and with no `damping` a stiff one rings, at a
-   * rate a coarse step damps more than a fine one does.
+   * exactly `k` at that step. `SkinnedClothSetup.pullWeights` weighs it particle by particle, so a
+   * strap can be held at its root and hang free at its tip. **What it gives up**: it is a pull
+   * rather than a limit, so a hard blow still takes a particle out of shape for a moment; and with
+   * no `damping` a stiff one rings, at a rate a coarse step damps more than a fine one does.
    */
   readonly pull?: number;
   /**
@@ -173,6 +173,14 @@ export interface SkinnedClothSetup {
   readonly inverseBind?: Float32Array;
   readonly limits?: ClothLimits;
   readonly colliders?: readonly ClothCollider[];
+  /**
+   * One a particle, 0 to 1: how much of the garment's `pull` draws it toward its skinned place,
+   * each substep keeping `1 / (1 + w · pull · h²)` of its offset. Absent, every particle takes the
+   * whole pull. **For a garment held unevenly**: a strap held at its root and free at its tip, a
+   * styled fringe held nearly whole while the body of a coat swings free. A weight of 0 is no pull
+   * at all, which is a free particle, not a kinematic one: `inverseMass` is what pins.
+   */
+  readonly pullWeights?: Float32Array;
 }
 
 /** The parameters with every default filled in. */
@@ -284,6 +292,12 @@ export function validateClothSetup(setup: SkinnedClothSetup): void {
   per('limits.frontstop', setup.limits?.frontstop, 2);
   per('limits.thickness', setup.limits?.thickness, 1);
   per('limits.selfCollision', setup.limits?.selfCollision, 1);
+  per('pullWeights', setup.pullWeights, 1);
+  const weights = setup.pullWeights;
+  for (let i = 0; weights !== undefined && i < weights.length; i++) {
+    const w = weights[i] as number;
+    if (!(w >= 0 && w <= 1)) fail(`pullWeights[${i}] is ${w}: a share of the pull, 0 to 1`);
+  }
   if ((setup.joints === undefined) !== (setup.weights === undefined))
     fail('joints without weights, or weights without joints');
   if ((setup.joints2 === undefined) !== (setup.weights2 === undefined))

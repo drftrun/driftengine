@@ -129,6 +129,42 @@ describe('a skinned cloth posed by a skeleton', () => {
     expect(at(loose, 0)[1]).toBeLessThan(-1);
   });
 
+  /*
+   * **A weight takes its share of the pull, particle by particle.** Four free particles a metre
+   * apart, nothing joining them, the same pull of 1000 and gravity −10 as above, weighted 1, 0.5,
+   * 0.25 and 0: each hangs where its own share of the pull holds it, 10 / (w · 1000) below its
+   * skinned place — 0.01, 0.02 and 0.04 — at a step of 1/60 and of 1/240 alike, and the one
+   * weighted 0 is not pulled at all and falls through a metre in two seconds, as a free particle.
+   */
+  it('A PULL WEIGHT HOLDS EACH PARTICLE AT THE SAG ITS OWN SHARE OF THE PULL GIVES', () => {
+    for (const step of [1 / 60, 1 / 240]) {
+      const cloth = new SkinnedCloth(
+        particles([0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0], [1, 1, 1, 1], {
+          parameters: { gravity: [0, -10, 0], pull: 1000, damping: Math.log(0.25), step },
+          pullWeights: new Float32Array([1, 0.5, 0.25, 0]),
+        }),
+      );
+      cloth.setPose(joints(8), translation(0, 0, 0));
+      cloth.advance(2);
+      expect(at(cloth, 3)[1]).toBeLessThan(-1);
+      cloth.advance(18);
+      near(at(cloth, 0), [0, -0.01, 0], 5);
+      near(at(cloth, 1), [1, -0.02, 0], 5);
+      near(at(cloth, 2), [2, -0.04, 0], 5);
+    }
+  });
+
+  it('refuses a pull weight outside 0 to 1, or one for each particle it does not have', () => {
+    for (const bad of [1.5, -0.1, Number.NaN]) {
+      expect(
+        () => new SkinnedCloth(particles([0, 0, 0], [1], { pullWeights: new Float32Array([bad]) })),
+      ).toThrow(/pullWeights\[0\] is/);
+    }
+    expect(
+      () => new SkinnedCloth(particles([0, 0, 0], [1], { pullWeights: new Float32Array(2) })),
+    ).toThrow(/pullWeights has 2 entries for 1 particles/);
+  });
+
   it('refuses a pull below zero, which would push a particle out of shape', () => {
     expect(() => new SkinnedCloth(particles([0, 0, 0], [1], { parameters: { pull: -1 } }))).toThrow(
       /a pull of -1/,

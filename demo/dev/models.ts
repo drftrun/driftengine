@@ -9,7 +9,11 @@
  *                                     strength 0 (the control), 0.8, and 0.8 turned a quarter
  *     /models.html?view=hair          a curtain of bowed strands, a lamp behind it on the line of
  *                                     sight: &backlit=0 turns the transmitted lobe off, the
- *                                     control for its glow; &standard=1 draws them unmodelled
+ *                                     control for its glow; &standard=1 draws them unmodelled;
+ *                                     &sky=only puts out the sun and the lamps under an even
+ *                                     white sky, so a strand shows the share of light from every
+ *                                     side it returns, as a colour; &fibre=r,g,b sets the strands'
+ *                                     linear colour and &scatter= their scatter
  *     /models.html?view=skin          at a person's scale: a head's curvature, a thin fin like an
  *                                     ear with a lamp behind it, a low sun across the terminator;
  *                                     &standard=1 draws both unmodelled, &backlight=0 the lamp off,
@@ -382,6 +386,14 @@ function patch(size: number): MeshData {
   };
 }
 
+/** `&fibre=r,g,b`: the strands' linear colour, or null where the page's own is wanted. */
+function fibreAsked(): Vec3 | null {
+  const parts = (ASKED.get('fibre') ?? '').split(',').map(Number);
+  return parts.length === 3 && parts.every((v) => Number.isFinite(v))
+    ? [parts[0] as number, parts[1] as number, parts[2] as number]
+    : null;
+}
+
 /** A one-texel map of the colour given, read linear: a model's channels where it wants constants. */
 function constantMap(r: number, g: number, b: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
@@ -459,6 +471,14 @@ async function main(): Promise<void> {
     /* Behind the curtain on the line from the eye through it, where light passes straight through. */
     env.lightPositions.set([0.4, -0.2, -3.2], 3);
     env.lightSourceRadii.set([0.12, 0.5]);
+  }
+  /* `&sky=only`: no sun and no lamp, a white sky above and below, so a pixel is the share itself. */
+  const skyOnly = ASKED.get('sky') === 'only';
+  if (skyOnly) {
+    env.lightCount = 0;
+    env.directionalColor = [0, 0, 0];
+    env.ambient = [1, 1, 1];
+    env.ambientGround = [1, 1, 1];
   }
   if (eye) {
     /* A small lamp up and to the right, for the cornea's glint; the sun from the left for the iris. */
@@ -556,12 +576,17 @@ async function main(): Promise<void> {
           ? [
               {
                 label: ASKED.get('standard') === '1' ? 'strands, standard' : 'strands',
-                color: [0.45, 0.28, 0.14],
+                color: fibreAsked() ?? [0.45, 0.28, 0.14],
                 material: {
                   model:
                     ASKED.get('standard') === '1'
                       ? null
-                      : hairModel({ backlit: ASKED.get('backlit') === '0' ? 0 : 1 }),
+                      : hairModel({
+                          backlit: ASKED.get('backlit') === '0' ? 0 : 1,
+                          ...(ASKED.has('scatter')
+                            ? { scatter: Number(ASKED.get('scatter')) }
+                            : {}),
+                        }),
                 },
               },
             ]
@@ -638,7 +663,7 @@ async function main(): Promise<void> {
   draw();
   stats.textContent =
     `${renderer.backend} · ${materials.map((m) => m.label).join(' | ')}` +
-    ` · backlight ${backlight ? 'on' : 'off'}`;
+    ` · backlight ${backlight ? 'on' : 'off'}${skyOnly ? ' · sky only' : ''}`;
   (window as unknown as { __modelsReady: boolean }).__modelsReady = true;
 }
 

@@ -86,6 +86,7 @@ export class SkinnedCloth {
   private readonly control: ClothControl;
   private readonly targets: ClothTargets;
   private readonly limits: ClothLimits;
+  private readonly pullWeights: Float32Array | null;
   private readonly colliders: number;
   /** The air the cloth drags toward, metres a second: the set-up's until `setWind` says otherwise. */
   private readonly wind: [number, number, number];
@@ -122,6 +123,7 @@ export class SkinnedCloth {
           );
     this.tethers = setup.tethers ?? null;
     this.limits = setup.limits ?? {};
+    this.pullWeights = setup.pullWeights ?? null;
     this.colliders = setup.colliders?.length ?? 0;
     /* Made once, so a step builds nothing: the control calls back into the private step. */
     const device: ClothDevice = {
@@ -219,7 +221,7 @@ export class SkinnedCloth {
     const keep = exactExp(damping * h);
     const dragKeep = exactExp(drag * h);
     /* A compliant constraint's step toward the skinned place: see `SkinnedClothParameters.pull`. */
-    const pullKeep = 1 / (1 + this.parameters.pull * h * h);
+    const pullStep = this.parameters.pull * h * h;
     for (let s = 0; s < substeps; s++) {
       predictParticles(
         this.positions,
@@ -242,7 +244,7 @@ export class SkinnedCloth {
           solveTethers(this.positions, tethers.particles, tethers.anchors, tethers.lengths);
         }
       }
-      this.limit(pullKeep);
+      this.limit(pullStep);
       finishParticles(this.positions, this.substepStart, this.velocities, this.inverseMass, invH);
     }
     if (blend > 0) this.blend(blend);
@@ -252,10 +254,12 @@ export class SkinnedCloth {
    * The pull, the limits and the colliders, after the constraints, so a garment pulling into the body
    * loses. The pull first, so the hard limits have the last word.
    */
-  private limit(pullKeep: number): void {
+  private limit(pullStep: number): void {
     const { positions, inverseMass, targets, limits } = this;
     const { maxDistanceScale, margin } = this.parameters;
-    if (pullKeep < 1) applyPull(positions, inverseMass, targets.position, pullKeep);
+    if (pullStep > 0) {
+      applyPull(positions, inverseMass, targets.position, this.pullWeights, pullStep);
+    }
     if (limits.maxDistance !== undefined) {
       applyMaxDistance(
         positions,

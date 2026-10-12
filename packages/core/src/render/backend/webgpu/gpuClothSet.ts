@@ -338,7 +338,7 @@ export class GpuClothSet {
     u[base + 32] = garment.range.colliderBase;
     u[base + 33] = garment.range.colliders;
     u[base + 34] = garment.particles.width;
-    f[base + 35] = 1 / (1 + p.pull * h * h);
+    f[base + 35] = p.pull * h * h;
     f[base + 36] = exactExp(p.damping * h);
     f[base + 37] = exactExp(p.drag * h);
     f[base + 38] = p.maxDistanceScale;

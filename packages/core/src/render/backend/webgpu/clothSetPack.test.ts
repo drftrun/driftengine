@@ -52,16 +52,19 @@ it("REGROUPS EVERY GARMENT'S CONSTRAINTS BY COLOUR, ITS PARTICLES OFFSET BY WHER
 
 /*
  * **A section lies at its start times the set's count, with each garment at its base**: the inverse
- * masses of both chains end to end, the second's unrigged joint the set's joint 1 at weight 1, and
- * the last section naming each particle's garment.
+ * masses of both chains end to end, the second's unrigged joint the set's joint 1 at weight 1, the
+ * pull weights — the first chain's as given, the second's 1 where it names none — and the last
+ * section naming each particle's garment.
  */
 it("LAYS EACH SECTION END TO END, A GARMENT'S JOINTS OFFSET, AND SAYS WHOSE EACH PARTICLE IS", () => {
-  const set = packClothSet([packCloth(chain(3)), packCloth(chain(4))]);
+  const weighted = { ...chain(3), pullWeights: new Float32Array([0, 0.5, 0.25]) };
+  const set = packClothSet([packCloth(weighted), packCloth(chain(4))]);
   const n = set.count;
   expect(set.statics.length).toBe(n * CLOTH_SET_STATIC_FLOATS);
   expect(Array.from(set.statics.subarray(0, n))).toEqual([0, 1, 1, 0, 1, 1, 1]);
   /* Particle 4, the second chain's second: its first influence is joint 1 at weight 1. */
   const influence = 13 * n + 4 * 16;
   expect([set.statics[influence], set.statics[influence + 4]]).toEqual([1, 1]);
-  expect(Array.from(set.statics.subarray(29 * n, 30 * n))).toEqual([0, 0, 0, 1, 1, 1, 1]);
+  expect(Array.from(set.statics.subarray(29 * n, 30 * n))).toEqual([0, 0.5, 0.25, 1, 1, 1, 1]);
+  expect(Array.from(set.statics.subarray(30 * n, 31 * n))).toEqual([0, 0, 0, 1, 1, 1, 1]);
 });

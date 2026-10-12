@@ -258,6 +258,13 @@ step, swings out of it as the body moves and settles back, as fast as `damping` 
 authored as a share `k` of the offset kept a step, at a step `s`, is `(1 / k - 1) / s²`, and keeps
 exactly that share at that step.
 
+A garment held unevenly weighs its pull particle by particle with `pullWeights` in the set-up, one
+a particle from 0 to 1: a strap held at its root and hanging free at its tip, a styled fringe held
+nearly whole beside a coat that swings free. Each particle keeps `1 / (1 + w · pull · h²)` of its
+offset each substep, `h` the substep's length, and sits `9.81 / (w · pull)` metres below its skinned
+place at rest. Unset, every particle takes the whole pull. A weight of 0 is no pull at all, a free
+particle rather than a pinned one: `inverseMass` is what pins.
+
 Several garments step as one with `createSkinnedClothSet(renderer, setups)`: one compute pass and
 one submit a frame for all of them, and a step costs one garment's dispatches however many the set
 holds. Each garment is named by its index; pose each, then step the set once:

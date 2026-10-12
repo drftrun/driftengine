@@ -695,8 +695,9 @@ export const MAIN_GLSL = `void main() {
      * branch it did not take before.
      */
     /* A model reflects its environment whatever the pass asked of the standard model: see
-       modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
-    if (uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) {
+       modelReflectance. Hair takes none: modelReflects. On the switches alone, so the derivatives
+       below stay in uniform flow. */
+    if ((uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) && modelReflects()) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
       vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);

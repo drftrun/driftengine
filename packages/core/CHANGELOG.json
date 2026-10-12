@@ -1,5 +1,21 @@
 [
   {
+    "version": "4.13.4",
+    "date": "2026-10-12",
+    "entries": [
+      {
+        "kind": "changed",
+        "short": "Hair takes the sky, a probe's light and DriftLight through its own highlights, for the eye's side of each strand, and reflects none of the environment, so a fibre keeps its colour in shade.",
+        "text": "Hair is lit from every side through its own lobes. The sky, a probe's irradiance and DriftLight reached a hair surface through its scatter alone, and the environment's reflection was laid over it, white, at the strand's Fresnel: a consumer's golden hair, base colour (1, 0.43, 0.115) and scatter 0.2, was reported drawing as platinum where its source draws it gold. Now the lobes are evaluated once for a light along the eye flattened across the strand, unshadowed, with no transmitted lobe because that direction stands for the eye's side, and every lobe widened by 0.2 radians as a source that large would widen it; twice their sum, at most 1, multiplies the light from every side, under the model map's occlusion as before. The scatter's half of that is exactly what the scatter alone gave, its own average over the sphere, so what is new is the reflected and the internally reflected lobes, which carry the fibre's colour into the shade. Hair reflects none of the environment, the probe, the sky's gradient and screen-space reflections alike, because the reflected lobe already holds that light. Measured on `demo/dev/models.html?view=hair&sky=only`, strands under an even white sky: a strand's middle drew (149, 127, 102) and draws (235, 189, 142), where the reference in `hairLobes.ts` gives (234, 189, 142) for the same geometry; the row of five models moves 8,340 pixels, every one of them the hair sphere's; and WebGPU and WebGL2, on Vulkan and on OpenGL, agree as closely as they did. **What it gives up**: hair lit from behind by an open sky shows no rim from the sky, which the lamps still give it, and the share moves with the eye as the lobes do rather than holding still as an average would."
+      },
+      {
+        "kind": "added",
+        "short": "A skinned cloth's pull is weighed particle by particle, so a strap is held at its root and hangs free at its tip: `SkinnedClothSetup.pullWeights`.",
+        "text": "`SkinnedClothSetup.pullWeights` weighs a skinned cloth's pull particle by particle, one a particle from 0 to 1: each keeps `1 / (1 + w · pull · h²)` of its offset from its skinned place a substep, and hangs `9.81 / (w · pull)` metres below it at rest. One pull for a whole garment had to choose, as a consumer reported: held at its mean, a belt's tips stood out from the waist they hang against; held at none, a styled fringe fell past the jaw it is swept up from. Now a strap is held at its root and hangs free at its tip, a fringe is held nearly whole and a coat's body swings free, in one garment. Absent, every particle takes the whole pull, as before; a weight of 0 is no pull at all, a free particle rather than a pinned one, and a weight outside 0 to 1 is refused by its index. The device carries the weights as a section of its statics and the pull as a substep's stiffness, `pull · h²`, and divides as the CPU does. Measured on `demo/dev/skinnedCloth.html?pull=400&weights=ramp`, a cape weighed 1 at its shoulders to 0 at its hem: it moves 39,267 pixels from the same cape under the whole pull; weights of 1 everywhere draw the unweighted cape to the pixel; WebGPU and WebGL2 agree to 159 pixels; and the device parts from the CPU by 1.8 mm at most and 0.03 mm by the 150th frame, inside what an unweighted pull of 100 parted by on the build before (1.8 mm, 0.07 mm), a hem that hangs free being as sensitive as a weak pull. An unweighted pull draws within 11 pixels of what it drew, the device now dividing in single precision where it was handed the share."
+      }
+    ]
+  },
+  {
     "version": "4.13.3",
     "date": "2026-10-12",
     "entries": [

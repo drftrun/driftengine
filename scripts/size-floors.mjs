@@ -966,7 +966,14 @@ export const FLOORS = {
    * refusals in TypeScript a few hundred bytes of it. A renderer cannot shake it out of a game that
    * lays no detail, since its material path names it.
    */
-  'core-only': 951742,
+  /*
+   * **Raised 2026-10-12 by +1,122, 0.12%, for 4.13.4, with every `core-*` entry by about as much**,
+   * all of it hair lit from every side through its lobes: the GLSL chunk once in the source WebGL2
+   * compiles from, and the WGSL generated from it in each of the lit stage's sixteen variants. The
+   * cloth's pull weights cost a game that makes no skinned cloth nothing, since it shakes the solver
+   * out; `core-and-cloth` carries them, +180 over the rest.
+   */
+  'core-only': 952864,
   /**
    * **The gizmo, 2026-09-03: 4,642 bytes over core, which is 4.53 KB gzipped.**
    *
@@ -992,7 +999,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-gizmo': 956695,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-gizmo': 957843,
   /**
    * **A skinned cloth, 2026-10-05: 14,393 bytes over core, paid only by a game that imports it.**
    *
@@ -1011,7 +1019,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-cloth': 969156,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-cloth': 970458,
   /*
    * Both carry the same drift as `core-only` — they are that bundle plus a package — and both sat
    * at 2.9% of their old floors, which is inside the tolerance and one commit from outside it. A
@@ -1037,7 +1046,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-audio': 958144,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-audio': 959265,
   /*
    * **`@driftengine/splats`, measured 2026-08-25 on the commit that published it.** Core alone is
    * 524,402 and this is 536,676, so the whole package — two readers, the packing, the counting
@@ -1072,7 +1082,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-animation': 958129,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-animation': 959271,
   /*
    * **The four floors below moved with core rather than on their own account, 2026-08-25.** Each
    * is that bundle plus a package, so core's +5,342 for Track A is in every one of them — and each
@@ -1120,7 +1131,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-script': 993280,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-script': 994459,
   /*
    * **`@driftengine/texture`, measured on the commit that published it.** Standalone, like
    * `drft-only` and `entities-only`: the package imports no renderer, so this is the whole of what
@@ -1326,7 +1338,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-splats': 969302,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-splats': 970409,
   /*
    * **Measured 2026-09-02, on the commit that published `@driftengine/terrain`.** Core alone is
    * 629,614 and this is the first number beside it, so the difference is the whole package: a
@@ -1356,7 +1369,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-terrain': 953098,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-terrain': 954226,
   /**
    * **The 2D layer: 8.7 KB gzipped over core**, and it sits where Track D's price table says it
    * should.
@@ -1399,7 +1413,8 @@ export const FLOORS = {
    */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-ui2d': 962476,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-ui2d': 963582,
   /* Lowered 2026-09-30 twice with `core-only`: the generated WGSL stores each shared item once. */
   /*
    * Raised 2026-10-01 by +7,689: `core-only`'s 4,725, and 2,740 that predates it — the loader's
@@ -1417,7 +1432,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-and-assets': 981754,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-and-assets': 982835,
   /**
    * **What placing a sound in the world costs, published rather than hidden.**
    *
@@ -1441,7 +1457,8 @@ export const FLOORS = {
   /* Raised 2026-10-11 with `core-only`, for 4.13.0. */
   /* Raised 2026-10-11 with `core-only`, for 4.13.2. */
   /* Raised 2026-10-12 with `core-only`, for 4.13.3. */
-  'core-audio-spatial': 960190,
+  /* Raised 2026-10-12 with `core-only`, for 4.13.4. */
+  'core-audio-spatial': 961364,
   /**
    * **The entity model with no engine at all: 632 bytes gzipped.**
    *

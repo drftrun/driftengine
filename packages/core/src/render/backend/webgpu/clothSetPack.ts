@@ -34,6 +34,7 @@ const SECTIONS: readonly (readonly [number, number])[] = [
   [7, 3],
   [10, 3],
   [13, 16],
+  [29, 1],
 ];
 /** Where the influences start, and where the garment's index sits, in particle counts. */
 const INFLUENCES = 13;

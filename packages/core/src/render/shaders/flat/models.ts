@@ -12,8 +12,8 @@
  * **Where the models plug in.** `main` gathers the surface once (`modelSurface`), then asks at each
  * place light arrives: `modelLight` for the sun, each lamp and each rectangle, `modelAmbient` for
  * the sky and the probe's irradiance, `modelIrradiance` for DriftLight, `modelReflectNormal` and
- * `modelReflectance` for the environment's reflection. Each returns today's term for the standard
- * model, and each model's file is where its own answers are.
+ * `modelReflectance` for the environment's reflection, which `modelReflects` keeps from hair. Each
+ * returns today's term for the standard model, and each model's file is where its own answers are.
  *
  * **What a model returns from a light** is the two halves the standard terms are: a diffuse already
  * weighted by the angle of arrival, and a specular lobe in the engine's peak-normalised units (see
@@ -93,6 +93,15 @@ bool modelSeesBehind() {
   if (MODEL_HAIR) return true;
   if (MODEL_SKIN) return true;
   return false;
+}
+
+/**
+ * Whether the environment's reflection reaches this surface: every model's but hair's, whose share
+ * of it is in its light from every side (hair.ts).
+ */
+bool modelReflects() {
+  if (MODEL_HAIR) return false;
+  return true;
 }
 
 /* The surface a model shades, gathered once in main before any light reaches it. */
@@ -285,7 +294,6 @@ vec3 modelIrradiance(vec3 irradiance) {
 /** The normal the environment is reflected about: the surface's own, but for a stretched lobe. */
 vec3 modelReflectNormal(vec3 n) {
   if (MODEL_ANISOTROPIC) return anisotropicReflectNormal(n);
-  if (MODEL_HAIR) return hairAcross();
   return n;
 }
 
@@ -361,7 +369,6 @@ vec3 modelDiffuseOut(vec3 diffuse, float fog) {
  * what the standard model would.
  */
 float modelReflectance(float standard) {
-  if (MODEL_HAIR) return hairReflectance();
   if (MODEL_SKIN) return skinReflectance();
   if (MODEL_EYE) return eyeReflectance();
   return standard;

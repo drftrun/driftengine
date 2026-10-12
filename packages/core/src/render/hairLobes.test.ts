@@ -4,6 +4,7 @@ import {
   HAIR_OUT,
   HAIR_SCATTER_SPHERE,
   hairFresnel,
+  hairIndirect,
   hairLight,
   hairLongitudinal,
 } from './hairLobes.ts';
@@ -140,11 +141,11 @@ describe('hair', () => {
   });
 
   /*
-   * **The scatter's answer to an even sky is `HAIR_SCATTER_SPHERE`**, which the lit stage multiplies
-   * the ambient by: its shape integrated over the sphere and divided by π, here by quadrature, for
-   * any eye. The constant's derivation is in its comment; this is the integral it stands for.
+   * **The scatter's answer to an even sky is `HAIR_SCATTER_SPHERE`**, which light from every side
+   * holds the scatter to: its shape integrated over the sphere and divided by π, here by quadrature,
+   * for any eye. The constant's derivation is in its comment; this is the integral it stands for.
    */
-  it('SCATTERS AN EVEN SKY BY THE CONSTANT THE AMBIENT USES', () => {
+  it('SCATTERS AN EVEN SKY BY THE CONSTANT LIGHT FROM EVERY SIDE IS HELD TO', () => {
     const out = new Float64Array(HAIR_OUT.length);
     const n = 160;
     for (const view of [0, 0.7]) {
@@ -183,6 +184,99 @@ describe('hair', () => {
       for (let k = 0; k < HAIR_OUT.length; k++) {
         expect(Number.isFinite(out[k])).toBe(true);
         expect(out[k]).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  /*
+   * **Light from every side, through the lobes along the flattened eye.** The eye in the plane
+   * normal to the strand, so the light along it is the eye itself: `sinθi` and `sinθo` 0, the half
+   * difference angle 0, and `cosφ` 1 but for the regulariser, `1/√(1 + 1e-4)`. A white fibre at
+   * roughness 0.5 (β 0.25), no tilt, scatter 0.2, worked by hand from the formulas:
+   *
+   * - R: a Gaussian of width 0.25 + 0.2 at 0, times 0.25 cos(φ/2), times F(1) = F0 0.0465206:
+   *   0.886524 · 0.25 · 0.999988 · 0.0465206 = 0.0103105, and π of it 0.0323912;
+   * - TRT: width 0.5 + 0.2, `exp(17 cosφ − 16.78)` 1.24503, F(0.5) 0.0763168 so (1 − f)² f 0.0651128:
+   *   0.569917 · 1.24503 · 0.0651128 = 0.0462013, and π of it 0.145146;
+   * - the scatter: `mix(1/2, 1, 0.33)` 0.665 times 0.2, 0.133;
+   *
+   * twice their sum 0.621074. The report's fibre, (1, 0.43, 0.115), tints TRT by its 0.8th power and
+   * the scatter by its root: 0.386988 and 0.206438 in green and blue — gold, where the scatter
+   * alone would answer the same light with (0.266, 0.174, 0.090).
+   */
+  it('LIGHTS A STRAND FROM EVERY SIDE THROUGH R, TRT AND THE SCATTER ALONG THE FLATTENED EYE', () => {
+    const lobes = new Float64Array(HAIR_OUT.length);
+    const out = new Float64Array(3);
+    const eye = around(0, 0.4);
+    hairIndirect(TANGENT, eye, eye, WHITE, 0.5, 0, 0.2, lobes, out);
+    expect(lobes[HAIR_OUT.r]).toBeCloseTo(0.0323912, 6);
+    expect(lobes[HAIR_OUT.trt]).toBeCloseTo(0.145146, 5);
+    expect(lobes[HAIR_OUT.scatter]).toBeCloseTo(0.133, 9);
+    expect(out[0]).toBeCloseTo(0.621074, 5);
+    hairIndirect(TANGENT, eye, eye, [1, 0.43, 0.115], 0.5, 0, 0.2, lobes, out);
+    expect(out[0]).toBeCloseTo(0.621074, 5);
+    expect(out[1]).toBeCloseTo(0.386988, 5);
+    expect(out[2]).toBeCloseTo(0.206438, 5);
+  });
+
+  /*
+   * **Nothing from behind, and never more than arrives.** The direction stands for the eye's side,
+   * so the transmitted lobe is not in it at all. And a strand scattering everything, 1, would answer
+   * with its scatter alone 1.33 of what reaches it, so the share stops at 1.
+   */
+  it('TAKES NO TRANSMITTED LOBE AND RETURNS AT MOST WHAT ARRIVES', () => {
+    const lobes = new Float64Array(HAIR_OUT.length);
+    const out = new Float64Array(3);
+    for (const view of [0, 0.5, 1.2]) {
+      const eye = around(Math.sin(view), 2);
+      hairIndirect(TANGENT, eye, eye, WHITE, 0.3, 0.05, 1, lobes, out);
+      for (let c = 0; c < 3; c++) {
+        expect(lobes[HAIR_OUT.tt + c]).toBe(0);
+        expect(out[c]).toBe(1);
+      }
+    }
+  });
+
+  /*
+   * **Twice, because the scatter's half is then its average over the sphere**: along the flattened
+   * eye, for any eye, the scatter answers with half of `HAIR_SCATTER_SPHERE` — the constant the
+   * quadrature above holds to — so doubling the one direction leaves the scatter as an even sky
+   * gives it, and R and TRT are what the direction adds.
+   */
+  it('DOUBLES ONE DIRECTION SO ITS SCATTER IS WHAT AN EVEN SKY GIVES', () => {
+    const lobes = new Float64Array(HAIR_OUT.length);
+    const out = new Float64Array(3);
+    const fibre: [number, number, number] = [0.64, 0.25, 0.09];
+    for (const view of [0, 0.7, -1.1]) {
+      const eye = around(Math.sin(view), 0.9);
+      hairIndirect(TANGENT, eye, eye, fibre, 0.4, 0.05, 0.6, lobes, out);
+      for (let c = 0; c < 3; c++) {
+        expect(2 * (lobes[HAIR_OUT.scatter + c] as number)).toBeCloseTo(
+          HAIR_SCATTER_SPHERE * Math.sqrt(fibre[c]) * 0.6,
+          9,
+        );
+      }
+    }
+  });
+
+  /*
+   * **The eye along the strand** has no direction across it, and the surface's normal stands in, as
+   * the shader's `hairAcross` has it; a black fibre and no tangent stay finite too.
+   */
+  it('STAYS FINITE FROM EVERY SIDE WHERE THE EYE RUNS ALONG THE STRAND', () => {
+    const lobes = new Float64Array(HAIR_OUT.length);
+    const out = new Float64Array(3);
+    const normal = [0, 1, 0];
+    const cases: [number[], number[], [number, number, number]][] = [
+      [TANGENT, [1, 0, 0], WHITE],
+      [TANGENT, [-1, 0, 0], [0, 0, 0]],
+      [[0, 0, 0], around(0.3, 0.2), WHITE],
+    ];
+    for (const [t, v, fibre] of cases) {
+      hairIndirect(t, v, normal, fibre, 0.3, 0.05, 0.7, lobes, out);
+      for (let c = 0; c < 3; c++) {
+        expect(Number.isFinite(out[c])).toBe(true);
+        expect(out[c]).toBeGreaterThanOrEqual(0);
       }
     }
   });

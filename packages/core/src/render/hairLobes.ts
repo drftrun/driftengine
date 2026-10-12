@@ -50,6 +50,17 @@ export const HAIR_MIN_BETA = 0.05;
  */
 export const HAIR_SCATTER_SPHERE = 1.33;
 
+/**
+ * How far every lobe is widened for light from every side, in radians: the angle a source would
+ * subtend to widen them as much, `sourceRadius / 2·dist` in `hairLight`'s terms.
+ *
+ * **0.2, the real-time form's own value**, which stands one direction in for the sphere: a lobe as
+ * narrow as a lamp's would put the whole sky's light into one highlight wherever the eye's
+ * direction happens to meet it. What it gives up is the sky's shape: a sun low in a clear sky and
+ * an even overcast light hair through the same widened lobes.
+ */
+export const HAIR_AREA = 0.2;
+
 /** How much the scatter term leans toward the strand's own direction rather than the pseudo-normal. */
 const KAJIYA_SHARE = 0.33;
 
@@ -99,6 +110,71 @@ export function hairLight(
   dist: number,
   out: Float64Array,
 ): void {
+  const grow = sourceRadius / Math.max(2 * dist, 1e-3);
+  hairLobes(tangent, toLight, toEye, fibre, roughness, shift, scatter, backlit, grow, out);
+}
+
+/** The flattened eye `hairIndirect` lights a strand along, as the shader finds it. */
+const flattened = new Float64Array(3);
+
+/**
+ * The share of light from every side a strand returns, a colour into `out`, with the one
+ * direction's lobes it is made of into `lobes` (`HAIR_OUT`'s layout). `normal` is the surface's,
+ * which stands in for the flattened eye where the eye runs along the strand and there is none.
+ *
+ * **One direction for the sphere**: the eye flattened across the strand, `V − T(V·T)`, unshadowed,
+ * with no light from behind and so no transmitted lobe, every lobe widened by `HAIR_AREA`. Twice
+ * the sum, and at most all of what arrives. **Why twice**: the scatter's half is then
+ * `HAIR_SCATTER_SPHERE`, its own answer to an even sky — along the flattened eye its shape is
+ * `mix(1/2, 1, 0.33)`, 0.665, which doubled is that constant's 1.33 — so the lobes ride on a
+ * scatter the sphere's quadrature already holds to, and R and TRT are what the direction adds.
+ */
+export function hairIndirect(
+  tangent: ArrayLike<number>,
+  toEye: ArrayLike<number>,
+  normal: ArrayLike<number>,
+  fibre: Vec3,
+  roughness: number,
+  shift: number,
+  scatter: number,
+  lobes: Float64Array,
+  out: Float64Array,
+): void {
+  const along = dot(tangent, toEye);
+  let length2 = 0;
+  for (let c = 0; c < 3; c++) {
+    const across = (toEye[c] as number) - (tangent[c] as number) * along;
+    flattened[c] = across;
+    length2 += across * across;
+  }
+  for (let c = 0; c < 3; c++) {
+    flattened[c] =
+      length2 > 1e-8 ? (flattened[c] as number) / Math.sqrt(length2) : (normal[c] as number);
+  }
+  hairLobes(tangent, flattened, toEye, fibre, roughness, shift, scatter, 0, HAIR_AREA, lobes);
+  for (let c = 0; c < 3; c++) {
+    const sum =
+      (lobes[HAIR_OUT.r] as number) +
+      (lobes[HAIR_OUT.tt + c] as number) +
+      (lobes[HAIR_OUT.trt + c] as number) +
+      (lobes[HAIR_OUT.scatter + c] as number);
+    out[c] = Math.min(1, 2 * sum);
+  }
+}
+
+/** `hairLight`'s arithmetic, every lobe widened by `grow` radians. */
+function hairLobes(
+  tangent: ArrayLike<number>,
+  toLight: ArrayLike<number>,
+  toEye: ArrayLike<number>,
+  fibre: Vec3,
+  roughness: number,
+  shift: number,
+  scatter: number,
+  backlit: number,
+  grow: number,
+  out: Float64Array,
+): void {
   const sinI = clamp(dot(tangent, toLight), -1, 1);
   const sinO = clamp(dot(tangent, toEye), -1, 1);
   /*
@@ -124,7 +200,6 @@ export function hairLight(
   const cosPhi = lpvp / Math.sqrt(lp2 * vp2 + 1e-4);
   const cosHalfPhi = Math.sqrt(clamp(0.5 + 0.5 * cosPhi, 0, 1));
   const beta = Math.max(roughness * roughness, HAIR_MIN_BETA);
-  const grow = sourceRadius / Math.max(2 * dist, 1e-3);
   const x = sinI + sinO;
 
   const r =

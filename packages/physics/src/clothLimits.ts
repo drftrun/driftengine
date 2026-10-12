@@ -11,18 +11,23 @@
  */
 
 /**
- * Every free particle drawn toward its skinned position, keeping `keep` of its offset: the share a
- * substep keeps under the garment's `pull`, `1 / (1 + pull · h²)`. A kinematic particle is already
- * there.
+ * Every free particle drawn toward its skinned position under the garment's `pull`: `stiffness` is
+ * `pull · h²`, each particle's weighted by `weights` (all 1 where null), and a particle keeps
+ * `1 / (1 + w · stiffness)` of its offset. A kinematic particle is already there, and one weighted
+ * 0 is left as it is: `t + (p − t)` is not `p` in floats.
  */
 export function applyPull(
   position: Float32Array,
   inverseMass: Float32Array,
   target: Float32Array,
-  keep: number,
+  weights: Float32Array | null,
+  stiffness: number,
 ): void {
   for (let i = 0; i < inverseMass.length; i++) {
     if ((inverseMass[i] as number) === 0) continue;
+    const pull = weights === null ? stiffness : (weights[i] as number) * stiffness;
+    if (!(pull > 0)) continue;
+    const keep = 1 / (1 + pull);
     const at = i * 3;
     for (let k = at; k < at + 3; k++) {
       const t = target[k] as number;

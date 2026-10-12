@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "75c22784:285164",
-  "directionalShadows+environmentProbe": "77ac974c:311175",
-  "directionalShadows+environmentProbe+nightEmissive": "65fd0298:313661",
-  "directionalShadows+nightEmissive": "9ffdf27e:287650",
-  "environmentProbe": "215a01fc:287935",
-  "environmentProbe+nightEmissive": "844cea62:290421",
-  "nightEmissive": "efdc8d9c:264410",
-  "none": "fda9a738:261924",
-  "pointShadows": "41f2ef24:301361",
-  "pointShadows+directionalShadows": "63965afc:324601",
-  "pointShadows+directionalShadows+environmentProbe": "300746bc:350612",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "63de44ce:353098",
-  "pointShadows+directionalShadows+nightEmissive": "b7d9c76c:327087",
-  "pointShadows+environmentProbe": "d9b58ca8:327372",
-  "pointShadows+environmentProbe+nightEmissive": "3b6a369c:329858",
-  "pointShadows+nightEmissive": "7914dd9e:303847",
+  "directionalShadows": "d312befd:286138",
+  "directionalShadows+environmentProbe": "b5c5262b:312149",
+  "directionalShadows+environmentProbe+nightEmissive": "ae2783d3:314635",
+  "directionalShadows+nightEmissive": "e185aa8b:288624",
+  "environmentProbe": "0ebcb853:288909",
+  "environmentProbe+nightEmissive": "0991faed:291395",
+  "nightEmissive": "ddb5cd31:265384",
+  "none": "42820401:262898",
+  "pointShadows": "490191c7:302335",
+  "pointShadows+directionalShadows": "a605fa2f:325575",
+  "pointShadows+directionalShadows+environmentProbe": "3592327d:351586",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "cce2aa7b:354072",
+  "pointShadows+directionalShadows+nightEmissive": "4cc02f53:328061",
+  "pointShadows+environmentProbe": "a3c032b1:328346",
+  "pointShadows+environmentProbe+nightEmissive": "c44b68a9:330832",
+  "pointShadows+nightEmissive": "98157e8d:304821",
 }
 `;
 
@@ -3260,6 +3260,15 @@ bool modelSeesBehind() {
   return false;
 }
 
+/**
+ * Whether the environment's reflection reaches this surface: every model's but hair's, whose share
+ * of it is in its light from every side (hair.ts).
+ */
+bool modelReflects() {
+  if (MODEL_HAIR) return false;
+  return true;
+}
+
 /* The surface a model shades, gathered once in main before any light reaches it. */
 vec3 mNormal;
 vec3 mToEye;
@@ -3444,14 +3453,11 @@ vec3 anisotropicReflectNormal(vec3 n) {
 
 const float HAIR_F0 = 0.046520569;
 const float HAIR_MIN_BETA = 0.050;
-const float HAIR_SCATTER_SPHERE = 1.330;
+const float HAIR_AREA = 0.200;
 
-/* This texel's tilt, gathered once with the surface. */
+/* This texel's tilt, and the share of light from every side it returns: gathered with the surface. */
 float hShift;
-
-void hairSurface() {
-  hShift = uModelParams[0].x * (0.5 + mMap.g);
-}
+vec3 hAround;
 
 /** A longitudinal lobe: a normalised Gaussian of width \`beta\` at \`x\` from its centre. */
 float hairLongitudinal(float beta, float x) {
@@ -3463,14 +3469,18 @@ float hairFresnel(float cosine) {
   return HAIR_F0 + (1.0 - HAIR_F0) * c * c * c * c * c;
 }
 
-/** The normal turned toward the eye across the strand: the scatter's and the environment's. */
+/** The normal turned toward the eye across the strand: the scatter's, and light from every side's. */
 vec3 hairAcross() {
   vec3 across = mToEye - mTangent * dot(mTangent, mToEye);
   float length2 = dot(across, across);
   return length2 > 1e-8 ? across * inversesqrt(length2) : mNormal;
 }
 
-void hairLight(vec3 l, float sourceRadius, float dist) {
+/**
+ * The lobes for light arriving along \`l\`, into \`mSpecular\` and \`mDiffuse\`: every lobe widened by
+ * \`grow\` radians, and the transmitted one scaled by \`backlit\`.
+ */
+void hairLobes(vec3 l, float grow, float backlit) {
   vec3 t = mTangent;
   float sinI = clamp(dot(t, l), -1.0, 1.0);
   float sinO = clamp(dot(t, mToEye), -1.0, 1.0);
@@ -3481,7 +3491,6 @@ void hairLight(vec3 l, float sourceRadius, float dist) {
   float cosPhi = dot(lp, vp) * inversesqrt(dot(lp, lp) * dot(vp, vp) + 1e-4);
   float cosHalfPhi = sqrt(clamp(0.5 + 0.5 * cosPhi, 0.0, 1.0));
   float beta = max(mRoughness * mRoughness, HAIR_MIN_BETA);
-  float grow = sourceRadius / max(2.0 * dist, 1e-3);
   float x = sinI + sinO;
 
   float r = hairLongitudinal(beta + grow, x + 2.0 * hShift) * 0.25 * cosHalfPhi
@@ -3491,7 +3500,7 @@ void hairLight(vec3 l, float sourceRadius, float dist) {
   float h = cosHalfPhi * (1.0 + a * (0.6 - 0.8 * cosPhi));
   float fTT = hairFresnel(cosD * sqrt(clamp(1.0 - h * h, 0.0, 1.0)));
   float tt = hairLongitudinal(0.5 * beta + grow, x - hShift) * exp(-3.65 * cosPhi - 3.98)
-    * (1.0 - fTT) * (1.0 - fTT) * uModelParams[0].z;
+    * (1.0 - fTT) * (1.0 - fTT) * backlit;
   float ttPower = 0.5 * sqrt(clamp(1.0 - h * h * a * a, 0.0, 1.0)) / cosD;
 
   float fTRT = hairFresnel(0.5 * cosD);
@@ -3506,6 +3515,11 @@ void hairLight(vec3 l, float sourceRadius, float dist) {
   mDiffuse = sqrt(mAlbedo) * uModelParams[0].y * mix(wrapped, 1.0 - abs(sinI), 0.33);
 }
 
+/** A lamp, or the sun at no size: widened by the angle it subtends, as \`sphereLobe\` takes it. */
+void hairLight(vec3 l, float sourceRadius, float dist) {
+  hairLobes(l, sourceRadius / max(2.0 * dist, 1e-3), uModelParams[0].z);
+}
+
 /**
  * A shadow on the scatter: light that reaches a strand in another's shadow has passed through
  * hair to get there, so a penumbra deepens toward the fibre's own hue.
@@ -3515,14 +3529,26 @@ vec3 hairShade(float shadow) {
   return shadow * pow(max(hue, vec3(1e-4)), vec3(1.0 - shadow));
 }
 
-/** Light from every side, through the scatter term: \`HAIR_SCATTER_SPHERE\` says why that number. */
-vec3 hairAround(vec3 light) {
-  return sqrt(mAlbedo) * (uModelParams[0].y * HAIR_SCATTER_SPHERE * mMap.b) * light;
+/**
+ * The share of light from every side a strand returns: the lobes for a light along the eye
+ * flattened across the strand, unshadowed, with nothing from behind and every lobe widened by
+ * \`HAIR_AREA\`, twice their sum and at most all of it. Twice, in this engine's units, because the
+ * lobes are per unit irradiance and the scatter's half is then exactly \`HAIR_SCATTER_SPHERE\`, its
+ * own average over the sphere: \`hairLobes.ts\` says why, and holds the arithmetic to it.
+ */
+vec3 hairIndirect() {
+  hairLobes(hairAcross(), HAIR_AREA, 0.0);
+  return min(vec3(1.0), 2.0 * (mSpecular + mDiffuse));
 }
 
-/** The reflected lobe's share of the environment: its Fresnel, which is what it integrates to. */
-float hairReflectance() {
-  return hairFresnel(dot(hairAcross(), mToEye)) * mMap.b;
+void hairSurface() {
+  hShift = uModelParams[0].x * (0.5 + mMap.g);
+  hAround = hairIndirect();
+}
+
+/** Light from every side, through the lobes, under the map's occlusion. */
+vec3 hairAround(vec3 light) {
+  return hAround * (mMap.b * light);
 }
 
 
@@ -3761,7 +3787,6 @@ vec3 modelIrradiance(vec3 irradiance) {
 /** The normal the environment is reflected about: the surface's own, but for a stretched lobe. */
 vec3 modelReflectNormal(vec3 n) {
   if (MODEL_ANISOTROPIC) return anisotropicReflectNormal(n);
-  if (MODEL_HAIR) return hairAcross();
   return n;
 }
 
@@ -3837,7 +3862,6 @@ vec3 modelDiffuseOut(vec3 diffuse, float fog) {
  * what the standard model would.
  */
 float modelReflectance(float standard) {
-  if (MODEL_HAIR) return hairReflectance();
   if (MODEL_SKIN) return skinReflectance();
   if (MODEL_EYE) return eyeReflectance();
   return standard;
@@ -5289,8 +5313,9 @@ void main() {
      * branch it did not take before.
      */
     /* A model reflects its environment whatever the pass asked of the standard model: see
-       modelReflectance. On the switches alone, so the derivatives below stay in uniform flow. */
-    if (uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) {
+       modelReflectance. Hair takes none: modelReflects. On the switches alone, so the derivatives
+       below stay in uniform flow. */
+    if ((uEnvironmentDials.y > 0.0 || uMaterialFlags.y != 0 || modelled) && modelReflects()) {
       vec3 toEye = normalize(uCameraPos - vWorldPos);
       vec3 mirrored = reflect(-toEye, modelled ? modelReflectNormal(n) : n);
       vec3 environment = mix(uAmbientGround, uAmbient, mirrored.y * 0.5 + 0.5);

@@ -20,7 +20,7 @@ import { batchesOf } from '@driftengine/physics';
 import type { ClothBatches, SkinnedClothSetup } from '@driftengine/physics';
 
 /** Floats of statics a particle, across its sections. */
-export const CLOTH_STATIC_FLOATS = 29;
+export const CLOTH_STATIC_FLOATS = 30;
 
 /** Bit flags of the limits a set-up has: a max distance, a backstop, a frontstop. */
 export const CLOTH_LIMIT_MAX = 1;
@@ -29,7 +29,10 @@ export const CLOTH_LIMIT_FRONT = 4;
 
 export interface PackedCloth {
   readonly count: number;
-  /** inverse mass, max distance, backstop ×2, frontstop ×2, thickness, rest ×3, normal ×3, influences ×16. */
+  /**
+   * inverse mass, max distance, backstop ×2, frontstop ×2, thickness, rest ×3, normal ×3,
+   * influences ×16, pull weight.
+   */
   readonly statics: Float32Array;
   /** Distance records (a, b, rest, compliance), bending (four ids, rest, compliance), tethers (particle, anchor, length). */
   readonly constraints: Uint32Array;
@@ -77,6 +80,7 @@ export function packCloth(setup: SkinnedClothSetup): PackedCloth {
       statics[at + i * 2 + 1] = real ? radius : 0;
     }
     statics[6 * n + i] = limits.thickness?.[i] ?? 0;
+    statics[29 * n + i] = setup.pullWeights?.[i] ?? 1;
     for (let k = 0; k < 3; k++) {
       statics[7 * n + i * 3 + k] = setup.positions[i * 3 + k] as number;
       statics[10 * n + i * 3 + k] = setup.normals?.[i * 3 + k] ?? (k === 2 ? 1 : 0);

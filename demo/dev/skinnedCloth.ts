@@ -16,6 +16,9 @@
  *     /skinnedCloth.html?backend=webgl2   the other backend, which solves on the CPU
  *     /skinnedCloth.html?frames=90        held at another frame
  *     /skinnedCloth.html?pull=400         the cape drawn back toward its skinned shape, a stiffness
+ *     /skinnedCloth.html?pull=400&weights=ramp   weighed from the whole pull at the shoulders to
+ *                                          none at the hem; &weights=one weighs every particle 1,
+ *                                          the control, which must draw what no weights draw
  *
  * A body on joint 0 swaying and turning, and a cape hanging from joint 1 — its shoulders — which
  * nods. The cape is a coarse simulation, 14 by 18 particles by default with its top row kinematic,
@@ -66,6 +69,8 @@ function gridOf(name: string, w: number, h: number): [number, number] {
 const [SX, SY] = gridOf('sim', 14, 18);
 /** `SkinnedClothParameters.pull`: none unless asked for. */
 const PULL = Number(ASKED.get('pull') ?? 0);
+/** `SkinnedClothSetup.pullWeights`: `ramp` from 1 at the shoulders to 0 at the hem, `one`, or none. */
+const WEIGHTS = ASKED.get('weights');
 const [RX, RY] = gridOf('mesh', 40, 52);
 /** The cape: its top edge at the shoulders, behind the body. */
 const TOP = 1.58;
@@ -97,10 +102,12 @@ function capeCloth(): SkinnedClothSetup {
   const normals = new Float32Array(count * 3);
   const joints = new Float32Array(count * 4);
   const weights = new Float32Array(count * 4);
+  const pullWeights = new Float32Array(count);
   for (let y = 0; y < SY; y++) {
     for (let x = 0; x < SX; x++) {
       const p = y * SX + x;
       capeAt(x / (SX - 1), y / (SY - 1), positions, p * 3);
+      pullWeights[p] = WEIGHTS === 'ramp' ? 1 - y / (SY - 1) : 1;
       inverseMass[p] = y === 0 ? 0 : 1;
       maxDistance[p] = y === 0 ? 0 : Infinity;
       normals[p * 3 + 2] = -1;
@@ -182,6 +189,7 @@ function capeCloth(): SkinnedClothSetup {
     weights,
     inverseBind,
     tethers: capeTethers(positions),
+    ...(WEIGHTS === 'ramp' || WEIGHTS === 'one' ? { pullWeights } : {}),
     limits: {
       maxDistance,
       backstop: capeBackstop(),
@@ -580,7 +588,8 @@ async function main(): Promise<void> {
     }
     stats.textContent =
       `${renderer.backend} · ${count} particles, ${RX * RY} bound vertices · ` +
-      `cloth ${clothOn ? 'on' : 'off'} · ${solved === null ? 'CPU' : solved.runsOn} solve ` +
+      `cloth ${clothOn ? 'on' : 'off'} · pull ${PULL}${WEIGHTS === null ? '' : ` weighed ${WEIGHTS}`} · ` +
+      `${solved === null ? 'CPU' : solved.runsOn} solve ` +
       `${(solving / frames).toFixed(3)} ms a frame${timing}` +
       (parityLines.length > 0 ? `\n${parityLines.join('\n')}` : '');
     (window as unknown as { __skinnedClothReady: boolean }).__skinnedClothReady = true;
