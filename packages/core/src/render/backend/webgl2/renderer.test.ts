@@ -18,6 +18,7 @@ import {
   CLOTH_PARTICLES_TEXTURE_UNIT,
   EMISSIVE_TEXTURE_UNIT,
   INSTANCE_CLOCKS_TEXTURE_UNIT,
+  MODEL_MAP_TEXTURE_UNIT,
   NORMAL_TEXTURE_UNIT,
   ORM_TEXTURE_UNIT,
   SURFACE_TEXTURE_UNIT,
@@ -2704,4 +2705,88 @@ test('A POINT SKIN IS POSED INTO THE MESH BY TRANSFORM FEEDBACK, AND LEAVES NOTH
       normals: new Float32Array(9),
     }),
   ).toThrow(/dynamic: true/);
+});
+
+/**
+ * **A material's tiled detail is uploaded, its array is what the model-map unit holds, and the next
+ * frame's lit programs carry it**; beside another array in that slot it is refused, said once, and a
+ * pass forgets it. The twin of the WebGPU test of the same subject.
+ */
+test("LAYS A MATERIAL'S DETAIL: ITS REGIONS UPLOADED, ITS ARRAY IN THE MODEL'S SLOT, AND A PASS FORGETS IT", () => {
+  const { gl, canvas, calls } = recordingGl({ uniforms: ['uDetail'] });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const camera = new Camera();
+  const env = createEnvironment();
+  const image = { width: 4, height: 4 } as unknown as TexImageSource;
+  const orm = renderer.createSurfaceTexture(image);
+  const maps = renderer.createSurfaceTexture(image);
+  const lastDetail = (): number[] =>
+    Array.from(
+      (calls
+        .filter(
+          (c) =>
+            c.name === 'uniform4fv' && (c.args[0] as { name?: string } | null)?.name === 'uDetail',
+        )
+        .at(-1)?.args[1] as Float32Array | undefined) ?? [],
+    );
+  const onModelUnit = (): unknown => {
+    let active = -1;
+    let bound: unknown = undefined;
+    for (const call of calls) {
+      if (call.name === 'activeTexture') active = call.args[0] as number;
+      if (call.name === 'bindTexture' && active === gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT) {
+        bound = call.args[1];
+      }
+    }
+    return bound;
+  };
+  const detail = { maps, regionLayer: 1, regions: [{ normalLayer: 0, repeat: 8 }] };
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ orm, detail });
+  expect(lastDetail().slice(0, 12)).toEqual([1, 1, 0, 0, 0, -1, 1, 1, 8, 8, 0, 0]);
+  expect(onModelUnit(), 'the detail array').toBe((maps as unknown as { texture: unknown }).texture);
+
+  /* The next frame's lit programs are compiled with the switch on. */
+  calls.length = 0;
+  renderer.beginFrame([0, 0, 0]);
+  const sources = calls.filter((c) => c.name === 'shaderSource').map((c) => String(c.args[1]));
+  expect(sources.some((source) => source.includes('const bool SURFACE_DETAIL = true;'))).toBe(true);
+  renderer.endFrame();
+
+  /* Beside a model map that is another array, drawn without, and said once. */
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const other = renderer.createSurfaceTexture(image);
+  renderer.bindMeshPass(camera, env);
+  renderer.setMaterial({ orm, modelMap: other, detail });
+  renderer.setMaterial({ orm, modelMap: other, detail });
+  expect(lastDetail()[0], 'no regions').toBe(0);
+  expect(warn).toHaveBeenCalledTimes(1);
+  /* Beside a model map that is its own array, laid. */
+  renderer.setMaterial({ orm, modelMap: maps, detail });
+  expect(lastDetail()[0]).toBe(1);
+  warn.mockRestore();
+  renderer.bindMeshPass(camera, env);
+  expect(lastDetail()).toEqual(new Array(132).fill(0));
+});
+
+test("REFUSES A MATERIAL'S DETAIL ON A PART WITH NO ROOM FOR ITS THIRTY-THREE VECTORS, IN WORDS", () => {
+  const { canvas, calls } = recordingGl({
+    uniforms: ['uDetail'],
+    fragmentUniformVectors: 256,
+    refuseLinkAbove: 256,
+  });
+  const renderer = new Renderer(canvas, resolveRenderQuality({}));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const image = { width: 4, height: 4 } as unknown as TexImageSource;
+  const maps = renderer.createSurfaceTexture(image);
+  renderer.bindMeshPass(new Camera(), createEnvironment());
+  renderer.setMaterial({ detail: { maps, regions: [{ normalLayer: 0, repeat: 8 }] } });
+  const detailWarnings = warn.mock.calls.filter((c) => String(c[0]).includes('detail'));
+  warn.mockRestore();
+  expect(detailWarnings).toHaveLength(1);
+  expect(String(detailWarnings[0]?.[0])).toContain('thirty-three fragment uniform vectors');
+  const uploads = calls.filter(
+    (c) => c.name === 'uniform4fv' && (c.args[0] as { name?: string } | null)?.name === 'uDetail',
+  );
+  expect((uploads.at(-1)?.args[1] as Float32Array)[0], 'drawn without').toBe(0);
 });

@@ -27,6 +27,7 @@ const lit = (
   movingSun = false,
   layered = false,
   layerLooks = false,
+  surfaceDetail = false,
 ): string =>
   flatFrag({
     pointShadows: true,
@@ -38,6 +39,7 @@ const lit = (
     movingSun,
     layered,
     layerLooks,
+    surfaceDetail,
     maxLights: budget.maxLights,
     maxAreaLights: budget.maxAreaLights,
   });
@@ -106,6 +108,11 @@ describe('countUniformVectors', () => {
       countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true, true)) -
         countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, true)),
     ).toBe(15);
+    /* A material's tiled detail, thirty-three: a header and two a region for sixteen. detail.ts. */
+    expect(
+      countUniformVectors(lit(FULL_LIGHT_BUDGET, false, false, false, false, false, true)) -
+        countUniformVectors(lit(FULL_LIGHT_BUDGET)),
+    ).toBe(33);
     const withoutPointShadows = flatFrag({
       pointShadows: false,
       directionalShadows: true,
@@ -115,6 +122,7 @@ describe('countUniformVectors', () => {
       worldUvs: false,
       movingSun: false,
       layered: false,
+      surfaceDetail: false,
     });
     expect(countUniformVectors(withoutPointShadows)).toBe(250);
   });
@@ -161,6 +169,19 @@ describe('the ladder', () => {
     const without = countUniformVectors(lit(rung));
     expect(countUniformVectors(lit(rung, true)) - without).toBe(15);
     expect(countUniformVectors(lit(rung, true))).toBeGreaterThan(256);
+  });
+
+  /*
+   * **A material's detail is thirty-three vectors, which that rung has no room for either**: the
+   * WebGL2 renderer refuses it there in words and draws the material without, as it does an
+   * overlay. Pinned so the cost is a decision someone sees.
+   */
+  it("PUTS A MATERIAL'S DETAIL AT THIRTY-THREE VECTORS, PAST THE EIGHT-LIGHT RUNG", () => {
+    const rung = { maxLights: 8, maxAreaLights: 2 };
+    const without = countUniformVectors(lit(rung));
+    const detailed = countUniformVectors(lit(rung, false, false, false, false, false, true));
+    expect(detailed - without).toBe(33);
+    expect(detailed).toBeGreaterThan(256);
   });
 
   it('starts at the budget the rest of the engine is written for', () => {

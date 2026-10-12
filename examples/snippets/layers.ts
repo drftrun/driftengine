@@ -1,9 +1,15 @@
 /**
- * Rock with moss and sand laid over it by a mask, each at its own repeat.
+ * Rock with moss and sand laid over it by a mask, each at its own repeat; and a garment's fine
+ * grain tiled over its base maps, a region at a time.
  *
  * A snippet, typechecked with the examples and quoted by the manual's materials chapter.
  */
-import type { SurfaceLayers, SurfaceMaterial, SurfaceTextureHandle } from '@driftengine/core';
+import type {
+  SurfaceDetail,
+  SurfaceLayers,
+  SurfaceMaterial,
+  SurfaceTextureHandle,
+} from '@driftengine/core';
 
 // #region layers
 /**
@@ -52,5 +58,30 @@ export function sharedCliffs(
     { albedo, normal, orm, layers: warm },
     { albedo, normal, orm, layers: cold },
   ];
+}
+// #endregion
+
+// #region detail
+/**
+ * A jacket: leather grain over most of it, a denim weave on the collar and a brushed buckle, each
+ * at its own repeat. The detail maps are one array: leather's normal 0, the weave's normal 1 and its
+ * occlusion 2, the brushing 3. The region map is the ORM array's layer 1.
+ */
+export function jacket(
+  albedo: SurfaceTextureHandle,
+  normal: SurfaceTextureHandle,
+  orm: SurfaceTextureHandle,
+  maps: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle> {
+  const detail: SurfaceDetail<SurfaceTextureHandle> = {
+    maps,
+    regionLayer: 1,
+    regions: [
+      { normalLayer: 0, repeat: 40, normalStrength: 0.8 },
+      { normalLayer: 1, occlusionLayer: 2, repeat: [24, 30], occlusionStrength: 0.6 },
+      { normalLayer: 3, repeat: 12, offset: [0.5, 0] },
+    ],
+  };
+  return { albedo, normal, orm, detail };
 }
 // #endregion

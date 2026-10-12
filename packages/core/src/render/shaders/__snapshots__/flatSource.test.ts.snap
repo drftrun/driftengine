@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "78cf8836:283031",
-  "directionalShadows+environmentProbe": "7d3079b0:309042",
-  "directionalShadows+environmentProbe+nightEmissive": "bb81da1e:311528",
-  "directionalShadows+nightEmissive": "f362daba:285517",
-  "environmentProbe": "c195dbfa:285802",
-  "environmentProbe+nightEmissive": "45a1a10e:288288",
-  "nightEmissive": "c63aa5be:262277",
-  "none": "972cd7ec:259791",
-  "pointShadows": "a6465e08:299228",
-  "pointShadows+directionalShadows": "d5f48c1e:322468",
-  "pointShadows+directionalShadows+environmentProbe": "1199a498:348479",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "8bb6eb1c:350965",
-  "pointShadows+directionalShadows+nightEmissive": "df8c91c0:324954",
-  "pointShadows+environmentProbe": "6bdae0f6:325239",
-  "pointShadows+environmentProbe+nightEmissive": "f7f530b0:327725",
-  "pointShadows+nightEmissive": "73dcc790:301714",
+  "directionalShadows": "75c22784:285164",
+  "directionalShadows+environmentProbe": "77ac974c:311175",
+  "directionalShadows+environmentProbe+nightEmissive": "65fd0298:313661",
+  "directionalShadows+nightEmissive": "9ffdf27e:287650",
+  "environmentProbe": "215a01fc:287935",
+  "environmentProbe+nightEmissive": "844cea62:290421",
+  "nightEmissive": "efdc8d9c:264410",
+  "none": "fda9a738:261924",
+  "pointShadows": "41f2ef24:301361",
+  "pointShadows+directionalShadows": "63965afc:324601",
+  "pointShadows+directionalShadows+environmentProbe": "300746bc:350612",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "63de44ce:353098",
+  "pointShadows+directionalShadows+nightEmissive": "b7d9c76c:327087",
+  "pointShadows+environmentProbe": "d9b58ca8:327372",
+  "pointShadows+environmentProbe+nightEmissive": "3b6a369c:329858",
+  "pointShadows+nightEmissive": "7914dd9e:303847",
 }
 `;
 
@@ -4363,6 +4363,51 @@ vec3 layeredEmissive() {
 }
 
 
+/* Whether this program lays a material's detail. Off but where one has asked: detail.ts. */
+const bool SURFACE_DETAIL = true;  // wgsl:override
+/*
+ * Thirty-three vectors, as surfaceDetail.ts packs them: the region count (x) and the ORM array's
+ * layer holding the region map, or -1 for none (y); then two a region, the normal map's layer (x),
+ * the occlusion's or -1 (y), the normal strength (z) and the occlusion strength (w); its repeats
+ * across and down (x y) and its offset (z w).
+ */
+uniform vec4 uDetail[33]; // wgsl:material
+
+bool detailed() { return uDetail[0].x > 0.0; }
+
+/* The region a texel of the base maps is in, read exactly, held to the regions there are. */
+int detailRegion(vec2 uv) {
+  int last = int(uDetail[0].x) - 1;
+  if (uDetail[0].y < 0.0) return 0;
+  ivec2 size = textureSize(uOrmMap, 0).xy;
+  ivec2 texel = clamp(ivec2(floor(fract(uv) * vec2(size))), ivec2(0), size - 1);
+  int region = int(texelFetch(uOrmMap, ivec3(texel, int(uDetail[0].y)), 0).r * 255.0 + 0.5);
+  return clamp(region, 0, last);
+}
+
+void surfaceDetail(inout vec3 n, inout float occlusion, vec2 uv) {
+  /* In uniform control flow, before anything that depends on the pixel's region. */
+  mat3 frame = tangentFrame(n, vWorldPos, uv, vTangent, vHasTangents);
+  vec2 dx = dFdx(uv);
+  vec2 dy = dFdy(uv);
+  int region = detailRegion(uv);
+  vec4 picks = uDetail[1 + region * 2];
+  vec4 place = uDetail[2 + region * 2];
+  vec2 at = uv * place.xy + place.zw;
+  vec2 gx = dx * place.xy;
+  vec2 gy = dy * place.xy;
+  vec3 d = textureGrad(uModelMap, vec3(at, picks.x), gx, gy).xyz * 2.0 - 1.0;
+  /* z rebuilt where none is stored, as the base map's is: normalMap.ts. */
+  d.z = d.z > 0.0 ? d.z : sqrt(max(0.0, 1.0 - dot(d.xy, d.xy)));
+  d = normalize(vec3(d.xy * picks.z, max(d.z, 1e-4)));
+  n = normalize(frame * d);
+  if (picks.y >= 0.0) {
+    float held = textureGrad(uModelMap, vec3(at, picks.y), gx, gy).r;
+    occlusion *= mix(1.0, held, picks.w);
+  }
+}
+
+
 /* The surface's coordinates moved onto the world's horizontal plane where a material projects them,
    with the frame's coordinates and the mesh's tangents, which no longer run along them, set aside. */
 void projectSurface(inout vec3 at, inout vec2 frameAt, inout int frameTangents) {
@@ -4783,6 +4828,8 @@ void main() {
     if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);
     /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
     if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
+    /* The material's tiled detail over whatever the maps made, and its occlusion: detail.ts. */
+    if (SURFACE_DETAIL && detailed()) surfaceDetail(n, ormOcclusion, surfaceAt.xy);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change

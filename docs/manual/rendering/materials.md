@@ -719,6 +719,67 @@ What it gives up:
   for the layers and not for them: the layers then read layer `i` of their arrays, untinted, at
   one repeat each.
 
+## Detail tiled over a surface
+
+A surface's finest grain, leather, a weave, brushed metal, a face's pores, is a small map repeated
+many times over it. Baked into the base maps it is lost: a 256-texel detail tiled forty times over a
+2048-texel map would want some ten thousand texels a side. `detail` lays it on top of a material
+instead, each region of the surface with its own grain at its own repeat:
+
+```ts sample=snippets/layers.ts#detail
+/**
+ * A jacket: leather grain over most of it, a denim weave on the collar and a brushed buckle, each
+ * at its own repeat. The detail maps are one array: leather's normal 0, the weave's normal 1 and its
+ * occlusion 2, the brushing 3. The region map is the ORM array's layer 1.
+ */
+export function jacket(
+  albedo: SurfaceTextureHandle,
+  normal: SurfaceTextureHandle,
+  orm: SurfaceTextureHandle,
+  maps: SurfaceTextureHandle,
+): SurfaceMaterial<SurfaceTextureHandle> {
+  const detail: SurfaceDetail<SurfaceTextureHandle> = {
+    maps,
+    regionLayer: 1,
+    regions: [
+      { normalLayer: 0, repeat: 40, normalStrength: 0.8 },
+      { normalLayer: 1, occlusionLayer: 2, repeat: [24, 30], occlusionStrength: 0.6 },
+      { normalLayer: 3, repeat: 12, offset: [0.5, 0] },
+    ],
+  };
+  return { albedo, normal, orm, detail };
+}
+```
+
+- **`maps`** is an array whose layers the regions name: tangent-space normal maps, and occlusions
+  in their red. It is read where a shading model's map goes, so a material with a `modelMap` puts
+  its detail layers in that same array and names it here too.
+- **`regionLayer`** is the layer of the material's ORM array holding the region map: each texel's
+  region as an index from 0 in its red, stored as `index / 255`, read exactly at the base
+  coordinates so a region's edge is sharp. Absent, every texel is region 0: one detail all over, a
+  face's pores.
+- **`regions`**, up to sixteen: each a `normalLayer`, an optional `occlusionLayer`, a `repeat` across
+  the base coordinates, the same both ways or a pair, an `offset`, a `normalStrength` its slopes are
+  scaled by and an `occlusionStrength` from 0 to 1. A texel naming a region past the last wears the
+  last.
+
+Each texel reads its own region's detail alone, turned through a frame built on the normal the base
+maps made, and multiplies its occlusion into the surface's, so the base maps carry the shape and the
+detail rides on it. It is compiled into the lit stage the first time a material asks.
+
+What it gives up:
+
+- **The detail maps share the slot a shading model's map is read through.** A material whose
+  `modelMap` is another array, or whose layers' mask is a map, is drawn without its detail, said
+  once.
+- **The region map shares the ORM array's size and format**, and an index has to survive it
+  exactly, so the array must be uncompressed: a compressed block blends neighbouring indices.
+- **A material placed by the world has no base coordinates** for its regions and repeats, so its
+  detail is refused, said once.
+- **Sixteen regions are thirty-three vectors of the material's numbers.** On WebGL2 they are
+  refused, said once, on a part with no room for them; a lower `maxLights` makes the room. On
+  WebGPU every material's block grows by them, from 1,024 bytes to 1,536.
+
 ## Light through a thin surface
 
 A banner lit from behind, a leaf against the sun and a lampshade all show the light on their far side

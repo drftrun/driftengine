@@ -10461,3 +10461,57 @@ describe('a point skin', () => {
     expect(() => renderer.posePointSkin(posed, moved)).toThrow(/a pose of 1 joints/);
   });
 });
+
+describe("a material's tiled detail", () => {
+  /*
+   * **Its regions in the material's block, its array where a model's map is read, and its switch
+   * on**; beside another array in that slot it is refused, said once, and a pass forgets it. The
+   * twin of the WebGL2 test of the same subject.
+   */
+  it("LAYS A MATERIAL'S DETAIL: ITS REGIONS IN THE BLOCK, ITS ARRAY IN THE MODEL'S SLOT, AND A PASS FORGETS IT", () => {
+    const stub = stubSurface();
+    const quality = resolveRenderQuality({});
+    const renderer = new WebGPURenderer(stub.surface, quality);
+    const { camera, env } = stubScene();
+    const mesh = stubMesh(renderer);
+    const image = { width: 4, height: 4 } as unknown as TexImageSource;
+    const orm = renderer.createSurfaceTexture(image, { colorSpace: 'linear' });
+    const maps = renderer.createSurfaceTexture(image, { colorSpace: 'linear' });
+    const other = renderer.createSurfaceTexture(image, { colorSpace: 'linear' });
+    const detail = { maps, regionLayer: 1, regions: [{ normalLayer: 0, repeat: 8 }] };
+    const slot = (): unknown => (renderer as unknown as { modelMap: unknown }).modelMap;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    renderer.beginFrame([0, 0, 0]);
+    renderer.bindMeshPass(camera, env);
+    renderer.setMaterial({ orm, detail });
+    expect(slot(), 'the detail array is read where a model map is').toBe(maps);
+    renderer.drawMesh(mesh, mat4.create());
+    /* Beside a model map that is another array, drawn without; beside its own, laid. */
+    renderer.setMaterial({ orm, modelMap: other, detail });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ orm, modelMap: maps, detail });
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.setMaterial({ orm, detail });
+    renderer.bindMeshPass(camera, env);
+    renderer.drawMesh(mesh, mat4.create());
+    renderer.endFrame();
+    const warned = warn.mock.calls.filter((c) => String(c[0]).includes('detail')).length;
+    warn.mockRestore();
+    const variant = variantFor(quality);
+    const lane = (k: number): number[] => drawnMaterial(stub, variant, 'uDetail', 'float', k);
+    /* Count, region layer, and region 0's normal layer, occlusion, strength and repeat. */
+    expect([lane(0), lane(1), lane(4), lane(5), lane(6), lane(8)]).toEqual([
+      [1, 0, 1, 0],
+      [1, 0, 1, 0],
+      [0, 0, 0, 0],
+      [-1, 0, -1, 0],
+      [1, 0, 1, 0],
+      [8, 0, 8, 0],
+    ]);
+    expect(warned, 'the other array, once').toBe(1);
+    const switches = (
+      renderer as unknown as { pipelines: { litSwitches: Record<string, boolean> } }
+    ).pipelines.litSwitches;
+    expect(switches.SURFACE_DETAIL).toBe(true);
+  });
+});

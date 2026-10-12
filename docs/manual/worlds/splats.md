@@ -11,7 +11,7 @@ areas: ['splats']
 A splat capture is a photographed place drawn as several hundred thousand oriented, soft-edged
 ellipsoids. `@driftengine/splats` reads the files capture tools write, sorts the splats off the
 frame, and draws them as a pass that composes into a scene of ordinary meshes, so a lamp post you
-model stands among splats someone photographed. It costs 17.2 KB gzipped on top of core.
+model stands among splats someone photographed. It costs 17.1 KB gzipped on top of core.
 
 The example is a rock garden synthesised from about sixty-six thousand flat splats, so the page
 needs no download, with a post of ordinary geometry standing in it. Switch the sort off to see

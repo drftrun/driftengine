@@ -8,6 +8,7 @@
  * array samples exactly as a 2D texture does. A mesh names its layer per vertex (`MeshData.layers`),
  * so a merged block wearing forty facades is one draw.
  */
+import type { SurfaceDetail } from './surfaceDetail.ts';
 import type { SurfaceLayers } from './surfaceLayers.ts';
 import type { SurfaceProjection } from './surfaceProjection.ts';
 import type { SurfaceModel } from './surfaceModel.ts';
@@ -252,6 +253,14 @@ export interface SurfaceMaterial<Texture = SurfaceTexture> {
    * vertices. See `surfaceLayers.ts` for the rest and what it gives up.
    */
   layers?: SurfaceLayers<Texture> | null;
+  /**
+   * Fine grain tiled over the base maps: up to sixteen regions, each a detail normal map, and an
+   * occlusion, at its own repeat and strength, a region map in the ORM array choosing which one each
+   * texel wears. The detail maps are layers of an array read where `modelMap` goes, so a material
+   * with a shading model's map puts them in that array. **A lit switch**, compiled in the first time
+   * a material asks. See `surfaceDetail.ts` for the rest and what it gives up.
+   */
+  detail?: SurfaceDetail<Texture> | null;
 }
 
 export interface SurfaceTextureOptions {

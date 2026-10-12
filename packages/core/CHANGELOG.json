@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.13.3",
+    "date": "2026-10-12",
+    "entries": [
+      {
+        "kind": "added",
+        "short": "A material can lay fine grain over its maps, a region at a time: up to sixteen detail normals and occlusions at their own repeats, chosen per texel: `SurfaceMaterial.detail`.",
+        "text": "`SurfaceMaterial.detail` lays a surface's finest grain over its base maps: up to sixteen regions, each a tangent-space detail normal map, and an occlusion, at its own repeat, offset and strengths, and a region map choosing which one each texel wears. A surface's grain, leather, a weave, brushed metal, a face's pores, is a map of a few hundred texels repeated tens of times across it, and baked into the base maps it is lost: a 256-texel detail tiled forty times over a 2048-texel map would want some ten thousand texels a side, so a consumer's characters looked smooth beside the surfaces they were authored with. Each texel reads its own region's detail alone, turned through a frame built on the normal the base maps made, and multiplies its occlusion into the surface's; the reads take explicit gradients, the base coordinates' times the region's repeat, since the region is the pixel's own. **Where the maps are, and why**: the lit stage had no texture binding to spare on either backend, so the detail maps are layers of the array read where a shading model's map is, and a material with a `modelMap` puts its detail layers in that array; the region map is a layer of the material's ORM array, one index a texel in its red, read exactly so a region's edge is sharp, which wants an uncompressed array. A material whose model-map slot holds another array, or that is placed by the world, is drawn without its detail, said once. Sixteen regions are thirty-three vectors: WebGL2 compiles them in only when a material first asks (`SURFACE_DETAIL`) and refuses them, said once, on a part with no room; on WebGPU every material's block grows from 1,024 bytes to 1,536. Measured on an RX 9070 XT (`demo/dev/detail.html`): where a material reads region 0 it draws exactly what one region with no region map draws, on WebGPU and on WebGL2 over Vulkan and over OpenGL; its other regions differ from it by 166,558 pixels; and the backends part by at most one level in a channel."
+      }
+    ]
+  },
+  {
     "version": "4.13.2",
     "date": "2026-10-11",
     "entries": [

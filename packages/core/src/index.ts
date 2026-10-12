@@ -677,6 +677,8 @@ export { SurfaceTexture } from './render/surfaceTexture.ts';
 export type { SurfaceMaterial, SurfaceTextureOptions } from './render/surfaceTexture.ts';
 export type { SurfaceProjection } from './render/surfaceProjection.ts';
 export type { SurfaceLayers } from './render/surfaceLayers.ts';
+export type { SurfaceDetail, SurfaceDetailRegion } from './render/surfaceDetail.ts';
+export { MAX_DETAIL_REGIONS } from './render/surfaceDetail.ts';
 export type { SurfaceLayerLook } from './render/surfaceLayerLooks.ts';
 /*
  * Compressed textures — BC, ETC2 and EAC, ASTC: the source `createSurfaceTexture` takes as blocks,

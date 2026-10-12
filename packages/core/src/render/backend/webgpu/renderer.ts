@@ -216,6 +216,15 @@ import {
   packSurfaceLayers,
 } from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
+import {
+  DETAIL_FLOATS,
+  detailOf,
+  detailRefusal,
+  detailRefusalWarning,
+  packSurfaceDetail,
+  type DetailRefusal,
+  type SurfaceDetail,
+} from '../../surfaceDetail.ts';
 import { LOOK_FLOATS, asksLayerLooks, packLayerLooks } from '../../surfaceLayerLooks.ts';
 import {
   frameReflectionsRefused,
@@ -3038,6 +3047,10 @@ export class WebGPURenderer implements RendererApi {
    */
   private readonly transmission = new Float32Array([-1, -1, -1, 0]);
   private warnedLayersModelMap = false;
+  /** `uDetail`, the material's tiled detail packed by `packSurfaceDetail`. */
+  private readonly detailFloats = new Float32Array(DETAIL_FLOATS);
+  /** The detail refusals already said, each once. See `detailOfMaterial`. */
+  private readonly warnedDetail = new Set<DetailRefusal>();
   private warnedLayersTriplanar = false;
   /** Its numbers, `uModelParams`, packed by `packModel`. */
   private readonly modelParams = new Float32Array(MODEL_PARAM_FLOATS);
@@ -3516,7 +3529,10 @@ export class WebGPURenderer implements RendererApi {
     const ownModelMap = (material?.modelMap ?? null) as GpuSurfaceTexture | null;
     /* A layered material's mask, where it is a map, goes where a model's would: surfaceLayers.ts. */
     const layers = this.layersOf(material);
-    const modelMap = ownModelMap ?? layerMaskMap(layers);
+    const taken = ownModelMap ?? layerMaskMap(layers);
+    /* And its detail's array, where nothing else is read there: surfaceDetail.ts. */
+    const detail = this.detailOfMaterial(material, taken);
+    const modelMap = taken ?? detail?.maps ?? null;
     this.materialModel = material?.model ?? null;
     const reflectivity = material?.reflectivity;
     const environmentGain = material?.environmentGain;
@@ -3609,6 +3625,10 @@ export class WebGPURenderer implements RendererApi {
       packLayerLooks(layers, this.lookFloats);
       f.set(this.lookFloats, this.materialField('uLayerLooks'));
       if (asksLayerLooks(layers)) this.enableLit('LAYER_LOOKS');
+      /* And its tiled detail, the first time a material lays any: detail.ts. */
+      packSurfaceDetail(detail, orm !== null, this.detailFloats);
+      f.set(this.detailFloats, this.materialField('uDetail'));
+      if (detail !== null) this.enableLit('SURFACE_DETAIL');
       f.set(this.modelParams, this.materialField('uModelParams'));
     });
     /*
@@ -6395,6 +6415,25 @@ export class WebGPURenderer implements RendererApi {
    * A material's layers where they can be drawn: none asked, or a model's map in the mask's place,
    * said once, leave one layer.
    */
+  /**
+   * A material's detail, or null where it is refused: its slot holds another array, or it is placed
+   * by the world. Each said once. This backend has room for its vectors wherever it runs.
+   */
+  private detailOfMaterial(
+    material: SurfaceMaterial<GpuSurfaceTexture> | null,
+    taken: GpuSurfaceTexture | null,
+  ): SurfaceDetail<GpuSurfaceTexture> | null {
+    const detail = detailOf(material);
+    if (detail === null) return null;
+    const refusal = detailRefusal(detail, taken, (material?.projection ?? null) !== null);
+    if (refusal === null) return detail;
+    if (!this.warnedDetail.has(refusal)) {
+      this.warnedDetail.add(refusal);
+      console.warn(detailRefusalWarning(refusal));
+    }
+    return null;
+  }
+
   private layersOf(
     material: SurfaceMaterial<GpuSurfaceTexture> | null,
   ): SurfaceLayers<GpuSurfaceTexture> | null {
@@ -9110,6 +9149,8 @@ export class WebGPURenderer implements RendererApi {
     /* Nor layers: one layer until a material asks for more. */
     f.fill(0, at('uLayers'), at('uLayers') + LAYER_FLOATS);
     f.fill(0, at('uLayerLooks'), at('uLayerLooks') + LOOK_FLOATS);
+    /* Nor detail. */
+    f.fill(0, at('uDetail'), at('uDetail') + DETAIL_FLOATS);
     f[at('uCutout')] = 0;
     f[at('uCutout') + 1] = 0;
     this.cutoutResolveStaged = 'hard';

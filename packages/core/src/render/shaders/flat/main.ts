@@ -227,6 +227,8 @@ export const MAIN_GLSL = `void main() {
     if (uNormalStrength > 0.0) n = normalMapped(n, surfaceAt, frameAt, frameTangents);
     /* A draw's wrinkles, by region, over whatever the map made: overlay.ts. */
     if (SURFACE_OVERLAY) n = overlayWrinkle(n, unmapped, surfaceAt.xy);
+    /* The material's tiled detail over whatever the maps made, and its occlusion: detail.ts. */
+    if (SURFACE_DETAIL && detailed()) surfaceDetail(n, ormOcclusion, surfaceAt.xy);
 
     /*
      * Microscopic relief: the surface's own texture, as a turn of the normal rather than a change

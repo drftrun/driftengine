@@ -117,6 +117,15 @@ import {
   packSurfaceLayers,
 } from '../../surfaceLayers.ts';
 import type { SurfaceLayers } from '../../surfaceLayers.ts';
+import {
+  DETAIL_FLOATS,
+  detailOf,
+  detailRefusal,
+  detailRefusalWarning,
+  packSurfaceDetail,
+  type DetailRefusal,
+  type SurfaceDetail,
+} from '../../surfaceDetail.ts';
 import { LOOK_FLOATS, asksLayerLooks, packLayerLooks } from '../../surfaceLayerLooks.ts';
 import type { SurfaceProjection } from '../../surfaceProjection.ts';
 import { FILM_FRAG, FILM_VERT } from '../../shaders/film.ts';
@@ -1801,6 +1810,13 @@ export class WebGL2Renderer implements RendererApi {
   /** Whether it has room for the layers' looks beside them, and whether the refusal was said. */
   private looksRoom: boolean | null = null;
   private warnedLooksRoom = false;
+  /** `uDetail`, the material's tiled detail packed by `packSurfaceDetail`. */
+  private readonly detailFloats = new Float32Array(DETAIL_FLOATS);
+  /** Whether the lit stage has room for detail on this part, asked once. See `detailOfMaterial`. */
+  private detailRoom: boolean | null = null;
+  private warnedDetailRoom = false;
+  /** The refusals already said, each once. */
+  private readonly warnedDetail = new Set<DetailRefusal>();
   private warnedLayersModelMap = false;
   private warnedLayersTriplanar = false;
   private warnedOverlayRoom = false;
@@ -4462,10 +4478,16 @@ export class WebGL2Renderer implements RendererApi {
     const modelMap = material?.modelMap ?? null;
     /* A layered material's mask, where it is a map, goes where a model's would: surfaceLayers.ts. */
     const layers = this.layersOf(material);
-    const boundMap = modelMap ?? layerMaskMap(layers);
+    const taken = modelMap ?? layerMaskMap(layers);
+    /* And its detail's array, where nothing else is read there: surfaceDetail.ts. */
+    const detail = this.detailOfMaterial(material, taken);
+    const boundMap = taken ?? detail?.maps ?? null;
     gl.activeTexture(gl.TEXTURE0 + MODEL_MAP_TEXTURE_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.emptyTexture2DArray);
     if (boundMap !== null) boundMap.bind(gl, MODEL_MAP_TEXTURE_UNIT);
+    packSurfaceDetail(detail, (material?.orm ?? null) !== null, this.detailFloats);
+    if (detail !== null) this.askLit('SURFACE_DETAIL');
+    gl.uniform4fv(u['uDetail'] ?? null, this.detailFloats);
     packSurfaceLayers(layers, this.layerFloats);
     if (layers !== null) this.askLit('LAYERED');
     gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
@@ -4771,6 +4793,37 @@ export class WebGL2Renderer implements RendererApi {
    * as they are, said once — which on a material sharing its arrays reads the wrong textures, so
    * the sentence names the way out.
    */
+  /**
+   * A material's detail, or null where it is refused: its slot holds another array, it is placed by
+   * the world, or the lit stage has no room for its thirty-three vectors. Each said once.
+   */
+  private detailOfMaterial(
+    material: SurfaceMaterial | null,
+    taken: SurfaceTexture | null,
+  ): SurfaceDetail<SurfaceTexture> | null {
+    const detail = detailOf(material) as SurfaceDetail<SurfaceTexture> | null;
+    if (detail === null) return null;
+    const refusal = detailRefusal(detail, taken, (material?.projection ?? null) !== null);
+    if (refusal !== null) {
+      if (!this.warnedDetail.has(refusal)) {
+        this.warnedDetail.add(refusal);
+        console.warn(detailRefusalWarning(refusal));
+      }
+      return null;
+    }
+    this.detailRoom ??= this.switchFits('SURFACE_DETAIL');
+    if (this.detailRoom) return detail;
+    if (!this.warnedDetailRoom) {
+      this.warnedDetailRoom = true;
+      console.warn(
+        "Renderer: a material's detail is refused on this device. It takes thirty-three fragment " +
+          'uniform vectors the lit shader does not have, so the material is drawn without it. A ' +
+          'lower `maxLights` makes the room, or WebGPU has it.',
+      );
+    }
+    return null;
+  }
+
   private looksFit(layers: SurfaceLayers<SurfaceTexture> | null): boolean {
     if (!asksLayerLooks(layers)) return false;
     this.looksRoom ??= this.switchFits('LAYER_LOOKS', 'LAYERED');
@@ -7121,6 +7174,7 @@ export class WebGL2Renderer implements RendererApi {
       movingSun: asIf.MOVING_SUN ?? this.litOn.MOVING_SUN,
       layered: asIf.LAYERED ?? this.litOn.LAYERED,
       layerLooks: asIf.LAYER_LOOKS ?? this.litOn.LAYER_LOOKS,
+      surfaceDetail: asIf.SURFACE_DETAIL ?? this.litOn.SURFACE_DETAIL,
       maxLights: budget.maxLights,
       maxAreaLights: budget.maxAreaLights,
     });
@@ -9287,9 +9341,10 @@ export class WebGL2Renderer implements RendererApi {
     this.projection.fill(0);
     /* Nor light through from behind. See `SurfaceMaterial.diffuseTransmission`. */
     resolveTransmission(null, this.transmission);
-    /* Nor layers: one layer until a material asks for more. */
+    /* Nor layers: one layer until a material asks for more. Nor detail. */
     this.layerFloats.fill(0);
     this.lookFloats.fill(0);
+    this.detailFloats.fill(0);
     this.overlayMaps = null;
     this.overlayTexture = null;
     /* Nor an ambient of its own: the frame's, until a draw asks. See `setAmbientSH`. */
@@ -9465,6 +9520,7 @@ export class WebGL2Renderer implements RendererApi {
     gl.uniform4fv(u['uWorldUv'] ?? null, this.projection);
     gl.uniform4fv(u['uLayers'] ?? null, this.layerFloats);
     gl.uniform4fv(u['uLayerLooks'] ?? null, this.lookFloats);
+    gl.uniform4fv(u['uDetail'] ?? null, this.detailFloats);
     /* Neither refracting nor glass, which is every draw that does not say otherwise. See
        `bindSeeThrough` for the four numbers in the one vector. */
     gl.uniform4f(u['uSeeThrough'] ?? null, 0, 0, 0, 0);

@@ -24,6 +24,7 @@ import { overlayGlsl } from './overlay.ts';
 import { reflectionSurfaceGlsl } from './reflectionSurface.ts';
 import { worldUvGlsl } from './worldUv.ts';
 import { movingSunGlsl } from './movingSun.ts';
+import { detailGlsl } from './detail.ts';
 import { layeredGlsl } from './layered.ts';
 import { MAP_READS_GLSL } from './mapReads.ts';
 import { CHANNEL_BEND, LIT_CHANNEL_ATTRIBUTE } from '../vertexChannel.ts';
@@ -540,6 +541,11 @@ export interface FlatShaderOptions {
    */
   readonly layerLooks?: boolean;
   /**
+   * Whether it lays a material's tiled detail over its maps, \`uDetail\` and all
+   * (\`SurfaceMaterial.detail\`). True when absent. See \`detailGlsl\`.
+   */
+  readonly surfaceDetail?: boolean;
+  /**
    * How many point lights this build declares room for. `MAX_POINT_LIGHTS` when absent.
    *
    * **Not a permutation axis and not a picture setting: a way to fit the uniform grid.** Ten of
@@ -692,6 +698,8 @@ export function flatFrag(options: FlatShaderOptions): string {
       worldUvGlsl(options.worldUvs ?? true),
       /* After the projection, so its switch takes the next id; the normal map below calls it. */
       layeredGlsl(options.layered ?? true, options.layerLooks ?? true),
+      /* After the layers, so its switch takes the next id; main calls it. See detail.ts. */
+      detailGlsl(options.surfaceDetail ?? true),
       /* Where each map is read, after both of the ways it can be read otherwise. See mapReads.ts. */
       MAP_READS_GLSL,
       /* After the frame and the projection it calls, unconditional for the same reason as the
