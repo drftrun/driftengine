@@ -5,6 +5,8 @@
  *     /models.html?backend=webgl2     the other backend
  *     /models.html?spin=1             turning, for a highlight that should move with the light
  *     /models.html?backlight=0        the lamp behind them off, the control for what glows through
+ *     /models.html?view=disc&lift=3   the two stretched discs' highlights lifted where bright
+ *     /models.html?view=disc&mixing=2 every reflection brought to twice the light (1, the control)
  *     /models.html?view=disc          brushed discs, grooves running round them: anisotropic at
  *                                     strength 0 (the control), 0.8, and 0.8 turned a quarter
  *     /models.html?view=hair          a curtain of bowed strands, a lamp behind it on the line of
@@ -13,7 +15,11 @@
  *                                     &sky=only puts out the sun and the lamps under an even
  *                                     white sky, so a strand shows the share of light from every
  *                                     side it returns, as a colour; &fibre=r,g,b sets the strands'
- *                                     linear colour and &scatter= their scatter
+ *                                     linear colour and &scatter= their scatter; &spec= binds a
+ *                                     model map whose red is that specular (0.5 must draw what no
+ *                                     map draws, 0 takes the white highlight away); &lean=degrees
+ *                                     adds a second layer leaning every strand that far out of its
+ *                                     card, toward the eye (0 is the tangent, the control)
  *     /models.html?view=skin          at a person's scale: a head's curvature, a thin fin like an
  *                                     ear with a lamp behind it, a low sun across the terminator;
  *                                     &standard=1 draws both unmodelled, &backlight=0 the lamp off,
@@ -64,6 +70,8 @@ import { DEV_RENDERER, askedQuality } from './askedQuality';
 
 const BACKGROUND: Vec3 = [0.05, 0.055, 0.065];
 const ASKED = new URLSearchParams(location.search);
+/** `&lift=`: the anisotropic discs' highlight lift, 0 by default (none). */
+const LIFT = Number(ASKED.get('lift') ?? 0);
 
 /** A sphere with texture coordinates and the tangent frame the generator gives them. */
 function sphere(color: Vec3): MeshData {
@@ -386,6 +394,23 @@ function patch(size: number): MeshData {
   };
 }
 
+/**
+ * `&spec=` and `&lean=`: the strands' model map, its red the specular and, under `&lean=`, a second
+ * layer whose direction turns each strand that many degrees out of its card, about the bitangent.
+ */
+function strandMap(renderer: RendererApi): { modelMap?: SurfaceTextureHandle } {
+  if (!ASKED.has('spec') && !ASKED.has('lean')) return {};
+  const channels = constantMap(Number(ASKED.get('spec') ?? 0.5), 0.5, 1);
+  if (!ASKED.has('lean')) {
+    return { modelMap: renderer.createSurfaceTexture(channels, { colorSpace: 'linear' }) };
+  }
+  const lean = (Number(ASKED.get('lean')) * Math.PI) / 180;
+  const direction = constantMap(0.5 + 0.5 * Math.cos(lean), 0.5, 0.5 + 0.5 * Math.sin(lean));
+  return {
+    modelMap: renderer.createSurfaceTextureArray([channels, direction], { colorSpace: 'linear' }),
+  };
+}
+
 /** `&fibre=r,g,b`: the strands' linear colour, or null where the page's own is wanted. */
 function fibreAsked(): Vec3 | null {
   const parts = (ASKED.get('fibre') ?? '').split(',').map(Number);
@@ -586,7 +611,9 @@ async function main(): Promise<void> {
                           ...(ASKED.has('scatter')
                             ? { scatter: Number(ASKED.get('scatter')) }
                             : {}),
+                          ...(ASKED.has('lean') ? { directionOffset: 1 } : {}),
                         }),
+                  ...strandMap(renderer),
                 },
               },
             ]
@@ -604,13 +631,13 @@ async function main(): Promise<void> {
                 {
                   label: 'strength 0.8',
                   color: [0.85, 0.84, 0.82],
-                  material: { model: anisotropicModel({ strength: 0.8 }), orm },
+                  material: { model: anisotropicModel({ strength: 0.8, lift: LIFT }), orm },
                 },
                 {
                   label: 'turned a quarter',
                   color: [0.85, 0.84, 0.82],
                   material: {
-                    model: anisotropicModel({ strength: 0.8, rotation: Math.PI / 2 }),
+                    model: anisotropicModel({ strength: 0.8, rotation: Math.PI / 2, lift: LIFT }),
                     orm,
                   },
                 },
@@ -645,6 +672,8 @@ async function main(): Promise<void> {
     renderer.bindMeshPass(camera, env);
     /* `?sh=hemi`: the gradient as coefficients, the control; `?sh=key`: warm light from +X. */
     if (harmonics !== null) renderer.setAmbientSH(harmonics);
+    /* `&mixing=`: every draw's reflection brought to that weight's light. See setEnvironmentMixing. */
+    if (ASKED.has('mixing')) renderer.setEnvironmentMixing(Number(ASKED.get('mixing')));
     materials.forEach((m, k) => {
       renderer.setMaterial(m.material);
       const x = hair ? 0 : discs ? (k - 1) * 2.4 : (k - 2) * 2.1;

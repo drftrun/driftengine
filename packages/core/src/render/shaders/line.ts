@@ -118,8 +118,10 @@ void main() {
    * rather than a surface losing some of itself to the air on the way over. A drawn line
    * is a thing in the world and recedes like one.
    */
-  float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
-  vec3 color = mix(uColor, mediumColor(), fog);
+  float dist = distance(vWorldPos, uCameraPos);
+  float fog = mediumFog(dist, vWorldPos.y);
+  vec3 color =
+    mix(uColor, mediumColor(), fog) + mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
   outColor = vec4(applyOutputTransform(color), coverage * uOpacity);
 }
 `;

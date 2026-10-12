@@ -153,8 +153,26 @@ window throws shafts across the whole room and a doorway its shape onto the floo
   and steam, lower for soot.
 - `anisotropy`, -1 to 1, is how much the medium scatters forward. Haze is strongly forward, around
   0.6, which is why the air around a low sun glows and the air behind you does not.
-- `maxDistance` is where the march stops looking for light to scatter; extinction still applies past
-  it.
+- `maxDistance` is where the medium ends: past it the air neither scatters nor absorbs. A medium
+  standing for the near part of the environment's haze hands the rest of the ray to that haze by
+  setting the environment's `fogStart` to the same distance, so the two never lay one stretch of
+  air twice.
+
+`setGlobalMedium` also takes one object, `{ density, albedo, anisotropy, maxDistance, ... }`, with
+more the four numbers cannot say:
+
+- `albedo` may be a colour, a share a channel: a faintly blue haze returns the sky's blue a little
+  more readily than its red.
+- `heightFalloff` and `baseY` thin the medium above `baseY` as the environment's haze thins, and
+  `layer2` adds a second layer, `{ density, heightFalloff, baseY }`. Together they make the medium
+  the same haze the environment draws, lit.
+- `sunScatter` and `skyScatter`, 1 by default, scale how strongly the sun and the sky's fill
+  scatter, each a share of how strongly it lights a surface.
+- `lampScatter`, 0 by default, lets the lamps scatter too: the frame's per-pixel lamps, each shaped
+  by its falloff and its cone and cut by its own shadow maps, so a lamp behind a post throws the
+  post's shadow into the air. Each lamp's `lightMediumScatter` in the environment, 1 where absent,
+  scales its own. A photometric profile or a cookie shapes a lamp's pool on a surface and not its
+  glow in the air.
 
 The medium is a dial and is held until changed, so weather can move every frame. What it may cost
 is a quality option: `globalMediumSteps` is the march's step count, **0 by default, which turns the

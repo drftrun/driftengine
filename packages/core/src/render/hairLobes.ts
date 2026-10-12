@@ -91,7 +91,9 @@ export const HAIR_OUT = { r: 0, tt: 1, trt: 4, scatter: 7, length: 10 } as const
 /**
  * One light on a strand, in lamp units and unshadowed, into `out` (`HAIR_OUT`'s layout: R is grey,
  * the rest colours). `tangent`, `toLight` and `toEye` are unit vectors but for a tangent that could
- * not be made one, which comes in as zeros; `fibre` is the base colour.
+ * not be made one, which comes in as zeros; `fibre` is the base colour; `specular` is the strand's,
+ * the model map's red, which scales the reflected lobe by twice it, so 0.5 draws the lobe as the
+ * fit gives it and 0 is a strand that reflects nothing off its surface.
  *
  * **A lamp with a size widens every lobe by the angle it subtends**, `sourceRadius / 2·dist` as
  * `sphereLobe` takes it, and the lobes are normalised Gaussians, so a wider one carries the same
@@ -104,6 +106,7 @@ export function hairLight(
   fibre: Vec3,
   roughness: number,
   shift: number,
+  specular: number,
   scatter: number,
   backlit: number,
   sourceRadius: number,
@@ -111,7 +114,19 @@ export function hairLight(
   out: Float64Array,
 ): void {
   const grow = sourceRadius / Math.max(2 * dist, 1e-3);
-  hairLobes(tangent, toLight, toEye, fibre, roughness, shift, scatter, backlit, grow, out);
+  hairLobes(
+    tangent,
+    toLight,
+    toEye,
+    fibre,
+    roughness,
+    shift,
+    specular,
+    scatter,
+    backlit,
+    grow,
+    out,
+  );
 }
 
 /** The flattened eye `hairIndirect` lights a strand along, as the shader finds it. */
@@ -136,6 +151,7 @@ export function hairIndirect(
   fibre: Vec3,
   roughness: number,
   shift: number,
+  specular: number,
   scatter: number,
   lobes: Float64Array,
   out: Float64Array,
@@ -151,7 +167,19 @@ export function hairIndirect(
     flattened[c] =
       length2 > 1e-8 ? (flattened[c] as number) / Math.sqrt(length2) : (normal[c] as number);
   }
-  hairLobes(tangent, flattened, toEye, fibre, roughness, shift, scatter, 0, HAIR_AREA, lobes);
+  hairLobes(
+    tangent,
+    flattened,
+    toEye,
+    fibre,
+    roughness,
+    shift,
+    specular,
+    scatter,
+    0,
+    HAIR_AREA,
+    lobes,
+  );
   for (let c = 0; c < 3; c++) {
     const sum =
       (lobes[HAIR_OUT.r] as number) +
@@ -170,6 +198,7 @@ function hairLobes(
   fibre: Vec3,
   roughness: number,
   shift: number,
+  specular: number,
   scatter: number,
   backlit: number,
   grow: number,
@@ -206,7 +235,9 @@ function hairLobes(
     hairLongitudinal(beta + grow, x + 2 * shift) *
     0.25 *
     cosHalfPhi *
-    hairFresnel(Math.sqrt(clamp(0.5 + 0.5 * dot(toLight, toEye), 0, 1)));
+    hairFresnel(Math.sqrt(clamp(0.5 + 0.5 * dot(toLight, toEye), 0, 1))) *
+    2 *
+    specular;
 
   const a = 1 / (1.19 / cosD + 0.36 * cosD);
   const h = cosHalfPhi * (1 + a * (0.6 - 0.8 * cosPhi));

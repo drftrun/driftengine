@@ -182,11 +182,11 @@ export const VERTEX_FLOATS = GPU_DRIVEN_VERTEX_FLOATS;
 /**
  * Floats the shading pass's frame block holds. Matches `FRAME_BLOCK_WGSL`'s `Frame`.
  *
- * Two matrices and fifteen vectors: the camera's, the light's, then the eye, the light's direction
+ * Two matrices and eighteen vectors: the camera's, the light's, then the eye, the light's direction
  * and colour, the sky, the ground, the target's size, the shadow's settings in two, the probe's in
- * two, the medium's four, and the visibility buffer's row.
+ * two, the medium's four, the visibility buffer's row, and the medium's last three after it.
  */
-const FRAME_FLOATS = 92;
+const FRAME_FLOATS = 104;
 
 /** Where each block starts in it, so the writer and the shader cannot drift apart. */
 const FRAME_LIGHT_VIEW_PROJ = 16;
@@ -205,6 +205,9 @@ const FRAME_FOG_UNDERWATER = 76;
 const FRAME_FOG_HEIGHT = 80;
 const FRAME_FOG_RANGE = 84;
 const FRAME_PITCH = 88;
+const FRAME_FOG_LIMITS = 92;
+const FRAME_FOG_GLOW = 96;
+const FRAME_FOG_GLOW_DIR = 100;
 
 /**
  * Pixels the internal width is rounded up to.
@@ -2693,6 +2696,20 @@ export class GpuDrivenPass implements PassDefinition {
     params[FRAME_FOG_RANGE + 1] = fog?.far ?? 0;
     params[FRAME_FOG_RANGE + 2] = fog?.mode ?? MEDIUM_FOG;
     params[FRAME_FOG_RANGE + 3] = fog?.underwaterDensity ?? 0;
+    /* The second layer, the floor, the cutoff and the glow: every one none at zero, as a view
+       written before they existed asks. */
+    params[FRAME_FOG_HEIGHT + 2] = fog?.density2 ?? 0;
+    params[FRAME_FOG_HEIGHT + 3] = fog?.heightFalloff2 ?? 0;
+    params[FRAME_FOG_LIMITS] = fog?.floor ?? 0;
+    params[FRAME_FOG_LIMITS + 1] = fog?.cutoff ?? 0;
+    params[FRAME_FOG_GLOW] = fog?.glowColour?.[0] ?? 0;
+    params[FRAME_FOG_GLOW + 1] = fog?.glowColour?.[1] ?? 0;
+    params[FRAME_FOG_GLOW + 2] = fog?.glowColour?.[2] ?? 0;
+    params[FRAME_FOG_GLOW + 3] = fog?.glowExponent ?? 1;
+    params[FRAME_FOG_GLOW_DIR] = fog?.glowDirection?.[0] ?? 0;
+    params[FRAME_FOG_GLOW_DIR + 1] = fog?.glowDirection?.[1] ?? 1;
+    params[FRAME_FOG_GLOW_DIR + 2] = fog?.glowDirection?.[2] ?? 0;
+    params[FRAME_FOG_GLOW_DIR + 3] = fog?.glowStart ?? 0;
     /* The scene's own decision about whether its grid supplies the ambient, as it is on the
        forward path: `ProbeBakeOptions.irradiance` reaches here as `PassEnvironment.irradiance`. */
     params[FRAME_ENVIRONMENT_MIX] = room !== null && room.irradiance ? 1 : 0;

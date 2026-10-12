@@ -1010,7 +1010,7 @@ describe('the webgpu renderer', () => {
     );
     const { camera, env } = stubScene();
     const mesh = stubMesh(renderer);
-    const frame = (): { local: number; auto: number; passes: string[] } => {
+    const frame = (): { local: number; shape: number; auto: number; passes: string[] } => {
       stub.encoder.beginRenderPass.mockClear();
       renderer.beginFrame([0, 0, 0]);
       renderer.bindMeshPass(camera, env);
@@ -1019,6 +1019,8 @@ describe('the webgpu renderer', () => {
       const rush = new Float32Array(ringUpload(stub.device, 'post.rushUniforms'));
       return {
         local: rush[(RUSH_FRAG_FIELDS.uLocalExposure?.offset ?? -4) / 4] as number,
+        /* The share a region keeps above its pivot, less one: −strength for the one number. */
+        shape: rush[(RUSH_FRAG_FIELDS.uLocalShape?.offset ?? -4) / 4] as number,
         auto: rush[(RUSH_FRAG_FIELDS.uAutoExposure?.offset ?? -4) / 4] as number,
         passes: stub.encoder.beginRenderPass.mock.calls.map((call) => String(call[0]?.label ?? '')),
       };
@@ -1037,7 +1039,8 @@ describe('the webgpu renderer', () => {
     expect(on.passes.indexOf('post.composite')).toBeGreaterThan(
       on.passes.indexOf('exposure.local'),
     );
-    expect(on.local).toBe(0.5);
+    expect(on.local).toBe(1);
+    expect(on.shape, 'half of each region moved toward the frame').toBe(-0.5);
     expect(on.auto, 'the frame as a whole is not adapted for it').toBe(0);
 
     renderer.setLocalExposure(0);

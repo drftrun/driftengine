@@ -124,10 +124,10 @@ const { glassTintAt } = await import(`${ROOT}packages/core/src/render/gpudriven/
 const { oitWeight, resolveOit } = await import(
   `${ROOT}packages/core/src/render/orderIndependent.ts`
 );
-const { LINEAR_FOG, MEDIUM_FOG, mediumColour, mediumFog } = await import(
+const { LINEAR_FOG, MEDIUM_FOG, mediumColour, mediumFog, mediumGlow } = await import(
   `${ROOT}packages/core/src/render/fog.ts`
 );
-const { FOG_CASE_FLOATS, FOG_PARITY_WGSL } = await import(
+const { FOG_CASE_FLOATS, FOG_PARITY_WGSL, FOG_RESULT_FLOATS } = await import(
   `${ROOT}packages/core/src/render/shaders/gpudriven/fog.wgsl.ts`
 );
 const { ADDRESS_MODE, DECODE_OP, createDecodeRegisters, decodeCpu, validateDecodeGraph } =
@@ -1174,6 +1174,16 @@ try {
         o.far,
         o.mode,
         o.underwaterDensity,
+        o.density2 ?? 0,
+        o.heightFalloff2 ?? 0,
+        o.floor ?? 0,
+        o.cutoff ?? 0,
+        ...(o.glowColour ?? [0, 0, 0]),
+        o.glowExponent ?? 1,
+        ...(o.glowDirection ?? [0, 1, 0]),
+        o.glowStart ?? 0,
+        ...(o.toPoint ?? [0, 0, 1]),
+        0,
       );
     const base = {
       colour: [0.7, 0.82, 0.92],
@@ -1202,10 +1212,36 @@ try {
       }
       /* A span of zero, which is a consumer asking for a hard cut rather than a ramp. */
       media.push({ ...base, mode, near: 60, far: 60 });
+      /*
+       * The second layer, the floor, the cutoff and the sun's glow, each alone and all together,
+       * in both modes: the glow seen toward its light, across it and away from it.
+       */
+      const glow = { glowColour: [1, 0.8, 0.5], glowExponent: 6, glowDirection: [0, 0.6, 0.8] };
+      for (const extra of [
+        { density2: 0.03, heightFalloff2: 0.05 },
+        { floor: 0.35 },
+        { cutoff: 80 },
+        { ...glow, glowStart: 0, toPoint: [0, 0.6, 0.8] },
+        { ...glow, glowStart: 25, toPoint: [0, 0, 1] },
+        { ...glow, glowStart: 0, toPoint: [0, 0, -1] },
+        { density2: 0.01, heightFalloff2: 0.2, floor: 0.1, cutoff: 500, ...glow, glowStart: 10 },
+      ]) {
+        for (const underwaterFactor of [0, 0.5]) {
+          media.push({
+            ...base,
+            mode,
+            underwaterFactor,
+            near: mode === MEDIUM_FOG ? 0 : 20,
+            ...extra,
+          });
+        }
+      }
     }
     let levelRays = 0;
     let atTheCut = 0;
     let fogWorst = 0;
+    let glowWorst = 0;
+    let glowing = 0;
     for (const o of media) {
       for (const [dist, pointY] of [
         [0, o.eyeY],
@@ -1229,7 +1265,7 @@ try {
       workgroups: [Math.ceil(count / 64)],
       buffers: [
         { type: 'f32', values: cases, readOnly: true },
-        { type: 'f32', length: count * 4, read: true },
+        { type: 'f32', length: count * FOG_RESULT_FLOATS, read: true },
       ],
     });
 
@@ -1248,9 +1284,18 @@ try {
         far: cases[at + 13],
         mode: cases[at + 14],
         underwaterDensity: cases[at + 15],
+        density2: cases[at + 16],
+        heightFalloff2: cases[at + 17],
+        floor: cases[at + 18],
+        cutoff: cases[at + 19],
+        glowColour: [cases[at + 20], cases[at + 21], cases[at + 22]],
+        glowExponent: cases[at + 23],
+        glowDirection: [cases[at + 24], cases[at + 25], cases[at + 26]],
+        glowStart: cases[at + 27],
       };
+      const toPoint = [cases[at + 28], cases[at + 29], cases[at + 30]];
       const want = mediumFog(o, dist, pointY);
-      const got = out[1][c * 4];
+      const got = out[1][c * FOG_RESULT_FLOATS];
       /*
        * **Absolute, because the answer is a fraction between zero and one**, and at 2e-4 — which
        * is an order of magnitude above the worst this corpus produces and three below anything a
@@ -1266,9 +1311,20 @@ try {
       if (!(Math.abs(want - got) <= 2e-4)) {
         failures.push(`mediumFog[${c}]: reference ${want}, device ${got} at ${dist}m, y ${pointY}`);
       }
+      const wantGlow = mediumGlow(o, dist, pointY, toPoint, [0, 0, 0]);
+      for (let k = 0; k < 3; k += 1) {
+        const gotGlow = out[1][c * FOG_RESULT_FLOATS + 4 + k];
+        glowWorst = Math.max(glowWorst, Math.abs(wantGlow[k] - gotGlow));
+        if (wantGlow[k] > 0) glowing += 1;
+        if (!(Math.abs(wantGlow[k] - gotGlow) <= 2e-4)) {
+          failures.push(
+            `mediumGlow[${c}] channel ${k}: reference ${wantGlow[k]}, device ${gotGlow}`,
+          );
+        }
+      }
       const wantColour = mediumColour(o);
       for (let k = 0; k < 3; k += 1) {
-        const gotColour = out[1][c * 4 + 1 + k];
+        const gotColour = out[1][c * FOG_RESULT_FLOATS + 1 + k];
         if (!(Math.abs(wantColour[k] - gotColour) <= 2e-4)) {
           failures.push(
             `mediumColour[${c}] channel ${k}: reference ${wantColour[k]}, device ${gotColour}`,
@@ -1282,9 +1338,13 @@ try {
     if (atTheCut === 0) {
       failures.push('fog: no case sits on a zero span, so that guard is untested');
     }
+    if (glowing === 0) {
+      failures.push('fog: no case glows, so the glow is untested');
+    }
     report(
       `fog            ${count} samples over ${media.length} media, ${levelRays} on the level ` +
-        `ray, ${atTheCut} on a zero span, worst ${fogWorst.toExponential(1)}`,
+        `ray, ${atTheCut} on a zero span, worst ${fogWorst.toExponential(1)}; ` +
+        `${glowing} glowing channels, worst ${glowWorst.toExponential(1)}`,
     );
   }
   /* --------------------------------------------------------------- an ordinary image */

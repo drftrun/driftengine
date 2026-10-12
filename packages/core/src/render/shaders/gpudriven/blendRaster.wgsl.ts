@@ -271,7 +271,8 @@ fn blendFrag(in: BlendVarying) -> BlendTargets {
    */
   let toward = distance(in.world, frame.eye.xyz);
   let fog = mediumFog(toward, in.world.y);
-  var colour = mix(litColour(surface, room), mediumColour(), fog);
+  var colour = mix(litColour(surface, room), mediumColour(), fog)
+    + mediumGlow(toward, in.world.y, normalize(in.world - frame.eye.xyz));
   /*
    * **Glass shows what is behind it**, as the forward path's glass branch does: the opaque half's
    * picture at this pixel, at the level frost picks, two short of the chain's end so a fully frosted

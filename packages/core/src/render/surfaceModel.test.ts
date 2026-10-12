@@ -31,6 +31,12 @@ describe('packModel', () => {
     expect(packed(hairModel({ shift: -0.05, scatter: 0.25, backlit: 2 }), true, out)).toEqual([
       -0.05, 0.25, 2, 0, 0, 0, 0, 1,
     ]);
+    expect(packed(anisotropicModel({ strength: 0.5, lift: 10 }), true, out)).toEqual([
+      0.5, 1, 0, 10, 0, 0, 0, 1,
+    ]);
+    expect(packed(hairModel({ shift: 0.05, directionOffset: 2 }), true, out)).toEqual([
+      0.05, 0.7, 1, 2, 0, 0, 0, 1,
+    ]);
     expect(
       packed(
         skinModel({
@@ -76,8 +82,11 @@ describe('packModel', () => {
 
   it('refuses a number out of its range by name, and freezes what it makes', () => {
     expect(() => anisotropicModel({ strength: 1.5 })).toThrow(/anisotropicModel: strength/);
+    expect(() => anisotropicModel({ lift: -1 })).toThrow(/anisotropicModel: lift/);
     expect(() => skinModel({ profile: 8 })).toThrow(/skinModel: profile/);
     expect(() => skinModel({ profile: 1.5 })).toThrow(/whole number/);
+    expect(() => hairModel({ directionOffset: -1 })).toThrow(/hairModel: directionOffset/);
+    expect(() => hairModel({ directionOffset: 1.5 })).toThrow(/whole number of layers/);
     expect(() => eyeModel({ axis: [0, 0, 0] })).toThrow(/eyeModel: axis/);
     expect(() => eyeModel({ joint: -2 })).toThrow(/eyeModel: joint/);
     expect(Object.isFrozen(hairModel())).toBe(true);

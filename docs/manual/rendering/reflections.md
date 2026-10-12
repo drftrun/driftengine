@@ -203,6 +203,14 @@ export function polishedFloor(renderer: RendererApi, env: Environment, camera: C
 dimmer than the light a polished floor should show. `bindMeshPass` resets both. See
 [Materials](materials.md) for the rest of a surface.
 
+`setEnvironmentMixing(weight, roughnessLow, roughnessHigh)` brings what every surface reflects,
+metal or not, to the light where it stands. A probe is captured at one place and seen from many, so
+a figure standing where the indirect light is twice what the probe saw reflects the probe too
+dimly against everything lit around it. `weight` is that ratio, the place's indirect light over the
+probe's own average brightness, above 1 or below. A mirror keeps the capture as it is and a rough
+surface takes the whole weight, mixed by a smoothstep between the two roughnesses, 0.1 and 0.3 by
+default. `bindMeshPass` resets it to 1, which is none.
+
 ## Reflecting what the frame drew
 
 ```ts sample=snippets/reflections.ts#screen

@@ -314,12 +314,14 @@ sets. A few are made of something it cannot describe, and a material names one o
 `model`, made by a factory that checks the numbers and freezes them. Leave `model` out, or pass
 `null`, for the standard model.
 
-- `anisotropicModel({ strength, rotation })`, for brushed metal, satin and grooved plastic: the
-  highlight stretched along the mesh's tangent by `strength`, 0 to 1, its direction turned by
+- `anisotropicModel({ strength, rotation, lift })`, for brushed metal, satin and grooved plastic:
+  the highlight stretched along the mesh's tangent by `strength`, 0 to 1, its direction turned by
   `rotation` radians toward the bitangent. At strength 0 it is the standard highlight exactly. The
   environment is reflected about a normal bent toward the stretch, so a brushed disc shows a streak
-  of sky.
-- `hairModel({ shift, scatter, backlit })`, for strands along the mesh's tangent, running from root
+  of sky. `lift` raises the highlight where it is bright, its distribution `D` becoming
+  `D + min(3, D^1.5) · lift`, for a brushed finish that reads as polished along its streak; 0, the
+  default, is none.
+- `hairModel({ shift, scatter, backlit, directionOffset })`, for strands along the mesh's tangent, running from root
   to tip: a white highlight shifted toward the root, a coloured second one toward the tip, a glow
   when a light is behind (`backlit` scales it), and the light scattered through many strands
   (`scatter`, 0 to 1). `shift` is the tilt of the strand's cuticle in radians, 3° by default. A card
@@ -346,9 +348,15 @@ sets. A few are made of something it cannot describe, and a material names one o
 `modelMap` is an image of a model's own channels, read at the albedo's coordinates and uploaded as
 `'linear'`:
 
-- anisotropic: red and green a direction in the surface, glTF's packing of −1 to 1, and blue a scale
-  on the strength.
-- hair: green varies each strand's tilt by up to half of it either way, and blue is occlusion.
+- anisotropic: red and green a direction in the surface, glTF's packing of −1 to 1, blue a scale
+  on the strength, and alpha a scale on the lift, so a map storing a tenth of each region's lift
+  takes `lift: 10`.
+- hair: red is the strand's specular, scaling its white highlight by twice it (0.5, or 128, is the
+  highlight as drawn; 0 is a strand that reflects nothing off its surface, as at a root), green
+  varies each strand's tilt by up to half of it either way, and blue is occlusion. With
+  `directionOffset: n`, the layer `n` past the texel's own holds each strand's direction in the
+  surface's tangent frame (red along the tangent, green along the bitangent, blue out of the
+  surface, each packed as a normal map packs it), so a card's strands can lean out of its plane.
 - skin: red is thickness, 1 being two centimetres, and green curvature, 1 being a radius of a
   centimetre.
 - eye: red is the iris, 1 inside it, and green the cornea's height above it as a share of
@@ -469,6 +477,9 @@ A few properties apply to the draws that follow, without a map:
   reflects by itself; this is for a varnished or wet dielectric.
 - `setEnvironmentGain(gain)`: how bright the reflected environment is, for a room too dim for its
   metal to read.
+- `setEnvironmentMixing(weight, roughnessLow, roughnessHigh)`: what every surface reflects brought
+  to the light where it stands, `weight` the place's indirect light over the probe's, mixed in by
+  roughness. See [Reflections](reflections.md).
 - `setSurfaceGrain(amount)` and `setSurfaceRelief(amount, cyclesPerMetre)`: procedural mineral
   texture and microscopic bumps, so stone reads as stone up close.
 - `setSurfaceTextureRelief(scale)`: bumps from the bound albedo's own brightness, for a texture with

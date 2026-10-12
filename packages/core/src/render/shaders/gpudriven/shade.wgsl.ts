@@ -821,7 +821,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
    * point and for the same reason: fog is the air in front of the picture rather than a property
    * of the surface, so it is the last thing between a shaded colour and the frame.
    */
-  let hazed = mix(lit, mediumColour(), mediumFog(distance(world, frame.eye.xyz), world.y));
+  let dist = distance(world, frame.eye.xyz);
+  let hazed = mix(lit, mediumColour(), mediumFog(dist, world.y))
+    + mediumGlow(dist, world.y, normalize(world - frame.eye.xyz));
 
   textureStore(frameColour, vec2<u32>(x, y), vec4<f32>(hazed, 1.0));
 }

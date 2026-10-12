@@ -28,12 +28,20 @@ export interface AnisotropicModel {
   readonly strength: number;
   /** Radians, turning the stretch's direction from the tangent toward the bitangent. */
   readonly rotation: number;
+  /**
+   * How far the highlight is lifted where it is bright: the distribution `D` becomes
+   * `D + min(3, D^1.5) · lift`, which is how a brushed finish that reads as polished along its
+   * streak is authored. Where a model map is bound its alpha scales it texel by texel, so a map
+   * storing a tenth of a region's lift takes `lift: 10`. 0, the default, is none.
+   */
+  readonly lift: number;
 }
 
 /**
  * Hair: three lobes along the strand, which is the mesh's tangent, running from root to tip
- * (`hairLobes.ts`). A model map's green turns each strand's tilt by up to half of it either way and
- * its blue is occlusion.
+ * (`hairLobes.ts`). A model map's red is the strand's specular, twice it scaling the reflected lobe
+ * (0.5 is the lobe as drawn), its green turns each strand's tilt by up to half of it either way and
+ * its blue is occlusion; `directionOffset` names a layer of it holding each strand's direction.
  */
 export interface HairModel {
   readonly kind: 'hair';
@@ -47,6 +55,15 @@ export interface HairModel {
   readonly scatter: number;
   /** How strongly light from behind glows through: the transmitted lobe. */
   readonly backlit: number;
+  /**
+   * Where the model map holds each strand's direction: this many layers past the layer the texel's
+   * other channels are read at, so a model map of one layer with its directions in the next takes
+   * 1. The direction is in the surface's tangent frame, red along the tangent, green along the
+   * bitangent and blue out of the surface along its normal, each −1 to 1 packed as a normal map
+   * packs them, and the strand runs along it rather than along the tangent: a card's strands can
+   * lean out of its plane. 0, the default, is none.
+   */
+  readonly directionOffset: number;
 }
 
 /** Skin: light scattered beneath the surface, reddening its terminator and its thin parts. */
@@ -137,10 +154,11 @@ function unit(model: string, name: string, v: Vec3): Vec3 {
 
 /** Brushed metal and the like, after glTF's `KHR_materials_anisotropy`: a strength and a turn. */
 export function anisotropicModel(
-  options: { strength?: number; rotation?: number } = {},
+  options: { strength?: number; rotation?: number; lift?: number } = {},
 ): AnisotropicModel {
   return Object.freeze({
     kind: 'anisotropic',
+    lift: check('anisotropicModel', 'lift', options.lift ?? 0, 0, 100),
     strength: check('anisotropicModel', 'strength', options.strength ?? 1, 0, 1),
     rotation: check(
       'anisotropicModel',
@@ -154,13 +172,26 @@ export function anisotropicModel(
 
 /** Hair, along the mesh's tangent from root to tip. A tilt of 3°, within the 2.5° to 5° measured. */
 export function hairModel(
-  options: { shift?: number; scatter?: number; backlit?: number } = {},
+  options: { shift?: number; scatter?: number; backlit?: number; directionOffset?: number } = {},
 ): HairModel {
+  const directionOffset = check(
+    'hairModel',
+    'directionOffset',
+    options.directionOffset ?? 0,
+    0,
+    255,
+  );
+  if (!Number.isInteger(directionOffset)) {
+    throw new Error(
+      `hairModel: directionOffset must be a whole number of layers, not ${directionOffset}`,
+    );
+  }
   return Object.freeze({
     kind: 'hair',
     shift: check('hairModel', 'shift', options.shift ?? (3 * Math.PI) / 180, -0.5, 0.5),
     scatter: check('hairModel', 'scatter', options.scatter ?? 0.7, 0, 1),
     backlit: check('hairModel', 'backlit', options.backlit ?? 1, 0, 4),
+    directionOffset,
   });
 }
 
@@ -246,8 +277,8 @@ export function lightmapModel(options: { region?: LightmapRegion } = {}): Lightm
  * models that read it leave free; skin, hair and the eye shade their own highlights and never do.
  *
  * - standard (null): − · −, −, physical, −
- * - anisotropic: strength, cos and sin of the rotation · −, −, physical, map
- * - hair: shift, scatter, backlit, − · −, −, −, map
+ * - anisotropic: strength, cos and sin of the rotation, lift · −, −, physical, map
+ * - hair: shift, scatter, backlit, direction offset · −, −, −, map
  * - skin: the scatter colour, radius / `SKIN_MEAN_EXIT` · transmission, profile, −, map
  * - eye: iris radius, iris depth, ior, cornea roughness · the axis, map
  * - lightmap: the region's scale and bias · −, −, physical, map
@@ -270,12 +301,16 @@ export function packModel(
       out[0] = model.strength;
       out[1] = Math.cos(model.rotation);
       out[2] = Math.sin(model.rotation);
+      /* The lift, which the map's alpha scales texel by texel; 0, and a missing field, is none. */
+      out[3] = model.lift ?? 0;
       out[6] = highlight;
       return;
     case 'hair':
       out[0] = model.shift;
       out[1] = model.scatter;
       out[2] = model.backlit;
+      /* A layer offset the shader adds to the texel's own; 0 is none, and so is a missing field. */
+      out[3] = model.directionOffset ?? 0;
       return;
     case 'skin':
       out[0] = model.scatterColor[0];

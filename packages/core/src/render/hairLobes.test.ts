@@ -26,7 +26,7 @@ function peak(lobe: number, phi: number, shift: number): number {
   let at = 0;
   for (let k = 0; k <= 100000; k++) {
     const s = -0.5 + k / 100000;
-    hairLight(TANGENT, around(s, phi), eye, WHITE, 0.25, shift, 0.7, 1, 0, 0, out);
+    hairLight(TANGENT, around(s, phi), eye, WHITE, 0.25, shift, 0.5, 0.7, 1, 0, 0, out);
     const value = out[lobe] as number;
     if (value > best) {
       best = value;
@@ -48,7 +48,7 @@ function returned(roughness: number, view: number, sourceRadius: number, dist: n
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < 2 * n; j++) {
       const l = around(-1 + (2 * (i + 0.5)) / n, (Math.PI * (j + 0.5)) / n);
-      hairLight(TANGENT, l, eye, WHITE, roughness, 0.05, 0.7, 1, sourceRadius, dist, out);
+      hairLight(TANGENT, l, eye, WHITE, roughness, 0.05, 0.5, 0.7, 1, sourceRadius, dist, out);
       sum += (out[HAIR_OUT.r] as number) + (out[HAIR_OUT.tt] as number);
       sum += out[HAIR_OUT.trt] as number;
     }
@@ -81,11 +81,11 @@ describe('hair', () => {
   it('GLOWS WITH THE LIGHT BEHIND AND NEARLY NOT AT ALL IN FRONT', () => {
     const out = new Float64Array(HAIR_OUT.length);
     const eye = around(0, 0);
-    hairLight(TANGENT, around(0.05, 0), eye, WHITE, 0.3, 0.05, 0.7, 1, 0, 0, out);
+    hairLight(TANGENT, around(0.05, 0), eye, WHITE, 0.3, 0.05, 0.5, 0.7, 1, 0, 0, out);
     const front = out[HAIR_OUT.tt] as number;
-    hairLight(TANGENT, around(0.05, Math.PI), eye, WHITE, 0.3, 0.05, 0.7, 1, 0, 0, out);
+    hairLight(TANGENT, around(0.05, Math.PI), eye, WHITE, 0.3, 0.05, 0.5, 0.7, 1, 0, 0, out);
     const behind = out[HAIR_OUT.tt] as number;
-    hairLight(TANGENT, around(-0.1, 0), eye, WHITE, 0.3, 0.05, 0.7, 1, 0, 0, out);
+    hairLight(TANGENT, around(-0.1, 0), eye, WHITE, 0.3, 0.05, 0.5, 0.7, 1, 0, 0, out);
     const reflection = out[HAIR_OUT.r] as number;
     expect(front / behind).toBeCloseTo(6.3e-4, 4);
     expect(behind).toBeGreaterThan(10 * reflection);
@@ -99,8 +99,8 @@ describe('hair', () => {
     for (let k = 0; k < 40; k++) {
       const l = around(Math.sin(k * 1.3) * 0.9, k * 0.7);
       const v = around(Math.cos(k * 0.9) * 0.8, k * 2.1);
-      hairLight(TANGENT, l, v, fibre, 0.35, 0.05, 0.7, 1, 0, 0, forward);
-      hairLight(TANGENT, v, l, fibre, 0.35, 0.05, 0.7, 1, 0, 0, back);
+      hairLight(TANGENT, l, v, fibre, 0.35, 0.05, 0.5, 0.7, 1, 0, 0, forward);
+      hairLight(TANGENT, v, l, fibre, 0.35, 0.05, 0.5, 0.7, 1, 0, 0, back);
       for (const lobe of [HAIR_OUT.r, HAIR_OUT.tt, HAIR_OUT.trt]) {
         for (let c = 0; c < (lobe === HAIR_OUT.r ? 1 : 3); c++) {
           expect(back[lobe + c]).toBeCloseTo(forward[lobe + c] as number, 9);
@@ -134,9 +134,9 @@ describe('hair', () => {
   it('SPREADS A LARGE LAMP’S HIGHLIGHT WITHOUT BRIGHTENING IT', () => {
     expect(returned(0.25, 0.3, 0.4, 1) / returned(0.25, 0.3, 0, 0)).toBeCloseTo(1, 2);
     const out = new Float64Array(HAIR_OUT.length);
-    hairLight(TANGENT, around(-0.1, 0), around(0, 0), WHITE, 0.25, 0.05, 0.7, 1, 0, 0, out);
+    hairLight(TANGENT, around(-0.1, 0), around(0, 0), WHITE, 0.25, 0.05, 0.5, 0.7, 1, 0, 0, out);
     const point = out[HAIR_OUT.r] as number;
-    hairLight(TANGENT, around(-0.1, 0), around(0, 0), WHITE, 0.25, 0.05, 0.7, 1, 0.4, 1, out);
+    hairLight(TANGENT, around(-0.1, 0), around(0, 0), WHITE, 0.25, 0.05, 0.5, 0.7, 1, 0.4, 1, out);
     expect((out[HAIR_OUT.r] as number) / point).toBeCloseTo(0.0625 / 0.2625, 2);
   });
 
@@ -154,7 +154,7 @@ describe('hair', () => {
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < 2 * n; j++) {
           const l = around(-1 + (2 * (i + 0.5)) / n, (Math.PI * (j + 0.5)) / n);
-          hairLight(TANGENT, l, eye, WHITE, 0.3, 0.05, 1, 1, 0, 0, out);
+          hairLight(TANGENT, l, eye, WHITE, 0.3, 0.05, 0.5, 1, 1, 0, 0, out);
           sum += out[HAIR_OUT.scatter] as number;
         }
       }
@@ -180,7 +180,7 @@ describe('hair', () => {
       [TANGENT, around(-0.1, 0), around(0, 0), WHITE, 0],
     ];
     for (const [t, l, v, fibre, roughness] of cases) {
-      hairLight(t, l, v, fibre, roughness, 0.05, 0.7, 1, 0, 0, out);
+      hairLight(t, l, v, fibre, roughness, 0.05, 0.5, 0.7, 1, 0, 0, out);
       for (let k = 0; k < HAIR_OUT.length; k++) {
         expect(Number.isFinite(out[k])).toBe(true);
         expect(out[k]).toBeGreaterThanOrEqual(0);
@@ -208,12 +208,12 @@ describe('hair', () => {
     const lobes = new Float64Array(HAIR_OUT.length);
     const out = new Float64Array(3);
     const eye = around(0, 0.4);
-    hairIndirect(TANGENT, eye, eye, WHITE, 0.5, 0, 0.2, lobes, out);
+    hairIndirect(TANGENT, eye, eye, WHITE, 0.5, 0, 0.5, 0.2, lobes, out);
     expect(lobes[HAIR_OUT.r]).toBeCloseTo(0.0323912, 6);
     expect(lobes[HAIR_OUT.trt]).toBeCloseTo(0.145146, 5);
     expect(lobes[HAIR_OUT.scatter]).toBeCloseTo(0.133, 9);
     expect(out[0]).toBeCloseTo(0.621074, 5);
-    hairIndirect(TANGENT, eye, eye, [1, 0.43, 0.115], 0.5, 0, 0.2, lobes, out);
+    hairIndirect(TANGENT, eye, eye, [1, 0.43, 0.115], 0.5, 0, 0.5, 0.2, lobes, out);
     expect(out[0]).toBeCloseTo(0.621074, 5);
     expect(out[1]).toBeCloseTo(0.386988, 5);
     expect(out[2]).toBeCloseTo(0.206438, 5);
@@ -229,7 +229,7 @@ describe('hair', () => {
     const out = new Float64Array(3);
     for (const view of [0, 0.5, 1.2]) {
       const eye = around(Math.sin(view), 2);
-      hairIndirect(TANGENT, eye, eye, WHITE, 0.3, 0.05, 1, lobes, out);
+      hairIndirect(TANGENT, eye, eye, WHITE, 0.3, 0.05, 0.5, 1, lobes, out);
       for (let c = 0; c < 3; c++) {
         expect(lobes[HAIR_OUT.tt + c]).toBe(0);
         expect(out[c]).toBe(1);
@@ -249,7 +249,7 @@ describe('hair', () => {
     const fibre: [number, number, number] = [0.64, 0.25, 0.09];
     for (const view of [0, 0.7, -1.1]) {
       const eye = around(Math.sin(view), 0.9);
-      hairIndirect(TANGENT, eye, eye, fibre, 0.4, 0.05, 0.6, lobes, out);
+      hairIndirect(TANGENT, eye, eye, fibre, 0.4, 0.05, 0.5, 0.6, lobes, out);
       for (let c = 0; c < 3; c++) {
         expect(2 * (lobes[HAIR_OUT.scatter + c] as number)).toBeCloseTo(
           HAIR_SCATTER_SPHERE * Math.sqrt(fibre[c]) * 0.6,
@@ -273,11 +273,41 @@ describe('hair', () => {
       [[0, 0, 0], around(0.3, 0.2), WHITE],
     ];
     for (const [t, v, fibre] of cases) {
-      hairIndirect(t, v, normal, fibre, 0.3, 0.05, 0.7, lobes, out);
+      hairIndirect(t, v, normal, fibre, 0.3, 0.05, 0.5, 0.7, lobes, out);
       for (let c = 0; c < 3; c++) {
         expect(Number.isFinite(out[c])).toBe(true);
         expect(out[c]).toBeGreaterThanOrEqual(0);
       }
+    }
+  });
+
+  /*
+   * **The strand's specular scales the reflected lobe by twice it, and nothing else**, in a lamp's
+   * lobes and in light from every side alike: at 0.5 the lobe is the fit's, 0.0323912 in the case
+   * worked above; at 0.25 half that and at 0 none, a root that reflects nothing; at 1 twice. TRT
+   * and the scatter do not move, so the share from every side loses exactly twice R's difference.
+   */
+  it('SCALES ONLY THE REFLECTED LOBE BY TWICE THE STRAND’S SPECULAR', () => {
+    const lobes = new Float64Array(HAIR_OUT.length);
+    const out = new Float64Array(3);
+    const lamp = new Float64Array(HAIR_OUT.length);
+    const eye = around(0, 0.4);
+    const light = around(-0.1, 0.2);
+    hairLight(TANGENT, light, eye, WHITE, 0.5, 0, 0.5, 0.2, 1, 0, 0, lamp);
+    const r = lamp[HAIR_OUT.r] as number;
+    const trt = lamp[HAIR_OUT.trt] as number;
+    for (const [specular, share] of [
+      [0, 0],
+      [0.25, 0.5],
+      [1, 2],
+    ] as const) {
+      hairLight(TANGENT, light, eye, WHITE, 0.5, 0, specular, 0.2, 1, 0, 0, lamp);
+      expect(lamp[HAIR_OUT.r]).toBeCloseTo(r * share, 12);
+      expect(lamp[HAIR_OUT.trt]).toBe(trt);
+      hairIndirect(TANGENT, eye, eye, WHITE, 0.5, 0, specular, 0.2, lobes, out);
+      expect(lobes[HAIR_OUT.r]).toBeCloseTo(0.0323912 * share, 6);
+      expect(lobes[HAIR_OUT.trt]).toBeCloseTo(0.145146, 5);
+      expect(out[0]).toBeCloseTo(0.621074 + 2 * 0.0323912 * (share - 1), 5);
     }
   });
 

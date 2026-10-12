@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { fogDensityAtEye, resolveAtmosphere } from './atmosphere.ts';
+import { createResolvedAtmosphere, fogDensityAtEye, resolveAtmosphere } from './atmosphere.ts';
 import type { Atmosphere, ResolvedAtmosphere } from './atmosphere.ts';
 
 /*
@@ -21,18 +21,7 @@ describe('resolving the camera medium', () => {
     fogBaseY: 0,
     underwater: null,
   };
-  const out = (): ResolvedAtmosphere => ({
-    fogColor: new Float32Array(3),
-    underwaterColor: new Float32Array(3),
-    fogDensity: 0,
-    fogHeightFalloff: 0,
-    fogEyeY: 0,
-    fogMode: 0,
-    fogNear: 0,
-    fogFar: 0,
-    underwaterFogDensity: 0,
-    underwaterFactor: 0,
-  });
+  const out = (): ResolvedAtmosphere => createResolvedAtmosphere();
 
   test('thins the haze with eye height, exactly as fogDensityAtEye does', () => {
     const r = resolveAtmosphere(air, 10, false, out());
@@ -106,18 +95,7 @@ describe('a medium that starts at a distance', () => {
     fogBaseY: 0,
     underwater: null,
   };
-  const target = (): ResolvedAtmosphere => ({
-    fogColor: new Float32Array(3),
-    underwaterColor: new Float32Array(3),
-    fogDensity: 0,
-    fogHeightFalloff: 0,
-    fogEyeY: 0,
-    fogMode: 0,
-    fogNear: 0,
-    fogFar: 0,
-    underwaterFogDensity: 0,
-    underwaterFactor: 0,
-  });
+  const target = (): ResolvedAtmosphere => createResolvedAtmosphere();
 
   test('CARRIES FOGSTART IN THE NEAR SLOT THE MEDIUM NEVER READ', () => {
     expect(resolveAtmosphere({ ...base, fogStart: 10 }, 1, false, target()).fogNear).toBe(10);

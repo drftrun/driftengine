@@ -86,8 +86,13 @@ describe('countUniformVectors', () => {
      * with nothing pinning the rung itself — so they put it at 257 and the part at four lights,
      * caught by the planner's tests on their first run. The material's four integer switches
      * became one \`ivec4\`, three rows for one, and the rung is 254 with the models in it.
+     *
+     * **And two fewer since the haze's second layer and the sun's glow, 440 and 248.** Those
+     * are three vectors, and the haze's eight scalars packed into two paid for them and two more.
+     * **And one of those back for the environment's mixing by roughness, 441 and 249**: one vector,
+     * the weight and the two roughnesses (environmentMixing.ts).
      */
-    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(442);
+    expect(countUniformVectors(lit(FULL_LIGHT_BUDGET))).toBe(441);
     /* A material's projection, when one asks, is its one vector and no more: worldUv.ts. */
     expect(
       countUniformVectors(lit(FULL_LIGHT_BUDGET, false, true)) -
@@ -124,7 +129,7 @@ describe('countUniformVectors', () => {
       layered: false,
       surfaceDetail: false,
     });
-    expect(countUniformVectors(withoutPointShadows)).toBe(250);
+    expect(countUniformVectors(withoutPointShadows)).toBe(249);
   });
 });
 
@@ -277,7 +282,7 @@ it('reports what the ceiling would have spent even when it could not have it', (
     builds++;
     return lit(budget);
   });
-  expect(plan.ceilingVectors).toBe(442);
+  expect(plan.ceilingVectors).toBe(441);
   expect(plan.vectors).toBeLessThan(plan.ceilingVectors);
   expect(builds, 'one build per rung tried and not one more').toBe(3);
 });

@@ -334,8 +334,10 @@ void main() {
   }
 
   vec3 shaded = vColor * lit;
-  float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
-  outColor = vec4(applyOutputTransform(mix(shaded, mediumColor(), fog)), mask * vAlpha);
+  float dist = distance(vWorldPos, uCameraPos);
+  float fog = mediumFog(dist, vWorldPos.y);
+  vec3 glow = mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
+  outColor = vec4(applyOutputTransform(mix(shaded, mediumColor(), fog) + glow), mask * vAlpha);
 }
 `;
 
@@ -463,8 +465,9 @@ void main() {
 
   vec3 color = vColor;
   if (uFogEnabled != 0) {
-    float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
-    color = mix(color, mediumColor(), fog);
+    float dist = distance(vWorldPos, uCameraPos);
+    float fog = mediumFog(dist, vWorldPos.y);
+    color = mix(color, mediumColor(), fog) + mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
   }
   /*
    * A real alpha blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) rather than spark's energy-in-colour
@@ -563,8 +566,9 @@ void main() {
   if (alpha <= 0.001) discard;
   vec3 color = vColor * image.rgb;
   if (uFogEnabled != 0) {
-    float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
-    color = mix(color, mediumColor(), fog);
+    float dist = distance(vWorldPos, uCameraPos);
+    float fog = mediumFog(dist, vWorldPos.y);
+    color = mix(color, mediumColor(), fog) + mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
   }
   outColor = vec4(applyOutputTransform(color), alpha);
 }

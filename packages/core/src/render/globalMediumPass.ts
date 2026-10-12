@@ -2,14 +2,14 @@ import { mat4 } from 'gl-matrix';
 import type { ReadonlyMat4 } from 'gl-matrix';
 
 import { mediumTargetSize } from './globalMedium.ts';
-import type { GlobalMediumOptions } from './globalMedium.ts';
+import type { ResolvedGlobalMedium, ResolvedMediumLamps } from './globalMedium.ts';
 import { DEPTH_01_TO_CLIP } from './lightVolumeDraw.ts';
 import { compileProgram, uniformLocations } from './shader.ts';
 import { FULLSCREEN_VERT } from './shaders/fullscreen.ts';
 import { MEDIUM_FRAG, MEDIUM_UPSAMPLE_FRAG } from './shaders/globalMedium.ts';
 import { blendCovering, blendTransmitting } from './sceneCoverage.ts';
 
-/** What the march needs about the light, which is the sun and the sky and nothing else. */
+/** What the march needs about the light: the sun, the sky, and the lamps that scatter. */
 export interface MediumLight {
   /** Surface → sun, normalised. `Environment.directionalDir` unchanged. */
   readonly sunDir: ArrayLike<number>;
@@ -25,6 +25,10 @@ export interface MediumLight {
   /** The sun's static, moving and peeled maps, as one array. See `shadowMap.ts`. */
   readonly sunShadows: WebGLTexture;
   readonly peeledEnabled: boolean;
+  /** The lamps that scatter, as `resolveMediumLamps` lays them out: none while `lampScatter` is 0. */
+  readonly lamps: ResolvedMediumLamps;
+  /** The lamps' shadow array, the lit stage's; the placeholder where there is none. */
+  readonly pointShadows: WebGLTexture;
 }
 
 /**
@@ -172,7 +176,7 @@ export class GlobalMediumPass {
     frameHeight: number,
     half: boolean,
     steps: number,
-    options: GlobalMediumOptions,
+    options: ResolvedGlobalMedium,
     viewProjection: ReadonlyMat4,
     projection: ReadonlyMat4,
     eye: ArrayLike<number>,
@@ -214,6 +218,9 @@ export class GlobalMediumPass {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, light.sunShadows);
     gl.uniform1i(u['uSunShadows'] ?? null, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, light.pointShadows);
+    gl.uniform1i(u['uPointShadows'] ?? null, 2);
 
     gl.uniformMatrix4fv(u['uDepthToWorld'] ?? null, false, this.depthToWorld);
     gl.uniform3f(u['uCameraPos'] ?? null, eye[0] ?? 0, eye[1] ?? 0, eye[2] ?? 0);
@@ -236,7 +243,10 @@ export class GlobalMediumPass {
       light.ambient[2] ?? 0,
     );
     gl.uniform1f(u['uDensity'] ?? null, options.density);
-    gl.uniform1f(u['uAlbedo'] ?? null, options.albedo);
+    gl.uniform2f(u['uHeight'] ?? null, options.heightFalloff, options.baseY);
+    gl.uniform3f(u['uLayer2'] ?? null, options.density2, options.heightFalloff2, options.baseY2);
+    gl.uniform3f(u['uAlbedo'] ?? null, options.albedo[0], options.albedo[1], options.albedo[2]);
+    gl.uniform2f(u['uScatter'] ?? null, options.sunScatter, options.skyScatter);
     gl.uniform1f(u['uAnisotropy'] ?? null, options.anisotropy);
     gl.uniform1f(u['uMaxDistance'] ?? null, options.maxDistance);
     gl.uniform1i(u['uSteps'] ?? null, steps);
@@ -248,6 +258,20 @@ export class GlobalMediumPass {
       light.movingLightViewProj as Float32Array,
     );
     gl.uniform1i(u['uPeeledShadowEnabled'] ?? null, light.peeledEnabled ? 1 : 0);
+    const lamps = light.lamps;
+    gl.uniform1i(u['uLampCount'] ?? null, lamps.count);
+    gl.uniform1i(u['uLampFalloff'] ?? null, lamps.falloff);
+    /* As `name[0]`, the only spelling an array uniform answers to: see `bindPointShadows`. */
+    if (lamps.count > 0) {
+      gl.uniform4fv(u['uLampPosition[0]'] ?? null, lamps.position);
+      gl.uniform4fv(u['uLampColor[0]'] ?? null, lamps.color);
+      gl.uniform4fv(u['uLampAim[0]'] ?? null, lamps.aim);
+      gl.uniform4fv(u['uLampCone[0]'] ?? null, lamps.cone);
+      gl.uniform4fv(u['uLampShadow[0]'] ?? null, lamps.shadow);
+      gl.uniform4fv(u['uLampShadowAt[0]'] ?? null, lamps.shadowAt);
+      gl.uniform4fv(u['uLampLive[0]'] ?? null, lamps.live);
+      gl.uniform4fv(u['uLampLiveAt[0]'] ?? null, lamps.liveAt);
+    }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -257,6 +281,7 @@ export class GlobalMediumPass {
     for (const unit of [gl.TEXTURE3, gl.TEXTURE2, gl.TEXTURE1, gl.TEXTURE0]) {
       gl.activeTexture(unit);
       gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return true;

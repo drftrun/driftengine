@@ -42,14 +42,18 @@ import {
   resolveFrameReflections,
   type ResolvedFrameReflections,
 } from '../../frameReflections.ts';
+import { noEnvironmentMixing, resolveEnvironmentMixing } from '../../environmentMixing.ts';
 import { GlobalMediumPass } from '../../globalMediumPass.ts';
 import {
   DEFAULT_GLOBAL_MEDIUM,
   WEAK_GPU_MEDIUM_STEPS,
+  createResolvedMediumLamps,
   mediumActive,
   resolveGlobalMedium,
+  resolveGlobalMediumSettings,
+  resolveMediumLamps,
 } from '../../globalMedium.ts';
-import type { GlobalMediumOptions } from '../../globalMedium.ts';
+import type { GlobalMediumSettings, ResolvedGlobalMedium } from '../../globalMedium.ts';
 import { REFLECTION_EDGE_FADE, ReflectionQueue } from '../../screenSpaceReflection.ts';
 import type { ReflectiveSurface } from '../../screenSpaceReflection.ts';
 import { DecalQueue } from '../../decalQueue.ts';
@@ -86,6 +90,7 @@ import type {
   PassRegistry,
 } from '../../pass.ts';
 import type { Vec3 } from '../../../math/color.ts';
+import type { LocalExposureOptions } from '../../shaders/localExposure.ts';
 import { clamp } from '../../../math/scalar.ts';
 import { attachContextLoss } from '../../contextLoss.ts';
 import { isWeakGpuFamily, webgl2RendererName } from '../../gpuCapability.ts';
@@ -177,6 +182,8 @@ import {
   MODEL_MAP_TEXTURE_UNIT,
   MORPH_DELTA_TEXTURE_UNIT,
   SKIN_PALETTE_TEXTURE_UNIT,
+  createResolvedPointLights,
+  resolvePointLights,
 } from '../../lightBudget.ts';
 import {
   MODEL_PARAM_FLOATS,
@@ -528,6 +535,12 @@ export interface Environment extends Atmosphere {
    * every light. See `PointLightSource.falloffExponent`.
    */
   lightFalloffExponents?: Float32Array;
+  /**
+   * One per active light: how strongly it scatters in the global medium, a share of how strongly it
+   * lights a surface, beside `setGlobalMedium`'s `lampScatter`. Optional: absent is 1 for every
+   * light. See `PointLightSet.lightMediumScatter`.
+   */
+  lightMediumScatter?: Float32Array;
   /** One per active light: a row of the photometric atlas, or −1 for none. */
   lightIesProfiles: Float32Array;
   /**
@@ -1551,6 +1564,8 @@ export class WebGL2Renderer implements RendererApi {
    * vector on the device, so written whole, and kept here so a setter moving one keeps the others.
    */
   private readonly environmentDials = new Float32Array(3);
+  /** `uEnvironmentMixing` as it stands: see `setEnvironmentMixing`. None until a draw asks. */
+  private readonly environmentMixing = noEnvironmentMixing(new Float32Array(4));
   /** `uEmission` as it stands: the emissive gain and the night factor. */
   private readonly emission = new Float32Array([1, 0]);
   /** The ramp and each level's tint, as `resolveBloomResponse` writes them; the subtraction and white. */
@@ -4881,6 +4896,31 @@ export class WebGL2Renderer implements RendererApi {
   }
 
   /**
+   * How much of the light where the surfaces drawn next stand their reflection is brought to, for
+   * every surface, metal or not: what each reflects of the environment times
+   * `lerp(1, weight, smoothstep(roughnessLow, roughnessHigh, roughness))`. 1 is the default and
+   * identity; held until changed, and put back at `bindMeshPass`.
+   *
+   * **Why there is a weight at all**: a probe is captured at one place and seen from many, so a
+   * figure standing where the indirect light is twice what the probe saw reflects the probe at the
+   * probe's brightness and reads as dull against everything lit around it. `weight` is that
+   * ratio, the place's indirect light over the probe's own average, and a caller that knows both
+   * passes it; above 1 brightens, below dims. A mirror keeps the capture as it is, because its
+   * image is the point, and a rough surface, whose reflection is an average anyway, takes its
+   * place's light: the roughnesses say where between, 0.1 and 0.3 by default.
+   *
+   * Unlike `setEnvironmentGain`, which reaches metals only, and `setSurfaceReflectivity`, which
+   * stops at 1. **What it gives up** is a reflection that stays the probe's image on a rough
+   * surface: past the upper roughness it is the probe scaled to the light, not the place relit.
+   */
+  setEnvironmentMixing(weight: number, roughnessLow = 0.1, roughnessHigh = 0.3): void {
+    if (this.contextLost) return;
+    resolveEnvironmentMixing(weight, roughnessLow, roughnessHigh, this.environmentMixing);
+    this.materials.dirty();
+    this.writeFlatVector('uEnvironmentMixing', this.environmentMixing);
+  }
+
+  /**
    * Kept as a no-op that says so once, because it was a stand-in for a term that now exists.
    *
    * It mixed the ambient toward a box-filtered level of the probe, three below the coarsest,
@@ -8098,12 +8138,12 @@ export class WebGL2Renderer implements RendererApi {
    * two regions of one brightness band differ. Needs `screenEffects` and `hdrScene`, and says so
    * once rather than doing nothing. See `shaders/localExposure.ts`.
    */
-  setLocalExposure(strength: number): void {
+  setLocalExposure(setting: number | LocalExposureOptions): void {
     if (this.sceneTarget === null || !this.quality.hdrScene) {
-      this.warnLookWithoutComposite(strength);
+      this.warnLookWithoutComposite(typeof setting === 'number' ? setting : 1);
       return;
     }
-    this.sceneTarget.setLocalExposure(strength);
+    this.sceneTarget.setLocalExposure(setting);
   }
 
   /**
@@ -8214,21 +8254,19 @@ export class WebGL2Renderer implements RendererApi {
    * of the two that can put the shape of a doorway on a floor.
    */
   setGlobalMedium(
-    density: number,
-    albedo?: number,
+    density: number | GlobalMediumSettings,
+    albedo?: number | Vec3,
     anisotropy?: number,
     maxDistance?: number,
   ): void {
-    this.mediumOptions = resolveGlobalMedium({
-      density: Number.isFinite(density) ? density : 0,
-      albedo,
-      anisotropy,
-      maxDistance,
-    });
+    this.mediumOptions = resolveGlobalMediumSettings(density, albedo, anisotropy, maxDistance);
   }
 
   /** This frame's medium. Off until a caller says otherwise. See `setGlobalMedium`. */
-  private mediumOptions: GlobalMediumOptions = DEFAULT_GLOBAL_MEDIUM;
+  private mediumOptions: ResolvedGlobalMedium = resolveGlobalMedium(DEFAULT_GLOBAL_MEDIUM);
+  /** The lamps the medium is lit by, and the lit stage's lamps they come from, refilled a frame. */
+  private readonly mediumLamps = createResolvedMediumLamps();
+  private readonly mediumLights = createResolvedPointLights();
   /** Built on the first frame that asks for a medium, and never on one that does not. */
   private medium: GlobalMediumPass | null = null;
 
@@ -9081,6 +9119,15 @@ export class WebGL2Renderer implements RendererApi {
                so it is safe only because `sunShadow` is 0 whenever these maps do not exist. */
             sunShadows: this.sunShadows?.texture ?? this.emptyTexture2DArray,
             peeledEnabled: this.peelFilled,
+            /* The lit stage's lamps and the shadows it resolved for them, this frame's. */
+            lamps: resolveMediumLamps(
+              this.mediumOptions,
+              resolvePointLights(env, this.quality.pointLightFalloff, this.mediumLights),
+              this.pointShadows === null ? null : this.resolvedPointShadows,
+              env?.lightMediumScatter,
+              this.mediumLamps,
+            ),
+            pointShadows: this.pointShadowArray?.texture ?? this.emptyTexture2DArray,
           },
         );
         if (marched) {
@@ -9356,6 +9403,8 @@ export class WebGL2Renderer implements RendererApi {
     this.materialEnvironmentGain = null;
     this.environmentDials[1] = 0;
     this.environmentDials[2] = 1;
+    /* And no mixing, for the same reason. See `setEnvironmentMixing`. */
+    noEnvironmentMixing(this.environmentMixing);
     this.emission[0] = env.emissiveGain;
     this.emission[1] = env.nightFactor;
     /* The moving layer's own matrix, the first time a frame draws that layer with one. */
@@ -9612,6 +9661,7 @@ export class WebGL2Renderer implements RendererApi {
      * See `setSurfaceReflectivity` and `setEnvironmentGain`.
      */
     gl.uniform3fv(u['uEnvironmentDials'] ?? null, this.environmentDials);
+    gl.uniform4fv(u['uEnvironmentMixing'] ?? null, this.environmentMixing);
     /* And no relief unless a caller asks, for the same reason. */
     gl.uniform2f(u['uRelief'] ?? null, 0, 60);
     /* And no relief read off a surface texture either, for the same reason. */

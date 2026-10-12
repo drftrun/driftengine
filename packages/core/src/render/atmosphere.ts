@@ -12,6 +12,44 @@ export interface UnderwaterAtmosphere {
   transitionDepth: number;
 }
 
+/**
+ * A layer of haze: how thick it is where it is thickest, and how fast it thins above that.
+ *
+ * In natural units, as `fogDensity` is: a haze authored in base two, its surviving light
+ * `2^(−∫ρ)` and its density falling as `2^(−f·Δy)`, is the layer `density: ρ · (ln 2)²`,
+ * `heightFalloff: f · ln 2` here — the integral of base two's exponential carries one `ln 2` of its
+ * own, and the transmittance's base the other.
+ */
+export interface FogLayer {
+  /** Extinction per metre at `baseY`. */
+  density: number;
+  /** Reciprocal scale height, per metre: 0 is a layer of even density. */
+  heightFalloff: number;
+  /** The height it is thickest at. */
+  baseY: number;
+}
+
+/**
+ * The sun's light scattered toward the eye by the haze: a glow in the sun's direction, as dust and
+ * droplets throw forward what they catch.
+ *
+ * Added to what the haze returns rather than mixed with it, by as much of the ray past `start` as
+ * the haze hides: a mountain range seen into a low sun burns gold at its distance, and the
+ * figures a few metres off do not. **What it gives up** is the light's own shape: the glow is a
+ * lobe about one direction, `cos^exponent` of the angle from it, not light scattered along the
+ * ray through the shadows the sun's map knows of — the global medium is that one.
+ */
+export interface FogSunGlow {
+  /** The glow looking straight along `direction` through haze that hides everything. */
+  color: Vec3;
+  /** How tight the glow is about the sun: the cosine of the angle from it, to this power. */
+  exponent: number;
+  /** Metres past the haze's own start before the glow begins. Default 0. */
+  start?: number;
+  /** Surface → the light the glow surrounds. Absent, the environment's `directionalDir`. */
+  direction?: Vec3;
+}
+
 /** Atmosphere fields shared by every visible render pass. */
 export interface Atmosphere {
   fogColor: Vec3;
@@ -60,6 +98,31 @@ export interface Atmosphere {
    * between the camera and the start, which a real medium has; that is the point of it.
    */
   fogStart?: number;
+  /**
+   * The medium only: a second layer of haze, summed with the first along every ray, each its own
+   * density, height and falloff. Absent, one layer.
+   *
+   * Two layers are what a valley with a ground mist under a high summer haze is: one thin and
+   * tall, one dense and hugging the floor. One layer must pick one of the two scale heights, and
+   * either gets the other's half of the picture wrong.
+   */
+  fogLayer2?: FogLayer | null;
+  /**
+   * The most of a surface the haze may hide, 0 to 1. Absent or 1, all of it.
+   *
+   * Below 1 a far mountain keeps that much of itself however much air lies between, which is how a
+   * scene keeps a skyline readable behind a haze that should hide everything nearer the ground.
+   * **What it gives up** is physics: no medium has a floor on what survives it.
+   */
+  fogMaxOpacity?: number;
+  /**
+   * Metres from the camera past which the haze hides nothing: a surface further away, the sky
+   * included, is drawn clear. Absent or 0, none. For a sky or a backdrop that brings its own
+   * haze painted in, which the medium would otherwise lay a second time.
+   */
+  fogCutoff?: number;
+  /** The medium only: the sun's light scattered toward the eye by the haze. Absent, none. */
+  fogSunGlow?: FogSunGlow | null;
   underwater: UnderwaterAtmosphere | null;
 }
 
@@ -89,6 +152,16 @@ export function fogDensityAtEye(atmosphere: Atmosphere, cameraY: number): number
  */
 export interface ResolvedAtmosphere {
   readonly fogColor: Float32Array;
+  /**
+   * Four floats: the second layer's extinction per metre at the camera's height and its falloff,
+   * then the least of a surface the haze must leave, `fogMaxOpacity`'s complement, and the cutoff
+   * distance. **Every lane is none at zero**, so a pass that never wrote them draws as before.
+   */
+  readonly fogLayer2: Float32Array;
+  /** Four floats: the sun glow's colour, black for none, and its exponent. */
+  readonly fogGlow: Float32Array;
+  /** Four floats: surface → the glow's light, and how far past the haze's start the glow begins. */
+  readonly fogGlowDir: Float32Array;
   fogDensity: number;
   fogHeightFalloff: number;
   fogEyeY: number;
@@ -109,7 +182,7 @@ export interface ResolvedAtmosphere {
  * it; nothing here allocates and nothing is shared between them.
  */
 export function resolveAtmosphere(
-  atmosphere: Atmosphere,
+  atmosphere: Atmosphere & { readonly directionalDir?: ArrayLike<number> },
   cameraY: number,
   underwaterEnabled: boolean,
   out: ResolvedAtmosphere,
@@ -163,22 +236,77 @@ export function resolveAtmosphere(
   out.underwaterColor.set(underwater === null ? atmosphere.fogColor : underwater.color);
   out.underwaterFogDensity = underwater === null ? atmosphere.fogDensity : underwater.fogDensity;
   out.underwaterFactor = factor;
+  resolveHazeExtras(atmosphere, cameraY, out);
   return out;
 }
 
+/**
+ * The second layer, the haze's limits and the sun's glow, into `out`: the layer and the glow only
+ * in the medium, since a linear ramp has neither a density nor a ray to integrate, and every slot
+ * written whatever is asked, so nothing a shader reads keeps what an earlier frame left in it.
+ */
+function resolveHazeExtras(
+  atmosphere: Atmosphere & { readonly directionalDir?: ArrayLike<number> },
+  cameraY: number,
+  out: ResolvedAtmosphere,
+): void {
+  const medium = atmosphere.fogMode !== 'linear';
+  const layer = medium ? (atmosphere.fogLayer2 ?? null) : null;
+  const density = layer === null ? 0 : Math.max(0, layer.density);
+  /* The second layer at the camera's height, as `fogDensityAtEye` puts the first. */
+  out.fogLayer2[0] =
+    density > 0 && layer !== null
+      ? density * Math.exp(-(cameraY - layer.baseY) * layer.heightFalloff)
+      : 0;
+  out.fogLayer2[1] = density > 0 && layer !== null ? layer.heightFalloff : 0;
+  const most = atmosphere.fogMaxOpacity;
+  out.fogLayer2[2] =
+    most !== undefined && Number.isFinite(most) ? 1 - Math.min(1, Math.max(0, most)) : 0;
+  const cutoff = atmosphere.fogCutoff;
+  out.fogLayer2[3] = cutoff !== undefined && Number.isFinite(cutoff) && cutoff > 0 ? cutoff : 0;
+
+  const glow = medium ? (atmosphere.fogSunGlow ?? null) : null;
+  const toward = glow?.direction ?? atmosphere.directionalDir;
+  const x = (toward?.[0] as number | undefined) ?? 0;
+  const y = (toward?.[1] as number | undefined) ?? 1;
+  const z = (toward?.[2] as number | undefined) ?? 0;
+  const length = Math.hypot(x, y, z);
+  const lit = glow !== null && length > 1e-6;
+  for (let c = 0; c < 3; c++) {
+    out.fogGlow[c] = lit && glow !== null ? Math.max(0, glow.color[c] as number) : 0;
+  }
+  /* Above zero, so the shader's pow never meets 0 to the 0: a lobe that flat is the whole sky. */
+  out.fogGlow[3] = lit && glow !== null ? Math.max(1e-3, glow.exponent) : 1;
+  out.fogGlowDir[0] = lit ? x / length : 0;
+  out.fogGlowDir[1] = lit ? y / length : 1;
+  out.fogGlowDir[2] = lit ? z / length : 0;
+  out.fogGlowDir[3] = lit && glow !== null ? Math.max(0, glow.start ?? 0) : 0;
+}
+
+/**
+ * A target for `resolveAtmosphere`, made once outside the frame loop: one factory, so a field added
+ * to the resolved medium is a field every holder of one gets rather than one each must remember.
+ */
+export function createResolvedAtmosphere(): ResolvedAtmosphere {
+  return {
+    fogColor: new Float32Array(3),
+    fogLayer2: new Float32Array(4),
+    fogGlow: new Float32Array(4),
+    fogGlowDir: new Float32Array(4),
+    underwaterColor: new Float32Array(3),
+    fogDensity: 0,
+    fogHeightFalloff: 0,
+    fogEyeY: 0,
+    fogMode: 0,
+    fogNear: 0,
+    fogFar: 1,
+    underwaterFogDensity: 0,
+    underwaterFactor: 0,
+  };
+}
+
 /** One per GL binder, refilled per call. See `resolveAtmosphere` on why it is not allocated. */
-const glResolved: ResolvedAtmosphere = {
-  fogColor: new Float32Array(3),
-  underwaterColor: new Float32Array(3),
-  fogDensity: 0,
-  fogHeightFalloff: 0,
-  fogEyeY: 0,
-  fogMode: 0,
-  fogNear: 0,
-  fogFar: 1,
-  underwaterFogDensity: 0,
-  underwaterFactor: 0,
-};
+const glResolved: ResolvedAtmosphere = createResolvedAtmosphere();
 
 /**
  * Bind the same camera medium to any shader that declares atmosphere uniforms.
@@ -195,13 +323,18 @@ export function bindAtmosphere(
   const m = resolveAtmosphere(atmosphere, cameraY, underwaterEnabled, glResolved);
 
   gl.uniform3fv(uniforms['uFogColor'] ?? null, m.fogColor);
-  gl.uniform1f(uniforms['uFogDensity'] ?? null, m.fogDensity);
-  gl.uniform1f(uniforms['uFogHeightFalloff'] ?? null, m.fogHeightFalloff);
-  gl.uniform1f(uniforms['uFogEyeY'] ?? null, m.fogEyeY);
-  gl.uniform1i(uniforms['uFogMode'] ?? null, m.fogMode);
-  gl.uniform1f(uniforms['uFogNear'] ?? null, m.fogNear);
-  gl.uniform1f(uniforms['uFogFar'] ?? null, m.fogFar);
+  /* Packed as `shaders/fog.ts` declares them, four to a row: see `uFogMedium` there for why. */
+  gl.uniform4f(
+    uniforms['uFogMedium'] ?? null,
+    m.fogDensity,
+    m.fogHeightFalloff,
+    m.fogEyeY,
+    m.underwaterFogDensity,
+  );
+  gl.uniform4f(uniforms['uFogRange'] ?? null, m.fogNear, m.fogFar, m.fogMode, 0);
   gl.uniform3fv(uniforms['uUnderwaterColor'] ?? null, m.underwaterColor);
-  gl.uniform1f(uniforms['uUnderwaterFogDensity'] ?? null, m.underwaterFogDensity);
   gl.uniform1f(uniforms['uUnderwaterFactor'] ?? null, m.underwaterFactor);
+  gl.uniform4fv(uniforms['uFogLayer2'] ?? null, m.fogLayer2);
+  gl.uniform4fv(uniforms['uFogGlow'] ?? null, m.fogGlow);
+  gl.uniform4fv(uniforms['uFogGlowDir'] ?? null, m.fogGlowDir);
 }

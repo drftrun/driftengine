@@ -3,10 +3,19 @@
  * their tilted peaks, the transmitted lobe to the backlight, the sum to what a white strand
  * receives, and every term to a finite answer where the geometry degenerates.
  *
- * **The strand is the tangent, root to tip.** The model map's green turns each strand's tilt by up
- * to half of it either way (0.5 is none) and its blue is occlusion, which light from every side
- * takes and the lamps do not — their shadows are theirs to cast. The red is not read: a colour from
- * root to tip is the albedo map's to carry.
+ * **The strand is the tangent, root to tip**, unless the model map says otherwise. Its red is the
+ * strand's specular, which scales the reflected lobe by twice it, so 0.5 is the lobe as drawn and 0
+ * a root that reflects nothing; its green turns each strand's tilt by up to half of it either way
+ * (0.5 is none); and its blue is occlusion, which light from every side takes and the lamps do not
+ * — their shadows are theirs to cast. A colour from root to tip is the albedo map's to carry.
+ *
+ * **A strand's direction, texel by texel**, where the model has a \`directionOffset\`: that many
+ * layers past the one the other channels are read at, a direction in the surface's tangent frame —
+ * red along the tangent, green along the bitangent and blue out of the surface along its normal,
+ * each −1 to 1 as a normal map packs them — which the strand runs along instead of the tangent. So
+ * a card's strands can lean out of its plane, each its own way, as the strands it stands for do.
+ * **What it gives up** is the frame's own precision: eight bits a component turns a strand in
+ * steps of about half a degree, which the lobes, a few degrees wide, do not resolve.
  *
  * **Light from every side** — the sky, the probes, DriftLight — goes through the lobes rather than
  * past them: they are evaluated once, for a light along the eye flattened across the strand, every
@@ -30,8 +39,10 @@ const float HAIR_F0 = ${HAIR_F0.toFixed(9)};
 const float HAIR_MIN_BETA = ${HAIR_MIN_BETA.toFixed(3)};
 const float HAIR_AREA = ${HAIR_AREA.toFixed(3)};
 
-/* This texel's tilt, and the share of light from every side it returns: gathered with the surface. */
+/* This texel's tilt, its specular, and the share of light from every side it returns: gathered
+   with the surface. */
 float hShift;
+float hSpecular;
 vec3 hAround;
 
 /** A longitudinal lobe: a normalised Gaussian of width \`beta\` at \`x\` from its centre. */
@@ -69,7 +80,7 @@ void hairLobes(vec3 l, float grow, float backlit) {
   float x = sinI + sinO;
 
   float r = hairLongitudinal(beta + grow, x + 2.0 * hShift) * 0.25 * cosHalfPhi
-    * hairFresnel(sqrt(clamp(0.5 + 0.5 * dot(l, mToEye), 0.0, 1.0)));
+    * hairFresnel(sqrt(clamp(0.5 + 0.5 * dot(l, mToEye), 0.0, 1.0))) * hSpecular;
 
   float a = 1.0 / (1.19 / cosD + 0.36 * cosD);
   float h = cosHalfPhi * (1.0 + a * (0.6 - 0.8 * cosPhi));
@@ -116,8 +127,21 @@ vec3 hairIndirect() {
   return min(vec3(1.0), 2.0 * (mSpecular + mDiffuse));
 }
 
-void hairSurface() {
+/**
+ * The strand at this texel: its tilt and specular from the model map, its direction from the layer
+ * \`directionOffset\` names where there is one, and then its share of light from every side, which
+ * reads all three. On a branch of uniforms alone, so the read's derivatives are in uniform flow; a
+ * direction that decodes to nothing keeps the tangent.
+ */
+void hairSurface(vec3 at) {
   hShift = uModelParams[0].x * (0.5 + mMap.g);
+  hSpecular = 2.0 * mMap.r;
+  if (uModelParams[0].w > 0.0 && uModelParams[1].w > 0.0) {
+    vec3 d = texture(uModelMap, vec3(at.xy, at.z + uModelParams[0].w)).rgb * 2.0 - 1.0;
+    vec3 strand = mTangent * d.x + mBitangent * d.y + mNormal * d.z;
+    float length2 = dot(strand, strand);
+    if (length2 > 1e-4) mTangent = strand * inversesqrt(length2);
+  }
   hAround = hairIndirect();
 }
 

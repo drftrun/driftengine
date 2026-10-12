@@ -1,6 +1,11 @@
 import { expect, it } from 'vitest';
 
-import { anisotropicAlphas, anisotropicLobe, anisotropicPhysicalLobe } from './anisotropicLobe.ts';
+import {
+  anisotropicAlphas,
+  anisotropicLiftFactor,
+  anisotropicLobe,
+  anisotropicPhysicalLobe,
+} from './anisotropicLobe.ts';
 import { specularLobe } from './gpudriven/lit.ts';
 
 /*
@@ -87,4 +92,19 @@ it('PEAKS AT 1 / (4 αT αB) HEAD-ON, AND IS ISOTROPIC GGX WITH ITS MASKING AT S
   expect(
     anisotropicPhysicalLobe(normal, normal, normal, alphas[0] as number, alphas[1] as number),
   ).toBeCloseTo(1, 9);
+});
+
+/*
+ * **The lift raises the distribution by `min(3, D^1.5) · k`, by hand at three half vectors.** Head
+ * on at widths 0.1 the distribution is 1 / (π · 0.01) = 31.8310, whose 1.5th power is far past 3, so
+ * a lift of 3 adds 9: 1 + 9 / 31.8310 = 1.282743. At widths 1 it is 1 / π = 0.318310, whose 1.5th
+ * power is 0.179587, so the factor is 1 + 3 · √0.318310 = 2.692569. Off the peak, 0.3 along a
+ * stretch of 0.5 by 0.2: d = 0.36 + 0.91 = 1.27 and D = 1 / (π · 0.1 · 1.6129) = 1.973525, under
+ * the cap, so a lift of 0.5 is 1 + 0.5 · √1.973525 = 1.702411. And none is exactly 1.
+ */
+it('LIFTS THE STRETCHED DISTRIBUTION BY MIN(3, D^1.5) TIMES ITS LIFT', () => {
+  expect(anisotropicLiftFactor(0, 0, 1, 0.1, 0.1, 3)).toBeCloseTo(1.282743, 6);
+  expect(anisotropicLiftFactor(0, 0, 1, 1, 1, 3)).toBeCloseTo(2.692569, 6);
+  expect(anisotropicLiftFactor(0.3, 0, Math.sqrt(0.91), 0.5, 0.2, 0.5)).toBeCloseTo(1.702411, 6);
+  expect(anisotropicLiftFactor(0.3, 0, Math.sqrt(0.91), 0.5, 0.2, 0)).toBe(1);
 });

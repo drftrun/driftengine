@@ -1,6 +1,7 @@
 import { SUN_DYNAMIC_LAYER, SUN_PEELED_LAYER, SUN_STATIC_LAYER } from '../shadowMap.ts';
 import { glslIsFarDepth, glslSceneDepthToNdc } from '../depthConvention.ts';
-import { MAX_GLOBAL_MEDIUM_STEPS } from '../globalMedium.ts';
+import { MAX_GLOBAL_MEDIUM_STEPS, MAX_MEDIUM_LAMPS } from '../globalMedium.ts';
+import { OCTAHEDRAL_GLSL } from './octahedral.ts';
 import { OUTPUT_TRANSFORM_GLSL } from './outputTransform.ts';
 
 /**
@@ -67,10 +68,18 @@ uniform vec3 uSunColor;
 /** The sky's own fill, scattered isotropically. Without it a shadowed medium is black. */
 uniform vec3 uAmbient;
 
-/** Extinction per metre. Above zero here, because nothing draws this pass at zero. */
+/**
+ * Extinction per metre at uHeight.y. Above zero here, because nothing draws this pass at zero.
+ */
 uniform float uDensity;
-/** How much of what the medium takes out comes back as light rather than heat, 0 to 1. */
-uniform float uAlbedo;
+/** Its reciprocal scale height and the height it is measured at: 0 is a medium as thick everywhere. */
+uniform vec2 uHeight;
+/** A second layer: its extinction at its own height, 0 for none, its falloff and that height. */
+uniform vec3 uLayer2;
+/** How much of what the medium takes out comes back as light rather than heat, a share a channel. */
+uniform vec3 uAlbedo;
+/** How strongly the sun and the sky scatter, each a share of how strongly it lights a surface. */
+uniform vec2 uScatter;
 /** Henyey-Greenstein g, -1 back to 1 forward. */
 uniform float uAnisotropy;
 /** Where the march stops, in metres. */
@@ -87,6 +96,24 @@ uniform mat4 uMovingLightViewProj;
 /* The sun's static, moving and peeled maps, as layers of one array: see shadowMap.ts. */
 uniform highp sampler2DArray uSunShadows;
 uniform int uPeeledShadowEnabled;
+
+/*
+ * The lamps that scatter, the lit stage's own per-pixel set: globalMedium.ts's
+ * resolveMediumLamps lays them out, eight vectors a lamp, and none while lampScatter is 0.
+ */
+uniform int uLampCount;
+/** 1 for inverse-square, 0 for the smooth falloff: the frame's own rule. */
+uniform int uLampFalloff;
+uniform vec4 uLampPosition[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampColor[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampAim[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampCone[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampShadow[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampShadowAt[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampLive[${MAX_MEDIUM_LAMPS}];
+uniform vec4 uLampLiveAt[${MAX_MEDIUM_LAMPS}];
+/* The lamps' shadows, the lit stage's array: a radius over the far plane, one layer a map. */
+uniform highp sampler2DArray uPointShadows;
 
 out vec4 fragColor;
 
@@ -106,6 +133,9 @@ const float SHADOW_SOFTEN = 0.0025;
 
 /** Four pi, which is what a phase function normalises over. */
 const float FOUR_PI = 12.56637061;
+
+/** Metres a lamp's shadow is held off its own caster: a point in the air is no surface to bias. */
+const float LAMP_SHADOW_BIAS = 0.05;
 
 /**
  * How the samples are spread along the ray: distance is \`far * u^DISTRIBUTION\` for u in 0 to 1.
@@ -181,6 +211,76 @@ float phase(float cosTheta, float g) {
   return (1.0 - g2) / (FOUR_PI * d * sqrt(d));
 }
 
+${OCTAHEDRAL_GLSL}
+
+/**
+ * How much one lamp map leaves of a lamp's light at a point: its layer, near plane and presence,
+ * and the projection it was drawn under, whose origin is the ray's own and not the lamp's.
+ */
+float lampMapReach(vec4 map, vec4 at, vec3 p) {
+  if (map.x < 0.0) return 1.0;
+  vec3 toPoint = p - at.xyz;
+  float dist = length(toPoint);
+  if (dist <= map.y) return 1.0;
+  float stored = textureLod(uPointShadows, vec3(octEncode(toPoint), map.x), 0.0).r;
+  return 1.0 - occlusion(stored, (dist - LAMP_SHADOW_BIAS) / at.w) * map.z;
+}
+
+/**
+ * Every lamp's light the medium scatters toward the eye at a point, its phase included: shaped as
+ * the lit stage shapes it, by its own falloff or the frame's and by its cone, and cut by both its
+ * maps.
+ */
+vec3 lampsAt(vec3 p, vec3 dir) {
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < ${MAX_MEDIUM_LAMPS}; i++) {
+    if (i >= uLampCount) break;
+    vec3 toLamp = uLampPosition[i].xyz - p;
+    float dist = length(toLamp);
+    float radius = max(uLampPosition[i].w, 1e-4);
+    float exponent = uLampColor[i].w;
+    float falloff;
+    if (exponent > 0.0) {
+      float reach = dist / radius;
+      falloff = pow(clamp(1.0 - reach * reach, 0.0, 1.0), exponent);
+    } else if (uLampFalloff == 1) {
+      float window = clamp(1.0 - pow(dist / radius, 4.0), 0.0, 1.0);
+      falloff = window * window / max(dist * dist, 0.01);
+    } else {
+      falloff = clamp(1.0 - dist / radius, 0.0, 1.0);
+      falloff *= falloff;
+    }
+    if (falloff <= 0.0) continue;
+    vec3 l = toLamp / max(dist, 1e-4);
+    float cone = smoothstep(uLampCone[i].y, uLampCone[i].x, dot(-l, uLampAim[i].xyz));
+    if (cone <= 0.0) continue;
+    float reach = min(lampMapReach(uLampShadow[i], uLampShadowAt[i], p),
+      lampMapReach(uLampLive[i], uLampLiveAt[i], p));
+    sum += uLampColor[i].rgb * (falloff * cone * reach * phase(dot(dir, l), uAnisotropy));
+  }
+  return sum;
+}
+
+/**
+ * The medium's optical depth over the stretch of the ray from s0 to s1 metres: each layer's
+ * density where the stretch begins, carried over its length as it thins with the height it climbs
+ * — the integral, not a sample, so a long far stretch is as right as a short near one. A layer of
+ * no falloff is its density times the length, exactly, which is the medium this was before.
+ */
+float layerDepth(float density, float falloff, float baseY, float s0, float s1, vec3 dir) {
+  float len = s1 - s0;
+  float climb = falloff * dir.y * len;
+  float shape = abs(climb) < 1e-4 ? 1.0 - 0.5 * climb : (1.0 - exp(-climb)) / climb;
+  float start = exp(min(-falloff * (uCameraPos.y + dir.y * s0 - baseY), 80.0));
+  return density * start * len * shape;
+}
+
+float segmentDepth(float s0, float s1, vec3 dir) {
+  float depth = layerDepth(uDensity, uHeight.x, uHeight.y, s0, s1, dir);
+  if (uLayer2.x > 0.0) depth += layerDepth(uLayer2.x, uLayer2.y, uLayer2.z, s0, s1, dir);
+  return depth;
+}
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
 
@@ -225,11 +325,11 @@ void main() {
    */
   float dither = hash21(gl_FragCoord.xy) - 0.5;
 
-  /* Constant along the ray, so out of the loop: the medium is homogeneous by construction. */
-  float scatter = uAlbedo * phase(dot(dir, uSunDir), uAnisotropy);
+  /* Constant along the ray, so out of the loop: the sun and the sky arrive the same way everywhere. */
+  vec3 scatter = uAlbedo * (uScatter.x * phase(dot(dir, uSunDir), uAnisotropy));
   vec3 sunLit = uSunColor * scatter;
   /* Isotropic, so no phase term: sky fill arrives from every direction and leaves the same way. */
-  vec3 skyLit = uAmbient * uAlbedo * (1.0 / FOUR_PI);
+  vec3 skyLit = uAmbient * uAlbedo * (uScatter.y / FOUR_PI);
 
   vec3 inscatter = vec3(0.0);
   float transmittance = 1.0;
@@ -261,13 +361,17 @@ void main() {
      * cost. It also cannot exceed the light that entered, at any density and any step, which a
      * product of two unbounded numbers can.
      */
-    float segmentTransmittance = exp(-uDensity * segment);
+    float segmentTransmittance = exp(-segmentDepth(next - segment, next, dir));
     float scattered = 1.0 - segmentTransmittance;
 
+    vec3 at = uCameraPos + dir * (travelled + dither * segment);
     float lit = 1.0;
-    if (uSunShadow > 0.0) lit = sunReach(uCameraPos + dir * (travelled + dither * segment));
+    if (uSunShadow > 0.0) lit = sunReach(at);
 
-    inscatter += transmittance * scattered * (sunLit * lit + skyLit);
+    vec3 light = sunLit * lit + skyLit;
+    /* The lamps at the same dithered point the sun's map is read at, so both cut by one edge. */
+    if (uLampCount > 0) light += uAlbedo * lampsAt(at, dir);
+    inscatter += transmittance * scattered * light;
     transmittance *= segmentTransmittance;
   }
 

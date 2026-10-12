@@ -26,7 +26,7 @@
  * whose drama is the contrast itself: a single shaft into a dark room wants the room dark, and the
  * strength is the caller's for that reason.
  */
-import { METER_GRID, METER_MAX_LOG2, METER_MIN_LOG2, METER_TAPS } from './exposure.ts';
+import { ADAPTED_KEY, METER_GRID, METER_MAX_LOG2, METER_MIN_LOG2, METER_TAPS } from './exposure.ts';
 
 /** Bands of log luminance, and how many stops each is wide. */
 export const LOCAL_BINS = 10;
@@ -82,15 +82,27 @@ void main() {
 `;
 
 /**
- * The composite's half. Needs `AUTO_EXPOSURE_GLSL` before it, for the held brightness.
+ * The composite's half. Needs `AUTO_EXPOSURE_GLSL` and `uOutputExposure` before it, for the held
+ * brightness and the frame's exposure.
  *
  * A block is read clamped half a texel inside its own tiles, so the filter never reaches into the
  * neighbouring band's block. Every fetch is at level zero: the grid has one level, and the branch
  * on the strength above them is uniform but the pixel's band is not.
  */
 export const LOCAL_EXPOSURE_GLSL = `
-/** How far each region is brought toward the frame, 0 to 1. 0 is off and the whole of the off path. */
+/** Above 0 when regions move at all: 0 is off and the whole of the off path. */
 uniform float uLocalExposure;
+/**
+ * How regions move, as \`resolveLocalExposure\` packs it: the share of a region's stops from the
+ * pivot it keeps above the pivot and below it, each less one; the share of a pixel's own stops
+ * from its region it keeps, less one; and how far a region's level leans toward its tile's mean.
+ */
+uniform vec4 uLocalShape;
+/**
+ * What they move about: 1 for the frame's held brightness, 0 for middle grey at the frame's
+ * exposure; stops added to it; and the furthest a region moves either way.
+ */
+uniform vec4 uLocalPivot;
 /** The bilateral grid: a block of tiles per band of brightness, and one of the tiles' means. */
 uniform highp sampler2D uExposureLocal;
 
@@ -109,9 +121,15 @@ float localExposureGain(vec2 uv, vec3 light) {
   vec2 banded = mix(localBlock(uv, lower), localBlock(uv, upper), clamp(b - lower, 0.0, 1.0));
   float tileMean = localBlock(uv, ${LOCAL_BINS.toFixed(1)}).r;
   float bilateral = banded.y > 1e-3 ? banded.x / banded.y : tileMean;
-  float local = mix(bilateral, tileMean, ${LOCAL_BLURRED_BLEND.toFixed(1)});
-  float stops = uLocalExposure * (held - local);
-  return exp2(clamp(stops, -${LOCAL_RANGE_STOPS.toFixed(1)}, ${LOCAL_RANGE_STOPS.toFixed(1)}));
+  float local = mix(bilateral, tileMean, uLocalShape.w);
+  /* Middle grey at the frame's exposure, in the scene light the grid measured. */
+  float pivot = uLocalPivot.x > 0.5
+    ? held
+    : ${Math.log2(ADAPTED_KEY).toFixed(6)} - log2(max(autoExposureGain() * uOutputExposure, 1e-8));
+  pivot += uLocalPivot.y;
+  float keep = local > pivot ? uLocalShape.x : uLocalShape.y;
+  float stops = (local - pivot) * keep + (pixel - local) * uLocalShape.z;
+  return exp2(clamp(stops, -uLocalPivot.z, uLocalPivot.z));
 }
 `;
 
@@ -146,6 +164,97 @@ export function localExposureGain(localLog2: number, heldLog2: number, strength:
   if (!(strength > 0)) return 1;
   const stops = strength * (heldLog2 - localLog2);
   return 2 ** clamp(stops, -LOCAL_RANGE_STOPS, LOCAL_RANGE_STOPS);
+}
+
+/**
+ * Local exposure as a shape rather than one strength: each region turned about middle grey at the
+ * frame's exposure, the real-time form most engines expose.
+ *
+ * A region's level is its stops from that grey: it keeps `highlightContrast` of them where it is
+ * brighter and `shadowContrast` where it is darker, so 1 leaves it where it is and 0 brings it all
+ * the way to grey. A pixel keeps `detail` of its own stops from its region, so above 1 sharpens the
+ * texture inside a region a curve would have flattened. **What it gives up** is the held level the
+ * one-number form turns about: a frame metered far from grey, a night, is pulled toward grey rather
+ * than toward itself, which is what the form is for and what a caller holding a night dark leaves
+ * off.
+ */
+export interface LocalExposureOptions {
+  /** The share of a region's stops above middle grey it keeps. 1 is none moved. */
+  readonly highlightContrast: number;
+  /** The share it keeps below. */
+  readonly shadowContrast: number;
+  /** The share of a pixel's own stops from its region it keeps. Default 1. */
+  readonly detail?: number;
+  /** How far a region's level leans from its bilateral band toward its tile's mean. Default 0.4. */
+  readonly blurredBlend?: number;
+  /** Stops added to middle grey, the level regions turn about. Default 0. */
+  readonly middleGreyBias?: number;
+  /** The furthest a region moves either way, in stops. Default 8. */
+  readonly range?: number;
+}
+
+/** Floats `resolveLocalExposure` fills: `uLocalShape`, then `uLocalPivot`. */
+export const LOCAL_EXPOSURE_FLOATS = 8;
+
+/**
+ * Either form of `setLocalExposure` as the composite reads it, into `out`, and whether regions move
+ * at all. The one number is the shape it always was, both shares `1 − strength` about the held
+ * level, at most three stops: so a strength draws what it drew, to the bit.
+ */
+export function resolveLocalExposure(
+  setting: number | LocalExposureOptions,
+  out: Float32Array,
+): boolean {
+  if (typeof setting === 'number') {
+    const strength = clampLocalExposure(setting);
+    out[0] = -strength;
+    out[1] = -strength;
+    out[2] = 0;
+    out[3] = LOCAL_BLURRED_BLEND;
+    out[4] = 1;
+    out[5] = 0;
+    out[6] = LOCAL_RANGE_STOPS;
+    out[7] = 0;
+    return strength > 0;
+  }
+  const share = (value: number | undefined, fallback: number): number =>
+    value !== undefined && Number.isFinite(value) ? Math.max(0, value) : fallback;
+  const highlight = share(setting.highlightContrast, 1);
+  const shadow = share(setting.shadowContrast, 1);
+  const detail = share(setting.detail, 1);
+  out[0] = highlight - 1;
+  out[1] = shadow - 1;
+  out[2] = detail - 1;
+  out[3] = clamp(share(setting.blurredBlend, LOCAL_BLURRED_BLEND), 0, 1);
+  out[4] = 0;
+  const bias = setting.middleGreyBias;
+  out[5] = bias !== undefined && Number.isFinite(bias) ? bias : 0;
+  out[6] = share(setting.range, 8);
+  out[7] = 0;
+  return highlight !== 1 || shadow !== 1 || detail !== 1;
+}
+
+/**
+ * A pixel's gain from either form, as the composite computes it: `pixelLog2` its own level,
+ * `localLog2` its region's before the blend, `tileMean` its tile's, `heldLog2` the frame's held
+ * brightness and `exposure` the frame's exposure, gain and all; `shape` is `resolveLocalExposure`'s.
+ */
+export function localExposureShapedGain(
+  pixelLog2: number,
+  localLog2: number,
+  tileMean: number,
+  heldLog2: number,
+  exposure: number,
+  shape: ArrayLike<number>,
+): number {
+  const local = localLog2 + (tileMean - localLog2) * (shape[3] as number);
+  const pivot =
+    ((shape[4] as number) > 0.5 ? heldLog2 : Math.log2(ADAPTED_KEY) - Math.log2(exposure)) +
+    (shape[5] as number);
+  const keep = local > pivot ? (shape[0] as number) : (shape[1] as number);
+  const stops = (local - pivot) * keep + (pixelLog2 - local) * (shape[2] as number);
+  const range = shape[6] as number;
+  return 2 ** clamp(stops, -range, range);
 }
 
 /** A local exposure strength as the shader takes it: 0 to 1, anything else off. */

@@ -11,20 +11,30 @@
  *
  * Lamps widen both of the lobe's widths by the source's angle, as `sphereLobe` widens the standard
  * lobe, with the energy kept; at strength 0 that is `sphereLobe` exactly.
+ *
+ * **A lift**, where the model asks for one: the distribution raised where it is bright, `D +
+ * min(3, D^1.5) · k`, which is how a brushed finish that reads as polished in its streak is
+ * authored. `k` is the model's `lift`, times the model map's alpha where one is bound, so it can
+ * vary texel by texel. Applied as a factor of the distribution at the half vector, so the
+ * peak-normalised lobe and the physical one lift alike. **What it gives up** is energy: a lifted
+ * lobe returns more than arrives, which is the look it is for.
  */
 export const ANISOTROPIC_GLSL = /* glsl */ `
-/* The stretch's frame and strength, gathered once with the surface. */
+/* The stretch's frame, strength and lift, gathered once with the surface. */
 vec3 aAlong;
 vec3 aAcross;
 float aStrength;
+float aLift;
 
 void anisotropicSurface() {
   vec2 direction = vec2(1.0, 0.0);
   float strength = uModelParams[0].x;
+  aLift = uModelParams[0].w;
   if (uModelParams[1].w > 0.0) {
     vec2 mapped = mMap.rg * 2.0 - 1.0;
     direction = dot(mapped, mapped) > 1e-8 ? normalize(mapped) : direction;
     strength *= mMap.b;
+    aLift *= mMap.a;
   }
   vec2 turned = vec2(
     direction.x * uModelParams[0].y - direction.y * uModelParams[0].z,
@@ -44,6 +54,17 @@ void anisotropicSurface() {
   aStrength = strength;
 }
 
+/**
+ * How much the lift brightens the lobe at a half vector, from the stretched distribution there, D,
+ * at widths \`along\` and \`across\` and \`d\` its denominator's root: \`(D + min(3, D^1.5) k) / D\`.
+ * anisotropicLiftFactor in anisotropicLobe.ts.
+ */
+float anisotropicLift(float along, float across, float d) {
+  if (aLift <= 0.0) return 1.0;
+  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  return 1.0 + aLift * min(3.0 / distribution, sqrt(distribution));
+}
+
 /** The stretched lobe at a half vector, 1 at the mirror direction: anisotropicLobe.ts. */
 float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   float alpha = max(mRoughness * mRoughness, MIN_LOBE_ALPHA);
@@ -56,7 +77,7 @@ float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   float y = dot(aAcross, h) / acrossWide;
   float z = dot(mNormal, h);
   float d = x * x + y * y + z * z;
-  return energy / max(d * d, 1e-8);
+  return energy / max(d * d, 1e-8) * anisotropicLift(alongWide, acrossWide, d);
 }
 
 /**
@@ -74,7 +95,8 @@ float anisotropicPhysical(vec3 l, vec3 h, float ndl, float sourceRadius, float d
   float y = dot(aAcross, h) / across;
   float z = dot(mNormal, h);
   float d = x * x + y * y + z * z;
-  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  float distribution =
+    1.0 / max(3.14159265 * along * across * d * d, 1e-8) * anisotropicLift(along, across, d);
   float ndv = max(dot(mNormal, mToEye), 1e-4);
   float viewed = ndl * length(vec3(along * dot(aAlong, mToEye), across * dot(aAcross, mToEye), ndv));
   float lit = ndv * length(vec3(along * dot(aAlong, l), across * dot(aAcross, l), ndl));

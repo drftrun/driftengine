@@ -2,22 +2,22 @@
 
 exports[`all sixteen fragment permutations are stable, by hash 1`] = `
 {
-  "directionalShadows": "d312befd:286138",
-  "directionalShadows+environmentProbe": "b5c5262b:312149",
-  "directionalShadows+environmentProbe+nightEmissive": "ae2783d3:314635",
-  "directionalShadows+nightEmissive": "e185aa8b:288624",
-  "environmentProbe": "0ebcb853:288909",
-  "environmentProbe+nightEmissive": "0991faed:291395",
-  "nightEmissive": "ddb5cd31:265384",
-  "none": "42820401:262898",
-  "pointShadows": "490191c7:302335",
-  "pointShadows+directionalShadows": "a605fa2f:325575",
-  "pointShadows+directionalShadows+environmentProbe": "3592327d:351586",
-  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "cce2aa7b:354072",
-  "pointShadows+directionalShadows+nightEmissive": "4cc02f53:328061",
-  "pointShadows+environmentProbe": "a3c032b1:328346",
-  "pointShadows+environmentProbe+nightEmissive": "c44b68a9:330832",
-  "pointShadows+nightEmissive": "98157e8d:304821",
+  "directionalShadows": "fb1d0d23:292076",
+  "directionalShadows+environmentProbe": "cc9f2617:318087",
+  "directionalShadows+environmentProbe+nightEmissive": "9d8f9a01:320573",
+  "directionalShadows+nightEmissive": "96203937:294562",
+  "environmentProbe": "c6d9e2e5:294847",
+  "environmentProbe+nightEmissive": "2e0de825:297333",
+  "nightEmissive": "810c972f:271322",
+  "none": "4144f9dd:268836",
+  "pointShadows": "09b82dab:308273",
+  "pointShadows+directionalShadows": "80ad755d:331513",
+  "pointShadows+directionalShadows+environmentProbe": "3f4f6b61:357524",
+  "pointShadows+directionalShadows+environmentProbe+nightEmissive": "ff700b4d:360010",
+  "pointShadows+directionalShadows+nightEmissive": "9f5a146b:333999",
+  "pointShadows+environmentProbe": "06640e6b:334284",
+  "pointShadows+environmentProbe+nightEmissive": "62f697e5:336770",
+  "pointShadows+nightEmissive": "b73da497:310759",
 }
 `;
 
@@ -274,6 +274,13 @@ uniform vec3 uOrmScale; // wgsl:material
 uniform vec3 uEnvironmentDials; // wgsl:material
 
 /**
+ * The environment a surface reflects brought to the light where it stands, for every surface:
+ * \`setEnvironmentMixing\`. x is the weight less one, so a program nothing wrote reflects as it did;
+ * y and z the roughnesses the weight is mixed in over, smooth to rough.
+ */
+uniform vec4 uEnvironmentMixing; // wgsl:material
+
+/**
  * Where a surface glows, and in what colour.
  *
  * **sRGB, unlike the two maps above it.** A normal map is a direction and an ORM map is three
@@ -358,20 +365,32 @@ uniform vec3 uAmbient;
 uniform vec3 uAmbientGround;
 
 uniform vec3 uFogColor;
-/** Extinction per metre **at the camera's own height**, not at the base. */
-uniform float uFogDensity;
-/** Reciprocal scale height of the haze, per metre. 0 is a uniform medium. */
-uniform float uFogHeightFalloff;
-/** The camera's height, so a fragment's own height is one subtraction away. */
-uniform float uFogEyeY;
+/**
+ * The haze: its extinction per metre **at the camera's own height**, not at the base; its
+ * reciprocal scale height per metre, 0 for a uniform medium; the camera's height, so a fragment's
+ * own height is one subtraction away; and the water column's own density.
+ *
+ * **Four numbers in one vector rather than four uniforms**, and the reason is a phone: a scalar
+ * costs a whole row of the uniform grid, and the lit stage at its eight-light rung must fit the 256
+ * rows an Adreno 740 offers (uniformVectorBudget.ts). Packed, the haze's eight scalars cost two
+ * rows where they cost eight, which is what paid for the second layer and the sun's glow below.
+ */
+uniform vec4 uFogMedium;
+/** Where haze begins, where a linear ramp is total, and the mode: 0 a medium, 1 a ramp. */
+uniform vec4 uFogRange;
 uniform vec3 uUnderwaterColor;
-uniform float uUnderwaterFogDensity;
 uniform float uUnderwaterFactor;
-/** 0 integrates a medium (Beer-Lambert); 1 ramps linearly between near and far. */
-uniform int uFogMode;
-/** Linear mode only: where haze begins, and where it is total. */
-uniform float uFogNear;
-uniform float uFogFar;
+/**
+ * The second layer's extinction per metre at the camera's height and its falloff; then the least of
+ * a surface the haze must leave, Atmosphere.fogMaxOpacity's complement, and the distance past which
+ * it hides nothing (0 is none). **Every lane is none at zero**, and so are uFogGlow's: a program a
+ * binder never wrote these into draws the haze it drew before they existed, rather than none.
+ */
+uniform vec4 uFogLayer2;
+/** The sun's glow in the haze: its colour, black for none, and the exponent of its lobe. */
+uniform vec4 uFogGlow;
+/** Surface → the glow's light, and how far past the haze's start the glow begins. */
+uniform vec4 uFogGlowDir;
 
 /** What distance converges toward: the day's haze, or the water column. */
 vec3 mediumColor() {
@@ -379,10 +398,38 @@ vec3 mediumColor() {
 }
 
 /**
+ * The haze's optical depth from where it begins along the ray to a point at height pointY, dist
+ * metres away: each layer's density at the eye carried over what is left of the ray, with the
+ * second layer only where there is one. The fog and the sun's glow both integrate it.
+ */
+float hazeDepth(float dist, float pointY) {
+  // Where the medium begins along the ray: uFogRange.x, the linear mode's slot, which this mode
+  // never read before Atmosphere.fogStart. The ray is integrated from there on, at the density
+  // of that point; at a start of 0 every term is the one it always was. See render/fog.ts.
+  float start = min(uFogRange.x, dist);
+  float before = dist > 0.0 ? start / dist : 0.0;
+  float t = (pointY - uFogMedium.z) * uFogMedium.y;
+  float rest = t * (1.0 - before);
+  // (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than
+  // branched: at t = 0 the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
+  float denom = abs(rest) < 1e-4 ? 1e-4 : rest;
+  float depth = uFogMedium.x * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom;
+  if (uFogLayer2.x > 0.0) {
+    float t2 = (pointY - uFogMedium.z) * uFogLayer2.y;
+    float rest2 = t2 * (1.0 - before);
+    float denom2 = abs(rest2) < 1e-4 ? 1e-4 : rest2;
+    depth += uFogLayer2.x * exp(-t2 * before) * (dist - start) * (1.0 - exp(-denom2)) / denom2;
+  }
+  return depth;
+}
+
+/**
  * How much of a surface standing at height pointY, dist metres away, is lost to
  * the medium in between. 0 is perfectly clear, 1 is the medium's own colour.
  */
 float mediumFog(float dist, float pointY) {
+  /* Past the cutoff the air hides nothing, in either mode; the water column keeps its own law. */
+  bool cut = uFogLayer2.w > 0.0 && dist > uFogLayer2.w;
   /*
    * A depth ramp rather than a medium, for worlds authored against one.
    *
@@ -398,31 +445,40 @@ float mediumFog(float dist, float pointY) {
    * Height falloff has no meaning here and is ignored: a ramp is defined on distance
    * alone.
    */
-  if (uFogMode == 1) {
-    float span = max(uFogFar - uFogNear, 1e-4);
-    float ramp = clamp((dist - uFogNear) / span, 0.0, 1.0);
+  if (uFogRange.z == 1.0) {
+    float span = max(uFogRange.y - uFogRange.x, 1e-4);
+    float ramp = cut ? 0.0 : min(clamp((dist - uFogRange.x) / span, 0.0, 1.0), 1.0 - uFogLayer2.z);
     if (uUnderwaterFactor <= 0.0) return ramp;
-    float wetLinear = uUnderwaterFogDensity * dist;
+    float wetLinear = uFogMedium.w * dist;
     return mix(ramp, 1.0 - exp2(-wetLinear * wetLinear * 1.442695), uUnderwaterFactor);
   }
 
-  // Where the medium begins along the ray: uFogNear, the linear mode's slot, which this mode
-  // never read before Atmosphere.fogStart. The ray is integrated from there on, at the density
-  // of that point; at a start of 0 every term is the one it always was. See render/fog.ts.
-  float start = min(uFogNear, dist);
-  float before = dist > 0.0 ? start / dist : 0.0;
-  float t = (pointY - uFogEyeY) * uFogHeightFalloff;
-  float rest = t * (1.0 - before);
-  // (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than
-  // branched: at t = 0 the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
-  float denom = abs(rest) < 1e-4 ? 1e-4 : rest;
-  float air =
-    1.0 - exp(-uFogDensity * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom);
+  // Beer-Lambert through both layers, leaving at least uFogLayer2.z of the surface: a floor on
+  // what survives rather than a ceiling on the depth, so the curve keeps its shape above it.
+  float air = cut ? 0.0 : 1.0 - max(exp(-hazeDepth(dist, pointY)), uFogLayer2.z);
   if (uUnderwaterFactor <= 0.0) return air;
   // Water is its own medium and keeps its own curve, so crossing the surface
   // changes nothing about how the water column reads.
-  float wet = uUnderwaterFogDensity * dist;
+  float wet = uFogMedium.w * dist;
   return mix(air, 1.0 - exp2(-wet * wet * 1.442695), uUnderwaterFactor);
+}
+
+/**
+ * The sun's light the haze scatters toward the eye along a ray to a point at height pointY, dist
+ * metres away in the direction toPoint: added to a surface after its fog, never mixed. A lobe of
+ * cos^exponent about the light, by as much of the ray past the glow's own start as the haze hides —
+ * the haze's depth per metre carried over that stretch. None in a linear ramp, past the cutoff, or
+ * under water, which keeps its own medium.
+ */
+vec3 mediumGlow(float dist, float pointY, vec3 toPoint) {
+  if (uFogRange.z == 1.0 || max(max(uFogGlow.r, uFogGlow.g), uFogGlow.b) <= 0.0) return vec3(0.0);
+  if (uFogLayer2.w > 0.0 && dist > uFogLayer2.w) return vec3(0.0);
+  float span = dist - min(uFogRange.x, dist);
+  if (span <= 0.0) return vec3(0.0);
+  float perMetre = hazeDepth(dist, pointY) / span;
+  float hidden = 1.0 - exp(-perMetre * max(span - uFogGlowDir.w, 0.0));
+  float lobe = pow(clamp(dot(toPoint, uFogGlowDir.xyz), 0.0, 1.0), uFogGlow.a);
+  return uFogGlow.rgb * (lobe * hidden * (1.0 - uUnderwaterFactor));
 }
 
 uniform vec3 uCameraPos;
@@ -3363,18 +3419,21 @@ void standardLight(vec3 l, float sourceRadius, float dist) {
 
 
 
-/* The stretch's frame and strength, gathered once with the surface. */
+/* The stretch's frame, strength and lift, gathered once with the surface. */
 vec3 aAlong;
 vec3 aAcross;
 float aStrength;
+float aLift;
 
 void anisotropicSurface() {
   vec2 direction = vec2(1.0, 0.0);
   float strength = uModelParams[0].x;
+  aLift = uModelParams[0].w;
   if (uModelParams[1].w > 0.0) {
     vec2 mapped = mMap.rg * 2.0 - 1.0;
     direction = dot(mapped, mapped) > 1e-8 ? normalize(mapped) : direction;
     strength *= mMap.b;
+    aLift *= mMap.a;
   }
   vec2 turned = vec2(
     direction.x * uModelParams[0].y - direction.y * uModelParams[0].z,
@@ -3394,6 +3453,17 @@ void anisotropicSurface() {
   aStrength = strength;
 }
 
+/**
+ * How much the lift brightens the lobe at a half vector, from the stretched distribution there, D,
+ * at widths \`along\` and \`across\` and \`d\` its denominator's root: \`(D + min(3, D^1.5) k) / D\`.
+ * anisotropicLiftFactor in anisotropicLobe.ts.
+ */
+float anisotropicLift(float along, float across, float d) {
+  if (aLift <= 0.0) return 1.0;
+  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  return 1.0 + aLift * min(3.0 / distribution, sqrt(distribution));
+}
+
 /** The stretched lobe at a half vector, 1 at the mirror direction: anisotropicLobe.ts. */
 float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   float alpha = max(mRoughness * mRoughness, MIN_LOBE_ALPHA);
@@ -3406,7 +3476,7 @@ float anisotropicLobe(vec3 h, float sourceRadius, float dist) {
   float y = dot(aAcross, h) / acrossWide;
   float z = dot(mNormal, h);
   float d = x * x + y * y + z * z;
-  return energy / max(d * d, 1e-8);
+  return energy / max(d * d, 1e-8) * anisotropicLift(alongWide, acrossWide, d);
 }
 
 /**
@@ -3424,7 +3494,8 @@ float anisotropicPhysical(vec3 l, vec3 h, float ndl, float sourceRadius, float d
   float y = dot(aAcross, h) / across;
   float z = dot(mNormal, h);
   float d = x * x + y * y + z * z;
-  float distribution = 1.0 / max(3.14159265 * along * across * d * d, 1e-8);
+  float distribution =
+    1.0 / max(3.14159265 * along * across * d * d, 1e-8) * anisotropicLift(along, across, d);
   float ndv = max(dot(mNormal, mToEye), 1e-4);
   float viewed = ndl * length(vec3(along * dot(aAlong, mToEye), across * dot(aAcross, mToEye), ndv));
   float lit = ndv * length(vec3(along * dot(aAlong, l), across * dot(aAcross, l), ndl));
@@ -3455,8 +3526,10 @@ const float HAIR_F0 = 0.046520569;
 const float HAIR_MIN_BETA = 0.050;
 const float HAIR_AREA = 0.200;
 
-/* This texel's tilt, and the share of light from every side it returns: gathered with the surface. */
+/* This texel's tilt, its specular, and the share of light from every side it returns: gathered
+   with the surface. */
 float hShift;
+float hSpecular;
 vec3 hAround;
 
 /** A longitudinal lobe: a normalised Gaussian of width \`beta\` at \`x\` from its centre. */
@@ -3494,7 +3567,7 @@ void hairLobes(vec3 l, float grow, float backlit) {
   float x = sinI + sinO;
 
   float r = hairLongitudinal(beta + grow, x + 2.0 * hShift) * 0.25 * cosHalfPhi
-    * hairFresnel(sqrt(clamp(0.5 + 0.5 * dot(l, mToEye), 0.0, 1.0)));
+    * hairFresnel(sqrt(clamp(0.5 + 0.5 * dot(l, mToEye), 0.0, 1.0))) * hSpecular;
 
   float a = 1.0 / (1.19 / cosD + 0.36 * cosD);
   float h = cosHalfPhi * (1.0 + a * (0.6 - 0.8 * cosPhi));
@@ -3541,8 +3614,21 @@ vec3 hairIndirect() {
   return min(vec3(1.0), 2.0 * (mSpecular + mDiffuse));
 }
 
-void hairSurface() {
+/**
+ * The strand at this texel: its tilt and specular from the model map, its direction from the layer
+ * \`directionOffset\` names where there is one, and then its share of light from every side, which
+ * reads all three. On a branch of uniforms alone, so the read's derivatives are in uniform flow; a
+ * direction that decodes to nothing keeps the tangent.
+ */
+void hairSurface(vec3 at) {
   hShift = uModelParams[0].x * (0.5 + mMap.g);
+  hSpecular = 2.0 * mMap.r;
+  if (uModelParams[0].w > 0.0 && uModelParams[1].w > 0.0) {
+    vec3 d = texture(uModelMap, vec3(at.xy, at.z + uModelParams[0].w)).rgb * 2.0 - 1.0;
+    vec3 strand = mTangent * d.x + mBitangent * d.y + mNormal * d.z;
+    float length2 = dot(strand, strand);
+    if (length2 > 1e-4) mTangent = strand * inversesqrt(length2);
+  }
   hAround = hairIndirect();
 }
 
@@ -3729,7 +3815,7 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   mMap = vec4(0.5, 0.5, 1.0, 1.0);
   if (uModelParams[1].w > 0.0) mMap = texture(uModelMap, at);
   if (MODEL_ANISOTROPIC) anisotropicSurface();
-  if (MODEL_HAIR) hairSurface();
+  if (MODEL_HAIR) hairSurface(at);
   if (MODEL_SKIN) skinSurface();
   if (MODEL_EYE) eyeSurface(at);
 }
@@ -5451,6 +5537,19 @@ void main() {
        * caller sets this.
        */
       environment *= mix(1.0, uEnvironmentDials.z, metal);
+      /*
+       * **And brought to the light where the surface stands**, metal or not: a probe is captured
+       * at one place and seen from many, so a rough surface standing in light twice what the probe
+       * saw takes twice its reflection, and a mirror keeps the capture as it is. The weight is the
+       * caller's, the place's indirect light over the probe's average; mixed in by roughness, with
+       * the smoothstep written out because GLSL leaves one over an empty range undefined. 0, the
+       * weight less one, is exactly the reflection there was.
+       */
+      if (uEnvironmentMixing.x != 0.0) {
+        float span = max(uEnvironmentMixing.z - uEnvironmentMixing.y, 1e-4);
+        float rough = clamp((surfaceRoughness - uEnvironmentMixing.y) / span, 0.0, 1.0);
+        environment *= 1.0 + uEnvironmentMixing.x * rough * rough * (3.0 - 2.0 * rough);
+      }
       float facing = 1.0 - max(dot(n, toEye), 0.0);
       /*
        * **A metal's Fresnel base is close to its albedo, not a dielectric's four percent.** Schlick
@@ -6691,8 +6790,14 @@ void main() {
    * the medium's colour and adding it puts the haze into the frame twice — a glow by day drew as
    * a grey shape of itself, greyer the thicker the air.
    */
+  /* And the sun's glow in the haze, which a surface takes after its fog and an added light never
+     does: what is behind it already has it. */
+  vec3 glow = vec3(0.0);
+  if (uFogEnabled == 1) {
+    glow = mediumGlow(distance(vWorldPos, uCameraPos), vWorldPos.y, normalize(vWorldPos - uCameraPos));
+  }
   vec3 shaded = applyOutputTransform(
-    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));
+    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog) + glow);
 
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**

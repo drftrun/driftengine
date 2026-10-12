@@ -47,7 +47,10 @@ struct Frame {
   fogColour: vec4<f32>,
   /** rgb is the water's colour, w is how far under it the camera is. */
   fogUnderwater: vec4<f32>,
-  /** Reciprocal scale height, extinction per metre at the eye, and two spare. */
+  /**
+   * Reciprocal scale height and extinction per metre at the eye; then the second layer's
+   * extinction at the eye and its reciprocal scale height, zero for none.
+   */
   fogHeight: vec4<f32>,
   /** Linear near and far, the mode, and the water's own density. */
   fogRange: vec4<f32>,
@@ -58,5 +61,13 @@ struct Frame {
    * "target", which WGSL reserves.
    */
   pitch: vec4<f32>,
+  /**
+   * The rest of the medium, after the pitch so nothing above it moves: the least of a surface the
+   * haze must leave and the cutoff, both none at zero, and two spare; the sun glow's colour, black
+   * for none, and its exponent; and surface → its light, and its start. render/fog.ts reads them.
+   */
+  fogLimits: vec4<f32>,
+  fogGlow: vec4<f32>,
+  fogGlowDir: vec4<f32>,
 }
 `;

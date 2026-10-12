@@ -277,7 +277,8 @@ void main() {
 
   float dist = distance(vWorldPos, uCameraPos);
   float fog = mediumFog(dist, vWorldPos.y);
-  col = mix(col, atmosphereColor, fog);
+  vec3 glow = mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
+  col = mix(col, atmosphereColor, fog) + glow;
   /*
    * **Graded here, before the mirror is mixed in**, as every pass grades what it draws when
    * nothing after it will: the mirror's own passes graded what it holds, so mixing first would put

@@ -162,13 +162,29 @@ the sky, lines, plumes, bolts and particles. A translucent draw can opt out with
   extinction, integrated from that point on. A faint, bright fog starting ten metres out hazes a
   far crowd and leaves the figures in front of the camera sharp, where the same fog from the eye
   would veil the whole frame. It does nothing in `'linear'` mode, which has `fogNear`.
+- `fogLayer2` is a second layer of haze, `{ density, heightFalloff, baseY }`, summed with the first
+  along every ray: a ground mist under a high summer haze, each thinning at its own rate.
+- `fogMaxOpacity`, 0 to 1, is the most of a surface the haze may hide. Below 1 a skyline keeps that
+  much of itself however much air lies in front of it.
+- `fogCutoff` is a distance past which the haze hides nothing at all, the sky included: for a sky or
+  a backdrop that brings its own haze painted in.
+- `fogSunGlow` is the sun's light the haze scatters toward the eye, `{ color, exponent, start }`:
+  `color` looking straight at the sun through haze that hides everything, falling off as the
+  cosine of the angle from the sun to the power `exponent`, and beginning `start` metres past
+  where the haze begins. It follows `directionalDir` unless given a `direction` of its own, and it
+  is added on top of the fog rather than mixed in, so a far ridge seen into a low sun burns gold.
+
+The densities and falloffs are in natural units: what survives a stretch of haze is
+`exp(-density · metres)`. A haze authored in base two, its surviving light `2^(-∫ρ)` and its
+density falling as `2^(-f · Δy)`, is `density: ρ · (ln 2)²` and `heightFalloff: f · ln 2` here.
 
 `fogMode: 'linear'` is a different look: nothing at all nearer than `fogNear`, the fog colour
 completely at `fogFar`, and a straight ramp between. It cannot be had from the exponential curve at
 any density.
 
-Fog darkens what is behind it; it does not glow where the sun is behind it. For air that scatters
-light, shafts through it and a glow around a low sun, see
+Fog darkens what is behind it, and with `fogSunGlow` it glows toward the sun; it does not know
+where the sun's shadows fall. For air that scatters light through those shadows, shafts through a
+window and a lamp's glow cut by what stands in front of it, see
 [Light in the air](light-in-the-air.md).
 
 ## Under water

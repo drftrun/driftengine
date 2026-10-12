@@ -23,11 +23,42 @@ fn mediumColour() -> vec3<f32> {
 }
 
 /**
+ * The haze's optical depth from where it begins along the ray to a point at "pointY", "dist" metres
+ * away: each layer's density at the eye carried over what is left of the ray, the second only
+ * where there is one. mediumFog and mediumGlow both integrate it.
+ */
+fn hazeDepth(dist: f32, pointY: f32) -> f32 {
+  /* Where the medium begins along the ray: fogRange.x, the linear mode's near, which this mode
+     never read before Atmosphere.fogStart. Integrated from there on, at that point's density; at
+     a start of 0 every term is the one it always was. See render/fog.ts. */
+  let start = min(frame.fogRange.x, dist);
+  var before = 0.0;
+  if (dist > 0.0) { before = start / dist; }
+  let t = (pointY - frame.fogColour.w) * frame.fogHeight.x;
+  let rest = t * (1.0 - before);
+  /* (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than branched: at t = 0
+     the quotient is 0/0, and 1e-4 of a scale height is 8 mm. */
+  var denom = rest;
+  if (abs(rest) < 1e-4) { denom = 1e-4; }
+  var depth = frame.fogHeight.y * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom;
+  if (frame.fogHeight.z > 0.0) {
+    let t2 = (pointY - frame.fogColour.w) * frame.fogHeight.w;
+    let rest2 = t2 * (1.0 - before);
+    var denom2 = rest2;
+    if (abs(rest2) < 1e-4) { denom2 = 1e-4; }
+    depth += frame.fogHeight.z * exp(-t2 * before) * (dist - start) * (1.0 - exp(-denom2)) / denom2;
+  }
+  return depth;
+}
+
+/**
  * How much of a surface at "pointY", "dist" metres away, is lost to the medium between.
  * 0 is perfectly clear, 1 is the medium's own colour.
  */
 fn mediumFog(dist: f32, pointY: f32) -> f32 {
   let underwaterFactor = frame.fogUnderwater.w;
+  /* Past the cutoff the air hides nothing, in either mode; the water column keeps its own law. */
+  let cut = frame.fogLimits.y > 0.0 && dist > frame.fogLimits.y;
   if (frame.fogRange.z == ${LINEAR_FOG}.0) {
     /*
      * A consumer asking for a hard cut writes far == near, and the guard is why that is a cut and
@@ -41,36 +72,50 @@ fn mediumFog(dist: f32, pointY: f32) -> f32 {
      * shape from the other direction on 2026-09-18: a device may assume NaN never arrives.
      */
     let span = max(frame.fogRange.y - frame.fogRange.x, 1e-4);
-    let ramp = clamp((dist - frame.fogRange.x) / span, 0.0, 1.0);
+    var ramp = min(clamp((dist - frame.fogRange.x) / span, 0.0, 1.0), 1.0 - frame.fogLimits.x);
+    if (cut) { ramp = 0.0; }
     if (underwaterFactor <= 0.0) { return ramp; }
     let wetLinear = frame.fogRange.w * dist;
     return mix(ramp, 1.0 - exp2(-wetLinear * wetLinear * 1.442695), underwaterFactor);
   }
 
-  /* Where the medium begins along the ray: fogRange.x, the linear mode's near, which this mode
-     never read before Atmosphere.fogStart. Integrated from there on, at that point's density; at
-     a start of 0 every term is the one it always was. See render/fog.ts. */
-  let start = min(frame.fogRange.x, dist);
-  var before = 0.0;
-  if (dist > 0.0) { before = start / dist; }
-  let t = (pointY - frame.fogColour.w) * frame.fogHeight.x;
-  let rest = t * (1.0 - before);
-  /* (1 - e^-t)/t, which tends to 1 as the ray levels out. Guarded rather than branched: at t = 0
-     the quotient is 0/0, and 1e-4 of a scale height is 8 mm. */
-  var denom = rest;
-  if (abs(rest) < 1e-4) { denom = 1e-4; }
-  let air =
-    1.0 - exp(-frame.fogHeight.y * exp(-t * before) * (dist - start) * (1.0 - exp(-denom)) / denom);
+  /* Beer-Lambert through both layers, leaving at least fogLimits.x of the surface. */
+  var air = 1.0 - max(exp(-hazeDepth(dist, pointY)), frame.fogLimits.x);
+  if (cut) { air = 0.0; }
   if (underwaterFactor <= 0.0) { return air; }
   /* Water is its own medium and keeps its own curve, so crossing the surface changes nothing
      about how the water column reads. */
   let wet = frame.fogRange.w * dist;
   return mix(air, 1.0 - exp2(-wet * wet * 1.442695), underwaterFactor);
 }
+
+/**
+ * The sun's light the haze scatters toward the eye along a ray to a point at "pointY", "dist"
+ * metres away in the unit direction "toPoint": added after the fog, never mixed. None in a linear
+ * ramp, past the cutoff or under water; render/fog.ts says the rest.
+ */
+fn mediumGlow(dist: f32, pointY: f32, toPoint: vec3<f32>) -> vec3<f32> {
+  if (frame.fogRange.z == ${LINEAR_FOG}.0) { return vec3<f32>(0.0); }
+  if (max(max(frame.fogGlow.x, frame.fogGlow.y), frame.fogGlow.z) <= 0.0) { return vec3<f32>(0.0); }
+  if (frame.fogLimits.y > 0.0 && dist > frame.fogLimits.y) { return vec3<f32>(0.0); }
+  let span = dist - min(frame.fogRange.x, dist);
+  if (span <= 0.0) { return vec3<f32>(0.0); }
+  let perMetre = hazeDepth(dist, pointY) / span;
+  let hidden = 1.0 - exp(-perMetre * max(span - frame.fogGlowDir.w, 0.0));
+  let lobe = pow(clamp(dot(toPoint, frame.fogGlowDir.xyz), 0.0, 1.0), frame.fogGlow.w);
+  return frame.fogGlow.xyz * (lobe * hidden * (1.0 - frame.fogUnderwater.w));
+}
 `;
 
-/** Floats a case of the fog check: distance, height, and the ten options. */
-export const FOG_CASE_FLOATS = 16;
+/**
+ * Floats a case of the fog check: distance, height, the ten options, the second layer, the floor
+ * and the cutoff, the glow's colour, exponent, direction and start, the ray's direction, and one
+ * spare.
+ */
+export const FOG_CASE_FLOATS = 32;
+
+/** Floats a case's answer: the fog, the colour, and the glow, and one spare. */
+export const FOG_RESULT_FLOATS = 8;
 
 /**
  * An entry point that does nothing but fog, so `gpu-parity.mjs` can compare the expression above
@@ -90,6 +135,12 @@ struct Frame {
   fogHeight: vec4<f32>,
   /** Linear near and far, the mode, and the water's own density. */
   fogRange: vec4<f32>,
+  /** The least of a surface the haze must leave, the cutoff, and two spare. */
+  fogLimits: vec4<f32>,
+  /** The sun glow's colour and exponent. */
+  fogGlow: vec4<f32>,
+  /** Surface → its light, and its start. */
+  fogGlowDir: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> cases: array<f32>;
@@ -105,14 +156,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let pointY = cases[at + 1u];
   frame.fogColour = vec4<f32>(cases[at + 2u], cases[at + 3u], cases[at + 4u], cases[at + 5u]);
   frame.fogUnderwater = vec4<f32>(cases[at + 6u], cases[at + 7u], cases[at + 8u], cases[at + 9u]);
-  frame.fogHeight = vec4<f32>(cases[at + 10u], cases[at + 11u], 0.0, 0.0);
+  frame.fogHeight = vec4<f32>(cases[at + 10u], cases[at + 11u], cases[at + 16u], cases[at + 17u]);
   frame.fogRange = vec4<f32>(cases[at + 12u], cases[at + 13u], cases[at + 14u], cases[at + 15u]);
+  frame.fogLimits = vec4<f32>(cases[at + 18u], cases[at + 19u], 0.0, 0.0);
+  frame.fogGlow = vec4<f32>(cases[at + 20u], cases[at + 21u], cases[at + 22u], cases[at + 23u]);
+  frame.fogGlowDir = vec4<f32>(cases[at + 24u], cases[at + 25u], cases[at + 26u], cases[at + 27u]);
+  let toPoint = vec3<f32>(cases[at + 28u], cases[at + 29u], cases[at + 30u]);
 
-  let out = id.x * 4u;
+  let out = id.x * ${FOG_RESULT_FLOATS}u;
   results[out] = mediumFog(dist, pointY);
   let colour = mediumColour();
   results[out + 1u] = colour.x;
   results[out + 2u] = colour.y;
   results[out + 3u] = colour.z;
+  let glow = mediumGlow(dist, pointY, toPoint);
+  results[out + 4u] = glow.x;
+  results[out + 5u] = glow.y;
+  results[out + 6u] = glow.z;
 }
 `;

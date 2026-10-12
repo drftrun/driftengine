@@ -17,7 +17,12 @@
  * one argument instead, and the backends keep their own packing.
  */
 
-import { resolveAtmosphere, type Atmosphere, type ResolvedAtmosphere } from './atmosphere.ts';
+import {
+  createResolvedAtmosphere,
+  resolveAtmosphere,
+  type Atmosphere,
+  type ResolvedAtmosphere,
+} from './atmosphere.ts';
 
 /** A colour as three numbers, matching `render/orderIndependent.ts`'s own `Rgb`. */
 export type Rgb = readonly [number, number, number];
@@ -46,6 +51,25 @@ export interface FogOptions {
    */
   readonly near: number;
   readonly far: number;
+  /** The medium's second layer: its extinction per metre at the camera's height. Absent, none. */
+  readonly density2?: number;
+  /** And its reciprocal scale height. */
+  readonly heightFalloff2?: number;
+  /**
+   * The least of a surface the haze must leave, `Atmosphere.fogMaxOpacity`'s complement. Absent or 0,
+   * no floor.
+   */
+  readonly floor?: number;
+  /** Metres past which the haze hides nothing. Absent or 0, none. */
+  readonly cutoff?: number;
+  /** The sun's glow in the haze: its colour. Absent or black, none. */
+  readonly glowColour?: Rgb;
+  /** The glow's lobe: the cosine of the angle from its light, to this power. */
+  readonly glowExponent?: number;
+  /** Surface → the glow's light, a unit vector. */
+  readonly glowDirection?: Rgb;
+  /** Metres past the haze's start before the glow begins. */
+  readonly glowStart?: number;
 }
 
 /**
@@ -82,15 +106,37 @@ export function mediumFog(fog: FogOptions, dist: number, pointY: number): number
    * is perfectly clear, which Beer-Lambert can never be, and height falloff has no meaning here
    * because a ramp is defined on distance alone. `shaders/fog.ts` argues the whole of it.
    */
+  /* Past the cutoff the air hides nothing, in either mode; the water column keeps its own law. */
+  const cutoff = fog.cutoff ?? 0;
+  const cut = cutoff > 0 && dist > cutoff;
+  const floor = fog.floor ?? 0;
   if (fog.mode === LINEAR_FOG) {
     /* A consumer asking for a hard cut writes `far === near`; the guard is why that is a cut. */
     const span = Math.max(fog.far - fog.near, 1e-4);
-    const ramp = Math.min(1, Math.max(0, (dist - fog.near) / span));
+    const ramp = cut ? 0 : Math.min(Math.min(1, Math.max(0, (dist - fog.near) / span)), 1 - floor);
     if (fog.underwaterFactor <= 0) return ramp;
     const wetLinear = fog.underwaterDensity * dist;
     return mix(ramp, 1 - Math.pow(2, -wetLinear * wetLinear * 1.442695), fog.underwaterFactor);
   }
 
+  /*
+   * Beer-Lambert through both layers, leaving at least `floor` of the surface: a floor on what
+   * survives rather than a ceiling on the depth, so the curve keeps its shape above it.
+   */
+  const air = cut ? 0 : 1 - Math.max(Math.exp(-hazeDepth(fog, dist, pointY)), floor);
+  if (fog.underwaterFactor <= 0) return air;
+  /* Water is its own medium and keeps its own curve, so crossing the surface changes nothing
+     about how the water column reads. */
+  const wet = fog.underwaterDensity * dist;
+  return mix(air, 1 - Math.pow(2, -wet * wet * 1.442695), fog.underwaterFactor);
+}
+
+/**
+ * The haze's optical depth from where it begins along the ray to a point at `pointY`, `dist` metres
+ * away: each layer's density at the eye carried over what is left of the ray, the second only where
+ * there is one. `mediumFog` and `mediumGlow` both integrate it.
+ */
+export function hazeDepth(fog: FogOptions, dist: number, pointY: number): number {
   /*
    * **Where the medium begins along the ray**, `near` — the linear mode's slot, which this mode
    * never read before `Atmosphere.fogStart`. The ray is integrated from that point on: the density
@@ -106,16 +152,55 @@ export function mediumFog(fog: FogOptions, dist: number, pointY: number): number
    * `t = 0` the quotient is 0/0, and 1e-4 of a scale height is 8 mm.
    */
   const denom = Math.abs(rest) < 1e-4 ? 1e-4 : rest;
-  const air =
-    1 -
-    Math.exp(
-      (-fog.density * Math.exp(-t * before) * (dist - start) * (1 - Math.exp(-denom))) / denom,
-    );
-  if (fog.underwaterFactor <= 0) return air;
-  /* Water is its own medium and keeps its own curve, so crossing the surface changes nothing
-     about how the water column reads. */
-  const wet = fog.underwaterDensity * dist;
-  return mix(air, 1 - Math.pow(2, -wet * wet * 1.442695), fog.underwaterFactor);
+  let depth =
+    (fog.density * Math.exp(-t * before) * (dist - start) * (1 - Math.exp(-denom))) / denom;
+  const density2 = fog.density2 ?? 0;
+  if (density2 > 0) {
+    const t2 = (pointY - fog.eyeY) * (fog.heightFalloff2 ?? 0);
+    const rest2 = t2 * (1 - before);
+    const denom2 = Math.abs(rest2) < 1e-4 ? 1e-4 : rest2;
+    depth +=
+      (density2 * Math.exp(-t2 * before) * (dist - start) * (1 - Math.exp(-denom2))) / denom2;
+  }
+  return depth;
+}
+
+/**
+ * The sun's light the haze scatters toward the eye along a ray to a point at `pointY`, `dist`
+ * metres away in the unit direction `toPoint`, into `out`: added after the fog, never mixed. A lobe
+ * of `cos^exponent` about the light, by as much of the ray past the glow's start as the haze hides.
+ * None in a linear ramp, past the cutoff, or under water.
+ */
+export function mediumGlow(
+  fog: FogOptions,
+  dist: number,
+  pointY: number,
+  toPoint: ArrayLike<number>,
+  out: [number, number, number],
+): [number, number, number] {
+  out[0] = 0;
+  out[1] = 0;
+  out[2] = 0;
+  const colour = fog.glowColour;
+  if (fog.mode === LINEAR_FOG || colour === undefined) return out;
+  if (Math.max(colour[0], colour[1], colour[2]) <= 0) return out;
+  const cutoff = fog.cutoff ?? 0;
+  if (cutoff > 0 && dist > cutoff) return out;
+  const span = dist - Math.min(fog.near, dist);
+  if (span <= 0) return out;
+  const perMetre = hazeDepth(fog, dist, pointY) / span;
+  const hidden = 1 - Math.exp(-perMetre * Math.max(span - (fog.glowStart ?? 0), 0));
+  const toward = fog.glowDirection ?? [0, 1, 0];
+  const cosine =
+    (toPoint[0] as number) * toward[0] +
+    (toPoint[1] as number) * toward[1] +
+    (toPoint[2] as number) * toward[2];
+  const lobe = Math.pow(Math.min(1, Math.max(0, cosine)), fog.glowExponent ?? 1);
+  const share = lobe * hidden * (1 - fog.underwaterFactor);
+  out[0] = colour[0] * share;
+  out[1] = colour[1] * share;
+  out[2] = colour[2] * share;
+  return out;
 }
 
 /** `FogOptions` with its fields writable, which is what a caller holds and refills a frame at a time. */
@@ -130,6 +215,14 @@ export interface FogTarget {
   mode: number;
   near: number;
   far: number;
+  density2: number;
+  heightFalloff2: number;
+  floor: number;
+  cutoff: number;
+  glowColour: [number, number, number];
+  glowExponent: number;
+  glowDirection: [number, number, number];
+  glowStart: number;
 }
 
 /** A target for `atmosphereFog`, allocated once, outside the frame loop. */
@@ -145,22 +238,19 @@ export function createFogTarget(): FogTarget {
     mode: MEDIUM_FOG,
     near: 0,
     far: 1,
+    density2: 0,
+    heightFalloff2: 0,
+    floor: 0,
+    cutoff: 0,
+    glowColour: [0, 0, 0],
+    glowExponent: 1,
+    glowDirection: [0, 1, 0],
+    glowStart: 0,
   };
 }
 
 /** `resolveAtmosphere`'s own target, reused, because this runs a frame at a time. */
-const RESOLVED: ResolvedAtmosphere = {
-  fogColor: new Float32Array(3),
-  underwaterColor: new Float32Array(3),
-  fogDensity: 0,
-  fogHeightFalloff: 0,
-  fogEyeY: 0,
-  fogMode: 0,
-  fogNear: 0,
-  fogFar: 1,
-  underwaterFogDensity: 0,
-  underwaterFactor: 0,
-};
+const RESOLVED: ResolvedAtmosphere = createResolvedAtmosphere();
 
 /**
  * The haze an `Environment` makes at a camera's height, as `GpuDrivenView.fog` takes it.
@@ -177,7 +267,7 @@ const RESOLVED: ResolvedAtmosphere = {
  * on the forward path; pass the same.
  */
 export function atmosphereFog(
-  atmosphere: Atmosphere,
+  atmosphere: Atmosphere & { readonly directionalDir?: ArrayLike<number> },
   eyeY: number,
   underwater: boolean,
   out: FogTarget,
@@ -197,5 +287,15 @@ export function atmosphereFog(
   out.mode = medium.fogMode;
   out.near = medium.fogNear;
   out.far = medium.fogFar;
+  out.density2 = medium.fogLayer2[0] as number;
+  out.heightFalloff2 = medium.fogLayer2[1] as number;
+  out.floor = medium.fogLayer2[2] as number;
+  out.cutoff = medium.fogLayer2[3] as number;
+  for (let c = 0; c < 3; c++) {
+    out.glowColour[c] = medium.fogGlow[c] as number;
+    out.glowDirection[c] = medium.fogGlowDir[c] as number;
+  }
+  out.glowExponent = medium.fogGlow[3] as number;
+  out.glowStart = medium.fogGlowDir[3] as number;
   return out;
 }

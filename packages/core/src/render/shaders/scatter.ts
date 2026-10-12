@@ -206,9 +206,11 @@ void main() {
   float ndl = abs(dot(n, uDirectionalDir));
   vec3 lit = vColor * (uAmbient + uDirectionalColor * ndl);
 
-  float fog = mediumFog(distance(vWorldPos, uCameraPos), vWorldPos.y);
+  float dist = distance(vWorldPos, uCameraPos);
+  float fog = mediumFog(dist, vWorldPos.y);
+  vec3 glow = mediumGlow(dist, vWorldPos.y, normalize(vWorldPos - uCameraPos));
 
   /* Graded where nothing after this will grade it, as every pass is: the same light as the ground. */
-  outColor = vec4(applyOutputTransform(mix(lit, mediumColor(), fog)), 1.0);
+  outColor = vec4(applyOutputTransform(mix(lit, mediumColor(), fog) + glow), 1.0);
 }
 `;

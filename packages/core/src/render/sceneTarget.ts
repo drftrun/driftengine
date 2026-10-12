@@ -4,7 +4,8 @@ import { FRINGE_FLOATS, resolveFringe } from './shaders/fringe.ts';
 import { AmbientOcclusionPass } from './ambientOcclusionPass.ts';
 import { ExposurePass } from './exposurePass.ts';
 import { clampAutoExposure } from './shaders/exposure.ts';
-import { clampLocalExposure } from './shaders/localExposure.ts';
+import { LOCAL_EXPOSURE_FLOATS, resolveLocalExposure } from './shaders/localExposure.ts';
+import type { LocalExposureOptions } from './shaders/localExposure.ts';
 import { BloomPass } from './bloomPass.ts';
 import {
   type ColourGradeLut,
@@ -107,8 +108,9 @@ export class SceneTarget {
   /** Eye adaptation: how far, and this frame's time step. See `Renderer.setAutoExposure`. */
   private autoExposure = 0;
   private autoExposureDt = 0;
-  /** How far each region is brought toward the frame. See `Renderer.setLocalExposure`. */
-  private localExposure = 0;
+  /** Whether regions move, and how, as `resolveLocalExposure` packs it. See `setLocalExposure`. */
+  private localExposure = false;
+  private readonly localExposureShape = new Float32Array(LOCAL_EXPOSURE_FLOATS);
   private exposure: ExposurePass | null = null;
   private width = 0;
   private height = 0;
@@ -722,9 +724,9 @@ export class SceneTarget {
     this.autoExposureDt = dtSec;
   }
 
-  /** How far each region is brought toward the frame. See `Renderer.setLocalExposure`. */
-  setLocalExposure(strength: number): void {
-    this.localExposure = clampLocalExposure(strength);
+  /** How regions are brought toward the frame. See `Renderer.setLocalExposure`. */
+  setLocalExposure(setting: number | LocalExposureOptions): void {
+    this.localExposure = resolveLocalExposure(setting, this.localExposureShape);
   }
 
   /** A new shot: the eye meters it afresh rather than easing in from the last one. */
@@ -1011,7 +1013,7 @@ export class SceneTarget {
      * reason: the composite consumes it. Off at zero strength, where nothing is allocated or drawn.
      */
     let heldExposure: WebGLTexture | null = null;
-    const local = this.localExposure > 0;
+    const local = this.localExposure;
     if ((this.autoExposure > 0 || local) && scene !== null) {
       this.exposure ??= new ExposurePass(gl);
       heldExposure = this.exposure.run(scene, this.autoExposureDt, local);
@@ -1136,10 +1138,12 @@ export class SceneTarget {
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, localGrid ?? scene);
     gl.uniform1i(this.uniforms['uExposureLocal'] ?? null, 6);
-    gl.uniform1f(
-      this.uniforms['uLocalExposure'] ?? null,
-      localGrid === null ? 0 : this.localExposure,
-    );
+    gl.uniform1f(this.uniforms['uLocalExposure'] ?? null, localGrid === null ? 0 : 1);
+    /* Its shape only where it is on: off, the shader returns before reading it. */
+    if (localGrid !== null) {
+      gl.uniform4fv(this.uniforms['uLocalShape'] ?? null, this.localExposureShape, 0, 4);
+      gl.uniform4fv(this.uniforms['uLocalPivot'] ?? null, this.localExposureShape, 4, 4);
+    }
     /* Each object's own motion is WebGPU's under a reconstruction; here the scene stands in on
        unit 7 and the flag says not to read it, so the camera's motion alone blurs. */
     gl.activeTexture(gl.TEXTURE7);

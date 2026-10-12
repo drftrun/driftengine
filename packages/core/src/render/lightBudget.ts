@@ -427,6 +427,13 @@ export interface PointLightSet {
    * falls off as it did. See `PointLightSource.falloffExponent`.
    */
   readonly lightFalloffExponents?: Float32Array;
+  /**
+   * One per light: how strongly it scatters in the global medium, as a share of how strongly it
+   * lights a surface, beside `setGlobalMedium`'s `lampScatter` for every lamp at once. **Absent, or
+   * a short array, is 1 for every light.** A lamp turned up here lights a fog bank brighter than it
+   * lights the floor in it, which is how a lamp authored for its shaft rather than its pool reads.
+   */
+  readonly lightMediumScatter?: Float32Array;
 }
 
 /** Weights are optional per consumer; a short array means every light is fully present. */
@@ -635,6 +642,31 @@ export interface ResolvedPointLights {
    */
   readonly heldSourceRadii: Float32Array;
   readonly heldWeights: Float32Array;
+}
+
+/**
+ * A target for `resolvePointLights`, made once outside the frame loop. Its arrays are references
+ * the resolve points at the caller's own or at the defaults, but for the four it owns.
+ */
+export function createResolvedPointLights(): ResolvedPointLights {
+  return {
+    count: 0,
+    falloff: 0,
+    positions: NO_POSITIONS,
+    colors: NO_COLORS,
+    radii: POINT_SOURCES,
+    sourceRadii: POINT_SOURCES,
+    weights: FULLY_PRESENT,
+    directions: NO_DIRECTIONS,
+    coneCos: OPEN_CONES,
+    iesProfiles: NO_PROFILES,
+    iesAxes: NO_IES_AXES,
+    cookies: NO_COOKIES,
+    axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
+    conesAndFalloffs: new Float32Array(MAX_POINT_LIGHTS * 4),
+    heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
+    heldWeights: new Float32Array(MAX_POINT_LIGHTS),
+  };
 }
 
 /** One per GL binder, refilled per call: holds references, allocates nothing. */

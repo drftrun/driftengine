@@ -236,7 +236,7 @@ void modelSurface(vec3 n, vec3 albedo, float roughness, float metal, vec3 at) {
   mMap = vec4(0.5, 0.5, 1.0, 1.0);
   if (uModelParams[1].w > 0.0) mMap = texture(uModelMap, at);
   if (MODEL_ANISOTROPIC) anisotropicSurface();
-  if (MODEL_HAIR) hairSurface();
+  if (MODEL_HAIR) hairSurface(at);
   if (MODEL_SKIN) skinSurface();
   if (MODEL_EYE) eyeSurface(at);
 }

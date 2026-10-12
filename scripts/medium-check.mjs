@@ -147,9 +147,17 @@ function differing(one, two) {
   return count;
 }
 
+/*
+ * **`transform=none`, the linear output every claim here is computed in.** The claims read
+ * extinction and inscatter straight off pixels, and that holds only while a pixel is the light.
+ * 4.13.0 made the screen encoding the default, which bends every value and clips the unshadowed
+ * runs to white, and three claims went red on a medium that had not changed: the floor patches
+ * moved 0.0 because both were already 255. Pinned so the check measures the medium rather than
+ * the encoding.
+ */
 async function capture(client, out, base, backend, name, query) {
   const page = await client.page(
-    `${base}/medium.html?backend=${backend}&${query}`,
+    `${base}/medium.html?backend=${backend}&transform=none&${query}`,
     CSS_WIDTH,
     CSS_HEIGHT,
   );

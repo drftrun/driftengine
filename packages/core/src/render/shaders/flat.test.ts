@@ -1723,10 +1723,12 @@ test('A PANE SEEN FROM BEHIND IS LIT FROM THE EYE S SIDE, and glows with the lig
  * **Added light fades in the medium and takes none of its colour.** Both backends write 2 for an
  * additive draw (`drawFog.ts`); mixed toward the medium and then added, a glow put the haze into the
  * frame twice — grey cones under every street lamp on a hazy morning. The surface rule is the
- * other arm, so every draw that is not additive shades exactly as it did.
+ * other arm, so every draw that is not additive shades exactly as it did. **The sun's glow in the
+ * haze is the surface's alone** for the same reason: what is behind an added light already has it.
  */
 test('ADDED LIGHT FADES IN THE MEDIUM, a surface still recedes into it', () => {
   expect(source).toContain(
-    'vec3 shaded = applyOutputTransform( uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));',
+    'vec3 shaded = applyOutputTransform( uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog) + glow);',
   );
+  expect(source).toContain('if (uFogEnabled == 1) { glow = mediumGlow(');
 });

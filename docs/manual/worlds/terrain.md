@@ -8,7 +8,7 @@ areas: ['terrain']
 
 # Terrain
 
-`@driftengine/terrain` is a heightfield and the geometry it draws, for 1.3 KB gzipped on top of
+`@driftengine/terrain` is a heightfield and the geometry it draws, for 1.4 KB gzipped on top of
 core. It imports no renderer: a patch of terrain comes back as `MeshData`, which goes to
 `createMesh` like any other geometry and is drawn by the pass that already exists.
 

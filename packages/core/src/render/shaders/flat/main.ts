@@ -835,6 +835,19 @@ export const MAIN_GLSL = `void main() {
        * caller sets this.
        */
       environment *= mix(1.0, uEnvironmentDials.z, metal);
+      /*
+       * **And brought to the light where the surface stands**, metal or not: a probe is captured
+       * at one place and seen from many, so a rough surface standing in light twice what the probe
+       * saw takes twice its reflection, and a mirror keeps the capture as it is. The weight is the
+       * caller's, the place's indirect light over the probe's average; mixed in by roughness, with
+       * the smoothstep written out because GLSL leaves one over an empty range undefined. 0, the
+       * weight less one, is exactly the reflection there was.
+       */
+      if (uEnvironmentMixing.x != 0.0) {
+        float span = max(uEnvironmentMixing.z - uEnvironmentMixing.y, 1e-4);
+        float rough = clamp((surfaceRoughness - uEnvironmentMixing.y) / span, 0.0, 1.0);
+        environment *= 1.0 + uEnvironmentMixing.x * rough * rough * (3.0 - 2.0 * rough);
+      }
       float facing = 1.0 - max(dot(n, toEye), 0.0);
       /*
        * **A metal's Fresnel base is close to its albedo, not a dielectric's four percent.** Schlick
@@ -2090,8 +2103,14 @@ export const MAIN_GLSL = `void main() {
    * the medium's colour and adding it puts the haze into the frame twice — a glow by day drew as
    * a grey shape of itself, greyer the thicker the air.
    */
+  /* And the sun's glow in the haze, which a surface takes after its fog and an added light never
+     does: what is behind it already has it. */
+  vec3 glow = vec3(0.0);
+  if (uFogEnabled == 1) {
+    glow = mediumGlow(distance(vWorldPos, uCameraPos), vWorldPos.y, normalize(vWorldPos - uCameraPos));
+  }
   vec3 shaded = applyOutputTransform(
-    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog));
+    uFogEnabled == 2 ? lit * (1.0 - fog) : mix(lit, mediumColor(), fog) + glow);
 
   /*
    * **Refraction: the scene behind this surface, bent and absorbed.**

@@ -60,7 +60,13 @@ import type {
   TranslucentMeshOptions,
 } from '../webgl2/renderer.ts';
 import type { IncrementalMeshHandle, MeshOptions, PrepareOptions } from '../api.ts';
-import { resolveAtmosphere, type ResolvedAtmosphere } from '../../atmosphere.ts';
+import { writeMediumFields, writeMediumSlot } from './mediumFields.ts';
+import { noEnvironmentMixing, resolveEnvironmentMixing } from '../../environmentMixing.ts';
+import {
+  createResolvedAtmosphere,
+  resolveAtmosphere,
+  type ResolvedAtmosphere,
+} from '../../atmosphere.ts';
 import { AMBIENT_SH_FLOATS, packAmbientSH } from '../../ambientHarmonics.ts';
 import {
   lightmapTexels,
@@ -286,7 +292,8 @@ import {
 import { ExposurePass } from './exposurePass.ts';
 import { AO_STORE } from '../../shaders/ambientOcclusion.ts';
 import { clampAutoExposure } from '../../shaders/exposure.ts';
-import { clampLocalExposure } from '../../shaders/localExposure.ts';
+import { LOCAL_EXPOSURE_FLOATS, resolveLocalExposure } from '../../shaders/localExposure.ts';
+import type { LocalExposureOptions } from '../../shaders/localExposure.ts';
 import type { UniformFields } from './scatterPass.ts';
 import {
   createDepthResolveLayout,
@@ -425,16 +432,23 @@ import {
   resolveScatterDeform,
   type ScatterDeform,
 } from '../../scatterDeform.ts';
-import { resolvePointLights, type ResolvedPointLights } from '../../lightBudget.ts';
+import {
+  createResolvedPointLights,
+  resolvePointLights,
+  type ResolvedPointLights,
+} from '../../lightBudget.ts';
 import { resolveRenderQuality, type RenderQuality } from '../../renderQuality.ts';
 import {
   DEFAULT_GLOBAL_MEDIUM,
+  WEAK_GPU_MEDIUM_STEPS,
+  createResolvedMediumLamps,
   mediumActive,
   mediumTargetSize,
-  WEAK_GPU_MEDIUM_STEPS,
   resolveGlobalMedium,
+  resolveGlobalMediumSettings,
+  resolveMediumLamps,
 } from '../../globalMedium.ts';
-import type { GlobalMediumOptions } from '../../globalMedium.ts';
+import type { GlobalMediumSettings, ResolvedGlobalMedium } from '../../globalMedium.ts';
 import type { MeshData } from '../../mesh.ts';
 import { castsDepth, glassOf } from '../../shadowCasters.ts';
 import { materialHasMaps, noteMapsWithoutUvs } from '../../mapsWithoutUvs.ts';
@@ -2242,7 +2256,10 @@ export class WebGPURenderer implements RendererApi {
   /** The inverse projection the composite linearises a depth with, built once per frame. */
   private readonly mediumInvProjection = mat4.create();
   /** This frame's medium. Off until a caller says otherwise. See `setGlobalMedium`. */
-  private mediumOptions: GlobalMediumOptions = DEFAULT_GLOBAL_MEDIUM;
+  private mediumOptions: ResolvedGlobalMedium = resolveGlobalMedium(DEFAULT_GLOBAL_MEDIUM);
+  /** The lamps the medium is lit by, and the lit stage's lamps they come from, refilled a frame. */
+  private readonly mediumLamps = createResolvedMediumLamps();
+  private readonly mediumLights = createResolvedPointLights();
   /**
    * The temporal resolve: its block, its ping-pong pair, and the jitter state.
    *
@@ -2948,16 +2965,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(FILM_FRAG_FIELDS, f, medium);
     this.filmFrags.writeBlock(fragmentSlot, this.filmFragInts);
 
     const filmPipe = filmPipeline(
@@ -3790,6 +3798,17 @@ export class WebGPURenderer implements RendererApi {
     this.passEnvironmentGain = Math.max(0, gain);
     this.writeEnvironmentDials();
   }
+
+  /** The environment brought to the light where a surface stands. See `renderer.ts`. */
+  setEnvironmentMixing(weight: number, roughnessLow = 0.1, roughnessHigh = 0.3): void {
+    resolveEnvironmentMixing(weight, roughnessLow, roughnessHigh, this.environmentMixing);
+    this.material((f) => {
+      f.set(this.environmentMixing, this.materialField('uEnvironmentMixing'));
+    });
+  }
+
+  /** `uEnvironmentMixing` as it stands; none until a draw asks. See `setEnvironmentMixing`. */
+  private readonly environmentMixing = noEnvironmentMixing(new Float32Array(4));
 
   /**
    * The reflectivity and environment gain the setters gave the pass, and the ones the material
@@ -4683,16 +4702,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(fields, f, medium);
     /* Only the mote fragment declares this — spark and smoke stay unconditionally fogged and
        have no such field. See ParticleBatchOptions.fog. */
     if (has('uFogEnabled')) i[atF('uFogEnabled')] = batch.fog ? 1 : 0;
@@ -4943,16 +4953,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    frags.writeFloats(fragmentSlot, atF('uFogColor'), medium.fogColor);
-    frags.writeFloat(fragmentSlot, atF('uFogDensity'), medium.fogDensity);
-    frags.writeFloat(fragmentSlot, atF('uFogHeightFalloff'), medium.fogHeightFalloff);
-    frags.writeFloat(fragmentSlot, atF('uFogEyeY'), medium.fogEyeY);
-    frags.writeFloats(fragmentSlot, atF('uUnderwaterColor'), medium.underwaterColor);
-    frags.writeFloat(fragmentSlot, atF('uUnderwaterFogDensity'), medium.underwaterFogDensity);
-    frags.writeFloat(fragmentSlot, atF('uUnderwaterFactor'), medium.underwaterFactor);
-    frags.writeInt(fragmentSlot, atF('uFogMode'), medium.fogMode);
-    frags.writeFloat(fragmentSlot, atF('uFogNear'), medium.fogNear);
-    frags.writeFloat(fragmentSlot, atF('uFogFar'), medium.fogFar);
+    writeMediumSlot(frags, fragmentSlot, PLUME_FRAG_FIELDS, medium);
     frags.writeInt(fragmentSlot, atF('uOutputTransform'), this.passGrade());
     frags.writeFloat(fragmentSlot, atF('uOutputExposure'), this.passGradeExposure());
     /*
@@ -5141,16 +5142,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(WATER_FRAG_FIELDS, f, medium);
 
     /* No reflection pass yet: the shader's own "off" path, not an improvised one. */
     i[atF('uReflectionEnabled')] = mirror === null ? 0 : 1;
@@ -5766,16 +5758,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(BOLT_FRAG_FIELDS, f, medium);
 
     this.boltVerts.writeBlock(vertexSlot, this.boltVertBlock);
     this.boltFrags.writeBlock(fragmentSlot, this.boltFragInts);
@@ -5903,20 +5886,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    this.lineFrags.writeFloats(fragmentSlot, atF('uFogColor'), medium.fogColor);
-    this.lineFrags.writeFloat(fragmentSlot, atF('uFogDensity'), medium.fogDensity);
-    this.lineFrags.writeFloat(fragmentSlot, atF('uFogHeightFalloff'), medium.fogHeightFalloff);
-    this.lineFrags.writeFloat(fragmentSlot, atF('uFogEyeY'), medium.fogEyeY);
-    this.lineFrags.writeFloats(fragmentSlot, atF('uUnderwaterColor'), medium.underwaterColor);
-    this.lineFrags.writeFloat(
-      fragmentSlot,
-      atF('uUnderwaterFogDensity'),
-      medium.underwaterFogDensity,
-    );
-    this.lineFrags.writeFloat(fragmentSlot, atF('uUnderwaterFactor'), medium.underwaterFactor);
-    this.lineFrags.writeInt(fragmentSlot, atF('uFogMode'), medium.fogMode);
-    this.lineFrags.writeFloat(fragmentSlot, atF('uFogNear'), medium.fogNear);
-    this.lineFrags.writeFloat(fragmentSlot, atF('uFogFar'), medium.fogFar);
+    writeMediumSlot(this.lineFrags, fragmentSlot, LINE_FRAG_FIELDS, medium);
 
     const linePipe = linePipeline(
       this.blendedPipelines(),
@@ -6079,39 +6049,11 @@ export class WebGPURenderer implements RendererApi {
   }
 
   /** Refilled per frame rather than allocated; see `resolvePointLights`. */
-  private readonly lights: ResolvedPointLights = {
-    count: 0,
-    falloff: 0,
-    positions: new Float32Array(0),
-    colors: new Float32Array(0),
-    radii: new Float32Array(0),
-    sourceRadii: new Float32Array(0),
-    weights: new Float32Array(0),
-    directions: new Float32Array(0),
-    coneCos: new Float32Array(0),
-    iesProfiles: new Float32Array(0),
-    iesAxes: new Float32Array(0),
-    cookies: new Float32Array(0),
-    heldSourceRadii: new Float32Array(MAX_POINT_LIGHTS),
-    axesAndChannels: new Float32Array(MAX_POINT_LIGHTS * 4),
-    conesAndFalloffs: new Float32Array(MAX_POINT_LIGHTS * 4),
-    heldWeights: new Float32Array(MAX_POINT_LIGHTS),
-  };
+  private readonly lights: ResolvedPointLights = createResolvedPointLights();
   /** The fixed arm's rectangles as `uAreaLightSize` holds them. See `packAreaSizesAndDoors`. */
   private readonly areaSizesAndDoors = new Float32Array(MAX_AREA_LIGHTS * 4);
   /** Refilled per frame rather than allocated; see `resolveAtmosphere`. */
-  private readonly medium: ResolvedAtmosphere = {
-    fogColor: new Float32Array(3),
-    underwaterColor: new Float32Array(3),
-    fogDensity: 0,
-    fogHeightFalloff: 0,
-    fogEyeY: 0,
-    fogMode: 0,
-    fogNear: 0,
-    fogFar: 1,
-    underwaterFogDensity: 0,
-    underwaterFactor: 0,
-  };
+  private readonly medium: ResolvedAtmosphere = createResolvedAtmosphere();
   /* -- Overlays: panels and text ------------------------------------------------------ */
 
   private readonly panelLayout: GPUBindGroupLayout;
@@ -7779,6 +7721,7 @@ export class WebGPURenderer implements RendererApi {
     this.mediumLayout = createPostStageLayout(device, MEDIUM_UNIFORMS, MEDIUM_FRAG_SIZE, [
       { binding: MEDIUM_TEXTURES.uDepth, filterable: false },
       { binding: MEDIUM_TEXTURES.uSunShadows, filterable: false, dimension: '2d-array' },
+      { binding: MEDIUM_TEXTURES.uPointShadows, filterable: false, dimension: '2d-array' },
     ]);
     this.mediumUniforms = device.createBuffer({
       label: 'post.mediumUniforms',
@@ -9178,16 +9121,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(meshMedium.fogColor, at('uFogColor'));
-    f[at('uFogDensity')] = meshMedium.fogDensity;
-    f[at('uFogHeightFalloff')] = meshMedium.fogHeightFalloff;
-    f[at('uFogEyeY')] = meshMedium.fogEyeY;
-    i[at('uFogMode')] = meshMedium.fogMode;
-    f[at('uFogNear')] = meshMedium.fogNear;
-    f[at('uFogFar')] = meshMedium.fogFar;
-    f.set(meshMedium.underwaterColor, at('uUnderwaterColor'));
-    f[at('uUnderwaterFogDensity')] = meshMedium.underwaterFogDensity;
-    f[at('uUnderwaterFactor')] = meshMedium.underwaterFactor;
+    writeMediumFields(this.fragment.fields, f, meshMedium);
     /*
      * The mirror's half-space, and only while the mirror is being drawn.
      *
@@ -9236,6 +9170,8 @@ export class WebGPURenderer implements RendererApi {
     f[at('uWriteMode') + 2] = 0;
     /* 1, not 0: a multiplier's identity is one. See `setEnvironmentGain`. */
     f[at('uEnvironmentDials') + 2] = 1;
+    /* And no mixing, which is stored less one. See `setEnvironmentMixing`. */
+    f.set(noEnvironmentMixing(this.environmentMixing), at('uEnvironmentMixing'));
     /* No overlay until a draw sets one. See `setSurfaceOverlay`. */
     this.overlayFloats.fill(0);
     f.fill(0, at('uOverlay'), at('uOverlay') + OVERLAY_FLOATS);
@@ -9491,16 +9427,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, at('uFogColor'));
-    f[at('uFogDensity')] = medium.fogDensity;
-    f[at('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[at('uFogEyeY')] = medium.fogEyeY;
-    i[at('uFogMode')] = medium.fogMode;
-    f[at('uFogNear')] = medium.fogNear;
-    f[at('uFogFar')] = medium.fogFar;
-    f.set(medium.underwaterColor, at('uUnderwaterColor'));
-    f[at('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[at('uUnderwaterFactor')] = medium.underwaterFactor;
+    writeMediumFields(this.fragment.fields, f, medium);
 
     /*
      * The shadow terms, matching what `renderer.ts` binds at default quality.
@@ -11120,16 +11047,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(SCATTER_FRAG_FIELDS, f, medium);
     i[atF('uOutputTransform')] = this.passGrade();
     f[atF('uOutputExposure')] = this.passGradeExposure();
 
@@ -12034,6 +11952,8 @@ export class WebGPURenderer implements RendererApi {
        * resolve, which is what sampling a stand-in does.
        */
       this.rebuildFlatBindGroup();
+      /* The medium reads the same array: see `buildMediumBindGroup`. */
+      this.mediumBindGroup = this.buildMediumBindGroup();
     }
     this.pointShadows.prepareStaticMaps(lights.length);
     this.preparedPointLightCount = lights.length;
@@ -12351,6 +12271,8 @@ export class WebGPURenderer implements RendererApi {
       if (old !== null) {
         this.retiredPointTexture = old;
         this.rebuildFlatBindGroup();
+        /* The medium reads the same array: see `buildMediumBindGroup`. */
+        this.mediumBindGroup = this.buildMediumBindGroup();
       }
     }
   }
@@ -12892,7 +12814,7 @@ export class WebGPURenderer implements RendererApi {
      * it. The held brightness is kept for either, since local exposure moves regions relative to it.
      * See `setAutoExposure` and `setLocalExposure`.
      */
-    const localising = this.localExposure > 0;
+    const localising = this.localExposure;
     const measuring = (this.autoExposure > 0 || localising) && this.exposurePass !== null;
     const adapting = measuring && this.autoExposure > 0;
     const shownScene = this.reconstructing ? this.reconShownView : this.sceneColorView;
@@ -12966,7 +12888,13 @@ export class WebGPURenderer implements RendererApi {
     f[at('uVignette')] = this.vignette;
     f.set(this.fringe, at('uFringe'));
     f[at('uAutoExposure')] = adapting ? this.autoExposure : 0;
-    f[at('uLocalExposure')] = measuring && localising ? this.localExposure : 0;
+    f[at('uLocalExposure')] = measuring && localising ? 1 : 0;
+    const shapeAt = at('uLocalShape');
+    const pivotAt = at('uLocalPivot');
+    for (let k = 0; k < 4; k++) {
+      f[shapeAt + k] = this.localExposureShape[k] as number;
+      f[pivotAt + k] = this.localExposureShape[4 + k] as number;
+    }
     f[at('uGrain')] = this.grain;
     f[at('uGrain') + 1] = this.grainSeed;
     device.queue.writeBuffer(this.rushUniforms, 0, this.rushStaging);
@@ -14404,7 +14332,17 @@ export class WebGPURenderer implements RendererApi {
     f.set(env?.directionalColor ?? [0, 0, 0], at('uSunColor'));
     f.set(env?.ambient ?? [0, 0, 0], at('uAmbient'));
     f[at('uDensity')] = options.density;
-    f[at('uAlbedo')] = options.albedo;
+    const height = at('uHeight');
+    f[height] = options.heightFalloff;
+    f[height + 1] = options.baseY;
+    const layer2 = at('uLayer2');
+    f[layer2] = options.density2;
+    f[layer2 + 1] = options.heightFalloff2;
+    f[layer2 + 2] = options.baseY2;
+    f.set(options.albedo, at('uAlbedo'));
+    const scatter = at('uScatter');
+    f[scatter] = options.sunScatter;
+    f[scatter + 1] = options.skyScatter;
     f[at('uAnisotropy')] = options.anisotropy;
     f[at('uMaxDistance')] = options.maxDistance;
     ints[at('uSteps')] = this.quality.globalMediumSteps;
@@ -14425,6 +14363,26 @@ export class WebGPURenderer implements RendererApi {
       at('uMovingLightViewProj'),
     );
     ints[at('uPeeledShadowEnabled')] = this.peelView === null || !this.peelFilled ? 0 : 1;
+    /* The lit stage's lamps and the shadows it resolved for them, this frame's. */
+    const lamps = resolveMediumLamps(
+      options,
+      resolvePointLights(env, this.quality.pointLightFalloff, this.mediumLights),
+      this.pointShadows === null ? null : this.resolvedPointShadows,
+      env?.lightMediumScatter,
+      this.mediumLamps,
+    );
+    ints[at('uLampCount')] = lamps.count;
+    ints[at('uLampFalloff')] = lamps.falloff;
+    if (lamps.count > 0) {
+      f.set(lamps.position, at('uLampPosition'));
+      f.set(lamps.color, at('uLampColor'));
+      f.set(lamps.aim, at('uLampAim'));
+      f.set(lamps.cone, at('uLampCone'));
+      f.set(lamps.shadow, at('uLampShadow'));
+      f.set(lamps.shadowAt, at('uLampShadowAt'));
+      f.set(lamps.live, at('uLampLive'));
+      f.set(lamps.liveAt, at('uLampLiveAt'));
+    }
     device.queue.writeBuffer(this.mediumUniforms, 0, this.mediumStaging);
 
     const g = this.mediumUpsampleFloats;
@@ -17147,8 +17105,9 @@ export class WebGPURenderer implements RendererApi {
   /** Eye adaptation: how far, this frame's time step, and the pass once asked for. */
   private autoExposure = 0;
   private autoExposureDt = 0;
-  /** How far each region is brought toward the frame. See `setLocalExposure`. */
-  private localExposure = 0;
+  /** Whether regions move, and how, as `resolveLocalExposure` packs it. See `setLocalExposure`. */
+  private localExposure = false;
+  private readonly localExposureShape = new Float32Array(LOCAL_EXPOSURE_FLOATS);
   private exposurePass: ExposurePass | null = null;
 
   /**
@@ -17312,17 +17271,12 @@ export class WebGPURenderer implements RendererApi {
    * draws nothing, and the three optional arguments are held until changed.
    */
   setGlobalMedium(
-    density: number,
-    albedo?: number,
+    density: number | GlobalMediumSettings,
+    albedo?: number | Vec3,
     anisotropy?: number,
     maxDistance?: number,
   ): void {
-    this.mediumOptions = resolveGlobalMedium({
-      density: Number.isFinite(density) ? density : 0,
-      albedo,
-      anisotropy,
-      maxDistance,
-    });
+    this.mediumOptions = resolveGlobalMediumSettings(density, albedo, anisotropy, maxDistance);
   }
 
   /** How much speed blur the frame should resolve with, 0 to 1. */
@@ -17397,13 +17351,13 @@ export class WebGPURenderer implements RendererApi {
    * the same setter over the same state, sharing eye adaptation's pass, which is built the first
    * time either is asked for.
    */
-  setLocalExposure(strength: number): void {
+  setLocalExposure(setting: number | LocalExposureOptions): void {
     if (!this.hasComposite || !this.quality.hdrScene) {
-      this.warnLookWithoutComposite(strength);
+      this.warnLookWithoutComposite(typeof setting === 'number' ? setting : 1);
       return;
     }
-    this.localExposure = clampLocalExposure(strength);
-    if (this.localExposure > 0) this.ensureExposurePass();
+    this.localExposure = resolveLocalExposure(setting, this.localExposureShape);
+    if (this.localExposure) this.ensureExposurePass();
   }
 
   /** The exposure pass, built once; the composite's group holds placeholders until it exists. */
@@ -17572,16 +17526,7 @@ export class WebGPURenderer implements RendererApi {
       this.quality.underwaterAtmosphere,
       this.medium,
     );
-    f.set(medium.fogColor, atF('uFogColor'));
-    f[atF('uFogDensity')] = medium.fogDensity;
-    f[atF('uFogHeightFalloff')] = medium.fogHeightFalloff;
-    f[atF('uFogEyeY')] = medium.fogEyeY;
-    f.set(medium.underwaterColor, atF('uUnderwaterColor'));
-    f[atF('uUnderwaterFogDensity')] = medium.underwaterFogDensity;
-    f[atF('uUnderwaterFactor')] = medium.underwaterFactor;
-    i[atF('uFogMode')] = medium.fogMode;
-    f[atF('uFogNear')] = medium.fogNear;
-    f[atF('uFogFar')] = medium.fogFar;
+    writeMediumFields(CAUSTICS_FRAG_FIELDS, f, medium);
 
     this.causticsVerts.writeBlock(vertexSlot, this.causticsVertBlock);
     this.causticsFrags.writeBlock(fragmentSlot, this.causticsFragInts);
@@ -18658,6 +18603,13 @@ export class WebGPURenderer implements RendererApi {
         { binding: MEDIUM_TEXTURES.uDepth.sampler, resource: this.postDepthSampler },
         { binding: MEDIUM_TEXTURES.uSunShadows.texture, resource: this.sunArrayView },
         { binding: MEDIUM_TEXTURES.uSunShadows.sampler, resource: this.volumeShadowSampler },
+        /* The lamps' maps, the lit stage's own array, rebuilt here whenever that array is
+           replaced; the white stand-in reads as nothing in the way, and no lamp reads it. */
+        {
+          binding: MEDIUM_TEXTURES.uPointShadows.texture,
+          resource: this.pointShadowArray?.view ?? (this.shadowBlankView as GPUTextureView),
+        },
+        { binding: MEDIUM_TEXTURES.uPointShadows.sampler, resource: this.volumeShadowSampler },
       ],
     });
   }

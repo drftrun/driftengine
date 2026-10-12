@@ -216,6 +216,16 @@ most three stops. A sunlit courtyard holds fifty times the light on its paving t
 its arcades, and one exposure leaves one of the two black or white; this lifts the shade as shade.
 About 0.5 is a photograph's latitude.
 
+`setLocalExposure` also takes a shape, `{ highlightContrast, shadowContrast, detail, blurredBlend,
+middleGreyBias, range }`, which turns each region about middle grey at the frame's exposure rather
+than about the frame's metered brightness. A region keeps `highlightContrast` of its stops from
+grey where it is brighter and `shadowContrast` where it is darker, so 1 leaves it as it is and 0
+brings it all the way to grey; each pixel keeps `detail` of its own stops from its region, so above
+1 sharpens the texture a curve would flatten. `blurredBlend`, 0.4 by default, leans a region's
+level from its own band of brightness toward its tile's average, `middleGreyBias` adds stops to
+grey, and `range`, 8 by default, is the furthest a region moves. A night metered far below grey is
+pulled toward grey by this form, which is what it is for; one held dark keeps the single number.
+
 Both need `screenEffects` and `hdrScene`, and say so once on the console when they lack them.
 
 ## Colour grading

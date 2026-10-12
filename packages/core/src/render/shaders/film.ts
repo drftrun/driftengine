@@ -211,8 +211,11 @@ void main() {
   // it was not: this ran its own curve while claiming otherwise, so a slick receded
   // at a different rate than the deck it was lying on.
   float fog = mediumFog(length(uCameraPos - vWorld), vWorld.y);
+  vec3 glow = mediumGlow(length(uCameraPos - vWorld), vWorld.y, normalize(vWorld - uCameraPos));
+  /* The air the mirror recedes into takes no glow: the mirror is mixed toward it by the fog, which
+     would lay the glow by the fog's share a second time over the surface's own. */
   vec3 gradedAir = applyOutputTransform(mediumColor());
-  vec3 graded = applyOutputTransform(mix(color, mediumColor(), fog));
+  vec3 graded = applyOutputTransform(mix(color, mediumColor(), fog) + glow);
 
   /*
    * The mirrored scene, under the sheen rather than instead of it.

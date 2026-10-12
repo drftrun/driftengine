@@ -13,6 +13,12 @@
  * Measured 2026-10-06 on both backends, with and without the composite, to those numbers.
  *     /fogStart.html?...&falloff=0.1&rise=0.2        the haze thinning with height, the patches
  *                                                    climbing as they recede
+ *     /fogStart.html?...&layer2=0.04,0.1,0           a second layer, density, falloff and base
+ *                                                    height, summed with the first along the ray
+ *     /fogStart.html?...&most=0.6                    the haze hides at most 0.6 of a patch
+ *     /fogStart.html?...&cutoff=30                   and nothing past 30 m
+ *     /fogStart.html?...&glow=1,0.6,0.2,4,5          the sun's glow in it, colour, exponent and
+ *                                                    start, about &glowdir=x,y,z (the view's -Z)
  *
  * Each patch is unlit, square to the camera and sized by its distance so that it fills one eighth
  * of the frame's width, so a capture reads its fog at the centre of its column. Nothing under
@@ -77,6 +83,30 @@ async function main(): Promise<void> {
     fogBaseY: 0,
   });
   env.fogStart = number('start', 0);
+  const list = (name: string): number[] | null => {
+    const parts = (ASKED.get(name) ?? '').split(',').map(Number);
+    return ASKED.has(name) && parts.every((v) => Number.isFinite(v)) ? parts : null;
+  };
+  const layer2 = list('layer2');
+  if (layer2 !== null) {
+    env.fogLayer2 = {
+      density: layer2[0] ?? 0,
+      heightFalloff: layer2[1] ?? 0,
+      baseY: layer2[2] ?? 0,
+    };
+  }
+  if (ASKED.has('most')) env.fogMaxOpacity = number('most', 1);
+  if (ASKED.has('cutoff')) env.fogCutoff = number('cutoff', 0);
+  const glow = list('glow');
+  if (glow !== null) {
+    const toward = list('glowdir') ?? [0, 0, -1];
+    env.fogSunGlow = {
+      color: [glow[0] ?? 0, glow[1] ?? 0, glow[2] ?? 0],
+      exponent: glow[3] ?? 1,
+      start: glow[4] ?? 0,
+      direction: [toward[0] ?? 0, toward[1] ?? 0, toward[2] ?? -1],
+    };
+  }
   const frame = (): void => {
     renderer.beginFrame([0, 0, 0]);
     renderer.bindMeshPass(camera, env);
@@ -86,6 +116,7 @@ async function main(): Promise<void> {
   };
   frame();
   stats.textContent = `${created.backend} · fog start · ${location.search}`;
+  (window as unknown as { __fogReady: boolean }).__fogReady = true;
 }
 
 void main();

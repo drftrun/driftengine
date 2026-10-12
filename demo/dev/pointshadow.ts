@@ -28,6 +28,9 @@
  *     ?area=1&areacast=0                 the same rectangle with no occlusion, which is the control
  *     ?area=1&areaw=3&areah=0.05         a long thin strip, which is the shape reported from outside
  *     ?area=1&arearange=6                a shadow map far plane too short to reach the floor
+ *     ?steps=32&medium=0.08              a global medium the lamp scatters in, through its own
+ *                                        shadow: &lampscatter=0 is the medium with no lamp in it,
+ *                                        the control, and &lampscatter=3 three times as strongly
  *
  * **`?pulse=1` is the one worth understanding.** `flicker` modulates *colour* and `matchesSource`
  * does not compare colour, so a flickering lamp keeps its map. An animated **radius** is a
@@ -545,6 +548,19 @@ async function main(): Promise<void> {
          mean one rectangle. */
       areaLights,
     );
+  }
+
+  /* `?medium=`: air the lamp scatters in, and nothing else does: the sun and the sky lit none. */
+  if (params.has('medium')) {
+    renderer.setGlobalMedium({
+      density: number('medium', 0),
+      albedo: 0.9,
+      anisotropy: 0.3,
+      maxDistance: 30,
+      sunScatter: 0,
+      skyScatter: 0,
+      lampScatter: number('lampscatter', 1),
+    });
   }
 
   function renderFrame(): void {

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 
-import { resolveAtmosphere, type Atmosphere } from './atmosphere.ts';
+import { createResolvedAtmosphere, resolveAtmosphere, type Atmosphere } from './atmosphere.ts';
 import {
   LINEAR_FOG,
   MEDIUM_FOG,
@@ -8,6 +8,7 @@ import {
   createFogTarget,
   mediumColour,
   mediumFog,
+  mediumGlow,
   type FogOptions,
 } from './fog.ts';
 
@@ -160,18 +161,7 @@ test('THE SECOND PIPELINE’S HAZE IS THE MEDIUM THE FIRST ONE BINDS, field for 
   ];
   const into = createFogTarget();
   for (const [atmosphere, eyeY, underwater] of cases) {
-    const bound = resolveAtmosphere(atmosphere, eyeY, underwater, {
-      fogColor: new Float32Array(3),
-      underwaterColor: new Float32Array(3),
-      fogDensity: 0,
-      fogHeightFalloff: 0,
-      fogEyeY: 0,
-      fogMode: 0,
-      fogNear: 0,
-      fogFar: 1,
-      underwaterFogDensity: 0,
-      underwaterFactor: 0,
-    });
+    const bound = resolveAtmosphere(atmosphere, eyeY, underwater, createResolvedAtmosphere());
     const fog = atmosphereFog(atmosphere, eyeY, underwater, into);
     /* Filled in place: the frame loop that calls this may not allocate. */
     expect(fog).toBe(into);
@@ -226,4 +216,107 @@ test('A MEDIUM WITH NO START IS THE EXPRESSION IT ALWAYS WAS, TO THE BIT', () =>
       1 - Math.exp((-0.03 * dist * (1 - Math.exp(-denom))) / denom),
     );
   }
+});
+
+test('TWO LAYERS SUM ALONG THE RAY, EACH THINNING BY ITS OWN HEIGHT', () => {
+  /*
+   * On a level ray each layer is its density times the distance, times the level ray's guard,
+   * (1 − e^-1e-4) / 1e-4 = 0.99995: 0.01 and 0.02 over 50 m is an optical depth of 1.4999250, and
+   * the fog 1 − e^-1.4999250 = 0.776853. On a ray climbing 20 m over 100 m
+   * through the second layer alone, falloff 0.05, the climb is one scale height, so the layer gives
+   * 0.01 · 100 · (1 − e^-1) / 1 = 0.632121 and the fog 1 − e^-0.632121 = 0.468536. Without the
+   * second layer the first is what it always was.
+   */
+  const both: FogOptions = { ...CLEAR, density: 0.01, density2: 0.02, heightFalloff2: 0.05 };
+  expect(mediumFog(both, 50, 0)).toBeCloseTo(0.776853, 6);
+  const second: FogOptions = { ...CLEAR, density2: 0.01, heightFalloff2: 0.05 };
+  expect(mediumFog(second, 100, 20)).toBeCloseTo(0.468536, 5);
+  expect(mediumFog({ ...CLEAR, density: 0.01 }, 50, 0)).toBeCloseTo(0.393454, 6);
+});
+
+test('THE HAZE LEAVES ITS FLOOR OF A SURFACE, AND HIDES NOTHING PAST ITS CUTOFF', () => {
+  /*
+   * A floor of 0.2 is a haze that may hide at most 0.8: a wall behind a hundred metres of air at
+   * density 1 keeps a fifth of itself, where without the floor it keeps e^-100. In the linear ramp
+   * too. Past a cutoff of 100 m nothing is hidden at all, in either mode, and short of it the haze
+   * is what it was.
+   */
+  const thick: FogOptions = { ...CLEAR, density: 1 };
+  expect(mediumFog({ ...thick, floor: 0.2 }, 100, 0)).toBeCloseTo(0.8, 12);
+  expect(mediumFog(thick, 100, 0)).toBe(1);
+  const ramp: FogOptions = { ...CLEAR, mode: LINEAR_FOG, near: 0, far: 10 };
+  expect(mediumFog({ ...ramp, floor: 0.2 }, 50, 0)).toBeCloseTo(0.8, 12);
+  const air: FogOptions = { ...CLEAR, density: 0.01, cutoff: 100 };
+  expect(mediumFog(air, 101, 0)).toBe(0);
+  expect(mediumFog(air, 99, 0)).toBeCloseTo(0.628405, 6);
+  expect(mediumFog({ ...ramp, cutoff: 100 }, 101, 0)).toBe(0);
+});
+
+test('THE SUN GLOWS IN THE HAZE PAST ITS START, ABOUT ITS DIRECTION AND NOWHERE ELSE', () => {
+  /*
+   * A level ray of 100 m through haze of 0.01 a metre, the glow beginning 20 m out: the haze over
+   * the last 80 m, at 0.01 times the level ray's guard of 0.99995 a metre, hides 1 − e^-0.799960 =
+   * 0.550653 of the light. Looking at 0.8 of the way toward the sun at exponent 2 the lobe is 0.64,
+   * so a glow of (1, 0.5, 0.25) adds (0.352418, 0.176209, 0.088104). Away from the sun, in a linear ramp, past the cutoff and inside the start it adds
+   * none; half under water, half.
+   */
+  const glowing: FogOptions = {
+    ...CLEAR,
+    density: 0.01,
+    glowColour: [1, 0.5, 0.25],
+    glowExponent: 2,
+    glowDirection: [0, 0, 1],
+    glowStart: 20,
+  };
+  const out: [number, number, number] = [0, 0, 0];
+  const toward = [0.6, 0, 0.8];
+  const glow = (fog: FogOptions, dist: number, at: ArrayLike<number>): number[] => [
+    ...mediumGlow(fog, dist, 0, at, out),
+  ];
+  const near = (actual: number[], expected: number[]): void =>
+    actual.forEach((v, i) => expect(v).toBeCloseTo(expected[i] as number, 5));
+  near(glow(glowing, 100, toward), [0.352418, 0.176209, 0.088104]);
+  near(glow(glowing, 100, [0, 0, -1]), [0, 0, 0]);
+  near(glow({ ...glowing, mode: LINEAR_FOG }, 100, toward), [0, 0, 0]);
+  near(glow({ ...glowing, cutoff: 90 }, 100, toward), [0, 0, 0]);
+  near(glow(glowing, 15, toward), [0, 0, 0]);
+  near(glow({ ...glowing, underwaterFactor: 0.5 }, 100, toward), [0.176209, 0.088104, 0.044052]);
+});
+
+test('AN ATMOSPHERE RESOLVES ITS SECOND LAYER AT THE EYE, ITS FLOOR AND ITS GLOW TOWARD THE SUN', () => {
+  /*
+   * A second layer of 0.02 at y 10, falloff 0.1, seen from y 0 is 0.02 · e^1 = 0.0543656 at the
+   * eye. A most of 0.8 is a floor of 0.2, and none is no floor. The glow takes the environment's
+   * sun where it names no direction, as a unit vector, and in a linear ramp there is none.
+   */
+  const air = {
+    fogColor: [0.7, 0.8, 0.9] as [number, number, number],
+    fogDensity: 0.01,
+    fogHeightFalloff: 0,
+    fogBaseY: 0,
+    fogLayer2: { density: 0.02, heightFalloff: 0.1, baseY: 10 },
+    fogMaxOpacity: 0.8,
+    fogCutoff: 300,
+    fogSunGlow: { color: [1, 0.9, 0.7] as [number, number, number], exponent: 8, start: 5 },
+    directionalDir: [0, 3, 4] as [number, number, number],
+    underwater: null,
+  };
+  const fog = atmosphereFog(air, 0, false, createFogTarget());
+  expect(fog.density2).toBeCloseTo(0.0543656, 6);
+  expect(fog.heightFalloff2).toBeCloseTo(0.1, 6);
+  expect(fog.floor).toBeCloseTo(0.2, 6);
+  expect(fog.cutoff).toBe(300);
+  expect(fog.glowColour.map((c) => Math.round(c * 1000) / 1000)).toEqual([1, 0.9, 0.7]);
+  expect(fog.glowDirection.map((c) => Math.round(c * 1000) / 1000)).toEqual([0, 0.6, 0.8]);
+  expect(fog.glowExponent).toBe(8);
+  expect(fog.glowStart).toBe(5);
+  const plain = atmosphereFog(
+    { ...air, fogMaxOpacity: undefined, fogMode: 'linear' as const },
+    0,
+    false,
+    createFogTarget(),
+  );
+  expect(plain.floor).toBe(0);
+  expect(plain.density2).toBe(0);
+  expect(plain.glowColour).toEqual([0, 0, 0]);
 });

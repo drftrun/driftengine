@@ -583,7 +583,12 @@ export type {
 export type { StaticDrawsHandle } from './render/staticDraws.ts';
 /* A bone animation's clip as a caller hands it over, and the handle `createBoneAnimation` returns. */
 export type { BoneAnimationClip, BoneAnimationHandle } from './render/boneAnimation.ts';
-export type { Atmosphere, UnderwaterAtmosphere } from './render/atmosphere.ts';
+export type {
+  Atmosphere,
+  FogLayer,
+  FogSunGlow,
+  UnderwaterAtmosphere,
+} from './render/atmosphere.ts';
 /*
  * Reading an image's texels back exactly, which no canvas and no `VideoFrame` will do.
  *
@@ -607,7 +612,12 @@ export {
   WEAK_GPU_MEDIUM_STEPS,
   resolveGlobalMedium,
 } from './render/globalMedium.ts';
-export type { GlobalMediumOptions } from './render/globalMedium.ts';
+export type {
+  GlobalMediumOptions,
+  GlobalMediumSettings,
+  ResolvedGlobalMedium,
+} from './render/globalMedium.ts';
+export type { LocalExposureOptions } from './render/shaders/localExposure.ts';
 /*
  * Equirectangular to cube faces, and the roughness a prefiltered level stands for.
  *

@@ -290,6 +290,13 @@ uniform vec3 uOrmScale; // wgsl:material
 uniform vec3 uEnvironmentDials; // wgsl:material
 
 /**
+ * The environment a surface reflects brought to the light where it stands, for every surface:
+ * \`setEnvironmentMixing\`. x is the weight less one, so a program nothing wrote reflects as it did;
+ * y and z the roughnesses the weight is mixed in over, smooth to rough.
+ */
+uniform vec4 uEnvironmentMixing; // wgsl:material
+
+/**
  * Where a surface glows, and in what colour.
  *
  * **sRGB, unlike the two maps above it.** A normal map is a direction and an ORM map is three

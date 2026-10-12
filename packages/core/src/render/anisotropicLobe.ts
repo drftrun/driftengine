@@ -27,6 +27,26 @@ export function anisotropicAlphas(roughness: number, strength: number, out: Floa
  * The lobe at a half vector whose components along the direction, across it and along the normal
  * are `th`, `bh` and `nh`. 1 at the mirror direction.
  */
+/**
+ * How much the lift brightens the stretched lobe at a half vector: `(D + min(3, D^1.5) · k) / D`,
+ * with D the distribution there, `1 / (π αT αB d²)`, as the shader's `anisotropicLift` has it.
+ */
+export function anisotropicLiftFactor(
+  th: number,
+  bh: number,
+  nh: number,
+  alphaT: number,
+  alphaB: number,
+  lift: number,
+): number {
+  if (lift <= 0) return 1;
+  const x = th / alphaT;
+  const y = bh / alphaB;
+  const d = x * x + y * y + nh * nh;
+  const distribution = 1 / Math.max(Math.PI * alphaT * alphaB * d * d, 1e-8);
+  return 1 + lift * Math.min(3 / distribution, Math.sqrt(distribution));
+}
+
 export function anisotropicLobe(
   th: number,
   bh: number,
