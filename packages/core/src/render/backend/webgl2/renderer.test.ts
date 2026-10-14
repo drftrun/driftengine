@@ -2788,5 +2788,7 @@ test("REFUSES A MATERIAL'S DETAIL ON A PART WITH NO ROOM FOR ITS THIRTY-THREE VE
   const uploads = calls.filter(
     (c) => c.name === 'uniform4fv' && (c.args[0] as { name?: string } | null)?.name === 'uDetail',
   );
-  expect((uploads.at(-1)?.args[1] as Float32Array)[0], 'drawn without').toBe(0);
+  const last = uploads.at(-1);
+  expect(last, 'uDetail uploaded').toBeDefined();
+  expect((last?.args[1] as Float32Array | undefined)?.[0], 'drawn without').toBe(0);
 });

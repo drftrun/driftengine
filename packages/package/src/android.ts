@@ -11,6 +11,7 @@ import { missingReferences } from './mobile/assetCheck.ts';
 import { withAndroidManifest } from './mobile/androidManifest.ts';
 import { versionCodeFor } from './mobile/versionCode.ts';
 import { androidToolchain, toolchainHome } from './toolchain.ts';
+import { toolStart } from './spawnTool.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -241,8 +242,10 @@ async function runTool(
   env: Readonly<Record<string, string>>,
 ): Promise<void> {
   await new Promise<void>((done, fail) => {
-    const child = spawn(command, [...args], {
+    const start = toolStart(command, args);
+    const child = spawn(start.command, [...start.args], {
       stdio: 'inherit',
+      windowsVerbatimArguments: start.windowsVerbatimArguments,
       env: { ...process.env, ...env },
     });
     child.on('error', fail);

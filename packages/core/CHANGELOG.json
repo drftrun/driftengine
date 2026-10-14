@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.13.6",
+    "date": "2026-10-14",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "The packager builds for Android on Windows again: `sdkmanager.bat` and `gradle.bat` start through `cmd.exe`, which Node has required of a batch file since its April 2024 security releases.",
+        "text": "An Android build on Windows stopped at accepting the SDK licences with `spawn EINVAL` and nothing else. Since the April 2024 security releases (CVE-2024-27980: Node 18.20.2, 20.12.2, 21.7.3 and every release after them), Node refuses to start a `.bat` or `.cmd` without a shell, and the packager's Android toolchain on Windows is two of them, `sdkmanager.bat` and `gradle.bat`. A batch file on Windows now starts through `cmd.exe`, with its AutoRun commands left out, every part of the line quoted by hand with its own quotes doubled, and the line passed as it is: an SDK root under a user folder with a space in its name stays one argument, and so does a package such as `platforms;android-35`, whose semicolon a batch file would otherwise read as a separator. Node's own `shell: true` does not quote, so an argument with a space would arrive in two. Every other tool, and a batch file on any other platform, starts as it did."
+      }
+    ]
+  },
+  {
     "version": "4.13.5",
     "date": "2026-10-12",
     "entries": [

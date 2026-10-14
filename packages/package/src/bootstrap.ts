@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import type { Target } from './manifest.ts';
+import { toolStart } from './spawnTool.ts';
 import {
   PINS,
   ensureDir,
@@ -379,7 +380,9 @@ interface RunOptions {
 
 async function run(command: string, args: readonly string[], options: RunOptions): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, [...args], {
+    const start = toolStart(command, args);
+    const child = spawn(start.command, [...start.args], {
+      windowsVerbatimArguments: start.windowsVerbatimArguments,
       env: { ...process.env, ...options.env },
       stdio: [
         options.stdin === undefined ? 'ignore' : 'pipe',
