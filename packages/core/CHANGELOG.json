@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.14.2",
+    "date": "2026-11-03",
+    "entries": [
+      {
+        "kind": "changed",
+        "short": "A desktop build is made with electron-builder 26.18.1 or later, which keeps what it packs into an asar inside the project's own folders.",
+        "text": "`@driftengine/package` asks for electron-builder `^26.18.1` where it asked for `^26.0.0`. Between the two, electron-builder backported a run of fixes to 26, and two reach what the packager does: what it packs into an asar is held inside the project's own folders, and native modules are rebuilt with `@electron/rebuild` 4.2.1. None carried a published advisory, and a project installing afresh already resolved 26.18.1, so this is a floor for a project whose lockfile held an older 26. On an RX 9070 XT, a small program packaged for the desktop target with 26.18.1 comes out at the sizes 26.15.3 gave it, a 130.1 MB AppImage and a 123.2 MB tarball, and starts to its first frame in 381 ms. Nothing else a consumer installs is different. The repository moves its CI to `actions/checkout` and `actions/setup-node` 7 and its own tools to oxlint 1.90, prettier 3.9.10, tsx 4.23.15 and Node's types 26.6.5, with no new warning and nothing reformatted, and its tests now run on a pull request as well as on a push, so an update Dependabot proposes is seen green or red before it is taken."
+      }
+    ]
+  },
+  {
     "version": "4.14.1",
     "date": "2026-11-03",
     "entries": [
