@@ -9,10 +9,13 @@
 # blocked on, which is a release of its own.
 version: 2
 updates:
-  # **The lockfile only.** Every range in a published manifest is something a consumer installs
-  # against, so a routine update moves what this checkout resolves and never what a manifest asks
-  # for. What it gives up: nothing outside a declared range is proposed, an exact pin such as
-  # esbuild's included, and raising a floor stays a person's change, as Electron's was in 4.14.1.
+  # **The lockfile only, asked for and not wholly given.** Every range in a published manifest is
+  # something a consumer installs against, so a routine update should move what this checkout
+  # resolves and not what a manifest asks for. It holds for the root's own ranges; for a
+  # workspace's, Dependabot raises the floor anyway: its first run took `@driftengine/package`'s
+  # electron-builder from `^26.0.0` to `^26.18.1`. So read a pull request's manifest diff before
+  # taking it, and take a floor only where a consumer needs it. What it gives up: nothing outside a
+  # declared range is proposed, an exact pin such as esbuild's included.
   - package-ecosystem: npm
     directory: /
     schedule:
