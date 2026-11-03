@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "electron": "^43.8.1",
-    "electron-builder": "^26.0.0",
+    "electron-builder": "^26.18.1",
     "esbuild": "0.28.2",
     "tsx": "^4.23.12"
   },
