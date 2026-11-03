@@ -1,4 +1,4 @@
-# The engine's own checks, on every push to main.
+# The engine's own checks, on every push to main and every pull request into it.
 #
 # **On push, because it is cheap enough to be.** A few seconds: 584 tests over pure functions
 # with no browser, two typecheck passes, and a bake of a four-triangle model. A suite that runs
@@ -26,6 +26,15 @@ on:
     # **Markdown only, and never a directory.** `docs/corpus/**` is `.drs` and is a real input to
     # the compiler suites, so ignoring `docs/**` would skip the tests a corpus change exists to
     # exercise. A mixed push matches nothing here and runs everything, which is the right answer.
+    paths-ignore:
+      - '**/*.md'
+  # **And on a pull request into main**, which is how Dependabot proposes an update. A proposal is
+  # taken into a release commit rather than merged (`.github/dependabot.yml`), and this is where it
+  # shows green or red before anybody takes it; until 2026-11-03 nothing ran on one at all. The
+  # job needs no secret and a read-only token, which is what such a run gets. Markdown alone skips
+  # it, as on a push.
+  pull_request:
+    branches: [main]
     paths-ignore:
       - '**/*.md'
   workflow_dispatch:
