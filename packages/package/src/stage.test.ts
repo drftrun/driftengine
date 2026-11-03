@@ -4,7 +4,45 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { PackageManifest } from './manifest.ts';
-import { stageApp } from './stage.ts';
+import { stageApp, stagedManifest } from './stage.ts';
+
+/**
+ * **One string joins a running window to its menu entry on Linux**: electron-builder names the
+ * `.desktop` file and its `StartupWMClass` from the packed `package.json`'s `desktopName`, and
+ * Electron derives the window's app id from it. Before it was written, the window's class was the
+ * package name and the entry's `StartupWMClass` the product name, so the two disagreed by case.
+ */
+describe('the packed package.json', () => {
+  it('NAMES ITS DESKTOP ENTRY AFTER THE PACKAGE, SO THE FILE, ITS CLASS AND THE WINDOW AGREE', () => {
+    const staged = stagedManifest(
+      {
+        id: 'dev.example.title',
+        name: 'Title',
+        entry: 'dist/index.html',
+        window: { width: 1280, height: 720, mode: 'windowed', resizable: true },
+        backend: { webgpu: 'prefer', allowSoftwareRenderer: false },
+        features: { clipExport: false, gamepad: true },
+        targets: ['linux-x64'],
+        native: null,
+        steam: { appId: null },
+        android: { permissions: [], cleartextTraffic: false, orientation: 'unspecified' },
+        splash: { show: true, minMs: 1400 },
+        publisher: 'example',
+        icon: null,
+      },
+      '1.2.3',
+    );
+    expect(staged).toEqual({
+      name: 'title',
+      productName: 'Title',
+      version: '1.2.3',
+      main: 'main.cjs',
+      description: 'Title',
+      author: 'example',
+      desktopName: 'title.desktop',
+    });
+  });
+});
 
 /**
  * **The refusal belongs to the copy, not to the command that usually comes before it.**

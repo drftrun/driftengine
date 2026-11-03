@@ -218,7 +218,10 @@ export async function build(
           /* Nothing is named here: electron-builder reads `WIN_CSC_LINK`/`CSC_LINK` from the
              environment itself, and repeating them is a second place for them to be wrong. */
         },
-        linux: { target: ['AppImage', 'tar.gz'], category: 'Game' },
+        /* `syncDesktopName` names the `.desktop` file and its `StartupWMClass` after the staged
+           manifest's `desktopName`, the string Electron gives the running window: see
+           `stagedManifest` in `stage.ts` for what went unlinked without it. */
+        linux: { target: ['AppImage', 'tar.gz'], category: 'Game', syncDesktopName: true },
       },
     });
 

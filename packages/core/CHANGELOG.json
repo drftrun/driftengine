@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.14.3",
+    "date": "2026-11-03",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A Linux desktop build's menu entry is joined to its running window: the class the entry names is the one the game's window has, where the two differed by case.",
+        "text": "The packager writes `desktopName` into the application's own `package.json` and has electron-builder 26 name the `.desktop` file and its `StartupWMClass` from it (`linux.syncDesktopName`). Until now the entry said `StartupWMClass=Startup`, the product name, while the running window's class was `startup`, the package name, and a desktop links a window to its entry by that class: a running game was not joined to its own launcher and icon, and electron-builder 26 warned about it on every Linux build. Measured on the starter's build under XWayland, the window's class is `startup` before and after, and the entry now says `startup` too. Electron also derives a Wayland window's app id from `desktopName`, which electron-builder documents and which was not measured here, since Electron does not start on this machine's Wayland session. The name is the last segment of the game's `id`, so nothing a game chose changes, and Windows and macOS builds are as they were."
+      }
+    ]
+  },
+  {
     "version": "4.14.2",
     "date": "2026-11-03",
     "entries": [

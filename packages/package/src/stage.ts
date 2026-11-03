@@ -32,6 +32,47 @@ import type { ResourceOptions } from './resources.ts';
  */
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+/** The `package.json` packed into the application: what electron-builder and Electron read. */
+export interface StagedManifest {
+  readonly name: string;
+  readonly productName: string;
+  readonly version: string;
+  readonly main: 'main.cjs';
+  readonly description: string;
+  readonly author: string;
+  readonly desktopName: string;
+}
+
+/**
+ * The application's own `package.json`, which electron-builder packs and Electron reads at start.
+ *
+ * **`desktopName` is what joins a running window to its entry in a Linux desktop's menu.** Electron
+ * derives a Wayland window's app id from it, and electron-builder 26 names the `.desktop` file and
+ * its `StartupWMClass` from it under `linux.syncDesktopName` (`build.ts`). Without it, measured on
+ * the starter's build under XWayland, the window's class was `startup` and the entry's
+ * `StartupWMClass` was `Startup`, the product name: a desktop links a window to its entry by that
+ * class, so the running game was not joined to its own launcher and icon. With it the entry reads
+ * `startup`, the class the window already had. What it gives up: nothing a game chose, since the
+ * name is already the last segment of its `id`. Wayland's half is electron-builder's statement and
+ * not a measurement here, where Electron does not start on Wayland at all (`demo/native/startup.mjs`).
+ */
+export function stagedManifest(manifest: PackageManifest, version: string): StagedManifest {
+  const name = manifest.id.split('.').pop() ?? 'app';
+  return {
+    name,
+    productName: manifest.name,
+    version,
+    main: 'main.cjs',
+    /* Both are read by installers rather than by code: electron-builder warns without them,
+       and a Windows installer with no publisher is the one a person is asked to trust. */
+    description: manifest.name,
+    author: manifest.publisher,
+    desktopName: `${name}.desktop`,
+    /* No dependencies: both entry points are bundled, and Electron is supplied by the runtime
+       that is executing them. */
+  };
+}
+
 export async function stageApp(
   manifest: PackageManifest,
   projectDir: string,
@@ -85,22 +126,7 @@ export async function stageApp(
   const version = await consumerVersion(projectDir);
   await writeFile(
     join(stageDir, 'package.json'),
-    `${JSON.stringify(
-      {
-        name: manifest.id.split('.').pop() ?? 'app',
-        productName: manifest.name,
-        version,
-        main: 'main.cjs',
-        /* Both are read by installers rather than by code: electron-builder warns without them,
-           and a Windows installer with no publisher is the one a person is asked to trust. */
-        description: manifest.name,
-        author: manifest.publisher,
-        /* No dependencies: both entry points are bundled, and Electron is supplied by the
-           runtime that is executing them. */
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify(stagedManifest(manifest, version), null, 2)}\n`,
   );
 
   await cp(join(projectDir, 'drift.package.json'), join(stageDir, 'drift.package.json'));
