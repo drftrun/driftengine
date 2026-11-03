@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.14.1",
+    "date": "2026-11-03",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "A desktop build ships Electron 43.8.1 or later: the packager asks for it, past the nine security advisories against the 43.4.1 it asked for until now.",
+        "text": "`@driftengine/package` asks for Electron `^43.8.1` where it asked for `^43.4.1`, so a desktop build made with this release ships a runtime past the nine advisories published against the versions between. Two are high: a sandboxed preload's code cache that a compromised renderer could poison (CVE-2026-102677), and the compromised eMudhra intermediate certificates (CVE-2026-115570). Four are medium: SameSite cookie restrictions not applied to a window opened from a link, and three kinds of permission request attributed to the wrong origin or frame. Three are low. A project whose lockfile holds an older 43 moves the next time it installs this version. The packager is otherwise as it was: on an RX 9070 XT, a small program packaged for the desktop target on Electron 43.8.6 starts to its first frame in 373 ms, against the 380 recorded for 43.4.1 in September. Nothing else a consumer installs is different. The repository's own lockfile, which no package ships, takes undici, fast-uri, brace-expansion, ip-address, vite and vitest to their patched versions inside the ranges already declared. Two moderate advisories stay, against `glob` below 14 and `minimatch` below 11, because they arrive only through electron-builder and through `@kmamal/gpu`'s build chain, and no release of either takes the fixed major."
+      }
+    ]
+  },
+  {
     "version": "4.14.0",
     "date": "2026-10-18",
     "entries": [

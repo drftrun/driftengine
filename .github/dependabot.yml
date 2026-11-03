@@ -1,0 +1,59 @@
+# Dependabot: a grouped security pull request when an advisory lands against anything this
+# repository installs, and one routine pull request a month per ecosystem for the rest.
+#
+# **A pull request from it is a proposal, never a merge.** A commit here carries one author
+# (AGENTS.md, "Commits carry one author"), a release is one squashed commit, and `packages/`, the
+# root manifest and the lockfile change only in a release, because the site's engine-docs check
+# refuses a docs commit past them. So its change is taken into the next release commit, the gates
+# run there, and the pull request is closed. What would make that wrong is a fix a consumer is
+# blocked on, which is a release of its own.
+version: 2
+updates:
+  # **The lockfile only.** Every range in a published manifest is something a consumer installs
+  # against, so a routine update moves what this checkout resolves and never what a manifest asks
+  # for. What it gives up: nothing outside a declared range is proposed, an exact pin such as
+  # esbuild's included, and raising a floor stays a person's change, as Electron's was in 4.14.1.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    versioning-strategy: lockfile-only
+    # A version a week old, for routine updates: a compromised release is caught within days of
+    # being published, if at all. Security updates do not wait for it.
+    cooldown:
+      default-days: 7
+    ignore:
+      # The engine's own packages are workspace links, and a release moves them together.
+      - dependency-name: '@driftengine/*'
+      # The language is pinned exactly in four manifests that must agree, and moves by hand.
+      - dependency-name: driftscript
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ['*']
+      npm-monthly:
+        applies-to: version-updates
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+
+  # The capture-weights parity tool's Python, pinned from an install its parity checks were run
+  # against. No routine updates, since a pin moved means running them again; a security update
+  # still opens, grouped.
+  - package-ecosystem: pip
+    directory: /tools/capture-weights/reference
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    groups:
+      pip-security:
+        applies-to: security-updates
+        patterns: ['*']

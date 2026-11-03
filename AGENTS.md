@@ -1430,6 +1430,15 @@ stems; the payload budget applies to audio too.
     not a reason to revisit.** Mediabunny is MPL-2.0 against mp4-muxer's MIT, which is a
     source-availability obligation on every site shipping a clip encoder, and the current one is
     frozen rather than broken.
+  - **Dependabot watches what this repository installs, and its pull requests are folded into a
+    release rather than merged** (2026-11-03). Alerts were on and security updates were off, so 120
+    alerts had piled up with nothing proposing a fix; `.github/dependabot.yml` says what is proposed
+    and why, and why a merge button is the wrong way in. **Two moderate advisories are not
+    fixable here**: `glob` below 14 and `minimatch` below 11 arrive only through electron-builder's
+    tree and the GPU binding's build chain, and no release of either parent takes the fixed major.
+    An `overrides` across a major breaks a `require` written for the old export. `@kmamal/gpu`
+    0.2.1 drops that chain but moves Dawn to another commit, which is a native-host change to
+    measure, not a security patch.
 
 ### A list of roots is a scope, and a scope nobody re-reads shrinks — hard rule (2026-09-20)
 
