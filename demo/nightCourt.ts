@@ -211,36 +211,12 @@ function buildCourt(): MeshData {
    */
   const random = mulberry32(0x5eed_c0de);
 
-  /* --- Paving. Skipped where the basin is, and jointed so the light finds edges. */
-  builder.setRoughness(0.82);
-  /* Cut stone, and so is everything down to the lanterns: paving, kerb, basin, columns. */
+  /*
+   * Cut stone from here down to the lanterns: kerb, basin and columns. The paving that sets its
+   * own grain is emitted last, below, and everything up to the lanterns used to inherit this from
+   * it, so it is stated here instead.
+   */
   builder.setGrain(0.85);
-  const slabs = Math.ceil((COURT_HALF_M * 2) / SLAB_PITCH_M);
-  const slabHalf = SLAB_PITCH_M / 2 - SLAB_JOINT_M / 2;
-  for (let ix = 0; ix < slabs; ix++) {
-    for (let iz = 0; iz < slabs; iz++) {
-      const cx = -COURT_HALF_M + (ix + 0.5) * SLAB_PITCH_M;
-      const cz = -COURT_HALF_M + (iz + 0.5) * SLAB_PITCH_M;
-      if (Math.abs(cx) < KERB_HALF_M && Math.abs(cz) < KERB_HALF_M) continue;
-      // A few percent either side. Enough that the floor is not a flat field of one
-      // colour, far too little to read as a pattern.
-      const shade = 0.92 + random() * 0.16;
-      builder.addBox(
-        [cx, -0.08, cz],
-        [slabHalf, 0.08, slabHalf],
-        [STONE[0] * shade, STONE[1] * shade, STONE[2] * shade],
-      );
-      /*
-       * And the bed the joint sits on, at full pitch so it meets its neighbour's rather than
-       * leaving a second, thinner gap. Emitted here rather than as one slab under the whole
-       * court so that it inherits the basin skip above by construction: a separate shape with
-       * its own idea of where the basin is would sit above the water the first time either
-       * moved. Its top is 4 cm down and its bottom is level with the slab's, so it fills the
-       * joint without standing proud of the paving or hanging below it.
-       */
-      builder.addBox([cx, -0.1, cz], [SLAB_PITCH_M / 2, 0.06, SLAB_PITCH_M / 2], JOINT_BED);
-    }
-  }
 
   /* --- The basin: a kerb, and a floor for the water to show. */
   const kerbMid = (POOL_HALF_M + KERB_HALF_M) / 2;
@@ -346,6 +322,48 @@ function buildCourt(): MeshData {
       Math.cos(angle) * FIGURE_RING_M,
       Math.sin(angle) * FIGURE_RING_M,
     );
+  }
+
+  /*
+   * --- Paving. Skipped where the basin is, and jointed so the light finds edges.
+   *
+   * **Last, because the merged mesh is drawn in the order it was built.** The floor is behind
+   * everything else in the court, so emitted first it was lit in full under every column, figure
+   * and lantern and then painted over, and this scene's lit shader is the frame: five shadowed
+   * lamps, a blocker search and a filter each, per pixel. Emitted after them, depth rejects those
+   * pixels before they are shaded. Measured on WebGPU at 3840x1408, the main pass went from 2.23 to
+   * 2.10 ms. What it gives up is nothing in the picture, since the depth test decides the same
+   * winners in either order; what would make it wrong is a translucent surface in this mesh, which
+   * would want its background drawn first.
+   */
+  builder.setRoughness(0.82);
+  /* Cut stone, as the kerb, basin and columns are. */
+  builder.setGrain(0.85);
+  const slabs = Math.ceil((COURT_HALF_M * 2) / SLAB_PITCH_M);
+  const slabHalf = SLAB_PITCH_M / 2 - SLAB_JOINT_M / 2;
+  for (let ix = 0; ix < slabs; ix++) {
+    for (let iz = 0; iz < slabs; iz++) {
+      const cx = -COURT_HALF_M + (ix + 0.5) * SLAB_PITCH_M;
+      const cz = -COURT_HALF_M + (iz + 0.5) * SLAB_PITCH_M;
+      if (Math.abs(cx) < KERB_HALF_M && Math.abs(cz) < KERB_HALF_M) continue;
+      // A few percent either side. Enough that the floor is not a flat field of one
+      // colour, far too little to read as a pattern.
+      const shade = 0.92 + random() * 0.16;
+      builder.addBox(
+        [cx, -0.08, cz],
+        [slabHalf, 0.08, slabHalf],
+        [STONE[0] * shade, STONE[1] * shade, STONE[2] * shade],
+      );
+      /*
+       * And the bed the joint sits on, at full pitch so it meets its neighbour's rather than
+       * leaving a second, thinner gap. Emitted here rather than as one slab under the whole
+       * court so that it inherits the basin skip above by construction: a separate shape with
+       * its own idea of where the basin is would sit above the water the first time either
+       * moved. Its top is 4 cm down and its bottom is level with the slab's, so it fills the
+       * joint without standing proud of the paving or hanging below it.
+       */
+      builder.addBox([cx, -0.1, cz], [SLAB_PITCH_M / 2, 0.06, SLAB_PITCH_M / 2], JOINT_BED);
+    }
   }
 
   builder.setRoughness(null);
@@ -744,10 +762,8 @@ const SMOKE_PLUME: PlumePlacement = {
 /**
  * What each budget costs, and what it gives up to get there.
  *
- * `full` trims two things the default profile spends that this scene has no use for: a
- * second directional depth layer, which exists to keep overlapping *static* geometry
- * from bleeding through and buys almost nothing on a flat court, and the widest PCF
- * kernel, which is being paid on every fragment for every one of five lights.
+ * `full` is what every reader of the site's front page is shown. This scene is the whole of
+ * that page's argument, so the frame it costs is the number a reader judges the engine by.
  *
  * `lean` gives up the planar reflection, and that is the whole of why it is worth
  * having. The reflection is a **second complete submission of the scene** from the
@@ -756,22 +772,45 @@ const SMOKE_PLUME: PlumePlacement = {
  */
 const PROFILES: Readonly<Record<DemoBudget, RenderQualityOptions>> = {
   /*
-   * The engine's own defaults, deliberately, and the empty object is the point.
+   * The engine's defaults, less three that this scene pays for on every pixel and shows almost
+   * nothing for.
    *
-   * This used to trim three of them: a single directional depth layer, 384 pixel cube
-   * faces and an eight tap filter. Every one measured as a saving here and every one put
-   * the scene on a configuration nothing else runs, which is how it came to render as a
-   * fire floating in the dark on WebKit while a shipping game using the same engine on
-   * the same phone was fine. 384 is the likeliest culprit of the three: it is not a power
-   * of two, and a cube map of depth at an unusual size is exactly the kind of allocation
-   * a mobile driver accepts and then mishandles.
+   * **It was the defaults alone, and that was the answer to a real failure.** An earlier trim
+   * (one directional layer, 384 pixel cube faces, an eight tap filter) coincided with the scene
+   * drawing a fire floating in the dark on WebKit, and 384 was the likeliest culprit: not a
+   * power of two, and a depth cube at an unusual size is the allocation a mobile driver accepts
+   * and then mishandles. The rule that came out of it stands, that a demo must not be the first
+   * consumer of an untested combination. These three are not untested: they are three of the
+   * trims `demoQualityFor` has given every phone and tablet that opens this page since it
+   * existed, iPhones included, so a desktop now runs a subset of what a handset already runs.
    *
-   * The defaults are the configuration with production evidence behind them. A demo is
-   * the worst possible place to be the first consumer of an untested combination, because
-   * a scene that fails here fails in front of the people being asked to trust the engine.
-   * The two draw calls this costs are the cheapest insurance in the project.
+   * **What it costs was measured, on the frame reported at 40 fps on ordinary machines.**
+   * The lit court is the frame: sky, plumes and water stubbed out move nothing, and the point
+   * shadows are half of what is left, because every pixel near the basin pays five lamps a
+   * blocker search and a filter each, and then pays it again in the reflection. On WebGPU at
+   * 3840x1408 the frame was 4.65 to 4.78 ms of GPU time and is 1.90 to 2.23 with these three, the
+   * floor emitted last and the moon's shadow drawn once (both described where they are done); at
+   * the 1920x855 a 1080p front page draws, 2.5 to 2.8 ms became 1.25, and on WebGL2 1.8 became
+   * 0.64. A phone already ran all three, so it gains only the moon.
+   *
+   * - **Four filter taps rather than twelve.** The filter turns its taps between neighbouring
+   *   columns and averages the pair, so four is an eight tap estimate of each penumbra. Held
+   *   frames at twelve and at four differ in the water, where the reflection changed, and almost
+   *   nowhere else. What it would cost first is grain in the widest penumbra, the fire's.
+   * - **One directional depth layer.** The second keeps overlapping static casters from showing
+   *   through each other, and the moon here is a weak fill over a flat court, at 0.4 strength.
+   * - **The reflection at half scale.** A quarter of the pixels of a full second pass of the
+   *   scene, for a basin that covers a small part of the frame and whose water filters what it
+   *   reflects across up to nine taps anyway. The cost is a softer image in the water.
+   *
+   * What would make it wrong is a scene change that makes any of these the subject: a lamp
+   * large enough to want its penumbra resolved, casters stacked under the moon, or a camera
+   * that puts the basin across most of the frame.
    */
   full: {
+    shadowFilterTaps: 4,
+    directionalShadowDepthLayers: 1,
+    waterReflectionScale: 0.5,
     /*
      * Four samples. The one place a demo deliberately asks for *more* than the engine
      * default, because the default is 1 only so that no scene written before multisampling
@@ -857,6 +896,8 @@ class NightCourtHandle implements DemoHandle {
   /** Both written by `applyHour`, both read by `frame`. */
   private baseEmissiveGain = NIGHT.emissiveGain;
   private shadowStrength = NIGHT.shadowStrength;
+  /** The hour the moon's shadow was last drawn at, so it is drawn again only when that moves. */
+  private moonBakedAt = Number.NaN;
 
   constructor(renderer: RendererApi, canvas: HTMLCanvasElement) {
     this.gl = canvas.getContext('webgl2');
@@ -1073,23 +1114,41 @@ class NightCourtHandle implements DemoHandle {
 
     /* --- Moonlight. Weak, and it should be: it is here to keep the far paving from
            going to pure ambient, not to compete with the lanterns. */
-    env.shadowDepthSpan = computeLightMatrix(
-      env.directionalDir,
-      0,
-      0,
-      0,
-      COURT_HALF_M,
-      renderer.shadowMapSize,
-      this.lightMatrix,
-    );
-    env.lightViewProj = this.lightMatrix;
     env.shadowStrength = this.shadowStrength;
-    renderer.beginShadowPass(this.lightMatrix, 'static');
-    renderer.drawShadowCasters(this.staticCasters);
-    renderer.endShadowPass();
-    renderer.beginShadowPass(this.lightMatrix, 'static-peel');
-    renderer.drawShadowCasters(this.staticCasters);
-    renderer.endShadowPass();
+    /*
+     * **Drawn when the hour moves, not every frame**, because nothing else here can change it:
+     * the casters are the fixed world, and the matrix is a function of the moon's direction
+     * alone, which only `applyHour` writes. A static layer keeps what was drawn into it until it
+     * is opened again, on both backends, so the frame after a bake reads the same map the bake
+     * frame did. It used to be redrawn sixty times a second as a full pass over the court, twice,
+     * which on a phone's tiled GPU is a depth target cleared and written back per frame for a
+     * picture that had not moved; a held frame is identical to the pixel with it and without it.
+     *
+     * What would make it wrong is anything that moves and casts into it, which belongs in the
+     * `dynamic` layer and would be drawn every frame there, or a renderer that loses the map's
+     * contents without losing the device. Both backends report that as `lost`, and a renderer
+     * cannot draw again after it without being built again, which bakes again.
+     */
+    if (this.moonBakedAt !== this.daylight) {
+      this.moonBakedAt = this.daylight;
+      env.shadowDepthSpan = computeLightMatrix(
+        env.directionalDir,
+        0,
+        0,
+        0,
+        COURT_HALF_M,
+        renderer.shadowMapSize,
+        this.lightMatrix,
+      );
+      env.lightViewProj = this.lightMatrix;
+      renderer.beginShadowPass(this.lightMatrix, 'static');
+      renderer.drawShadowCasters(this.staticCasters);
+      renderer.endShadowPass();
+      /* A no-op on both backends where the profile asks for one depth layer. */
+      renderer.beginShadowPass(this.lightMatrix, 'static-peel');
+      renderer.drawShadowCasters(this.staticCasters);
+      renderer.endShadowPass();
+    }
 
     renderer.beginFrame(this.sky.horizon);
 
