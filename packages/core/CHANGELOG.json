@@ -1,5 +1,16 @@
 [
   {
+    "version": "4.14.4",
+    "date": "2026-11-15",
+    "entries": [
+      {
+        "kind": "fixed",
+        "short": "`exactExp` answers correctly at the ends of its range, where `exp(-709.5)` came back as 1.33 and a thin Gaussian in a capture drew a stray line beside itself.",
+        "text": "`exactExp` reduces `x` to `r + k ln 2` and scales `e^r` by `2^k`, with `k` from -1075 to 1024, and the table of powers it scaled by stopped at `2^512`: a `k` of 1024, or below -1023, lost its top bit and came back as a plausible finite number. So for `x` from 709.4363 to 709.7827 and from -745.1332 to -709.4363 it answered wrongly, 0.75 for `exp(709.5)` and 1.33 for `exp(-709.5)`, more than one for a negative input. It scales in two steps at both ends now, as fdlibm does: at the top the sum is doubled and then scaled by `2^1023`, and at the bottom it is scaled exactly while still normal and rounded once into a subnormal. Every answer in those ranges is the correctly rounded one, checked against eighty-digit decimal, and `exp(-745)` is the smallest subnormal rather than 5e-16. Between them nothing moves: over seven million inputs from -709.4363 to 709.4363 every answer is the bit pattern 4.14.3 gave, so a replay changes only where it evaluated `exactExp` past those bounds. Reported as issue 3. **Where it showed**: DriftCapture's CPU rasteriser, depth pass and gradients take `exactExp` of a Gaussian's falloff, which reaches those exponents in the corners of a thin splat's box. Through 4.14.3 one such splat, tilted 10 degrees, lit 66 pixels about 21 pixels off its axis at an alpha up to 1.08, which a fit then compared and differentiated against; it lights none now."
+      }
+    ]
+  },
+  {
     "version": "4.14.3",
     "date": "2026-11-03",
     "entries": [

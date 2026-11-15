@@ -111,14 +111,14 @@ const POW2 = [
 ];
 
 /**
- * Two to an integer power, by binary decomposition of the exponent.
+ * Two to an integer power from -1023 to 1023, by binary decomposition of the exponent.
  *
- * Multiplication by a power of two is exact in IEEE 754, so this is exact wherever it does not
- * overflow — which is what makes it a legitimate substitute for the `Math.pow` a range reduction
- * would otherwise reach for.
- *
- * A large negative exponent lands on zero instead of a subnormal, because the reciprocal is taken
- * after the product overflows. That is `exp` underflowing to zero, which is where it was going.
+ * Multiplication by a power of two is exact in IEEE 754, so this is exact across that range — which
+ * is what makes it a legitimate substitute for the `Math.pow` a range reduction would otherwise
+ * reach for. **Past it there is no exact answer to give**: `2^1024` is not a double. So an exponent
+ * with a bit beyond the table answers Infinity, and a negative one its reciprocal, zero, rather than
+ * dropping the bit it has no entry for — which it did until 4.14.4, and which turned `exp(709.5)`
+ * into 0.75. `exactExp` scales in two steps at both ends rather than hand this a `k` past the range.
  */
 function pow2(exponent: number): number {
   let remaining = exponent < 0 ? -exponent : exponent;
@@ -129,8 +129,13 @@ function pow2(exponent: number): number {
     remaining >>= 1;
     index += 1;
   }
+  if (remaining > 0) return exponent < 0 ? 0 : Number.POSITIVE_INFINITY;
   return exponent < 0 ? 1 / result : result;
 }
+
+/** The two halves of a scale too large or too small to be one double. Both are exact. */
+const TWO_1023 = pow2(1023);
+const TWO_M1000 = pow2(-1000);
 
 /** sin on [-π/4, π/4]. */
 function sinKernel(x: number): number {
@@ -241,6 +246,17 @@ export function exactExp(x: number): number {
   sum = 1 + r * sum;
   sum = 1 + r * sum;
 
+  /*
+   * **The scale is `2^k` for `k` from -1075 to 1024, and only -1022 to 1023 is a normal double.** At
+   * the top the sum is doubled first, exactly, and then scaled by `2^1023`, which rounds once or
+   * overflows. At the bottom the answer is subnormal: the sum is scaled by `2^(k + 1000)` while it is
+   * still normal, exactly, and the one rounding is the last step, by `2^-1000`. That is fdlibm's
+   * arrangement, and it makes an answer below `2^-1022` the correctly rounded scaling of the sum
+   * rather than zero or a second rounding. Between the two, one multiply by an exact power of two is
+   * one rounding already, and the answers there are the bits they always were.
+   */
+  if (k > 1023) return sum * 2 * TWO_1023;
+  if (k < -1021) return sum * pow2(k + 1000) * TWO_M1000;
   return sum * pow2(k);
 }
 

@@ -90,6 +90,14 @@ const GOLDEN: readonly (readonly [string, number, string])[] = [
   ['exp', -100, '36ea8c1f14e2af5d'],
   ['exp', 709, '7fdd422d2be5dc9b'],
   ['exp', -700, '00d14f2b0fb9307f'],
+  /* The two ends of the range, added 2026-11-15 when their scale stopped losing its top bit. Each
+     is also the correctly rounded answer, checked against eighty-digit decimal. */
+  ['exp', 709.5, '7fe81e9b4b52d0c9'],
+  ['exp', 709.78, '7fefe9ce5c4c52b4'],
+  ['exp', -709.5, '00054e90c99fb878'],
+  ['exp', -710, '00033802fd28b3c3'],
+  ['exp', -720, '0000000993b4dc95'],
+  ['exp', -745, '0000000000000001'],
   ['acos', 1, '0000000000000000'],
   ['acos', -1, '400921fb54442d18'],
   ['acos', 0, '3ff921fb54442d18'],
@@ -203,8 +211,54 @@ describe('reproducible transcendentals', () => {
   });
 
   /*
+   * **The scale reaches both ends of the double range.** `x` is reduced to `r + k ln 2` and the
+   * answer is `e^r · 2^k`, with `k` from -1075 to 1024. The power table stopped at `2^512`, so a `k`
+   * of 1024, or below -1023, lost its top bit and came back as a plausible finite number: 0.75 for
+   * `exp(709.5)` and 1.33 for `exp(-709.5)`, reported against 4.14.3. The sweep above stops at 709.1
+   * and the saturation test jumps to 1000, past the range checks, which is why neither saw it.
+   *
+   * The references are `exp` evaluated in eighty-digit decimal and rounded once to a double: the
+   * correctly rounded answers, owing nothing to the code under test.
+   */
+  it('KEEPS EVERY BIT OF THE SCALE AT BOTH ENDS OF THE DOUBLE RANGE', () => {
+    const correctlyRounded: readonly (readonly [number, number])[] = [
+      [709.4375, 1.2728918482977176e308],
+      [709.5, 1.3549863193146328e308],
+      [709.78, 1.7928227943945155e308],
+      [709.782712893384, 1.7976931348622732e308],
+      [-709.4375, 7.856126986258373e-309],
+      [-709.5, 7.38014831401258e-309],
+      [-710, 4.47628622567513e-309],
+      [-720, 2.0322308024e-313],
+      [-745, 5e-324],
+      [-745.1332191019411, 5e-324],
+    ];
+    for (const [x, expected] of correctlyRounded) {
+      const actual = exactExp(x);
+      /* Within an ulp where the answer is normal, within one step of the grid where it is not. */
+      const tolerance =
+        expected >= 2.2250738585072014e-308 ? expected * Number.EPSILON : Number.MIN_VALUE;
+      expect(Math.abs(actual - expected), `exp(${x}) = ${actual}`).toBeLessThanOrEqual(tolerance);
+    }
+    /*
+     * And between those points: never falling as `x` rises, across every `k` from one end to the
+     * other. Steps of 1/16 move the answer by six per cent, far more than any rounding can undo, and
+     * they pass through zero, so nothing below it can exceed one.
+     */
+    const falls: string[] = [];
+    let previous = 0;
+    for (let i = 0; i <= 23278; i++) {
+      const x = -745.125 + i * 0.0625;
+      const value = exactExp(x);
+      if (value < previous) falls.push(`exp(${x}) = ${value} after ${previous}`);
+      previous = value;
+    }
+    expect(falls).toEqual([]);
+  });
+
+  /*
    * **That this file reaches only arithmetic and `sqrt` is asserted by `scripts/determinism.mjs`**,
-   * which scans `packages/core/src/math` among its thirteen simulation roots. A second check here
+   * which scans `packages/physics/src` among its simulation roots. A second check here
    * would read the source from disk, which a browser-target test cannot do without `node:fs` — and
    * would be a worse instrument anyway, since the gate sees every file rather than this one.
    */
